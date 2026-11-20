@@ -24,13 +24,13 @@ const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for 
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
 type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six';
-async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false) {
+async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false, options: { timelineGate?: Promise<void>; timelineStarted?: () => void; failResponse?: boolean } = {}) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content.startsWith('interaction') } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && content.startsWith('interaction') } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
@@ -78,13 +78,18 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
     if (path === `${root}/commands` && request.method() === 'POST') {
       const command = request.postDataJSON() as SessionCommand;
       settingUpdate.resolve(command);
+      if (options.failResponse && command.kind === 'interaction_response') return send({ error: { code: 'invalid_request', message: 'Response unavailable', requestId: source.sessionId } }, 400);
       await settingReceipt.promise;
       return send({ operation: { protocol: snapshot.protocol, ...sessionFence(snapshot), operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'handled', error: null }, operationUrl: `${root}/operations/${command.operationId}` }, 202);
     }
     if (path === (entry === 'task' ? `${taskRoot}/sessions/current` : root)) {
       observations.currentReads++; return send(entry === 'task' ? { status: 'registered', session: snapshot } : { session: snapshot });
     }
-    if (path === `${root}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries, resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    if (path === `${root}/timeline`) {
+      options.timelineStarted?.();
+      await options.timelineGate;
+      return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries, resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    }
     if (path === `${root}/archive`) return send({ archive: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null } });
     if (path === `${root}/archive/content`) return send({ archive: { schemaVersion: 1, ...sessionFence(snapshot), controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, provider, nativeSessionId: snapshot.identity.nativeSessionId, entries, resources: [] } });
     if (path.endsWith('/attachments') || path.endsWith('/steps')) return send({ items: [], nextCursor: null });
@@ -507,6 +512,33 @@ test('desktop form choices use interface typography and compact rows', async ({ 
   const row = page.locator('.session-multiselect-choice').first();
   await expect(row).toHaveCSS('font-size', '14px');
   expect(await row.evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(36);
+});
+
+test('form loading and failed response preserve the selected choices', async ({ page }) => {
+  const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  const opening = open(page, 'en', 'waiting_input', 'test', 'interaction-two', false, { timelineGate: gate.promise, timelineStarted: started.resolve, failResponse: true });
+  await started.promise;
+  await expect(page.locator('.session-multiselect-choice')).toHaveCount(0);
+  gate.resolve();
+  const fixture = await opening;
+  const checks = page.locator('.session-multiselect-choice input');
+  await checks.nth(1).check();
+  await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+  await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
+  await page.locator('.session-interaction button[type=submit]').click();
+  await expect(page.locator('.session-error')).toBeVisible();
+  await expect(checks.nth(1)).toBeChecked();
+  await expect(checks.nth(1)).toBeEnabled();
+  expect(fixture.observations.writes).toHaveLength(1);
+});
+
+test('archived form requests remain readable without response controls', async ({ page }) => {
+  const fixture = await open(page, 'en', 'archived', 'test', 'interaction-two');
+  await expect(page.locator('.session-multiselect-choice')).toHaveCount(2);
+  await expect(page.getByRole('checkbox', { name: 'Standard' })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: /Development configuration/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Submit' })).toBeDisabled();
+  expect(fixture.observations.writes).toEqual([]);
 });
 
 for (const entry of ['task', 'assistant'] as const) test(`${entry} composer follows interface and touch typography without losing its draft`, async ({ browser }) => {
