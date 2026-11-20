@@ -1551,6 +1551,121 @@ async function installChainUsage(page: Page) {
   return { requests, setOutcome: (next: typeof outcome) => { outcome = next; } };
 }
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 24]) {
+  test(`chain action typography and interactions at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+    const scopedRoot = '00000000-0000-4000-8000-000000000063';
+    const scopedMember = '00000000-0000-4000-8000-000000000064';
+    const goalId = '00000000-0000-4000-8000-000000000065';
+    const additionalTasks = [
+      detailFixture(projectId, usageSecondRoot, { title: 'Unfinished chain' }),
+      detailFixture(projectId, usageSecondMember, { title: 'Unfinished member', dependsOn: [usageSecondRoot] }),
+      detailFixture(projectId, scopedRoot, { title: 'Scoped chain' }),
+      detailFixture(projectId, scopedMember, { title: 'Scoped member', parentId: goalId, dependsOn: [scopedRoot] }),
+      detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', ready: false }),
+    ];
+    const writes = await install(page, false, true, false, false, false, undefined,
+      { status: 'done', completedAt: time, ready: false }, { additionalTasks, locale });
+    await installChainUsage(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.addStyleTag({ content: `html { font-size: ${rootSize}px !important; }` });
+    await page.locator('#project-section-tab-tasks').click();
+
+    for (const [id, kind, title] of [[taskId, 'completed', 'Target task'], [usageSecondRoot, 'unfinished', 'Unfinished chain'], [scopedRoot, 'scoped', 'Scoped chain']] as const) {
+      const row = page.locator(`[data-chain-id="${id}"]`);
+      await row.locator('.root-toggle').click();
+      const heading = row.locator('.goal-children-heading');
+      const actions = heading.locator('.goal-children-actions');
+      const usage = actions.getByRole('button', { name: `${title}${locale === 'en' ? ', Token usage' : '，Token 用量'}`, exact: true });
+      const detail = actions.locator('.goal-detail-link:not(.chain-usage-button)');
+      await expect(usage).toBeVisible();
+      await expect(usage).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      for (const word of await usage.locator('.goal-detail-word > span').all()) await expect(word).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      await expect(detail).toHaveCount(kind === 'scoped' ? 0 : 1);
+      if (kind !== 'scoped') {
+        await expect(detail).toHaveAccessibleName(`${title}${locale === 'en' ? ', View task details' : '，查看任务详情'}`);
+        await expect(detail).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        for (const word of await detail.locator('.goal-detail-word > span').all()) await expect(word).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        await expect(detail.locator('time')).toHaveCount(kind === 'completed' ? 1 : 0);
+        if (kind === 'completed') {
+          await expect(detail.locator('time')).toHaveAttribute('datetime', time);
+          await expect(detail.locator('time')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+        }
+      }
+      const targetSizes = await actions.evaluate(element => {
+        const sizes = () => ({ height: element.parentElement!.getBoundingClientRect().height, buttons: [...element.querySelectorAll<HTMLButtonElement>(':scope > button')].map(button => {
+          const box = button.getBoundingClientRect(), heading = element.parentElement!.getBoundingClientRect();
+          const time = button.querySelector('time')?.getBoundingClientRect();
+          return { width: box.width, height: box.height, left: box.left - heading.left, top: box.top - heading.top, timeTop: time === undefined ? null : time.top - box.top };
+        }) });
+        const baseline = document.createElement('style');
+        baseline.textContent = `.project-tasks .root-list .goal-children-actions .goal-detail-link { font-size: var(--text-sm) !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word { display: contents !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word::before { content: none !important; }
+          .project-tasks .root-list .goal-children-actions .goal-detail-word > span { font-size: var(--text-sm) !important; }`;
+        return [null, 200, 266].map(width => {
+          if (width !== null) (element as HTMLElement).style.flex = `0 0 ${width}px`;
+          const current = sizes();
+          document.head.append(baseline);
+          const previous = sizes();
+          baseline.remove();
+          (element as HTMLElement).style.flex = '';
+          return { width, current, previous };
+        });
+      });
+      for (const { current, previous } of targetSizes) {
+        expect(Math.abs(current.height - previous.height)).toBeLessThanOrEqual(2.1);
+        for (let i = 0; i < current.buttons.length; i++) {
+          const actual = current.buttons[i]!, old = previous.buttons[i]!;
+          expect(actual.width).toBeGreaterThanOrEqual(old.width - 0.1);
+          expect(Math.abs(actual.width - old.width)).toBeLessThanOrEqual(1.1);
+          expect(actual.height).toBeGreaterThanOrEqual(old.height - 0.1);
+          expect(Math.abs(actual.height - old.height)).toBeLessThanOrEqual(2.1);
+          expect(Math.abs(actual.left - old.left)).toBeLessThanOrEqual(1.1);
+          expect(Math.abs(actual.top - old.top)).toBeLessThanOrEqual(2.1);
+          if (actual.timeTop !== null && old.timeTop !== null) expect(Math.abs(actual.timeTop - old.timeTop)).toBeLessThanOrEqual(2.1);
+        }
+      }
+      expect(await heading.evaluate(element => {
+        const count = element.querySelector(':scope > span')!.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll<HTMLButtonElement>('.goal-children-actions > button')];
+        const boxes = buttons.map(button => button.getBoundingClientRect());
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        const inside = (box: DOMRect) => box.left >= 0 && box.right <= innerWidth && box.top >= element.getBoundingClientRect().top && box.bottom <= element.getBoundingClientRect().bottom;
+        const detail = buttons.find(button => button.querySelector('time'));
+        const textSeparate = detail === undefined || (() => {
+          const text = document.createRange(); text.selectNodeContents(detail.firstChild!);
+          const label = detail.querySelector('time')!.getBoundingClientRect();
+          return [...text.getClientRects()].every(rect => separate(rect, label));
+        })();
+        return boxes.every(box => inside(box) && separate(box, count)) && (boxes.length < 2 || separate(boxes[0]!, boxes[1]!)) && textSeparate && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+
+      await usage.focus(); await page.keyboard.press('Enter');
+      const usageDialog = page.locator('.chain-usage-dialog');
+      await expect(usageDialog).toHaveAccessibleName(`${locale === 'en' ? 'Token usage' : 'Token 用量'} · ${title}`);
+      await page.keyboard.press('Escape'); await expect(usageDialog).toHaveCount(0); await expect(usage).toBeFocused();
+      if (kind !== 'scoped') {
+        await detail.focus();
+        if (kind === 'completed') {
+          const hint = page.getByRole('tooltip');
+          await expect(hint).toBeVisible(); await expect(hint).not.toBeEmpty();
+          const hintBox = await hint.boundingBox();
+          expect(hintBox).not.toBeNull();
+          expect(hintBox!.x).toBeGreaterThanOrEqual(0); expect(hintBox!.x + hintBox!.width).toBeLessThanOrEqual(width);
+        }
+        await detail.click();
+        const dialog = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+        await expect(dialog).toHaveAccessibleName(title);
+        await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
+        await expect(detail).toBeFocused();
+      }
+      await expect(row.locator('.root-toggle')).toHaveAttribute('aria-expanded', 'true');
+    }
+    expect(writes).toEqual([]);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
   test(`chain usage follows the selected chain and preserves list and graph at ${width}px in ${locale}`, async ({ page }) => {
     const second = [detailFixture(projectId, usageSecondRoot, { title: 'Second chain', version: 5n }),
