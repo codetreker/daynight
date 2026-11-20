@@ -52,7 +52,13 @@ the browser account, catalog revision and observed scope version. They retain or
 remove previously issued unavailable IDs but cannot add unavailable IDs. The
 target row and browser session are rechecked in the transaction; expiration and
 usage writes remain independent of scope fields. Fixed OAuth profiles have no
-editable business policy. The existing production assembly remains unchanged.
+editable business policy. The independent Web management panels use that catalog
+and the same selector as the authorization pages. Manual PAT creation starts with CLI defaults; edits
+preserve unavailable issued IDs and show the draft's changes. Conflict and
+unknown outcomes retain the account-bound target until a current read and user
+review; writes are not replayed. Scope versions and expiry or usage fields are
+merged independently so an older observation cannot undo a confirmed policy.
+The existing production assembly remains unchanged.
 
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
