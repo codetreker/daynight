@@ -1,8 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -12,6 +14,50 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
+
+func TestAppExecutorDiagnosticsRetainAdmittedConnectionIdentity(t *testing.T) {
+	for _, failWork := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure=%v", failWork), func(t *testing.T) {
+			f := newPollFixture(t)
+			f.workKind, f.connection.NextPollAt = "webhook", nil
+			db := appFixtureStore(t, f)
+			cause := errors.New(diagnosticPrivateContent)
+			write := db.write
+			db.write = func(ctx context.Context, project string, expected *store.GitHubAppWorkIdentity, fn func(store.GitHubAppWorkDAO) error) (store.Completion, error) {
+				if failWork && expected != nil {
+					return store.Completion{Outcome: store.TransactionNotCommitted}, cause
+				}
+				return write(ctx, project, expected, fn)
+			}
+			var output bytes.Buffer
+			e, err := NewAppExecutor(db, appClientFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
+				// Later connection reads must not replace the identity captured at admission.
+				repository, installation := int64(300), int64(200)
+				f.connection.RepositoryID, f.connection.InstallationID = &repository, &installation
+				return &remote.Client{}, func() {}, nil
+			}), slog.New(slog.NewJSONHandler(&output, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = e.Execute(context.Background(), testProject)
+			if (failWork && !errors.Is(err, cause)) || (!failWork && err != nil) {
+				t.Fatalf("execution result: %v", err)
+			}
+			records := diagnosticRecords(t, &output)
+			if len(records) != 2 {
+				t.Fatalf("execution records=%d, want start and terminal", len(records))
+			}
+			for _, record := range records {
+				for key, value := range map[string]any{"component": "github_sync", "project_id": testProject, "sync_id": f.lease.Token, "repository_id": float64(30), "installation_id": float64(20), "app_resource_id": executionIdentity.AppResourceID, "app_id": float64(10), "credential_version": float64(3), "grant_id": executionIdentity.GrantID, "team_id": executionIdentity.TeamID, "ownership_version": float64(7), "generation": float64(7), "trigger": "webhook"} {
+					if record[key] != value {
+						t.Fatalf("%s=%v, want %v", key, record[key], value)
+					}
+				}
+			}
+			t.Log(output.String())
+		})
+	}
+}
 
 type appExecutionStore struct {
 	store.SnapshotReader
@@ -110,6 +156,7 @@ func TestAppExecutorRequiresConfirmedAdmissionBeforeAcquire(t *testing.T) {
 func TestAppExecutorIdleAndProviderFailure(t *testing.T) {
 	f := newPollFixture(t)
 	f.connection.SyncEnabled = false
+	f.connection.RepositoryID, f.connection.InstallationID = nil, nil
 	e := appExecutor(t, appFixtureStore(t, f), appClientFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
 		t.Fatal("borrowed for idle Project")
 		return nil, nil, nil

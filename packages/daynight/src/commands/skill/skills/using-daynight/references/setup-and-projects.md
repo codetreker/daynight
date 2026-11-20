@@ -71,6 +71,35 @@ without falling back, while explicit selection bypasses it.
 
 Retain the returned ID; read back the Project to verify repository and name.
 
+## Project repository changes
+
+```bash
+daynight project set-repository --project <project-id> --repo <url>
+daynight project set-repository --project <project-id> --repo <url> --confirm --allow-unverified-switch --json
+```
+
+An effective Project admin can select the explicit Project, including outside
+Git, or resolve it from the current repository. The stderr preview identifies
+the Project, old and new addresses, classification and effects. Unchanged or
+confirmed same-repository addresses preserve the GitHub App connection and Worker
+selections. A switch disconnects the Project's GitHub App repository connection
+and removes the Project from Worker cloud configurations selected in the
+transaction's snapshot. Worker application is asynchronous and may stop existing
+executions. Local clones, origins and worktrees remain; reconnect GitHub and
+manage local Worker configuration as needed after a switch.
+
+Interactive use prompts for confirmation; `--confirm` supplies it. An unverified
+identity also needs an explicit choice to treat it as a switch, by prompt or
+`--allow-unverified-switch`. Noninteractive use requires `--confirm`, and an
+unverified identity also requires `--allow-unverified-switch`. Cancellation sends
+no change. The request retains the preview's exact versions and classification
+evidence. For a stale preview, rerun the command to preview and confirm again.
+A same-Team repository occupancy conflict refuses the change.
+Only a validated receipt confirms the write; an unknown outcome requires
+[read-only observation](write-safety.md#uncertain-results), not automatic replay.
+`--json` prints only the receipt on stdout. Repository changes require a supporting
+service; older services retain the existing Project and Task commands.
+
 ## Project tag catalog
 
 Select the Project explicitly or through [Project discovery](#project-discovery).
@@ -169,8 +198,10 @@ acceptance receipt.
 
 Authorized `project transfer --to-team <uuid|same-service-link>` moves the explicit
 `--project` or repository-resolved Project. Source Team admins need no destination
-membership. Review Project, source/destination and expected actor access in the
-preview; confirm interactively or with `--confirm`. The CLI submits observed
+membership. `--confirm` is required. The preview on stderr identifies the Project,
+source/destination and expected actor access, and warns that an actual transfer
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. The CLI submits observed
 ownership/destination versions with current identity; conflicts require a new
 preview/decision. Defaults and repository binding stay unchanged; grants and
 invitations remain independent. A receipt can confirm success without remaining
@@ -183,9 +214,10 @@ Explicitly authorized owner Team admins may `project delete` the explicit
 Deletion retains server history/files but makes the Project unavailable without
 a product recovery option.
 
-Review the complete preview. Interactive deletion requires the displayed JSON
-string literal of the name even with `--confirm`; noninteractive deletion requires
-`--confirm`. The preview supplies no version/identity condition on DELETE;
+`--confirm` is required. The complete preview on stderr warns that deletion
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. Interactive deletion also requires
+the displayed JSON string literal of the name. The preview supplies no version/identity condition on DELETE;
 the service checks current permissions/claims. The CLI sends at most one DELETE.
 Only a validated receipt confirms deletion; a later 404 cannot prove an unknown
 original outcome.

@@ -18,6 +18,8 @@ type TaskResult struct {
 type PageInput struct {
 	Limit                              int
 	Cursor, State, ItemID, TargetBotID string
+	// Type keeps one event type and ExcludeType removes one; event pages only.
+	Type, ExcludeType string
 }
 type CreateInput struct {
 	ID, Name, Purpose, Scope, Kind, Takeover, Application string
@@ -46,6 +48,13 @@ type AppendixInput struct {
 	Text          string
 	SourceRecords []string
 	State         string
+	// Scope is nil when the request does not declare one; an add then stores
+	// an unrestricted scope and an update keeps the current scope.
+	Scope *model.AssistantTaskAppendixScope
+}
+type AppendixValidationInput struct {
+	Mutation
+	OutcomeRecordID string
 }
 type ProposalInput struct {
 	Mutation
@@ -77,9 +86,10 @@ type ItemInput struct {
 }
 type RecordInput struct {
 	Mutation
-	ItemID     *string
-	Kind, Text string
-	Refs       json.RawMessage
+	ItemID                  *string
+	Kind, Text              string
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
 }
 type EventInput struct {
 	Mutation

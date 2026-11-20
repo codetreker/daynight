@@ -104,18 +104,17 @@ describe("local Git repositories and review snapshots", () => {
 
   it("clears owned dirty files and nested generated clones for a new revision without resetting a shared branch", async () => {
     const f = fixture(); const local = await f.manager.ensureRepository(f.configuration); const first = f.reserve();
-    const prepared = await f.manager.prepareWorktree(f.store, local, first.id, proof);
-    if (prepared.kind !== "prepared") throw new Error("Expected preparation.");
-    rawGit(prepared.path, ["checkout", "-b", "agent-shared"]);
-    writeFileSync(path.join(prepared.path, "file.txt"), "dirty"); writeFileSync(path.join(prepared.path, "junk"), "junk");
-    const nested = path.join(prepared.path, "generated-clone"); mkdirSync(nested); rawGit(nested, ["init"]);
+    const worktreePath = f.stageOwnedWorktree(local.root, first);
+    rawGit(worktreePath, ["checkout", "-b", "agent-shared"]);
+    writeFileSync(path.join(worktreePath, "file.txt"), "dirty"); writeFileSync(path.join(worktreePath, "junk"), "junk");
+    const nested = path.join(worktreePath, "generated-clone"); mkdirSync(nested); rawGit(nested, ["init"]);
     const nextHead = commit(f.upstream, "new PR\n", f.head); const next = f.nextRevision(first.id, nextHead);
     const second = await f.manager.prepareWorktree(f.store, local, next.id, proof);
-    expect(second).toMatchObject({ kind: "prepared", path: prepared.path, headSha: nextHead });
+    expect(second).toMatchObject({ kind: "prepared", path: worktreePath, headSha: nextHead });
     expect(rawGit(local.root, ["rev-parse", "refs/heads/agent-shared"])).toBe(f.head);
-    expect(existsSync(path.join(prepared.path, "junk"))).toBe(false);
+    expect(existsSync(path.join(worktreePath, "junk"))).toBe(false);
     expect(existsSync(nested)).toBe(false);
-    expect(rawGit(prepared.path, ["rev-parse", "--symbolic-full-name", "HEAD"])).toBe("HEAD");
+    expect(rawGit(worktreePath, ["rev-parse", "--symbolic-full-name", "HEAD"])).toBe("HEAD");
   }, 60_000);
 
   it("returns changed for remote head, Draft, closure, and target changes before worktree mutation", async () => {
@@ -213,12 +212,11 @@ describe("Git failures, history and invocation boundaries", () => {
 
   it("retains cleanup intent and error after a completed failure, then reconciles a successful retry", async () => {
     const f = fixture(); const local = await f.manager.ensureRepository(f.configuration); const review = f.reserve();
-    const prepared = await f.manager.prepareWorktree(f.store, local, review.id, proof);
-    if (prepared.kind !== "prepared") throw new Error("Expected preparation.");
+    const worktreePath = f.stageOwnedWorktree(local.root, review);
     f.update({ state: "closed" }); f.store.supersedeReview(review.id, proof, 30);
     f.setIntercept(async () => ({ stdout: "", stderr: "", error: Object.assign(new Error("disk failed"), { code: 128 }) }));
     await expect(f.manager.cleanupWorktree(f.store, local, review, proof)).rejects.toThrow();
-    expect(f.store.getPullRequest(review)).toMatchObject({ worktreePath: prepared.path, cleanupPending: true });
+    expect(f.store.getPullRequest(review)).toMatchObject({ worktreePath, cleanupPending: true });
     expect(f.store.getPullRequest(review)?.cleanupError).toBeTypeOf("string");
     f.setIntercept(undefined);
     expect(await f.manager.cleanupWorktree(f.store, local, review, proof)).toEqual({ kind: "cleaned" });

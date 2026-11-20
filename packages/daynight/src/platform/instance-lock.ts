@@ -1,3 +1,4 @@
+import { sqliteFilename } from "./sqlite-filename.js";
 import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
@@ -14,7 +15,7 @@ const isMissing = (error: unknown): boolean => error instanceof Error && "code" 
 
 const withOwnershipGate = <T>(databaseFile: string, operation: () => T, fileMustExist = false, timeoutMs = 5_000): T => {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError("Instance-lock timeout must be a positive safe integer of at most 60000 milliseconds.");
-  const database = new Database(databaseFile, { timeout: timeoutMs, fileMustExist });
+  const database = new Database(sqliteFilename(databaseFile), { timeout: timeoutMs, fileMustExist });
   let result: T;
   try { result = database.transaction(operation).immediate(); }
   catch (error) {

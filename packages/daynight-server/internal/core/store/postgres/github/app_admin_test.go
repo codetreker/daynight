@@ -18,21 +18,27 @@ import (
 
 func appAdminFixture(t *testing.T) (*postgres.Store, string, string, string) {
 	t.Helper()
-	db, actor := dbFixture(t)
-	other, appID := uuid.NewString(), uuid.NewString()
+	db, _ := dbFixture(t)
+	app, actor, other := seedAppAdminFixture(t, db, 123)
+	return db, app, actor, other
+}
+
+func seedAppAdminFixture(t *testing.T, db *postgres.Store, githubAppID int64) (string, string, string) {
+	t.Helper()
+	actor, other, appID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	for _, id := range []string{actor, other} {
 		if _, err := db.Pool.Exec(t.Context(), `INSERT INTO users(id,uniauth_id,name,email,avatar_url,created_at,updated_at) VALUES($1,$2,'A name','a@example.test','https://example.test/a',now(),now())`, id, id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	completion, err := db.WriteGitHubApp(t.Context(), func(w store.GitHubAppWriteDAO) error {
-		_, err := w.Create(t.Context(), store.GitHubAppCreate{ID: appID, GitHubAppID: 123, Name: "Automation", GitHubName: "Remote", GitHubSlug: "remote", CreatorUserID: actor, Credentials: githubpr.AppCredentials{PrivateKeyPEM: []byte("key"), WebhookSecret: []byte("secret")}})
+		_, err := w.Create(t.Context(), store.GitHubAppCreate{ID: appID, GitHubAppID: githubAppID, Name: "Automation", GitHubName: "Remote", GitHubSlug: "remote", CreatorUserID: actor, Credentials: githubpr.AppCredentials{PrivateKeyPEM: []byte("key"), WebhookSecret: []byte("secret")}})
 		return err
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("create fixture: %+v %v", completion, err)
 	}
-	return db, appID, actor, other
+	return appID, actor, other
 }
 
 func adminWrite(t *testing.T, db *postgres.Store, appID string, operation func(store.GitHubAppAdminWriter) error) {

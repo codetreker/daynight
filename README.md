@@ -4,10 +4,16 @@ Daynight is a project and task workspace for people and coding agents. It keeps
 work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
-Codex, Claude Code or Copilot in browser-controlled Task Sessions. The same
+Codex or Copilot in browser-controlled Task Sessions. The same
 Worker hosts named assistants in ordinary directories, with shared browser
 conversations and Daynight CLI access. The CLI also provides automated GitHub
 pull request review through Copilot CLI.
+
+Claude Code is temporarily unsupported for Daynight-managed Task Sessions,
+Test Sessions and assistants. Its existing adapter and command options remain
+available, but initialization disconnect cleanup is not reliable on macOS.
+Passing CI does not certify Claude Code support; see the
+[support decision](.agents/notes/implemented/testing/2026-11-19-claude-support-suspension.md).
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
 Open the **[workspace](https://daynight.cc/projects)** to continue your projects,
@@ -181,7 +187,6 @@ Run a provider in the current directory and open the printed Daynight URL:
 
 ```bash
 daynight controller codex
-daynight controller claude
 daynight controller copilot "Explain this project"
 ```
 
@@ -228,8 +233,8 @@ Running native processes keep their launch arguments. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 define ownership, retries and recovery boundaries.
 
-Web execution uses a private Controller and the Daynight relay with Codex, Claude
-Code or Copilot. When local mode is omitted, the first bootstrap candidate uses
+Web execution uses a private Controller and the Daynight relay with Codex or
+Copilot. The retained Claude Code adapter is temporarily unsupported. When local mode is omitted, the first bootstrap candidate uses
 `web`. A local bootstrap candidate that explicitly selects `herdr` is refused
 with instructions to adjust it. An explicit cloud `herdr` target is retained
 unchanged and reported as unsupported. Existing Herdr claims and resources are
@@ -334,8 +339,8 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` and
-`bash scripts/startup-shutdown.sh` with `DAYNIGHT_TEST_DATABASE_URL` pointing to
-an isolated database. The first validates module tests; the second owns command
+`bash scripts/startup-shutdown.sh` with `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_REDIS_URL` pointing to isolated PostgreSQL and Redis instances. The first validates module tests; the second owns command
 startup, shutdown, migration and recovery tests. Each production-code partition
 requires statement coverage strictly greater than 90%. Task HTTP, complete
 Session core and Webhook service unit suites run independently without
@@ -420,13 +425,14 @@ Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected Go module, Go server startup &
 shutdown, API, Web quality and product E2E jobs to succeed. A newer PR run cancels
-its older run. Each main run has an independent concurrency group, including
-repeated runs of the same commit, so later runs do not replace or cancel it;
-runner availability still controls when jobs start.
+its older run. Each workflow has its own main concurrency group: a running main
+run continues, while a newly queued run replaces any older pending run. This can
+skip validation of intermediate commits; runner availability controls job start.
+Manual shell/browser runs on main share that workflow's main group.
 
 The independent [`shell and browser acceptance` workflow](.github/workflows/shell-browser.yml)
-runs real shell completion and the frontend assistant browser suite on every
-`main` push and through `workflow_dispatch`. Ordinary module commands and the
+is triggered by `main` pushes and `workflow_dispatch` to run real shell completion
+and the frontend assistant browser suite. Ordinary module commands and the
 PR `checks` gate do not invoke or depend on these two jobs. Both retain their
 complete suites, fresh source checkout, toolchains and evidence. Product E2E
 keeps its own Chromium installation, path selection and required result. The

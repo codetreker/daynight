@@ -1,7 +1,9 @@
 import { expectTextContrast, roleColors } from './color-roles';
 import { expectCopyButtonSkin } from './copy-button-assertions';
+import { expectGraphCardBadges } from './graph-card-badges';
 import type { TaskDetail } from '../../src/api/types';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { usageMetricKeys } from '../../src/api/usage';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -55,7 +57,7 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, tagsForTask: row => details.find(detail => detail.id === row.id)!.tags, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'unavailable' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, tagsForTask: row => details.find(detail => detail.id === row.id)!.tags, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'working' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -148,7 +150,7 @@ test('selected attachment keeps its new-tab target while copy uses overview', as
   expect(state.writes).toEqual([]); await reader.close();
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
   test(`execution time advances during a held sync without moving the graph at ${width}px in ${locale}`, async ({ page }) => {
     const state = await install(page, true);
     await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
@@ -175,6 +177,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       await page.clock.fastForward(16_000);
       await expect.poll(() => state.syncReads).toBeGreaterThan(reads);
       await expect(node.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(node.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
       const afterDuration = await duration.getAttribute('datetime');
       expect(afterDuration).toMatch(/^PT[0-9.]+S$/);
       expect(Number(afterDuration!.slice(2, -1))).toBeGreaterThan(Number(beforeDuration!.slice(2, -1)));
@@ -183,17 +186,23 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       expect(await node.locator('.task-node').evaluate(element => {
         const card = element.getBoundingClientRect(), timing = element.querySelector('.task-duration')!.getBoundingClientRect(), detail = element.querySelector('.task-node-details')!.getBoundingClientRect();
         const decorations = [...element.querySelectorAll('.task-stuck-label, .task-agent-permission')];
-        return (element as HTMLElement).offsetWidth === 220 && [96, 136].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
+        return (element as HTMLElement).offsetWidth === 320 && [144, 204].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button', { name: locale === 'en' ? 'Close dependency graph' : '关闭依赖图' }).click();
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
       const row = taskRow(page.locator(`#standalone-task-${standaloneId}`));
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-stuck-label svg')).toBeVisible();
       expect(await row.evaluate(element => {
         const bounds = element.getBoundingClientRect();
         return bounds.left >= 0 && bounds.right <= innerWidth && element.scrollWidth <= element.clientWidth && [...element.querySelectorAll('.task-duration, .task-stuck-label')].every(item => { const box = item.getBoundingClientRect(); return box.left >= bounds.left && box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '15px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '15px');
       expect(state.writes).toEqual([]);
     } finally { state.holdSync = null; gate.resolve(); }
   });
@@ -215,10 +224,6 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await expect(completionLabel).toBeVisible();
     await expect(expand).toHaveAttribute('aria-expanded', 'false');
     await expectChainTimeLayout(header);
-    if (width === 1280) {
-      expect(Math.abs(await header.evaluate(element => element.getBoundingClientRect().height) - 62)).toBeLessThanOrEqual(1);
-      expect(Math.abs(await header.locator('..').evaluate(element => element.getBoundingClientRect().height) - 64)).toBeLessThanOrEqual(1);
-    }
     await completionButton.focus();
     const tooltip = header.getByRole('tooltip');
     await expect(tooltip).toBeVisible();
@@ -406,9 +411,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
   test(`semantic lifecycle roles remain distinct from attention at ${width}px in ${locale}`, async ({ page }) => {
     const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
     const ids = statuses.map((_, index) => `00000000-0000-4000-8000-${String(60 + index).padStart(12, '0')}`);
+    const platforms = ['windows', 'linux', 'macos', null, null] as const;
     const overdueId = '00000000-0000-4000-8000-000000000065', blockedId = '00000000-0000-4000-8000-000000000066';
     const details = statuses.map((status, index) => detailFixture(projectId, ids[index]!, {
-      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0,
+      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0, requiredPlatform: platforms[index] ?? null,
       completedAt: status === 'done' ? '2026-10-22T09:59:50Z' : null,
       cancelledAt: status === 'cancelled' ? '2026-10-22T09:59:55Z' : null,
       properties: { pullRequests: [], ...(status === 'in_progress' ? { paused: true } : {}) },
@@ -426,6 +432,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     for (const [index, status] of statuses.entries()) {
       const row = taskRow(page.locator(`#standalone-task-${ids[index]}`));
       await expect(row).toHaveAttribute('data-task-status', status);
+      await expect(row.locator('.root-status')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-platform')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-platform')).toHaveText(['Windows', 'Linux', 'macOS', locale === 'en' ? 'Any platform' : '不限平台', locale === 'en' ? 'Any platform' : '不限平台'][index]!);
+      await expect(row.locator('.task-row-title')).toHaveCSS('font-size', '14px');
+      if (status === 'todo') await expect(row.locator('.task-ready')).toHaveCSS('font-size', '14px');
       await page.mouse.move(0, 0);
       await expect(row).toHaveCSS('background-color', roleColors[status][0]);
       await expect(row).toHaveCSS('border-top-color', roleColors[status][2]);
@@ -434,6 +445,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await expect(badge).toHaveCount(index % 2 === 0 ? 1 : 0);
       if (index % 2 === 0) {
         await expect(badge).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
+        await expect(badge).toHaveCSS('font-size', '12px');
         await expect(badge).toHaveCSS('color', roleColors.done[3]);
         await expect(badge).toHaveCSS('background-color', roleColors.done[0]);
         await expect(badge).toHaveCSS('border-top-color', roleColors.done[2]);
@@ -456,10 +468,14 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await expectTextContrast(overdue.locator('.task-agent-permission'));
     await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
-    await expect(taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge')).toHaveCSS('color', roleColors.attention[3]);
+    await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', '14px');
+    const paused = taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge');
+    await expect(paused).toHaveCSS('color', roleColors.attention[3]);
+    await expect(paused).toHaveCSS('font-size', '12px');
     await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
     const chain = page.locator(`[data-chain-id="${taskId}"]`), header = chain.locator('.goal-header');
     await expect(header).toHaveCSS('background-color', roleColors.proposed[0]);
+    await expect(header.locator('.root-status')).toHaveCSS('font-size', '14px');
     await expect(header.locator('.root-progress-track i')).toHaveCSS('background-color', roleColors.done[3]);
     await header.locator('[aria-expanded]').click();
     await expect(chain.locator('.task-row')).toHaveCSS('background-color', roleColors.proposed[0]);
@@ -468,6 +484,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const body = node.locator('.task-node-body');
     const graphBadge = node.locator('.task-agent-permission');
     await expect(graphBadge).toHaveText(locale === 'en' ? 'Auto' : '自动');
+    await expect(graphBadge).toHaveCSS('font-size', '14px');
     await expect(graphBadge).toHaveAttribute('aria-label', locale === 'en' ? 'Automatic execution' : '自动执行');
     await expect(graphBadge).toHaveAttribute('title', locale === 'en' ? 'Automatic execution' : '自动执行');
     await expect(graphBadge).toHaveCSS('background-color', roleColors.done[0]);
@@ -517,7 +534,21 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   const openLabel = locale === 'en' ? /Open Session/ : /打开 Session/;
   const assertFit = async (item: Locator) => {
     const action = item.getByRole('button', { name: openLabel });
-    await expect(action).toBeVisible(); await expectTextContrast(action); await action.focus(); await expect(action).toBeFocused();
+    await expect(action).toBeVisible(); await expectTextContrast(action);
+    await expect(action).toHaveCSS('font-size', '12px');
+    await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '12px');
+    await expect(action).toHaveCSS('min-height', '36px');
+    await expect(action).toHaveCSS('padding-top', '3px');
+    await page.keyboard.press('Tab'); await action.focus(); await expect(action).toBeFocused();
+    expect(await action.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+    await expect(action).toHaveCSS('outline-width', '2px');
+    await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+    await expect(action).toHaveCSS('font-size', '18px');
+    await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '18px');
+    expect(await item.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(item.locator('.root-status')).toHaveCSS('font-size', '18px');
+    if (await item.locator('.task-paused-badge').count()) await expect(item.locator('.task-paused-badge')).toHaveCSS('font-size', '18px');
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     expect(await item.evaluate(element => {
       const a = element.querySelector('.project-session-control')!.getBoundingClientRect();
       const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
@@ -529,11 +560,14 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   };
   await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
   const standalone = taskRow(page.locator(`#standalone-task-${standaloneId}`));
-  await assertFit(standalone);
+  const standaloneAction = await assertFit(standalone);
+  await expect(standaloneAction).toHaveText(locale === 'en' ? 'Session working · Needs attention' : 'Session 工作中 · 需要关注');
+  await expect(standalone.locator('.task-paused-badge')).toHaveCSS('font-size', '12px');
   const titleWidth = await standalone.locator('.task-row-title').evaluate(element => element.getBoundingClientRect().width);
   expect(titleWidth).toBeGreaterThanOrEqual(width === 320 ? 100 : 240);
-  await page.keyboard.press('Enter');
+  await standaloneAction.click();
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+  await expect(page.locator('.task-detail-dialog .task-status-trigger')).toHaveCSS('font-size', '14px');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${standaloneId}/sessions/current`);
   await page.keyboard.press('Escape'); await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
   await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
@@ -541,6 +575,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   const chainToggle = page.locator(`#task-root-${taskId}`);
   const chainAction = await assertFit(taskRow(page.locator(`#chain-task-${taskId}-${successorId}`)));
   await expect(chainAction).toHaveCSS('color', roleColors.attention[3]);
+  await expect(chainAction).toHaveText(locale === 'en' ? 'Session needs a response' : 'Session 需要响应');
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${successorId}/sessions/current`);
@@ -549,9 +584,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
   await page.getByRole('tab', { name: locale === 'en' ? 'Goals' : 'Goal' }).click();
   const goalToggle = page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`);
+  await expect(page.locator(`[data-goal-id="${goalId}"] > .goal-list-row .root-status`)).toHaveCSS('font-size', '14px');
   await goalToggle.click();
   const goalAction = await assertFit(page.locator(`[data-goal-id="${goalId}"] .task-row`).first());
   await expect(goalAction).toHaveCSS('color', roleColors.attention[3]);
+  await expect(goalAction).toHaveText(locale === 'en' ? 'Session needs checking' : 'Session 需要检查');
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${memberId}/sessions/current`);
@@ -578,8 +615,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 390, 3
     const copy = row.getByRole('button', { name: locale === 'en' ? 'Copy task ID' : '复制任务 ID' });
     await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${taskId}`);
     await expect(idText).toHaveText(taskId);
-    await expect(link).toHaveCSS('font-size', '13px');
-    await expect(idText).toHaveCSS('font-size', '11px');
+    await expect(link).toHaveCSS('font-size', '14px');
+    await expect(idText).toHaveCSS('font-size', '12px');
     expect(await row.evaluate(element => {
       const heading = element.querySelector('.task-row-heading')!;
       const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
@@ -599,7 +636,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 390, 3
     await page.mouse.move(box!.x + Math.min(box!.width - 2, 80), box!.y + box!.height / 2, { steps: 6 }); await page.mouse.up();
     const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
     expect(selected.length).toBeGreaterThan(0);
-    await page.keyboard.press('Control+C');
+    await page.keyboard.press('ControlOrMeta+C');
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
     await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
@@ -646,7 +683,7 @@ for (const kind of ['chain', 'goal'] as const) test(`shared ${kind} row supports
   });
   expect(metaWasHandled).toBe(false);
   const popupPromise = context.waitForEvent('page');
-  await link.click({ modifiers: ['Control'] });
+  await link.click({ modifiers: ['ControlOrMeta'] });
   const popup = await popupPromise; await popup.waitForLoadState();
   expect(new URL(popup.url()).pathname).toBe(`/projects/${projectId}/tasks/${id}`);
   await popup.close();
@@ -669,7 +706,7 @@ for (const kind of ['chain', 'goal'] as const) test(`shared ${kind} row supports
   await page.keyboard.press('Escape'); await expect(session).toBeFocused();
 });
 
-for (const allowAgents of [false, true]) test(`equivalent ordinary Tasks share facts across standalone, chain, Goal and personal lists with permission ${allowAgents}`, async ({ page }) => {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const allowAgents of [false, true]) test(`equivalent ordinary Tasks share facts across standalone, chain, Goal and personal lists with permission ${allowAgents} at ${width}px in ${locale}`, async ({ page }) => {
   const goalId = '00000000-0000-4000-8000-000000000060';
   const memberId = '00000000-0000-4000-8000-000000000061';
   const common = { version: 5n, status: 'in_progress' as const, ready: false, assignedTo: TEST_VIEWER_ID, requiredPlatform: 'linux' as const, allowAgents };
@@ -687,26 +724,39 @@ for (const allowAgents of [false, true]) test(`equivalent ordinary Tasks share f
     items: running.map(task => ({ project: { id: projectId, name: graph.project.name, ownerTeam: directAccessFixture(projectId).ownerTeam, executionWarningMinutes: 60, matchedTaskCount: 3 },
       task: { id: task.id, version: '5', title: task.title, status: 'in_progress', startedAt: null, createdAt: task.createdAt, requiredPlatform: task.requiredPlatform, tags: [], blockedBy: [], ready: false, allowAgents: task.allowAgents, paused: false, worker: null, goal: task.parentId === null ? null : { id: goalId, title: 'Actual Goal' } },
       session: { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: row.observedAt, freshUntil: row.freshUntil }, sessionRow: { ...row, taskVersion: '5' } })) }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.setViewportSize({ width, height: 900 });
   await page.goto(`/projects/${projectId}`);
-  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
   await page.locator('#project-section-tab-tasks').click();
   const facts = async (id: string) => {
     const element = page.locator('.task-row').filter({ has: page.locator(`.task-row-id:text-is("${id}")`) });
     await expect(element.locator('.assignee-name')).toHaveText('Reader');
     await expect(element.locator('.task-agent-permission')).toHaveCount(allowAgents ? 1 : 0);
-    if (allowAgents) await expect(element.locator('.task-agent-permission')).toHaveText('Automatic execution');
+    if (allowAgents) {
+      await expect(element.locator('.task-agent-permission')).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
+      await expect(element.locator('.project-session-text')).toHaveCSS('font-size', '12px');
+    }
+    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '12px');
+    for (const selector of ['.task-row-title', '.assignee-name']) await expect(element.locator(selector)).toHaveCSS('font-size', '14px');
+    expect(await element.evaluate(row => row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission', '.project-session-text'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '18px');
+    await expect(element.locator('.task-row-title')).toHaveCSS('font-size', '21px');
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     return element.evaluate(row => ({ meta: Array.from(row.querySelector('.task-row-meta')!.children).filter(child => !child.matches('.task-row-goal')).map(child => child.textContent), state: row.querySelector('.task-row-status')!.textContent, background: getComputedStyle(row).backgroundColor, titleSize: getComputedStyle(row.querySelector('.task-row-title')!).fontSize, idSize: getComputedStyle(row.querySelector('.task-row-id')!).fontSize }));
   };
-  await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+  await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
   const expected = await facts(standaloneId);
-  await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
+  await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链', exact: true }).click();
   await page.locator(`#task-root-${taskId}`).click();
   expect(await facts(successorId)).toEqual(expected);
-  await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+  await page.getByRole('tab', { name: locale === 'en' ? 'Goals' : 'Goal', exact: true }).click();
   await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
   expect(await facts(memberId)).toEqual(expected);
   await expect(page.locator('.task-row-goal')).toHaveCount(0);
-  await page.getByRole('link', { name: 'In-progress tasks', exact: true }).click();
+  if (width === 320) await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('link', { name: locale === 'en' ? 'In-progress tasks' : '进行中的任务', exact: true }).click();
+  if (width === 320) await page.setViewportSize({ width, height: 900 });
   for (const task of running) {
     expect(await facts(task.id)).toEqual(expected);
     await expect(page.getByRole('link', { name: task.title, exact: true })).toHaveAttribute('href', `/projects/${projectId}/tasks/${task.id}`);
@@ -795,3 +845,472 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(state.writes).toEqual([]); await reader.close();
   });
 }
+
+type RowUsageMode = 'loading' | 'no_data' | 'unknown' | 'unsupported' | 'failed' | 'zero' | 'partial' | 'large';
+const rowUsageSummary = (mode: RowUsageMode) => {
+  const values: Partial<Record<typeof usageMetricKeys[number], string>> = mode === 'zero' ? { totalTokens: '0' }
+    : mode === 'partial' ? { inputTokens: '84', outputTokens: '42' }
+      : mode === 'large' ? { totalTokens: '9007199254740993', outputTokens: '42' }
+        : mode === 'unknown' ? { cacheReadTokens: '123' } : {};
+  return {
+    metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: values[key] ?? null, contributingRecords: values[key] === undefined ? '0' : '1', unknownRecords: '0' }])),
+    scope: 'registered_web_executions', completeness: mode === 'no_data' ? 'no_data' : mode === 'zero' ? 'complete' : 'partial', reasonCodes: [],
+    coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+    measurementRecords: mode === 'no_data' ? '0' : '1', lastMeasuredAt: null, observedAt: time, etag: 'row-usage',
+  };
+};
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 32]) {
+  test(`compact graph contains complex external task content at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+    const goalId = '00000000-0000-4000-8000-000000000061';
+    const externalId = '00000000-0000-4000-8000-000000000062';
+    const title = locale === 'en' ? 'A task title long enough to occupy two lines in this card' : '这是一个用于验证依赖图卡片双行标题显示和完整布局的任务';
+    const details = [
+      detailFixture(projectId, taskId, { version: 5n, title: 'Short', status: 'in_progress', ready: false, startedAt: '2026-10-22T09:45:00Z' }),
+      detailFixture(projectId, successorId, { version: 5n, title: 'Blocked successor', ready: false, blockedBy: [taskId, externalId], dependsOn: [taskId, externalId], externalDependsOn: [externalId] }),
+      detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'A very long external owner name that should truncate', status: 'in_progress', ready: false }),
+      detailFixture(projectId, externalId, { version: 5n, parentId: goalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-22T08:00:00Z',
+        allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } }),
+    ];
+    await install(page, false, false, 'Short', details);
+    await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+      const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+      return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary(id === externalId ? 'large' : 'no_data') })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const graph = page.locator('.task-chain-dialog');
+    const external = graph.locator(`.react-flow__node[data-id="${externalId}"] .task-node`);
+    const short = graph.locator(`.react-flow__node[data-id="${taskId}"] .task-node`);
+    await expect(external.locator('.task-node-usage')).toBeVisible();
+    await expect(short.locator('.task-node-usage')).toHaveCount(0);
+    await expect(external.locator('.task-node-owner')).toContainText('A very long external owner');
+    await expect(external.locator('.task-external-label')).toBeVisible();
+    await expect(external.locator('.task-paused-badge, .task-agent-permission, .task-platform, .task-stuck-label')).toHaveCount(4);
+    await expectGraphCardBadges(external);
+    const geometry = await external.evaluate(element => {
+      const card = element as HTMLElement, box = card.getBoundingClientRect();
+      const title = card.querySelector<HTMLElement>('.task-node-title')!;
+      const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
+      const selectors = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-node-bottom > *', '.task-node-details', '.task-node-expansions'];
+      const parts = selectors.flatMap(selector => [...card.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+      const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+      return { width: card.offsetWidth, height: card.offsetHeight, twoLines: title.offsetHeight > lineHeight * 1.5 && title.scrollHeight <= title.clientHeight + 1,
+        inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
+        separate: parts.every((part, index) => parts.slice(index + 1).every(other => separate(part, other))) };
+    });
+    expect(geometry).toEqual({ width: 320 * rootSize / 16, height: 204 * rootSize / 16, twoLines: true, inside: true, separate: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await graph.locator('[data-direction="vertical"]').click();
+    await expect(graph.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+    const detail = external.locator('.task-node-details');
+    await detail.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: title, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'A very long external owner name that should truncate', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(detail).toBeFocused();
+    const navigate = external.locator('.task-node-navigate');
+    await navigate.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'A very long external owner name that should truncate', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: title, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await expect(navigate).toBeFocused();
+  });
+}
+
+for (const kind of ['standalone', 'goal'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`ordinary ${kind} usage shows only numeric readings at ${width}px in ${locale}`, async ({ page }) => {
+    const goalId = '00000000-0000-4000-8000-000000000060';
+    const title = (locale === 'en' ? 'A long task title for numeric usage layout ' : '用于检查数字用量布局的很长任务标题').repeat(8);
+    const details = [detailFixture(projectId, taskId, { version: 5n, title, ...(kind === 'goal' ? { parentId: goalId } : {}) }),
+      ...(kind === 'goal' ? [detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Usage Goal' })] : [])];
+    const fixture = await install(page, false, false, title, details);
+    const usage = { mode: 'loading' as RowUsageMode, completed: 0, pending: false };
+    const gate = Promise.withResolvers<void>();
+    const send = (route: Route, body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    await page.route('**/api/usage/v1/capabilities', async route => {
+      if (usage.mode === 'unsupported') { await route.fulfill({ status: 404, body: 'not found' }); usage.completed++; return; }
+      await send(route, { protocol: 'daynight.usage.v1' });
+    });
+    await page.route('**/api/projects/*/usage/v1/task-summaries', async route => {
+      if (usage.mode === 'loading') { usage.pending = true; await gate.promise; }
+      const ids = (route.request().postDataJSON() as { taskIds: string[] }).taskIds;
+      if (usage.mode === 'failed') await send(route, { error: { code: 'unavailable', requestId: 'row-usage-failure' } }, 503);
+      else await send(route, { items: ids.map(taskId => ({ taskId, summary: rowUsageSummary(usage.mode) })) });
+      usage.completed++;
+    });
+    await page.route('**/api/projects/*/tasks/*/usage/v1/records?*', route => send(route, { error: { code: 'unavailable', requestId: 'record-usage-failure' } }, 503));
+    await page.clock.install();
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: kind === 'goal' ? locale === 'en' ? 'Goals' : 'Goal' : locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
+    if (kind === 'goal') await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
+    const row = page.locator('.task-row').filter({ hasText: title });
+    await expect(row.locator('.task-row-title')).toHaveText(title);
+    await expect.poll(() => usage.pending).toBe(true);
+    const assertEmpty = async () => {
+      await expect(row.locator('.task-usage-summary, .usage-error, .task-row-usage-unsupported')).toHaveCount(0);
+      expect(await row.locator('.task-row-content').evaluate(element => [...element.children].map(child => child.className))).toEqual(['task-row-heading', 'task-row-meta']);
+    };
+    const assertLayout = async () => {
+      expect(await row.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const parts = ['.task-row-title', '.task-row-status', '.task-usage-summary'].flatMap(selector => [...element.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+        return parts.every((part, index) => part.width > 0 && part.height > 0 && part.left >= bounds.left - 1 && part.right <= bounds.right + 1 && part.top >= bounds.top - 1 && part.bottom <= bounds.bottom + 1 && parts.slice(index + 1).every(other => separate(part, other))) && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+    };
+    const refresh = async (mode: RowUsageMode) => {
+      const before = usage.completed; usage.mode = mode;
+      await page.clock.fastForward(15_001);
+      await expect.poll(() => usage.completed).toBeGreaterThan(before);
+    };
+    await assertEmpty(); await assertLayout();
+    const loadingHeight = await row.evaluate(element => element.getBoundingClientRect().height);
+    usage.mode = 'failed'; gate.resolve();
+    await expect.poll(() => usage.completed).toBeGreaterThan(0);
+    await assertEmpty();
+    for (const mode of ['no_data', 'unknown', 'unsupported'] as const) {
+      await refresh(mode); await assertEmpty(); await assertLayout();
+      expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(loadingHeight, 0);
+    }
+    await refresh('zero');
+    await expect(row.locator('.usage-summary strong')).toHaveText('0');
+    await assertLayout();
+    await refresh('partial');
+    await expect(row.locator('.usage-summary')).toContainText(locale === 'en' ? 'Known Output: 42' : '已知输出: 42');
+    await expect(row.locator('.usage-summary')).toContainText(locale === 'en' ? 'Partial' : '部分');
+    await assertLayout();
+    await refresh('large');
+    await expect(row.locator('.usage-summary strong')).toHaveText('9,007,199,254,740,993');
+    await assertLayout();
+    await refresh('failed');
+    await expect(row.locator('.usage-summary strong')).toHaveText('9,007,199,254,740,993');
+    await expect(row.locator('.usage-error')).toHaveCount(0);
+    const link = row.locator('.usage-summary-link');
+    await link.focus(); await expect(link).toBeFocused(); await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}\\?tab=usage`));
+    await expect(page.locator('.usage-panel')).toBeVisible();
+    await expect(page.locator('.usage-panel .task-usage-summary .usage-error')).toContainText(locale === 'en' ? 'Usage unavailable' : '用量暂不可用');
+    await expect(page.locator('.usage-panel .task-usage-summary').getByRole('button', { name: locale === 'en' ? 'Retry' : '重试', exact: true })).toBeVisible();
+    expect(fixture.writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`usage detail stays usable in each surface at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    const metrics = Object.fromEntries(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens', 'providerTotalTokens'].map(key => [key, '9007199254740993']));
+    const summaryMetrics = Object.fromEntries(Object.keys(metrics).filter(key => key !== 'providerTotalTokens').map(key => [key, { known: '9007199254740993', contributingRecords: '1', unknownRecords: '0' }]));
+    const summary = { metrics: summaryMetrics, scope: 'registered_web_executions', completeness: 'partial', reasonCodes: [], coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' }, measurementRecords: '1', lastMeasuredAt: time, observedAt: time, etag: 'etag' };
+    const requests: string[] = [];
+    await page.route('**/api/**/usage/v1/**', async route => {
+      const url = new URL(route.request().url()); requests.push(url.pathname + url.search);
+      const send = (body: unknown) => route.fulfill({ json: body, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (url.pathname.endsWith('/capabilities')) return send({ protocol: 'daynight.usage.v1' });
+      if (url.pathname.endsWith('/task-summaries')) return send({ items: [{ taskId, summary }], observedAt: time, etag: 'batch' });
+      if (url.pathname.endsWith('/records')) {
+        const kind = url.searchParams.get('kind');
+        return send({ items: Array.from({ length: 8 }, (_, i) => ({ id: `20000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`, recordKind: kind, sessionId: taskId, stateId: null, executionGeneration: '1', provider: 'provider-with-a-very-long-name', model: 'model-with-a-very-long-name-that-must-wrap-on-narrow-screens', sourceKey: kind === 'measurement' ? 'a-very-long-source-key-that-must-wrap-on-narrow-screens' : null, profileId: 'test-profile', providerVersion: '1', collectionState: 'complete', aggregationRole: 'counted', finality: 'final', disposition: 'active', metrics, reasonCodes: [], observedAt: time, updatedAt: time })), nextCursor: 'next', snapshotToken: 'snapshot', observedAt: time });
+      }
+      return route.abort();
+    });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量', exact: true }).click();
+    const check = async (surface: Locator) => {
+      const panel = surface.locator('.task-detail-panel-usage');
+      await expect(panel.locator('.usage-record')).toHaveCount(8);
+      expect(await panel.evaluate(el => { el.scrollTop = el.scrollHeight; return el.scrollTop > 0 && el.scrollWidth <= el.clientWidth && document.documentElement.scrollWidth <= innerWidth; })).toBe(true);
+      expect(await panel.locator('.usage-filters').evaluate((el, narrow) => {
+        const fields = [...el.querySelectorAll<HTMLElement>('label')];
+        const controls = [...el.querySelectorAll<HTMLElement>('input, select, button')];
+        const boxes = fields.map(field => field.getBoundingClientRect());
+        return narrow ? controls.every(control => control.getBoundingClientRect().height >= 44) : boxes.every(box => Math.abs(box.bottom - boxes[0]!.bottom) < 2);
+      }, width === 320)).toBe(true);
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' })).toBeVisible();
+      const provider = panel.getByLabel('Provider'); await provider.fill('provider');
+      const filtered = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('provider=provider'));
+      await provider.press('Enter'); await filtered;
+      const measurement = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('kind=measurement'));
+      await panel.getByLabel(locale === 'en' ? 'View' : '查看').selectOption('measurement'); await measurement;
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeEnabled();
+      await expect(panel.getByText('9,007,199,254,740,993').first()).toBeVisible();
+      const details = panel.locator('details').first();
+      if (await details.getAttribute('open') === null) await details.locator('summary').click();
+      await expect(panel.locator('details[open] code').first()).toBeVisible();
+      await panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' }).click();
+      await expect.poll(() => requests.some(value => value.includes('cursor=next'))).toBe(true);
+      await panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).focus();
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeFocused();
+    };
+    await check(dialog);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await check(dialog);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+    await check(page.locator('.task-detail-page'));
+  });
+}
+
+test('unsupported service shows one neutral usage explanation without a records request', async ({ page }) => {
+  await install(page);
+  let records = 0;
+  await page.route('**/api/**/usage/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/records')) records++;
+    return route.fulfill({ status: 404, json: { error: { code: 'not_found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+  const surface = page.locator('.task-detail-page');
+  await expect(surface.getByText('This service does not support usage')).toHaveCount(1);
+  await expect(surface.locator('.usage-filters, .usage-pagination, .usage-error')).toHaveCount(0);
+  expect(records).toBe(0);
+  await surface.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(surface.locator('.task-detail-heading').getByText('This service does not support usage')).toHaveCount(0);
+});
+for (const entry of ['dialog', 'page'] as const) for (const width of [320, 1280]) {
+  test(`task detail keeps usage inside its tab in ${entry} at ${width}px`, async ({ page }, info) => {
+    const zh = width === 320;
+    const labels = {
+      usage: zh ? '用量' : 'Usage', overview: zh ? '概览' : 'Overview',
+      loading: zh ? '读取用量…' : 'Loading usage…',
+      empty: zh ? '暂无计量记录；未知不代表零。' : 'No measurements; unknown does not mean zero.',
+      error: zh ? '用量暂不可用' : 'Usage unavailable',
+      unsupported: zh ? '此服务不支持用量查询' : 'This service does not support usage',
+    };
+    type UsageState = 'loading' | 'data' | 'empty' | 'error' | 'unsupported';
+    let usageState: UsageState = 'loading';
+    const loading = Promise.withResolvers<void>();
+    await install(page);
+    await page.route(/\/api\/(usage\/v1\/capabilities|projects\/.*\/usage\/v1\/)/, async route => {
+      const request = route.request(), path = new URL(request.url()).pathname;
+      const state = usageState;
+      const send = (body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (state === 'loading') await loading.promise;
+      if (path.endsWith('/capabilities')) return state === 'unsupported' ? send({}, 404) : send({ protocol: 'daynight.usage.v1' });
+      if (state === 'error') return send({ error: { code: 'internal_error', requestId: 'usage-detail' } }, 503);
+      if (state === 'unsupported') return send({ error: { code: 'usage_unsupported', requestId: 'usage-detail' } }, 404);
+      if (path.endsWith('/task-summaries')) {
+        const { taskIds } = request.postDataJSON() as { taskIds: string[] };
+        const summary = {
+          metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: state === 'empty' ? null : '12345', contributingRecords: state === 'empty' ? '0' : '1', unknownRecords: '0' }])),
+          scope: 'registered_web_executions', completeness: state === 'empty' ? 'no_data' : 'complete', reasonCodes: [],
+          coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '1', partialExecutions: '0', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+          measurementRecords: state === 'empty' ? '0' : '1', lastMeasuredAt: state === 'empty' ? null : time, observedAt: time, etag: 'detail-usage',
+        };
+        return send({ items: taskIds.map(id => ({ taskId: id, summary })) });
+      }
+      if (path.endsWith('/records')) return send({ items: [], nextCursor: null, snapshotToken: 'detail-usage', observedAt: time });
+      throw new Error(`Unexpected usage request ${request.method()} ${path}`);
+    });
+    await page.setViewportSize({ width, height: 900 });
+    const surface = page.locator(entry === 'dialog' ? '.task-detail-dialog' : '.task-detail-page');
+    const heading = surface.locator('.task-detail-heading');
+    const usage = surface.getByRole('tab', { name: labels.usage, exact: true });
+    const overview = surface.getByRole('tab', { name: labels.overview, exact: true });
+    const panel = surface.locator('.task-detail-panel-usage');
+    const open = async (deepLink: boolean) => {
+      if (entry === 'page') await page.goto(`/projects/${projectId}/tasks/${taskId}${deepLink ? '?tab=usage' : ''}`);
+      else {
+        await page.goto(`/projects/${projectId}`);
+        await page.locator('#project-section-tab-tasks').click();
+        await page.getByRole('tab', { name: zh ? '独立任务' : 'Standalone tasks' }).click();
+        await page.locator(`#standalone-task-${taskId}`).click();
+      }
+      await expect(heading.locator('.task-detail-status-row')).toBeVisible();
+      await expect(heading.locator('.task-usage-summary, .usage-summary, .usage-error')).toHaveCount(0);
+      await expect(heading.locator(':scope > *')).toHaveCount(1);
+      if (deepLink && entry === 'page') await expect(usage).toHaveAttribute('aria-selected', 'true');
+      await overview.click();
+      await usage.click();
+      await expect(panel).toBeVisible();
+      await usage.press('Home');
+      await expect(overview).toBeFocused();
+      await overview.press('End');
+      await expect(usage).toBeFocused();
+      await expect(usage).toHaveAttribute('aria-selected', 'true');
+    };
+    const layout = () => heading.evaluate(element => {
+      const status = element.querySelector('.task-detail-status-row')!.getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      const tabs = element.parentElement!.querySelector('.task-detail-tabs')!.getBoundingClientRect();
+      return { headerHeight: box.height, belowControls: Math.abs(box.bottom - status.bottom) < 1, tabsBelow: tabs.top >= box.bottom, controlsInside: status.left >= box.left && status.right <= box.right, noPageOverflow: document.documentElement.scrollWidth <= innerWidth };
+    });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(zh ? 'zh-CN' : 'en');
+    try {
+      await open(false);
+      await expect(panel.getByText(labels.loading, { exact: true }).first()).toBeVisible();
+      const initial = await layout();
+      expect(initial).toMatchObject({ belowControls: true, tabsBelow: true, controlsInside: true, noPageOverflow: true });
+      usageState = 'data'; loading.resolve();
+      await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+      for (const state of ['data', 'empty', 'error', 'unsupported'] as const) {
+        usageState = state;
+        await open(entry === 'page');
+        if (state === 'data') await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+        else await expect(panel.getByText(labels[state], { exact: true }).first()).toBeVisible();
+        expect(await layout()).toEqual(initial);
+        await page.screenshot({ path: info.outputPath(`${entry}-${width}-${state}.png`) });
+      }
+    } finally { loading.resolve(); }
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`list summaries accommodate larger browser text at ${width}px in ${locale}`, async ({ page }) => {
+    const goalId = '00000000-0000-4000-8000-000000000060';
+    const details = [detailFixture(projectId, taskId, { title: 'Long chain title '.repeat(8), status: 'in_progress', ready: false }),
+      detailFixture(projectId, successorId, { title: 'Member', dependsOn: [taskId], blockedBy: [taskId], ready: false }),
+      detailFixture(projectId, goalId, { type: 'goal', title: 'Long goal title '.repeat(8), status: 'in_progress', ready: false })];
+    await install(page, false, false, 'unused', details);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.addStyleTag({ content: 'html { font-size: 24px; }' });
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    for (const kind of ['chains', 'goals'] as const) {
+      await page.locator(`#project-task-tab-${kind}`).click();
+      const summary = kind === 'chains' ? page.locator(`[data-chain-id="${taskId}"] > .goal-header`) : page.locator(`[data-goal-id="${goalId}"] > .goal-list-row`);
+      const title = summary.locator(kind === 'chains' ? '.root-title' : '.goal-list-title');
+      const status = summary.locator('.session-status-label');
+      const progress = summary.locator(kind === 'chains' ? '.root-progress' : '.goal-list-progress');
+      await expect(title).toHaveCSS('font-size', '21px');
+      await expect(status).toHaveCSS('font-size', '21px');
+      expect(await summary.evaluate((element) => {
+        const status = element.querySelector('.session-status-label')!.getBoundingClientRect();
+        const progress = element.querySelector('.root-progress, .goal-list-progress')!.getBoundingClientRect();
+        const bounds = element.getBoundingClientRect();
+        return status.left >= bounds.left && status.right <= bounds.right && status.top >= bounds.top && status.bottom <= bounds.bottom &&
+          (status.left >= progress.right || status.right <= progress.left || status.top >= progress.bottom || status.bottom <= progress.top) &&
+          document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+      const toggle = summary.locator(kind === 'chains' ? '.goal-toggle' : '.goal-list-toggle');
+      await toggle.focus(); await page.keyboard.press('Enter'); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    }
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390, 600, 601, 1280]) {
+  test(`ordinary task tabs retain one row and navigation at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const surface = page.locator('.task-detail-page');
+    const bar = surface.locator('.ordinary-task-tabs-wrap [role=tablist]');
+    const usage = bar.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量' });
+    await expect(usage).toHaveAttribute('aria-selected', 'true');
+    const geometry = () => bar.evaluate(element => {
+      const barBox = element.getBoundingClientRect();
+      const tabs = [...element.querySelectorAll<HTMLElement>('[role=tab]')].map(tab => tab.getBoundingClientRect());
+      const selected = element.querySelector<HTMLElement>('[aria-selected=true]')!.getBoundingClientRect();
+      return { singleRow: tabs.every(tab => Math.abs(tab.top - tabs[0]!.top) < 1), height: barBox.height,
+        selectedVisible: selected.left >= barBox.left && selected.right <= barBox.right,
+        pageFits: document.documentElement.scrollWidth <= innerWidth };
+    });
+    expect(await geometry()).toMatchObject({ singleRow: true, selectedVisible: true, pageFits: true });
+    if (width <= 600) expect((await geometry()).height).toBeLessThan(50);
+    await usage.focus(); await page.keyboard.press('Home');
+    await expect(bar.getByRole('tab').first()).toBeFocused();
+    await page.keyboard.press('ArrowRight'); await expect(bar.getByRole('tab').nth(1)).toBeFocused();
+    await page.keyboard.press('End'); await expect(usage).toBeFocused();
+    expect((await geometry()).selectedVisible).toBe(true);
+    if (await bar.evaluate(element => element.scrollWidth > element.clientWidth + 1)) {
+      await expect(surface.locator('.ordinary-task-tabs-edge.start')).toBeVisible();
+      await bar.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+      await expect(surface.locator('.ordinary-task-tabs-edge.end')).toBeHidden();
+      await bar.evaluate(element => { element.scrollLeft = 0; });
+      await expect(surface.locator('.ordinary-task-tabs-edge.end')).toBeVisible();
+      await expect(usage).toHaveAttribute('aria-selected', 'true');
+    }
+    await page.goBack(); await page.goForward();
+    await expect(usage).toHaveAttribute('aria-selected', 'true');
+    expect((await geometry()).selectedVisible).toBe(true);
+  });
+}
+
+test('narrow task tabs preserve reading state across dialog, fullscreen and short viewports', async ({ page }) => {
+  const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
+    workerId: '00000000-0000-4000-8000-000000000072', worktreeId: '00000000-0000-4000-8000-000000000073',
+    machine: { id: '00000000-0000-4000-8000-000000000074', name: 'Worker' }, platform: 'linux' as const,
+    agent: 'codex' as const, agentControlMode: 'web' as const, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+  const task = detailFixture(projectId, taskId, { title: 'Reading task', description, version: 5n, status: 'in_progress', startedAt: time, properties: { worker } });
+  const state = await install(page, false, false, 'unused', [task], true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
+  await page.locator(`#standalone-task-${taskId}`).click();
+  const dialog = page.locator('.task-detail-dialog');
+  const bar = dialog.locator('.ordinary-task-tabs-wrap [role=tablist]');
+  await expect(bar.getByRole('tab')).toHaveCount(6);
+  await expect(dialog.getByRole('button', { name: 'Dismiss notification' })).toHaveCount(2);
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
+  await bar.evaluate(element => { element.scrollLeft = 0; });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+  const barBox = (await bar.boundingBox())!;
+  const x = barBox.x + barBox.width - 35, y = barBox.y + barBox.height / 2;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  for (let distance = 20; distance <= 160; distance += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x - distance, y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect.poll(() => bar.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  await expect(bar.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await cdp.detach();
+  const overview = dialog.locator('.task-detail-panel-overview');
+  await overview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const scroll = await overview.evaluate(element => element.scrollTop); expect(scroll).toBeGreaterThan(0);
+  const outerScroll = await page.evaluate(() => [window.scrollX, window.scrollY]);
+  await page.setViewportSize({ width: 375, height: 844 });
+  expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
+  expect(await page.evaluate(() => [window.scrollX, window.scrollY])).toEqual(outerScroll);
+  await bar.getByRole('tab', { name: 'Discussion' }).click();
+  expect(await bar.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
+    return selected.left >= box.left + 11 && selected.right <= box.right - 11;
+  })).toBe(true);
+  const draft = dialog.locator('.thread-composer textarea'); await draft.fill('Retained draft');
+  await bar.getByRole('tab', { name: 'Usage' }).click();
+  await bar.getByRole('tab', { name: 'Overview' }).click();
+  expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
+  await bar.getByRole('tab', { name: 'Discussion' }).click(); await expect(draft).toHaveValue('Retained draft');
+  await dialog.getByRole('button', { name: 'Enter fullscreen' }).click();
+  await expect(draft).toHaveValue('Retained draft');
+  await page.setViewportSize({ width: 320, height: 490 });
+  await bar.getByRole('tab', { name: 'Discussion' }).press('End');
+  await expect(bar.getByRole('tab', { name: 'Usage' })).toBeFocused();
+  expect(await bar.evaluate(element => {
+    const outer = element.getBoundingClientRect();
+    const boxes = [...element.querySelectorAll('[role=tab]')].map(tab => tab.getBoundingClientRect());
+    const last = boxes[boxes.length - 1]!;
+    return boxes.every(box => Math.abs(box.top - boxes[0]!.top) < 1) && last.left >= outer.left && last.right <= outer.right && document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+  await bar.getByRole('tab', { name: 'Discussion' }).click(); await expect(draft).toHaveValue('Retained draft');
+  expect(state.writes).toEqual([]);
+  await page.setViewportSize({ width: 601, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+  const pageBar = page.locator('.task-detail-page .ordinary-task-tabs-wrap [role=tablist]');
+  await expect(pageBar.getByRole('tab')).toHaveCount(6);
+  await expect.poll(() => pageBar.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
+    return element.scrollWidth > element.clientWidth && selected.left >= box.left && selected.right <= box.right && document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+});

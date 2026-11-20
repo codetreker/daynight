@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { TaskSummary, WorkerClaim } from '../../api/types';
+import type { TaskSummary, WorkerMachine } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import type { GraphIndex } from '../task-graph/model';
@@ -28,7 +28,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
   readonly goal: TaskSummary;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly childTagFilter: Pick<TagFilterController, 'value' | 'invalid'>;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, 'state' | 'machine'>>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
   readonly onOpenGoal: (id: string, trigger: HTMLElement) => void;
   readonly onOpenGoalGraph: (id: string, trigger: HTMLElement) => void;
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;

@@ -13,6 +13,7 @@ import (
 // Service coordinates each Session operation with the application's writer.
 type Service struct {
 	*sessioncore.Execution
+	*botruntime.Recovery
 	engine       *sessioncore.Engine
 	writer       store.SessionWriter
 	historyOps   historyScopeOperations
@@ -22,6 +23,9 @@ type Service struct {
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	s := &Service{engine: engine, writer: writer, historyOps: historyScopeBindings(), beginBrowser: func() (browserOperation, error) { return engine.BeginOperation() }}
 	botRuntime := botruntime.NewRuntime(engine, func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
+		return s.write(ctx, op.Finish, fn)
+	})
+	s.Recovery = botruntime.NewRecovery(engine, func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
 		return s.write(ctx, op.Finish, fn)
 	})
 	s.Execution = sessioncore.NewExecution(engine, s.browserFor, s.controller, s.archive, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.authorize)

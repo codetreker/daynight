@@ -4,7 +4,7 @@ import { browserNavigation } from './navigation';
 import { projectSettingsSelection, type ProjectSettingsSelection } from './project-settings-route';
 import { accountSelection, type AccountSelection } from './account-route';
 
-export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
+export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session" | "usage";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 export type ProjectSection = "overview" | "statistics" | "tasks" | "prs" | "tags";
 
@@ -79,7 +79,7 @@ export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly retu
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
   if (values.length === 0) return defaultTab;
-  return values.length === 1 && (values[0] === "description" || values[0] === "overview" || values[0] === "steps" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session") ? values[0] : null;
+  return values.length === 1 && (values[0] === "description" || values[0] === "overview" || values[0] === "steps" || values[0] === "attachments" || values[0] === "discussion" || values[0] === "session" || values[0] === "usage") ? values[0] : null;
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {

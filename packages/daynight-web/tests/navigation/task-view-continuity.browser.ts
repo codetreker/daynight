@@ -13,25 +13,27 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
-  const state = { tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const projectGate = Promise.withResolvers<void>();
+  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
-    const request = route.request(), url = new URL(request.url()), path = url.pathname, graph = graphFixture(state.tasks);
+    const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
-    if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
+    if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
+    if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
+    if (path === `/api/v1/projects/${targetProject}`) { if (state.projectMode === 'pending') await projectGate.promise; return send(graph.project); }
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
-    if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) {
+    if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: state.viewer, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+    if (path === `/api/v1/projects/${targetProject}/access`) return send(directAccessFixture(targetProject, state.viewer));
+    if (path === `/api/v1/projects/${targetProject}/task-sync`) {
       if (state.graphMode === 'pending') await gate.promise;
       if (state.holdReplacement && taskSyncQuery(url).epoch === undefined) { state.replacementHeld = true; await gate.promise; }
       if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
-      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: targetProject === projectId ? state.epoch : taskSyncEpoch(targetProject), actorAccess: directAccessFixture(targetProject, state.viewer), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
     }
-    const base = `/api/v1/projects/${projectId}/tasks/`;
+    const base = `/api/v1/projects/${targetProject}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
       if (detail && parts.length === 1 && request.method() === 'DELETE') {
@@ -51,6 +53,232 @@ const select = async (page: Page, name: string) => {
   await page.keyboard.press('Enter');
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
+
+test.describe('project settings navigation', () => {
+  test.use({ hasTouch: true });
+  for (const input of ['touch', 'keyboard', 'pointer'] as const) test(`opens the settings link with ${input}`, async ({ page }) => {
+    await install(page, [row(10, 'Task')]);
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+    await expect(settings).toBeVisible();
+    if (input === 'touch') await settings.tap();
+    else if (input === 'keyboard') { await settings.focus(); await page.keyboard.press('Enter'); }
+    else await settings.click();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+  });
+});
+
+test('reserves the narrow settings position while the project loads', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.projectMode = 'pending';
+  await page.setViewportSize({ width: 320, height: 640 });
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    const placeholder = page.locator('.project-title-actions-placeholder .project-header-secondary');
+    await expect(placeholder).toHaveCount(1);
+    const before = await placeholder.boundingBox();
+    expect(before?.width).toBe(44); expect(before?.height).toBe(44);
+    state.projectMode = 'normal'; state.releaseProject();
+    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+    await expect(settings).toBeVisible();
+    const after = await settings.boundingBox();
+    expect(after?.width).toBe(before?.width); expect(after?.height).toBe(before?.height);
+  } finally { state.releaseProject(); }
+});
+
+test('withdraws the narrow settings entrance when project access is lost', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}?tab=tasks`);
+  const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+  await expect(settings).toBeVisible();
+  state.revoked = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(settings).toBeHidden();
+  expect(state.writes).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`project heading actions fit narrow containers and preserve interactions in ${locale}`, async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const labels = locale === 'en' ? { settings: 'Project settings', refresh: 'Refresh', refreshing: 'Refreshing…', task: 'New Task', goal: 'New Goal' } : { settings: '项目设置', refresh: '刷新', refreshing: '正在刷新…', task: '新建 Task', goal: '新建 Goal' };
+    const settings = page.getByRole('link', { name: labels.settings, exact: true });
+    const refresh = page.getByRole('button', { name: labels.refresh, exact: true });
+    const task = page.getByRole('button', { name: labels.task, exact: true });
+    const goal = page.getByRole('button', { name: labels.goal, exact: true });
+    await expect(settings).toHaveAttribute('href', `/projects/${projectId}/settings`);
+    await expect(task).toBeEnabled();
+    expect(await settings.evaluate(link => {
+      let prevented = true;
+      const observe = (event: Event) => { prevented = event.defaultPrevented; event.preventDefault(); };
+      document.addEventListener('click', observe, { once: true });
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      return prevented;
+    })).toBe(false);
+    for (const width of [320, 375, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      const boxes = await Promise.all([settings, refresh, task, goal].map(item => item.boundingBox()));
+      expect(boxes.every(box => box !== null && box.height === 44)).toBe(true);
+      expect(boxes.map(box => Math.round(box!.y))).toEqual(Array(4).fill(Math.round(boxes[0]!.y)));
+      expect(await page.locator('.project-title-actions').evaluate(el => Math.round(el.getBoundingClientRect().height))).toBe(44);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await settings.focus();
+    await expect(settings.locator('.project-header-action-tooltip')).toBeVisible();
+    await refresh.hover(); await expect(refresh.locator('.project-header-action-tooltip')).toBeVisible();
+    for (const button of [task, goal]) {
+      await button.focus(); await page.keyboard.press('Enter');
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape'); await expect(button).toBeFocused();
+    }
+    const before = await refresh.boundingBox();
+    state.graphMode = 'pending'; await refresh.click();
+    const busy = page.getByRole('button', { name: labels.refreshing, exact: true });
+    await expect(busy).toBeDisabled(); await expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(await busy.boundingBox()).toEqual(before);
+    state.graphMode = 'normal'; state.releaseGraph(); await expect(refresh).toBeEnabled();
+    for (const [width, compact] of [[420, true], [421, false]] as const) {
+      await page.locator('.project-heading-container').evaluate((el, value) => { (el as HTMLElement).style.width = `${value}px`; }, width);
+      await expect(settings.locator('.project-header-action-icon')).toHaveCSS('display', compact ? 'block' : 'none');
+      if (compact) expect((await settings.boundingBox())!.y).toBeGreaterThanOrEqual((await page.locator('.project-title-line').boundingBox())!.y + (await page.locator('.project-title-line').boundingBox())!.height);
+    }
+    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = '230px'; });
+    const narrow = await Promise.all([settings, task, goal].map(item => item.boundingBox()));
+    expect(narrow[1]!.y).toBeGreaterThan(narrow[0]!.y);
+    expect(narrow[1]!.y).toBe(narrow[2]!.y);
+    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = ''; });
+    for (const width of [768, 1360]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(settings.locator('.project-header-action-label')).toBeVisible();
+      await expect(refresh.locator('.project-header-action-label')).toBeVisible();
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.locator('.project-heading h1').evaluate(el => { el.textContent = 'A very long project name '.repeat(5); });
+    await page.locator('.project-repository-value').evaluate(el => { el.textContent = 'https://example.com/' + 'long-repository-name-'.repeat(10); });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
+    expect(await page.locator('.project-heading').evaluate(el => {
+      const bounds = el.getBoundingClientRect();
+      return [...el.querySelectorAll<HTMLElement>('.project-title-line, .project-title-actions, .project-creation-actions, .project-creation-actions button')].every(item => item.getBoundingClientRect().right <= bounds.right + 1);
+    })).toBe(true);
+    expect(state.writes).toEqual([]);
+  } finally { state.releaseGraph(); }
+});
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`project task category labels preserve word boundaries at narrow widths in ${locale}`, async ({ page }) => {
+    const root = row(10, 'Chain root'), child = row(11, 'Chain child', [root.id]);
+    const goal = detailFixture(projectId, id(12), { type: 'goal', title: 'Goal' });
+    const state = await install(page, [root, child, row(13, 'Standalone'), goal]);
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const tabs = page.locator('.project-task-tabs');
+    for (const view of ['standalone', 'chains', 'goals']) await expect(page.locator(`#project-task-tab-${view} .graph-count-pill`)).toHaveText('1');
+    const names = locale === 'en' ? ['Standalone tasks', 'Task chains', 'Goals'] : ['独立任务', '任务链', 'Goal'];
+    for (const width of [320, 375, 390, 768, 1360]) {
+      await page.setViewportSize({ width, height: 800 });
+      const geometry = await tabs.evaluate((element, labels) => {
+        const bounds = element.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll<HTMLElement>('[role="tab"]')];
+        return buttons.map((button, index) => {
+          const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+          let node: Node | null;
+          while ((node = walker.nextNode()) && !node.textContent?.includes(labels[index]!)) { /* find the label, not its count */ }
+          if (!node) throw new Error(`Missing label ${labels[index]}`);
+          const start = node.textContent!.indexOf(labels[index]!);
+          const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + labels[index]!.length);
+          const labelLines = range.getClientRects().length;
+          range.setEnd(node, start + labels[index]!.split(' ')[0]!.length);
+          const firstWordLines = range.getClientRects().length;
+          const rect = button.getBoundingClientRect(), pill = button.querySelector<HTMLElement>('.graph-count-pill')!;
+          const pillRect = pill.getBoundingClientRect();
+          return { labelLines, firstWordLines, top: rect.top, bottom: rect.bottom, width: rect.width,
+            inStrip: rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1,
+            pillFits: pill.scrollWidth <= pill.clientWidth + 1 && pillRect.left >= rect.left - 1 && pillRect.right <= rect.right + 1 };
+        });
+      }, names);
+      expect(geometry).toHaveLength(3);
+      for (const item of geometry) {
+        expect(item.firstWordLines).toBe(1);
+        if (width !== 320 || locale === 'zh-CN') expect(item.labelLines).toBe(1);
+        expect(item.inStrip && item.pillFits && item.width > 0).toBe(true);
+        expect(Math.abs(item.top - geometry[0]!.top)).toBeLessThan(1);
+        expect(Math.abs(item.bottom - geometry[0]!.bottom)).toBeLessThan(1);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    // Keep the viewport wide while changing only the task content width.
+    const gaps: number[] = [];
+    for (const width of [420, 421]) {
+      await tabs.evaluate((element, value) => { element.parentElement!.style.width = `${value}px`; }, width);
+      gaps.push(await tabs.evaluate(element => Number.parseFloat(getComputedStyle(element).columnGap)));
+      expect(await tabs.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    expect(gaps[0]).toBeLessThan(gaps[1]!);
+    expect(state.writes).toEqual([]);
+  });
+}
+
+test.describe('touch task tabs', () => {
+  test.use({ hasTouch: true });
+  test('tap selects each category on a narrow project page', async ({ page }) => {
+    const state = await install(page, [row(1, 'Standalone')]);
+    await page.setViewportSize({ width: 320, height: 800 }); await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').tap();
+    for (const view of ['standalone', 'goals', 'chains']) {
+      const tab = page.locator(`#project-task-tab-${view}`);
+      await tab.tap(); await expect(tab).toHaveAttribute('aria-selected', 'true');
+    }
+    expect(state.writes).toEqual([]);
+  });
+});
+
+test('project task tabs keep counts and focused selection visible in an overflowing strip', async ({ page }) => {
+  const root = row(100, 'Chain root'), child = row(101, 'Chain child', [root.id]);
+  const goals = Array.from({ length: 12 }, (_, i) => detailFixture(projectId, id(200 + i), { type: 'goal', title: `Goal ${i}` }));
+  const state = await install(page, [root, child, ...goals]);
+  await page.setViewportSize({ width: 320, height: 800 }); await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const tabs = page.locator('.project-task-tabs'), first = page.locator('#project-task-tab-standalone'), last = page.locator('#project-task-tab-goals');
+  await expect(first.locator('.graph-count-pill')).toHaveText('0');
+  await expect(last.locator('.graph-count-pill')).toHaveText('12');
+  // A larger browser font and narrow content exercise overflow without changing the viewport.
+  await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+  await tabs.evaluate(element => { element.parentElement!.style.width = '200px'; });
+  expect(await tabs.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  await tabs.hover(); await page.mouse.wheel(500, 0);
+  await expect.poll(() => tabs.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  await first.focus(); const pageScroll = await position(page);
+  await page.keyboard.press('End'); await expect(last).toBeFocused(); await expect(last).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => tabs.evaluate(element => {
+    const strip = element.getBoundingClientRect(), item = element.querySelector<HTMLElement>('#project-task-tab-goals')!.getBoundingClientRect();
+    return item.left >= strip.left - 1 && item.right <= strip.right + 1;
+  })).toBe(true);
+  expect(await position(page)).toBe(pageScroll);
+  await page.keyboard.press('Home'); await expect(first).toBeFocused(); await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => tabs.evaluate(element => {
+    const strip = element.getBoundingClientRect(), item = element.querySelector<HTMLElement>('#project-task-tab-standalone')!.getBoundingClientRect();
+    return item.left >= strip.left - 1 && item.right <= strip.right + 1;
+  })).toBe(true);
+  expect(await position(page)).toBe(pageScroll);
+  await page.keyboard.press('ArrowLeft'); await expect(last).toBeFocused();
+  await page.keyboard.press('ArrowRight'); await expect(first).toBeFocused();
+  await page.keyboard.press('Tab');
+  expect(await tabs.evaluate(element => !element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Shift+Tab'); await expect(first).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  expect(await tabs.evaluate(element => !element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Tab'); await expect(first).toBeFocused();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.writes).toEqual([]);
+});
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
   test(`unfinished Goal tab count and keyboard navigation at ${width}px in ${locale}`, async ({ page }) => {
@@ -95,10 +323,9 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
     await expect(page.getByText('https://github.com/example/project', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
     const overview = page.getByRole('tab', { name: 'Overview', exact: true });
     const tasks = page.getByRole('tab', { name: 'Task list', exact: true });
-    await expect(page.getByRole('tab')).toHaveCount(4);
+    await expect(page.locator('.project-section-tabs [role="tab"]')).toHaveCount(5);
     await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
     await tasks.click();
     await expect(tasks).toHaveAttribute('aria-selected', 'true');
@@ -200,6 +427,191 @@ test('project management remains available when the task cache cannot open', asy
   await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
   expect(state.writes).toEqual([]);
+});
+
+for (const width of [1100, 390]) test(`top-level project tabs share the painted scroll position at ${width}px`, async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  await install(page, chains);
+  // The retired key would restore a different position in the old implementation.
+  await page.addInitScript(project => localStorage.setItem(`daynight:task-list-scroll:${project}`, '320'), projectId);
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeGreaterThan(400);
+  const trace = await page.evaluateHandle(() => {
+    let positions: number[] = [], active = false;
+    const sample = () => { if (active) { positions.push(scrollY); requestAnimationFrame(sample); } };
+    return {
+      start: () => { positions = [scrollY]; active = true; requestAnimationFrame(sample); },
+      stop: () => new Promise<number[]>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { positions.push(scrollY); active = false; resolve(positions); }))),
+    };
+  });
+  const begin = () => trace.evaluate(value => value.start());
+  const end = () => trace.evaluate(value => value.stop());
+  const clickWithoutScrolling = (section: string) => page.locator(`#project-section-tab-${section}`).evaluate((element: HTMLElement) => element.click());
+  const expectStable = (samples: number[], expected: number) => expect(samples).toEqual(samples.map(() => expected));
+  try {
+    await page.evaluate(() => scrollTo(0, 90)); await expect.poll(() => page.evaluate(() => scrollY)).toBe(90);
+    await begin(); await clickWithoutScrolling('tasks'); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 90);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeGreaterThan(400);
+    await page.evaluate(() => scrollTo(0, 400)); await expect.poll(() => page.evaluate(() => scrollY)).toBe(400);
+    await page.locator('#project-section-tab-overview').evaluate((element: HTMLElement) => element.focus({ preventScroll: true }));
+    await begin(); await page.keyboard.press('Enter'); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await begin(); await page.goBack(); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await begin(); await page.goForward(); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await page.evaluate(() => scrollTo(0, 90));
+    await begin(); await clickWithoutScrolling('prs'); await expect(page.locator('#project-section-tab-prs')).toHaveAttribute('aria-selected', 'true');
+    const prSamples = await end();
+    expect(prSamples.every(value => value <= 90)).toBe(true);
+    const prPosition = prSamples.at(-1)!;
+    await begin(); await clickWithoutScrolling('overview'); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), prPosition);
+    await page.evaluate(() => scrollTo(0, 400));
+    await begin(); await clickWithoutScrolling('tags'); await expect(page.locator('#project-section-tab-tags')).toHaveAttribute('aria-selected', 'true');
+    const shortSamples = await end(), clamped = shortSamples.at(-1)!;
+    expect(clamped).toBeLessThan(400);
+    expect(shortSamples.every(value => value >= clamped && value <= 400)).toBe(true);
+    await begin(); await clickWithoutScrolling('tasks'); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), clamped);
+  } finally { await trace.dispose(); }
+});
+
+test('project position survives reload and stays separate across projects and accounts', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const state = await install(page, chains), otherProject = id(32), otherViewer = id(998);
+  const key = (project: string, user: string) => `daynight:project-scroll:${JSON.stringify([project, user])}`;
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 200));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(projectId, TEST_VIEWER_ID))).toBe('200');
+  await page.reload();
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await expect.poll(() => position(page)).toBe(200);
+  await page.goto(`/projects/${otherProject}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 300));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(otherProject, TEST_VIEWER_ID))).toBe('300');
+  await page.goto(`/projects/${projectId}`);
+  await expect.poll(() => position(page)).toBe(200);
+  state.viewer = otherViewer;
+  await page.reload();
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 250));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(projectId, otherViewer))).toBe('250');
+  expect(await page.evaluate(name => localStorage.getItem(name), key(projectId, TEST_VIEWER_ID))).toBe('200');
+  state.viewer = TEST_VIEWER_ID;
+  await page.reload();
+  await expect.poll(() => position(page)).toBe(200);
+});
+
+test('loading and preference failures do not replace a saved position', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const state = await install(page, chains);
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+  await page.addInitScript(name => localStorage.setItem(name, '320'), key);
+  state.graphMode = 'pending';
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    expect(await page.evaluate(name => localStorage.getItem(name), key)).toBe('320');
+    state.releaseGraph();
+    await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+    await expect.poll(() => position(page)).toBe(320);
+  } finally { state.releaseGraph(); }
+});
+
+test('an unreadable scroll preference reports the failure and leaves navigation usable', async ({ page }) => {
+  await install(page, [row(10, 'Task')]);
+  await page.addInitScript(() => {
+    const read = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (name) {
+      if (name.startsWith('daynight:project-scroll:')) throw new DOMException('Denied', 'SecurityError');
+      return read.call(this, name);
+    };
+  });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByText('The saved project browsing position could not be read. You can continue browsing.')).toBeVisible();
+  await page.locator('#project-section-tab-tasks').evaluate((element: HTMLElement) => element.click());
+  await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('explicit overview location takes precedence over the shared position', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  await install(page, chains);
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 90));
+  const target = page.locator('#project-overview-progress .overview-progress-row').last();
+  const targetTitle = await target.locator('.overview-progress-title').innerText();
+  await target.evaluate((element: HTMLElement) => element.click());
+  const selected = page.locator('#project-section-tab-tasks');
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  const located = page.locator('.overview-progress-target');
+  await expect(located).toContainText(targetTitle);
+  expect(await position(page)).not.toBe(90);
+  await expect(located).toBeFocused();
+});
+
+for (const navigation of ['category', 'history'] as const) test(`cached task preview cancels a pending scroll restore on ${navigation} navigation`, async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const standalone = Array.from({ length: 20 }, (_, i) => row(300 + i, `Standalone ${i}`));
+  const state = await install(page, [...chains, ...standalone]);
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toBeVisible();
+    if (navigation === 'history') {
+      await select(page, 'Standalone tasks');
+      await page.locator('.project-navigation a[href="/projects"]').click();
+      await expect(page).toHaveURL(/\/projects$/);
+    }
+    await page.evaluate(name => { scrollTo(0, 0); localStorage.setItem(name, '320'); }, key);
+    state.graphMode = 'pending';
+    if (navigation === 'history') await page.goBack();
+    else await page.reload();
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Standalone tasks' : 'Task chains', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    if (navigation === 'history') await page.goBack();
+    else await select(page, 'Standalone tasks');
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Task chains' : 'Standalone tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    state.releaseGraph();
+    await completed;
+    await expect(page.locator('.snapshot-time time')).toBeVisible();
+    expect(await position(page)).toBe(0);
+  } finally { state.releaseGraph(); }
+});
+
+test('project history restores native mode when leaving for other routes', async ({ page }) => {
+  await install(page, [row(10, 'Task')]);
+  await page.goto(`/projects/${projectId}/settings`);
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('a[href="/projects"]').first().click();
+  await expect(page).toHaveURL(/\/projects$/);
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('auto');
+  await page.goto(`/projects/${projectId}/settings`);
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('.project-management-nav a').click();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('manual');
+  await page.reload();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('manual');
+  await page.getByRole('link', { name: 'Project settings', exact: true }).click();
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('.project-management-nav a').click();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  await page.locator('.project-navigation a[href="/projects"]').click();
+  await expect(page).toHaveURL(/\/projects$/);
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('auto');
 });
 
 test('category switching preserves real scroll and only the browser clamps shorter content', async ({ page }) => {
@@ -315,9 +727,12 @@ test('overview progress rows fit their content at desktop and narrow widths', as
         return element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1 &&
           children.every((child, i) => child.scrollWidth <= child.clientWidth + 1 && child.scrollHeight <= child.clientHeight + 1 &&
             boxes[i]!.left >= rowBox.left - 1 && boxes[i]!.right <= rowBox.right + 1 && boxes[i]!.top >= rowBox.top - 1 && boxes[i]!.bottom <= rowBox.bottom + 1 &&
-            (i === 0 || boxes[i - 1]!.right <= boxes[i]!.left + 1));
+            boxes.every((other, j) => i === j || boxes[i]!.right <= other.left + 1 || other.right <= boxes[i]!.left + 1 ||
+              boxes[i]!.bottom <= other.top + 1 || other.bottom <= boxes[i]!.top + 1));
       }))).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(await rows.first().locator('.overview-progress-title').evaluate(element => getComputedStyle(element).fontSize)).toBe('14px');
+      expect(await page.locator('.project-overview .stat-label').first().evaluate(element => getComputedStyle(element).fontSize)).toBe('14px');
       if (width === 320) {
         expect((await rows.filter({ hasText: 'A long English title' }).boundingBox())!.height).toBeGreaterThan(60);
         expect((await rows.filter({ hasText: '这是一个较长的中文' }).boundingBox())!.height).toBeGreaterThan(60);

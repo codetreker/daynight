@@ -23,6 +23,7 @@ type DeleteBot struct {
 
 type BotWriteDAO interface {
 	BotCreationReader
+	BotRecoveryDAO
 	Credential(context.Context, model.Principal) error
 	Worker(context.Context, string, string) error
 	LockCreation(context.Context, string) error
@@ -34,4 +35,11 @@ type BotWriteDAO interface {
 	BindBotSession(context.Context, string, int64, string, model.BotRoleConfiguration) (model.Bot, error)
 	SetBotStartup(context.Context, string, int64, model.BotStartupResult) (model.Bot, error)
 	CommitBotPreferences(context.Context, string) error
+}
+
+// BotBarrierDAO reads a Bot under a shared deletion barrier held until the
+// caller's transaction ends. A deletion committed before the lock is granted
+// is visible in the returned Bot; a later deletion waits for the caller.
+type BotBarrierDAO interface {
+	Bot(context.Context, string) (model.Bot, error)
 }

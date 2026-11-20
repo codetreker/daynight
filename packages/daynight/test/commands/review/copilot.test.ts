@@ -1,8 +1,10 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { Readable, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
+import { LastLine, createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
 import * as windowsJobs from "../../../src/commands/review/windows-job-scope.js";
 import type { CopilotRunOptions, CopilotRunnerOptions } from "../../../src/commands/review/adapters/copilot.js";
@@ -57,19 +59,9 @@ writeFileSync(process.env.FIXTURE_REPORT,JSON.stringify({args,prompt,cwd:process
 const marker='PR 101 Review Completed';
 if(mode==='hang') {process.stdout.write(marker+'\\n');setInterval(()=>{},1000);}
 else if(mode==='stderr') process.stderr.write(marker+'\\n');
-else if(mode==='wrong-pr') process.stdout.write('PR 102 Review Completed\\n');
-else if(mode==='prefix') process.stdout.write('done: '+marker+'\\n');
-else if(mode==='leading-space') process.stdout.write(' '+marker+'\\n');
-else if(mode==='trailing-space') process.stdout.write(marker+' \\n');
-else if(mode==='fence') process.stdout.write('~~~\\n'+marker+'\\n~~~\\n');
-else if(mode==='later') process.stdout.write(marker+'\\nnot finished\\n');
-else if(mode==='spaces-after') process.stdout.write(marker+'\\n \\n');
 else if(mode==='invalid-utf8') process.stdout.write(Buffer.concat([Buffer.from([0xc3]),Buffer.from('\\n'+marker+'\\n')]));
-else if(mode==='bom') process.stdout.write('\\ufeff'+marker+'\\n');
 else if(mode==='truncated-utf8') process.stdout.write(Buffer.concat([Buffer.from(marker+'\\n'),Buffer.from([0xc3])]));
 else if(mode==='large-after') process.stdout.write(marker+'\\n'+'x'.repeat(200000));
-else if(mode==='large-before') process.stdout.write('x'.repeat(200000)+'\\n'+marker+'\\n');
-else if(mode==='no-newline') process.stdout.write(marker);
 else if(mode==='crlf') {
  const output=Buffer.from('中文 progress\\r\\n'+marker+'\\r\\n\\r\\n');
  for(let i=0;i<output.length;i++) await new Promise(r=>process.stdout.write(output.subarray(i,i+1),r));
@@ -547,13 +539,61 @@ describe("Copilot skill discovery and phase ownership", () => {
   });
 });
 
+describe("Copilot completion marker parser", () => {
+  const marker = "PR 101 Review Completed";
+  const capture = async (chunks: Buffer[]) => {
+    const parser = new LastLine(8_192);
+    const output: Buffer[] = [];
+    await pipeline(Readable.from(chunks, { objectMode: false }), parser, new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        output.push(chunk);
+        callback();
+      },
+    }));
+    expect(Buffer.concat(output)).toEqual(Buffer.concat(chunks));
+    return parser;
+  };
+
+  it.each([
+    { mode: "no-newline", stdout: marker, last: marker, completed: true },
+    { mode: "large-before", stdout: `${"x".repeat(200_000)}\n${marker}\n`, last: marker, completed: true },
+    { mode: "wrong-pr", stdout: "PR 102 Review Completed\n", last: "PR 102 Review Completed", completed: false },
+    { mode: "prefix", stdout: `done: ${marker}\n`, last: `done: ${marker}`, completed: false },
+    { mode: "leading-space", stdout: ` ${marker}\n`, last: ` ${marker}`, completed: false },
+    { mode: "trailing-space", stdout: `${marker} \n`, last: `${marker} `, completed: false },
+    { mode: "fence", stdout: `~~~\n${marker}\n~~~\n`, last: "~~~", completed: false },
+    { mode: "later", stdout: `${marker}\nnot finished\n`, last: "not finished", completed: false },
+    { mode: "spaces-after", stdout: `${marker}\n \n`, last: " ", completed: false },
+    { mode: "missing", stdout: "incomplete\n", last: "incomplete", completed: false },
+    { mode: "bom", stdout: `\ufeff${marker}\n`, last: `\ufeff${marker}`, completed: false },
+  ])("recognizes the exact final stdout marker: $mode", async ({ stdout, last, completed }) => {
+    const parser = await capture([Buffer.from(stdout)]);
+    expect(parser.lastNonempty).toBe(last);
+    expect(parser.matchesCompletion(101)).toBe(completed);
+  });
+
+  it("recognizes the marker across bytewise UTF-8 and CRLF chunks", async () => {
+    const bytes = Buffer.from(`中文 progress\r\n${marker}\r\n\r\n`);
+    const parser = await capture(Array.from(bytes, (_byte, index) => bytes.subarray(index, index + 1)));
+    expect(parser.lastNonempty).toBe(marker);
+    expect(parser.matchesCompletion(101)).toBe(true);
+  });
+
+  it.each([
+    { mode: "invalid UTF-8 before a marker", chunks: [Buffer.from([0xc3]), Buffer.from(`\n${marker}\n`)] },
+    { mode: "truncated UTF-8 after a marker", chunks: [Buffer.from(`${marker}\n`), Buffer.from([0xc3])] },
+  ])("rejects $mode as a stream failure", async ({ chunks }) => {
+    await expect(capture(chunks)).rejects.toThrow();
+  });
+});
+
 describe("Copilot completion protocol", () => {
-  it.each(["success", "crlf", "no-newline", "large-before"])("accepts a complete normal capture with exact final marker: %s", async (mode) => {
+  it.each(["success", "crlf"])("accepts a complete normal capture with exact final marker: %s", async (mode) => {
     const outcome = await fixture().run(mode);
     expect(outcome).toMatchObject({ completed: true, captureComplete: true, exitCode: 0, lastNonemptyLine: "PR 101 Review Completed" });
   });
 
-  it.each(["stderr", "wrong-pr", "prefix", "leading-space", "trailing-space", "fence", "later", "spaces-after", "missing", "large-after", "nonzero", "no-history", "invalid-utf8", "truncated-utf8", "bom"])("rejects an incomplete or invalid result: %s", async (mode) => {
+  it.each(["stderr", "large-after", "nonzero", "no-history", "invalid-utf8", "truncated-utf8"])("rejects an incomplete or invalid result: %s", async (mode) => {
     expect(await fixture().run(mode)).toMatchObject({ completed: false, directProcessClosed: true });
   });
 

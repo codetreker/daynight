@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
@@ -50,7 +52,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 				}
 				return projectservice.DeletionPreview{}, fault
 			}
-			h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+			h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 				if id != h.Project.ID {
 					t.Fatal(id)
 				}
@@ -64,7 +66,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 			assertProjectError(t, response, tc.status, tc.code)
 			calls := map[string]int{}
 			if tc.status != 400 && tc.status != 401 {
-				operation := "Delete"
+				operation := "DeleteWithInput"
 				if tc.method == "GET" {
 					operation = "GetWithAccess"
 					if strings.HasPrefix(tc.suffix, "/deletion-preview") {
@@ -78,7 +80,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 	}
 	t.Run("confirmed receipt", func(t *testing.T) {
 		h := newHTTPHarness(t)
-		h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+		h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 			if id != h.Project.ID {
 				t.Fatal(id)
 			}
@@ -96,7 +98,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 		if strings.Contains(h.Logs.String(), "Shared project") || strings.Contains(h.Logs.String(), "example.com/shared") {
 			t.Fatalf("private text in logs: %s", &h.Logs)
 		}
-		h.assertCalls(map[string]int{"Delete": 1})
+		h.assertCalls(map[string]int{"DeleteWithInput": 1})
 	})
 }
 
@@ -203,4 +205,37 @@ func TestProjectDeletionHTTPPreviewPageCount(t *testing.T) {
 		t.Fatalf("preview %+v", full)
 	}
 	h.assertCalls(map[string]int{"DeletionPreview": 3})
+}
+
+func TestProjectDeletionWorkerIdentityProtocol(t *testing.T) {
+	for _, values := range [][]string{nil, {"1"}, {"2"}, {""}, {"1", "1"}, {"1, 1"}} {
+		t.Run(fmt.Sprint(values), func(t *testing.T) {
+			h := newHTTPHarness(t)
+			h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, _ string, _ model.PageRequest) (projectservice.DeletionPreview, error) {
+				return projectservice.DeletionPreview{Project: h.Project, ActiveClaims: []projectservice.DeletionClaim{{TaskID: h.Project.ID, UserID: h.Principal.UserID, WorkerID: h.Project.ID, MachineName: "Retained machine"}}}, nil
+			}
+			request := h.request("GET", "/api/v1/projects/"+h.Project.ID+"/deletion-preview", "")
+			for _, value := range values {
+				request.Header.Add("Daynight-Worker-Identity", value)
+			}
+			response := httptest.NewRecorder()
+			h.Handler.ServeHTTP(response, request)
+			valid := len(values) == 0 || len(values) == 1 && values[0] == "1"
+			if !valid {
+				assertProjectError(t, response, 400, "invalid_input")
+				h.assertCalls(map[string]int{})
+				return
+			}
+			page := decodeResponse[api.ProjectDeletionPreview](t, response, 200)
+			worker := page.ActiveClaims[0].Worker
+			if len(values) == 0 {
+				if worker.UserID != nil || worker.WorkerID != nil || response.Header().Get("Daynight-Worker-Identity") != "" {
+					t.Fatalf("legacy identity leaked: %s", response.Body)
+				}
+			} else if worker.UserID == nil || *worker.UserID != h.Principal.UserID || worker.WorkerID == nil || *worker.WorkerID != h.Project.ID || response.Header().Get("Daynight-Worker-Identity") != "1" || worker.MachineName != "Retained machine" {
+				t.Fatalf("identity response: %s", response.Body)
+			}
+			h.assertCalls(map[string]int{"DeletionPreview": 1})
+		})
+	}
 }

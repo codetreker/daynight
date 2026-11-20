@@ -6,12 +6,14 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -50,7 +52,7 @@ func TestProjectAppScopeLostCommitReceipt(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	p := model.Principal{Kind: model.SessionCredential, UserID: actor, CredentialID: uuid.NewString()}
-	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: app, GrantID: grant, AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7}
+	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: app, GrantID: grant, AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7, RepositoryVersion: 1}
 	proof := core.InstallationCandidate{Installation: githubpr.InstallationObservation{ID: 7, AccountLogin: "o"}, Repository: githubpr.RepositoryObservation{ID: 8, FullName: "o/r"}}
 	armed.Store(true)
 	c, err := (&Store{Pool: pool}).WriteGitHubProjectApp(ctx, project, actor, app, func(d store.GitHubProjectAppWriteDAO) error {
@@ -67,27 +69,119 @@ func TestProjectAppScopeLostCommitReceipt(t *testing.T) {
 	}
 }
 
+type projectAppRootState struct {
+	ownership, team, app, grant           string
+	connectionTable, appTable, grantTable uint32
+	appColumn                             int16
+}
+
+func readProjectAppRootState(t *testing.T, ctx context.Context, s *Store, project, team, app, grant string) projectAppRootState {
+	t.Helper()
+	var state projectAppRootState
+	var intact bool
+	err := s.Pool.QueryRow(ctx, `SELECT
+ (SELECT to_jsonb(o)::text FROM project_ownership o WHERE project_id=$1),
+ (SELECT to_jsonb(t)::text FROM teams t WHERE id=$2),
+ (SELECT to_jsonb(a)::text FROM github_apps a WHERE id=$3),
+ (SELECT to_jsonb(g)::text FROM github_app_team_grants g WHERE id=$4),
+ 'project_github'::regclass::oid,
+ 'github_apps'::regclass::oid,
+ 'github_app_team_grants'::regclass::oid,
+ (SELECT attnum FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='app_resource_id' AND NOT attisdropped),
+ NOT EXISTS(SELECT FROM project_github WHERE project_id=$1)
+   AND to_regclass('broken_apps') IS NULL
+   AND to_regclass('broken_grants') IS NULL
+   AND NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='broken_app' AND NOT attisdropped)`, project, team, app, grant).
+		Scan(&state.ownership, &state.team, &state.app, &state.grant, &state.connectionTable, &state.appTable, &state.grantTable, &state.appColumn, &intact)
+	if err != nil || !intact {
+		t.Fatalf("Project App root fixture is not intact: %v, %v", intact, err)
+	}
+	return state
+}
+
 func TestProjectAppScopeMissingAndFailedRoots(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, tc := range []struct {
-		name, breakSQL string
-		args           func(string, string, string) []any
+	db, actorID, projectID, teamID, appResourceID, grantID := projectAppScopeFixture(t)
+	before := readProjectAppRootState(t, t.Context(), db, projectID, teamID, appResourceID, grantID)
+	for _, test := range []struct {
+		name, phase, state    string
+		breakSQL, repairSQL   string
+		breakArgs, repairArgs []any
 	}{
-		{"ownership", `DELETE FROM project_ownership WHERE project_id=$1`, func(project, _, _ string) []any { return []any{project} }},
-		{"owner Team", `DELETE FROM teams WHERE id=$1`, func(_, team, _ string) []any { return []any{team} }},
-		{"candidate query", `ALTER TABLE project_github RENAME COLUMN app_resource_id TO broken_app`, func(string, string, string) []any { return nil }},
-		{"App query", `ALTER TABLE github_apps RENAME TO broken_apps`, func(string, string, string) []any { return nil }},
-		{"grant query", `ALTER TABLE github_app_team_grants RENAME TO broken_grants`, func(string, string, string) []any { return nil }},
+		{
+			name: "ownership", phase: "lock App ownership",
+			breakSQL:  `DELETE FROM project_ownership WHERE project_id=$1`,
+			repairSQL: `INSERT INTO project_ownership SELECT * FROM jsonb_populate_record(NULL::project_ownership,$1::jsonb)`,
+			breakArgs: []any{projectID}, repairArgs: []any{before.ownership},
+		},
+		{
+			name: "owner Team", phase: "lock App owner Team",
+			breakSQL:  `DELETE FROM teams WHERE id=$1`,
+			repairSQL: `INSERT INTO teams SELECT * FROM jsonb_populate_record(NULL::teams,$1::jsonb)`,
+			breakArgs: []any{teamID}, repairArgs: []any{before.team},
+		},
+		{
+			name: "candidate query", phase: "read candidate App binding", state: "42703",
+			breakSQL:  `ALTER TABLE project_github RENAME COLUMN app_resource_id TO broken_app`,
+			repairSQL: `ALTER TABLE project_github RENAME COLUMN broken_app TO app_resource_id`,
+		},
+		{
+			name: "App query", phase: "lock project App", state: "42P01",
+			breakSQL:  `ALTER TABLE github_apps RENAME TO broken_apps`,
+			repairSQL: `ALTER TABLE broken_apps RENAME TO github_apps`,
+		},
+		{
+			name: "grant query", phase: "lock project App grants", state: "42P01",
+			breakSQL:  `ALTER TABLE github_app_team_grants RENAME TO broken_grants`,
+			repairSQL: `ALTER TABLE broken_grants RENAME TO github_app_team_grants`,
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s, actor, project, team, app, _ := projectAppScopeFixture(t)
-			mustQueryExec(t, s, tc.breakSQL, tc.args(project, team, app)...)
-			c, err := s.WriteGitHubProjectApp(t.Context(), project, actor, app, func(store.GitHubProjectAppWriteDAO) error { t.Fatal("failed-root callback"); return nil })
-			if err == nil || c.Outcome != store.TransactionNotCommitted {
-				t.Fatalf("failure completion: %+v %v", c, err)
+		if !t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			if tag, err := db.Pool.Exec(ctx, test.breakSQL, test.breakArgs...); err != nil || (len(test.breakArgs) != 0 && tag.RowsAffected() != 1) {
+				t.Fatalf("install Project App root fault: %v, %v", tag, err)
 			}
-		})
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if tag, err := db.Pool.Exec(ctx, test.repairSQL, test.repairArgs...); err != nil || (len(test.repairArgs) != 0 && tag.RowsAffected() != 1) {
+					t.Fatalf("restore Project App root: %v, %v", tag, err)
+				}
+				db.Pool.Reset()
+				calls := 0
+				completion, err := db.WriteGitHubProjectApp(ctx, projectID, actorID, appResourceID, func(store.GitHubProjectAppWriteDAO) error { calls++; return nil })
+				if err != nil || completion.Outcome != store.TransactionCommitted || calls != 1 {
+					t.Fatalf("restored Project App root: completion=%+v calls=%d error=%v", completion, calls, err)
+				}
+				if got := readProjectAppRootState(t, ctx, db, projectID, teamID, appResourceID, grantID); got != before {
+					t.Fatal("Project App root fault changed committed rows or catalog identities")
+				}
+			})
+			db.Pool.Reset()
+			calls := 0
+			completion, err := db.WriteGitHubProjectApp(ctx, projectID, actorID, appResourceID, func(store.GitHubProjectAppWriteDAO) error { calls++; return nil })
+			var failure *store.TransactionError
+			var cause *store.Error
+			if completion.Outcome != store.TransactionNotCommitted || calls != 0 ||
+				!errors.As(err, &failure) || !errors.As(failure.Cause, &cause) || cause.Phase != test.phase {
+				t.Fatalf("failed Project App root: completion=%+v calls=%d error=%v, want phase %s", completion, calls, err, test.phase)
+			}
+			if test.state == "" {
+				if !cause.MissingRow || cause.DatabaseFailure || !errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("missing Project App root error lost: %v", err)
+				}
+			} else {
+				var pg *pgconn.PgError
+				if !cause.DatabaseFailure || !errors.As(err, &pg) || pg.Code != test.state {
+					t.Fatalf("Project App root error = %v, want SQLSTATE %s", err, test.state)
+				}
+			}
+		}) {
+			return
+		}
 	}
+
 	s, actor, project, _, app, _ := projectAppScopeFixture(t)
 	missing := uuid.NewString()
 	if _, err := s.WriteGitHubProjectApp(t.Context(), project, actor, missing, func(store.GitHubProjectAppWriteDAO) error { return nil }); err != nil {

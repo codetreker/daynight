@@ -32,7 +32,7 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   }) };
 });
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: (options: { copilotRequired: () => boolean }) => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
+  run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
   ...mocks.captureBotOptions(options),
 }) }));
 

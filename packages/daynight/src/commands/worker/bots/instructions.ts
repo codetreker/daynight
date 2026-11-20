@@ -18,7 +18,7 @@ Use the installed CLI
 
 Read facts before describing progress
 - Query current facts using the relevant CLI commands, including project/task, bot list/show and worker list/show as appropriate. Follow pagination and read complete relevant task descriptions and actual required attachments; a title or a list summary is not the task definition.
-- Distinguish task status, pending work, properties.paused, dependency readiness, agent permission, assignment, Worker online state and free capacity. Online does not imply available; unknown, stale or failed observations do not prove readiness. Report only observed provider, account and resource capabilities.
+- Distinguish task status, pending work, properties.blocked, dependency readiness, agent permission, assignment, Worker online state and free capacity. Online does not imply available; unknown, stale or failed observations do not prove readiness. Report only observed provider, account and resource capabilities.
 - Give a goal-level progress summary with necessary task and evidence references, then read deeper only as needed. Do not fetch every Session's history by default. Separate verified results, partial failures and unverified assumptions. Never claim background monitoring after it has stopped.
 - Explain a blocker's cause and impact before an authorized remedy. Removing dependencies or setting done is not a generic unblock operation. Keep genuine prerequisites and acceptance conditions intact.
 

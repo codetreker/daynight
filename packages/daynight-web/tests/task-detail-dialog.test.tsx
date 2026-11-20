@@ -1,3 +1,9 @@
+// Detail sequence fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
 import { summariesForGraph } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -701,6 +707,19 @@ describe('task detail dialog', () => {
     expect(within(successors).getByRole('button', { name: /任务 4.*外部依赖/ })).toBeVisible();
     expect(within(successors).getByRole('button', { name: /任务 5.*普通依赖/ })).toBeVisible();
     expect(within(predecessors).getByRole('button', { name: /任务 2.*外部依赖/ })).toBeVisible();
+  });
+
+  it('keeps unsupported usage inside its tab and out of the dialog header', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
+    await open();
+    const title = await screen.findByRole('heading', { name: '任务 1' });
+    const header = title.closest('.task-detail-dialog')!.querySelector<HTMLElement>('.task-detail-heading')!;
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
+    expect(within(header).queryByText('此服务不支持用量查询')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '用量' }));
+    const usage = screen.getByRole('tabpanel', { name: '用量' });
+    expect(await within(usage).findByText('此服务不支持用量查询')).toBeVisible();
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
   });
 
   it('opens on overview and keeps task-scoped attachments in their own mounted panel', async () => {

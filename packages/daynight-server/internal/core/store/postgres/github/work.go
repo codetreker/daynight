@@ -92,11 +92,11 @@ func (w *writer) Publish(ctx context.Context, l store.GitHubLease, items []githu
 		}
 		values = append(values, "("+strings.Join(placeholders, ",")+")")
 	}
-	query := `WITH lease AS (UPDATE project_github SET revision=revision+1, updated_at=clock_timestamp() WHERE ` + leasePredicate + ` RETURNING revision),
+	query := `WITH lease AS (UPDATE project_github SET revision=revision+1, updated_at=clock_timestamp() WHERE ` + leasePredicate + ` RETURNING revision,repository_id),
  input(number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,github_closed_at,github_merged_at,description,observed_at,seen_poll_id) AS (VALUES ` + strings.Join(values, ",") + `),
- written AS (INSERT INTO project_pull_requests (project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,github_closed_at,github_merged_at,description,observed_at,seen_poll_id,revision)
- SELECT $1::uuid, i.number::bigint,i.github_id::bigint,i.url::text,i.title::text,i.author_id::bigint,i.author_login::text,i.state::text,i.draft::boolean,i.base_ref::text,i.head_repository_id::bigint,i.head_repository_full_name::text,i.head_ref::text,i.head_sha::text,i.github_created_at::timestamptz,i.github_updated_at::timestamptz,i.github_closed_at::timestamptz,i.github_merged_at::timestamptz,i.description::text,i.observed_at::timestamptz,i.seen_poll_id::uuid,lease.revision FROM input i CROSS JOIN lease WHERE true
- ON CONFLICT (project_id,number) DO UPDATE SET github_id=EXCLUDED.github_id,url=EXCLUDED.url,title=EXCLUDED.title,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,state=EXCLUDED.state,draft=EXCLUDED.draft,base_ref=EXCLUDED.base_ref,head_repository_id=EXCLUDED.head_repository_id,head_repository_full_name=EXCLUDED.head_repository_full_name,head_ref=EXCLUDED.head_ref,head_sha=EXCLUDED.head_sha,github_created_at=EXCLUDED.github_created_at,github_updated_at=EXCLUDED.github_updated_at,github_closed_at=EXCLUDED.github_closed_at,github_merged_at=EXCLUDED.github_merged_at,description=EXCLUDED.description,observed_at=EXCLUDED.observed_at,revision=EXCLUDED.revision,seen_poll_id=COALESCE(EXCLUDED.seen_poll_id,project_pull_requests.seen_poll_id) RETURNING 1) SELECT count(*) FROM written`
+ written AS (INSERT INTO project_pull_requests (project_id,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,github_closed_at,github_merged_at,description,observed_at,seen_poll_id,revision)
+ SELECT $1::uuid, lease.repository_id, i.number::bigint,i.github_id::bigint,i.url::text,i.title::text,i.author_id::bigint,i.author_login::text,i.state::text,i.draft::boolean,i.base_ref::text,i.head_repository_id::bigint,i.head_repository_full_name::text,i.head_ref::text,i.head_sha::text,i.github_created_at::timestamptz,i.github_updated_at::timestamptz,i.github_closed_at::timestamptz,i.github_merged_at::timestamptz,i.description::text,i.observed_at::timestamptz,i.seen_poll_id::uuid,lease.revision FROM input i CROSS JOIN lease WHERE true
+ ON CONFLICT (project_id,repository_id,number) DO UPDATE SET github_id=EXCLUDED.github_id,url=EXCLUDED.url,title=EXCLUDED.title,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,state=EXCLUDED.state,draft=EXCLUDED.draft,base_ref=EXCLUDED.base_ref,head_repository_id=EXCLUDED.head_repository_id,head_repository_full_name=EXCLUDED.head_repository_full_name,head_ref=EXCLUDED.head_ref,head_sha=EXCLUDED.head_sha,github_created_at=EXCLUDED.github_created_at,github_updated_at=EXCLUDED.github_updated_at,github_closed_at=EXCLUDED.github_closed_at,github_merged_at=EXCLUDED.github_merged_at,description=EXCLUDED.description,observed_at=EXCLUDED.observed_at,revision=EXCLUDED.revision,seen_poll_id=COALESCE(EXCLUDED.seen_poll_id,project_pull_requests.seen_poll_id) RETURNING 1) SELECT count(*) FROM written`
 	var n int
 	if err := w.tx.QueryRow(ctx, query, args...).Scan(&n); err != nil {
 		return false, pg.QueryError("publish github observations", err)
@@ -111,10 +111,13 @@ func (w *writer) PublishRepository(ctx context.Context, l store.GitHubLease, o s
 	if err != nil || !valid {
 		return false, err
 	}
-	tag, err := w.tx.Exec(ctx, `UPDATE project_github SET
+	tag, err := w.tx.Exec(ctx, `WITH updated AS (UPDATE project_github SET
  revision=revision+CASE WHEN installation_account_login IS DISTINCT FROM $6 OR repository_full_name IS DISTINCT FROM $7 OR repository_private IS DISTINCT FROM $8 THEN 1 ELSE 0 END,
- installation_account_login=$6,repository_full_name=$7,repository_private=$8,updated_at=clock_timestamp()
- WHERE `+leasePredicate+` AND installation_id=$4 AND repository_id=$5`, w.projectID, l.Generation, l.Token, o.InstallationID, o.RepositoryID, o.InstallationAccountLogin, o.RepositoryFullName, o.RepositoryPrivate)
+ installation_account_login=$6,repository_full_name=$7,repository_private=$8,legacy_repository_id=COALESCE(legacy_repository_id,repository_id),updated_at=clock_timestamp()
+ WHERE `+leasePredicate+` AND installation_id=$4 AND repository_id=$5 RETURNING project_id,repository_id,repository_full_name)
+ INSERT INTO project_github_repositories(project_id,repository_id,full_name)
+ SELECT project_id,repository_id,repository_full_name FROM updated
+ ON CONFLICT(project_id,repository_id) DO UPDATE SET full_name=EXCLUDED.full_name`, w.projectID, l.Generation, l.Token, o.InstallationID, o.RepositoryID, o.InstallationAccountLogin, o.RepositoryFullName, o.RepositoryPrivate)
 	return affected(tag.RowsAffected(), "publish github repository observation", err)
 }
 
@@ -126,7 +129,7 @@ func (w *writer) UnseenActive(ctx context.Context, l store.GitHubLease, pollID s
 	if err != nil || !valid {
 		return nil, valid, err
 	}
-	rows, err := w.tx.Query(ctx, `SELECT number FROM project_pull_requests WHERE project_id=$1 AND state='open' AND seen_poll_id IS DISTINCT FROM $2::uuid AND number>$3 ORDER BY number LIMIT $4`, w.projectID, pollID, after, limit)
+	rows, err := w.tx.Query(ctx, `SELECT number FROM project_pull_requests WHERE project_id=$1 AND repository_id=(SELECT repository_id FROM project_github WHERE project_id=$1) AND state='open' AND seen_poll_id IS DISTINCT FROM $2::uuid AND number>$3 ORDER BY number LIMIT $4`, w.projectID, pollID, after, limit)
 	if err != nil {
 		return nil, false, pg.QueryError("read unseen github pull requests", err)
 	}
@@ -236,6 +239,12 @@ func (w *writer) SaveRuntime(ctx context.Context, l store.GitHubLease, r store.G
 // InvalidateProject is invoked under the Project deletion lock. Historical PRs
 // are retained; a later signal cannot revive an already disabled connection.
 func InvalidateProject(ctx context.Context, tx pgx.Tx, projectID string) error {
+	if _, err := tx.Exec(ctx, `SELECT project_id FROM project_github WHERE project_id=$1 FOR UPDATE`, projectID); err != nil {
+		return pg.QueryError("lock deleted project github connection", err)
+	}
+	if err := closeConnectionCoverage(ctx, tx, projectID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE project_github SET enabled=false,sync_enabled=false,claim_token=NULL,claim_until=NULL,claim_kind=NULL,next_poll_at=NULL,next_access_check_at=NULL,access_hint_id=NULL,access_delivery_id=NULL,updated_at=clock_timestamp() WHERE project_id=$1`, projectID); err != nil {
 		return pg.QueryError("invalidate deleted project github work", err)
 	}

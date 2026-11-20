@@ -8,11 +8,13 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	tasktext "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
@@ -138,16 +140,23 @@ func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
 // not be attached, while an attachment committed first is cleared by deletion.
 func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
+	caseNumber := 0
 	for _, create := range []bool{false, true} {
 		for _, deleteFirst := range []bool{false, true} {
-			t.Run(fmt.Sprintf("create=%t/deleteFirst=%t", create, deleteFirst), func(t *testing.T) {
-				s := isolatedStore(t)
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				project := queryProject(t, s, 1)
-				taskID, tagID := queryID(11), queryID(21)
+			caseNumber++
+			if !t.Run(fmt.Sprintf("create=%t/deleteFirst=%t", create, deleteFirst), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				var writers sync.WaitGroup
+				defer func() {
+					cancel()
+					writers.Wait()
+				}()
+				project := queryProject(t, s, caseNumber)
+				taskNumber := 10 + caseNumber
+				taskID, tagID := queryID(taskNumber), queryID(20+caseNumber)
 				if !create {
-					queryTask(t, s, project.ID, 11, model.TaskTodo)
+					queryTask(t, s, project.ID, taskNumber, model.TaskTodo)
 				}
 				if err := writeProjectForTest(s, ctx, project.ID, func(scope ProjectWriteScope) error {
 					now, err := scope.TaskDAO().ObservedAt(ctx)
@@ -180,22 +189,41 @@ func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
 				if deleteFirst {
 					first, second = remove, attach
 				}
-				result := make(chan error, 1)
-				err := writeProjectForTest(s, ctx, project.ID, func(scope ProjectWriteScope) error {
+				type result struct {
+					completion Completion
+					err        error
+				}
+				done := make(chan result, 1)
+				completion, err := s.WriteProject(ctx, project.ID, func(scope ProjectWriteScope) error {
 					if err := first(scope); err != nil {
 						return err
 					}
-					go func() { result <- writeProjectForTest(s, ctx, project.ID, second) }()
-					waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE")
+					holder := scope.(*ProjectTx).tx.Conn().PgConn().PID()
+					writers.Go(func() {
+						completion, err := s.WriteProject(ctx, project.ID, second)
+						done <- result{completion: completion, err: err}
+					})
+					testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text FROM projects WHERE", holder)
 					return nil
 				})
-				if err != nil {
-					t.Fatal(err)
+				if err != nil || completion.Outcome != TransactionCommitted {
+					t.Fatalf("first operation: %+v %v", completion, err)
 				}
-				err = receiveQueryResult(t, ctx, result)
-				if deleteFirst && !errors.Is(err, missing) || !deleteFirst && err != nil {
-					t.Fatalf("waiting operation: %v", err)
+				var waiting result
+				select {
+				case waiting = <-done:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
 				}
+				if deleteFirst {
+					if waiting.completion.Outcome != TransactionNotCommitted || !errors.Is(waiting.err, missing) {
+						t.Fatalf("waiting operation admitted deleted tag: %+v %v", waiting.completion, waiting.err)
+					}
+				} else if waiting.completion.Outcome != TransactionCommitted || waiting.err != nil {
+					t.Fatalf("waiting deletion: %+v %v", waiting.completion, waiting.err)
+				}
+				writers.Wait()
+				testutil.AssertPoolReusable(t, s.Pool)
 				var tags, associations, tasks int
 				if err := s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_tags WHERE project_id=$1 AND id=$2), (SELECT count(*) FROM task_tags WHERE project_id=$1 AND tag_id=$2), (SELECT count(*) FROM tasks WHERE project_id=$1 AND id=$3)`, project.ID, tagID, taskID).Scan(&tags, &associations, &tasks); err != nil {
 					t.Fatal(err)
@@ -217,7 +245,9 @@ func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
 						t.Fatalf("task status/version: %s/%d", status, version)
 					}
 				}
-			})
+			}) {
+				return
+			}
 		}
 	}
 }

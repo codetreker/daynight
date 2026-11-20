@@ -17,6 +17,8 @@ func (op *ArchiveOperation) AppendArchiveSourceTail(ctx context.Context, in sp.A
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	if _, err = sp.DecodeArchiveSourceTail(encode(in)); err != nil {
 		return out, fault("invalid_input", "Invalid archive source tail.")
 	}

@@ -1,7 +1,9 @@
+import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import path from "node:path";
+import { resolveBotControllerStateDirectory } from "./paths.js";
 import { randomUUID } from "node:crypto";
 import { closeSqliteDatabase, openSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { assertCurrentSqlite, type SqliteFormat } from "../../../platform/sqlite-format.js";
 import { parseStartupObservation, type StartupObservation } from "../../../session/startup.js";
 import { controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
@@ -32,7 +34,7 @@ const checkProcess = (proof: ProcessProof): void => {
   if (proof === null || typeof proof !== "object" || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || proof.pid > 2_147_483_647
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 0 || proof.parentPid > 2_147_483_647
     || !(proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0)
-    || typeof proof.startedAt !== "string" || proof.startedAt.trim() === "" || !proof.startedAt.isWellFormed()
+    || !isProcessBirth(proof.startedAt)
     || typeof proof.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.commandHash)
     || proof.jobObjectName !== undefined && (typeof proof.jobObjectName !== "string" || proof.jobObjectName.trim() === "" || /\0/.test(proof.jobObjectName))) {
     throw new Error("Bot controller process evidence is invalid.");
@@ -93,13 +95,14 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
   return value;
 };
 
-/** The caller retains the Worker instance lock; these rows never enter Task capacity or cleanup inventory. */
-export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file, format: workerStoreFormat, allowCreate: true,
+/** The caller retains the owning storage lock; these rows never enter Task capacity or cleanup inventory. */
+export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; format?: SqliteFormat } = {}) => {
+  const format = options.format ?? workerStoreFormat;
+  const db = openSqliteDatabase({ file, format, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
-  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).immediate();
-  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).deferred();
+  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).immediate();
+  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).deferred();
   const current = (record: BotRecord): BotRecord => {
     const row = db.prepare(`SELECT record FROM bots WHERE ${predicate}`).get(identity(record)) as { record: string } | undefined;
     if (row === undefined) throw new Error("Bot execution requires its original inventory record.");
@@ -186,7 +189,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       if (previous.recoveryBlocked !== null) throw new Error(previous.recoveryBlocked);
       const orderly = previous.restartAfterShutdown && stopped.error === null;
       if (!orderly && previous.recoveryCount >= intent.recoveryLimit) throw new Error("The Bot execution recovery budget is exhausted.");
-      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
+      if (!path.isAbsolute(homeDirectory) || /[\0\r\n]/.test(homeDirectory) || controllerTicketPath(homeDirectory, intent.launchId, resolveBotControllerStateDirectory(homeDirectory, saved)) !== intent.ticketPath) throw new Error("Bot recovery requires the original private execution home.");
       if (intent.registration.provider !== "claude") {
         const selected = toolLaunch ?? intent.toolLaunch;
         if (selected === undefined) throw new ToolSelectionError(intent.registration.provider, "web", "launch", "legacy_tool_identity_missing");
@@ -197,10 +200,10 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
       const generation = botVersion(String(BigInt(intent.executionGeneration) + 1n));
       const launchId = randomUUID(), controllerInstanceId = randomUUID();
       const next: BotRecord = { ...saved, intent: { ...intent, executionGeneration: generation, launchId, controllerInstanceId,
-        ticketPath: controllerTicketPath(homeDirectory, launchId), nativeSessionId: stopped.nativeSessionId } };
+        ticketPath: controllerTicketPath(homeDirectory, launchId, resolveBotControllerStateDirectory(homeDirectory, saved)), nativeSessionId: stopped.nativeSessionId } };
       const recoveryCount = previous.recoveryCount + (orderly ? 0 : 1);
       if (!Number.isSafeInteger(recoveryCount)) throw new Error("Bot recovery count is exhausted.");
-      // Both rows share the Worker database and transaction; interruption cannot
+      // Both rows share their owning database and transaction; interruption cannot
       // expose a replacement intent paired with the old generation's evidence.
       db.prepare(`UPDATE bots SET record=@record WHERE ${predicate}`).run({ ...identity(saved), record: JSON.stringify(next) });
       put(next, { launchId, executionId: intent.executionId, executionGeneration: generation,
@@ -211,7 +214,7 @@ export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { bus
         retainedAliasDirectories: [...new Set([...previous.retainedAliasDirectories, ...(previous.aliasDirectory === null ? [] : [previous.aliasDirectory])])] });
       return next;
     }),
-    close: (): void => closeSqliteDatabase(db, { file, format: workerStoreFormat }),
+    close: (): void => closeSqliteDatabase(db, { file, format }),
   };
 };
 export type BotExecutionStore = ReturnType<typeof openBotExecutionStore>;

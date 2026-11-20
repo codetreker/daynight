@@ -34,6 +34,15 @@ Independent same-machine takeover preserves native and platform identities,
 requires current authorization and local exclusion, and never replays an
 unknown command.
 
+The [server takeover decision](2026-11-19-bot-server-takeover.md) implements
+recovery registration, independent hosting generations and recoverable grant
+receipts. It leaves local process exclusion and Provider resume with their
+respective execution owners.
+
+The [retention persistence decision](2026-11-19-task-archive-retention.md)
+implements first-success storage and protected deadline recalculation. Directory
+exposure and physical expiration remain separately owned consumers.
+
 The [Task history decision](../feature/2026-11-10-task-session-history.md)
 originally preserves complete available entries, including tool details, through
 raw reads. That remains appropriate for legacy archives and live sources; the

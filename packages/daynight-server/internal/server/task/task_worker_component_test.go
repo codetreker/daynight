@@ -282,7 +282,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
 		current.Properties = workerHTTPProperties(t, current.Properties, &worker)
 		if value != "" {
-			current.Properties["paused"] = json.RawMessage(value)
+			current.Properties["blocked"] = json.RawMessage(value)
 			paused[current.ID] = value
 		}
 		wanted = append(wanted, current)
@@ -309,8 +309,9 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		item := page.Items[0]
 		value, exists := item.Properties["paused"]
 		wantValue, wantExists := paused[item.ID]
-		if exists != wantExists || string(value) != wantValue {
-			t.Fatalf("inventory changed paused presence/value: %#v", item.Properties)
+		blocked, blockedExists := item.Properties["blocked"]
+		if exists != wantExists || blockedExists != wantExists || string(value) != wantValue || string(blocked) != wantValue {
+			t.Fatalf("inventory changed blocked aliases presence/value: %#v", item.Properties)
 		}
 		ids = append(ids, item.ID)
 		if index == len(wanted)-1 {
@@ -375,6 +376,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			}
 			assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": f.principal.UserID}, nil, false)
 			assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil, store.TransactionCommitted)
+			f.expectLifecyclePreflight(task)
 			same := setHTTPTask(t, f.handler, assignmentHTTPAPI(t, task), "in_progress")
 			platformHTTPCheck(t, same, assignmentHTTPAPI(t, task))
 			for _, target := range []*string{nil, &other} {
@@ -403,6 +405,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				}
 				values := workerHTTPWriteValues(after)
 				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, nil, store.TransactionCommitted)
+				f.expectLifecyclePreflight(task)
 				got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(assignmentHTTPAPI(t, task))+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claim.ClaimID})), http.StatusOK)
 				plan.check()
 				platformHTTPCheck(t, got, assignmentHTTPAPI(t, after))

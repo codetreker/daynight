@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, lstat, link, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
-import { resolveConfigurationPaths } from "../../config/paths.js";
+import { resolveControllerStateDirectory } from "./paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { sessionBinding, type SessionBinding } from "../../session/protocol.js";
 import type { FrozenExecutionConfiguration } from "../worker/types.js";
@@ -24,6 +24,9 @@ type LaunchCommon = {
   readonly configuration: FrozenExecutionConfiguration;
   readonly initialOperationId: string; readonly initialPrompt: string;
   readonly instructions?: string;
+  readonly codexBotRecovery?: { readonly botId: string; readonly directory: string };
+  readonly claudeBotRecovery?: { readonly botId: string; readonly directory: string };
+  readonly copilotBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly resumeNativeSessionId: string | null;
   readonly credentialFile: string; readonly ipcEndpoint: string; readonly ipcSecret: string;
   readonly createdAt: string;
@@ -33,8 +36,8 @@ export type ControllerLaunchTicket = LaunchCommon & SessionBinding & (
   | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
 );
 const uuid = (value: unknown): string => { if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Controller identity must be a canonical UUID."); return value; };
-export const controllerExecutionDirectory = (home: string, executionId: string): string => path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "executions", uuid(executionId));
-export const controllerTicketPath = (home: string, launchId: string): string => path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "launches", `${uuid(launchId)}.json`);
+export const controllerExecutionDirectory = (home: string, executionId: string, storageStateDirectory?: string): string => path.join(resolveControllerStateDirectory(home, storageStateDirectory), "controller", "executions", uuid(executionId));
+export const controllerTicketPath = (home: string, launchId: string, storageStateDirectory?: string): string => path.join(resolveControllerStateDirectory(home, storageStateDirectory), "controller", "launches", `${uuid(launchId)}.json`);
 const canonicalPayload = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalPayload);
   if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([left],[right])=>left<right?-1:left>right?1:0).map(([key,item])=>[key,canonicalPayload(item)]));
@@ -47,12 +50,30 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
   if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
+  if (Object.hasOwn(data, "copilotBotRecovery")) {
+    const recovery = data.copilotBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "copilot" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Copilot Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
+  if (Object.hasOwn(data, "codexBotRecovery")) {
+    const recovery = data.codexBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "codex" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Codex Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
+  if (Object.hasOwn(data, "claudeBotRecovery")) {
+    const recovery = data.claudeBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "claude" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Claude Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
   for (const key of ["cwd", "nativeHome", "credentialFile"]) if (typeof data[key] !== "string" || !path.isAbsolute(data[key]) || /[\0\r\n]/.test(data[key])) throw new Error(`Controller ticket ${key} must be absolute.`);
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");
   if (typeof data.ipcSecret !== "string" || !/^[a-f0-9]{64}$/.test(data.ipcSecret)) throw new Error("Controller IPC authentication is invalid.");
@@ -77,8 +98,8 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   if (observation) parseFrozenToolObservation(fields.toolObservation);
   return value as ControllerLaunchTicket;
 };
-export const readLaunchTicket = async (home: string, launchId: string): Promise<ControllerLaunchTicket> => {
-  const file = controllerTicketPath(home, launchId); const metadata = await lstat(file);
+export const readLaunchTicket = async (home: string, launchId: string, storageStateDirectory?: string): Promise<ControllerLaunchTicket> => {
+  const file = controllerTicketPath(home, launchId, storageStateDirectory); const metadata = await lstat(file);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_TICKET_BYTES || (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)) throw new Error("Controller ticket must be a private regular file.");
   const ticket = parseLaunchTicket(JSON.parse(await readFile(file, "utf8")) as unknown);
   if (ticket.launchId !== launchId) throw new Error("Controller launch ticket identity mismatch.");
@@ -91,16 +112,16 @@ export const serializeLaunchTicket = (ticket: ControllerLaunchTicket): string =>
   if (actualBytes > MAX_TICKET_BYTES) throw new LaunchTicketLimitError(actualBytes, MAX_TICKET_BYTES, "Controller serialized ticket exceeds 6 MiB.");
   return serialized;
 };
-export const writeLaunchTicket = async (home: string, ticket: ControllerLaunchTicket): Promise<string> => {
+export const writeLaunchTicket = async (home: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): Promise<string> => {
   const serialized = serializeLaunchTicket(ticket);
-  const filename = controllerTicketPath(home, ticket.launchId); const directory = path.dirname(filename);
+  const filename = controllerTicketPath(home, ticket.launchId, storageStateDirectory); const directory = path.dirname(filename);
   await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   const temporary = `${filename}.${randomUUID()}.tmp`; const file = await open(temporary, "wx", 0o600);
   try { await file.writeFile(serialized); await file.sync(); } finally { await file.close(); }
   try { await link(temporary, filename); }
   catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-    if (JSON.stringify(await readLaunchTicket(home, ticket.launchId)) !== JSON.stringify(ticket)) throw new Error("The launch identity is already bound to a different ticket.");
+    if (JSON.stringify(await readLaunchTicket(home, ticket.launchId, storageStateDirectory)) !== JSON.stringify(ticket)) throw new Error("The launch identity is already bound to a different ticket.");
   } finally { await unlink(temporary); }
   return filename;
 };

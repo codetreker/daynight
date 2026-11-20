@@ -2,6 +2,7 @@ package bot_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"reflect"
@@ -28,17 +29,24 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	database, err := postgres.Open(t.Context(), testutil.ScopedDatabaseURL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
+	return newFixtureInStore(t, openFixtureStore(t))
+}
+
+func openFixtureStore(t *testing.T) *postgres.Store {
+	t.Helper()
+	return testutil.OpenStore(t, postgres.Open)
+}
+
+func newFixtureInStore(t *testing.T, database *postgres.Store) fixture {
+	t.Helper()
 	tx, err := database.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := tx.Rollback(context.Background()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 			t.Error(err)
 		}
 	})
@@ -182,9 +190,10 @@ func TestInventoryPaginationAndCleanupObligations(t *testing.T) {
 }
 
 func TestBindingAndStartupVersionGates(t *testing.T) {
+	database := openFixtureStore(t)
 	for _, state := range []string{"unbound", "stale", "deleted", "exhausted"} {
-		t.Run(state, func(t *testing.T) {
-			f := newFixture(t)
+		if !t.Run(state, func(t *testing.T) {
+			f := newFixtureInStore(t, database)
 			current := f.insert(t, f.candidate)
 			version := current.Version
 			if state == "deleted" {
@@ -213,9 +222,11 @@ func TestBindingAndStartupVersionGates(t *testing.T) {
 			if !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("invalid startup: %v", err)
 			}
-		})
+		}) {
+			return
+		}
 	}
-	f := newFixture(t)
+	f := newFixtureInStore(t, database)
 	current := f.ready(t, f.candidate)
 	_, err := f.writer.BindBotSession(t.Context(), current.ID, current.Version, *current.SessionID, *current.RoleConfiguration)
 	if !errors.Is(err, model.ErrNotFound) {
@@ -334,27 +345,36 @@ func TestClosedTransactionErrorsRemainObservable(t *testing.T) {
 }
 
 func TestDefaultsStorageFailuresRemainErrors(t *testing.T) {
+	database := openFixtureStore(t)
 	for _, mutation := range []struct{ name, sql string }{
 		{"worker preference unavailable", `DROP TABLE bot_worker_preferences`},
 		{"workers unavailable", `ALTER TABLE workers RENAME TO unavailable_workers`},
 		{"worker data corrupt", `UPDATE workers SET telemetry='{"machine":42}'`},
 		{"configuration preference unavailable", `DROP TABLE bot_configuration_preferences`},
 	} {
-		t.Run(mutation.name, func(t *testing.T) {
-			f := newFixture(t)
+		if !t.Run(mutation.name, func(t *testing.T) {
+			f := newFixtureInStore(t, database)
 			exec(t, f.tx, mutation.sql)
 			_, err := f.reader.BotDefaults(t.Context(), f.candidate.OwnerUserID)
-			if err == nil || errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("broken defaults storage became absence: %v", err)
+			if mutation.name == "worker data corrupt" {
+				var decode *json.UnmarshalTypeError
+				if !errors.As(err, &decode) || errors.Is(err, model.ErrNotFound) {
+					t.Fatalf("worker telemetry did not report its decode error: %v", err)
+				}
+			} else {
+				requireMissingBotRelation(t, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func TestPreferenceWriteFailuresRemainErrors(t *testing.T) {
+	database := openFixtureStore(t)
 	for _, field := range []string{"worker", "cwd", "provider"} {
-		t.Run(field, func(t *testing.T) {
-			f := newFixture(t)
+		if !t.Run(field, func(t *testing.T) {
+			f := newFixtureInStore(t, database)
 			candidate := f.candidate
 			switch field {
 			case "worker":
@@ -370,9 +390,17 @@ func TestPreferenceWriteFailuresRemainErrors(t *testing.T) {
 				table = "bot_worker_preferences"
 			}
 			exec(t, f.tx, `DROP TABLE `+table)
-			if err := f.writer.CommitBotPreferences(t.Context(), candidate.ID); err == nil || errors.Is(err, botpg.ErrBotPreferencesNotReady) || errors.Is(err, model.ErrNotFound) {
-				t.Fatalf("preference storage failure was hidden: %v", err)
-			}
-		})
+			requireMissingBotRelation(t, f.writer.CommitBotPreferences(t.Context(), candidate.ID))
+		}) {
+			return
+		}
+	}
+}
+
+func requireMissingBotRelation(t *testing.T, err error) {
+	t.Helper()
+	failed, state := store.DatabaseErrorFacts(err)
+	if !failed || state != "42P01" || errors.Is(err, model.ErrNotFound) || errors.Is(err, botpg.ErrBotPreferencesNotReady) {
+		t.Fatalf("expected PostgreSQL missing relation (42P01), got %v", err)
 	}
 }

@@ -11,13 +11,12 @@ import type { createWorkerToolInspector } from "../native-selection.js";
 import type { FrozenToolObservation } from "../types.js";
 import type { ExecutionConfiguration } from "../types.js";
 import { createBotDeletion } from "./delete.js";
-import { openBotExecutionStore } from "./execution-store.js";
+import { openLocalBotStores } from "./local-store.js";
 import { createAssistantHostCollector, type AssistantHostSample } from "./host-capabilities.js";
 import { createBotProcess } from "./process.js";
 import { createBotRemote } from "./remote.js";
 import { createManagedAssistantRuntime } from "./runtime.js";
 import { createBotSessionApi } from "./session-api.js";
-import { openBotStore } from "./store.js";
 import type { BotOwner } from "./types.js";
 import { createAssistantTaskRuntime } from "./assistant-tasks.js";
 import { createAssistantTaskSessionTransport } from "./assistant-task-session.js";
@@ -26,8 +25,11 @@ import { ControllerIpcOutcomeUnknownError } from "../../controller/local-client.
 import { ASSISTANT_TASK_OPERATION_BYTES, ASSISTANT_TASK_RESPONSE_BYTES } from "./assistant-task-pages.js";
 import { createWatchdogApplication } from "./apps/watchdog.js";
 import { createWatchdogTransport } from "./apps/watchdog-transport.js";
+import { openBotRecoveryStore } from "./recovery-store.js";
+import { createBotRecoveryApi } from "./recovery-api.js";
+import { createBotReconciliation } from "./reconciliation.js";
 
-/** The Worker lock protects both stores until all Bot jobs and writers have joined. */
+/** Storage locks remain held until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   toolLaunchForHost?: (agent: "codex" | "copilot") => ResolvedToolLaunch | undefined;
@@ -41,19 +43,27 @@ export const createWorkerBotHost = (options: {
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
 }) => {
   const migration = { onMigration: (event: Parameters<typeof workerSqliteMigrationEvent>[0]): undefined => { options.emit(workerSqliteMigrationEvent(event)); } };
-  const store = openBotStore(options.paths.databaseFile, migration);
-  let executions: ReturnType<typeof openBotExecutionStore> | undefined;
+  const local = openLocalBotStores({ stateDirectory: options.paths.stateDirectory, legacyDatabaseFile: options.paths.databaseFile, owner: options.owner, ...migration });
+  const { store, executions } = local;
   try {
-    executions = openBotExecutionStore(options.paths.databaseFile, migration);
+    let machineReportConfirmed = false;
     const remote = createBotRemote({ owner: options.owner, serverToken: options.serverToken });
-    const sessionApi = createBotSessionApi({ owner: options.owner, serverToken: options.serverToken });
-    const botProcess = createBotProcess({ ...options, store, executions, sessionApi, recoveryLimit: () => {
+    const recovery = createBotReconciliation({ owner: options.owner,
+      store: openBotRecoveryStore({ stateDirectory: options.paths.stateDirectory, owner: options.owner, assertLocked: local.assertLocked }),
+      api: createBotRecoveryApi({ owner: options.owner, serverToken: options.serverToken }), applicable: local.isDedicated,
+      canSubmit: () => machineReportConfirmed });
+    const sessionApi = createBotSessionApi({ owner: options.owner, serverToken: options.serverToken, recovery, stateDirectory: options.paths.stateDirectory });
+    const botProcess = createBotProcess({ ...options, store, executions, sessionApi, reconcileHosting: local.isDedicated, canControl: recovery.ownsHosting, recoveryLimit: () => {
       const value = options.recoveryLimit();
       if (value === null) throw new Error("Worker recovery configuration has not been applied; Bot initialization is waiting.");
       return value;
     } });
     const deletion = createBotDeletion({ ...options, store, executions, process: botProcess, sessionApi, remote });
-    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner),
+    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner).filter(record => {
+      if (record.migration !== undefined) return false;
+      try { return recovery.ready(record); }
+      catch (cause) { options.emit({ kind: "bot-unavailable", message: `Bot ${record.botId}: ${cause instanceof Error ? cause.message : "Recovery state is unavailable."}` }); return false; }
+    }),
       stateDirectory: botId => prepareBotStateDirectory(options.paths, botId),
       healthy: async (record, signal) => {
         try {
@@ -70,13 +80,14 @@ export const createWorkerBotHost = (options: {
         try { return await action(createAssistantTaskClient({ serverUrl: options.owner.serverOrigin, serverToken: options.serverToken, expectedUserId: options.owner.ownerUserId, operation, ...(botId === undefined ? {} : { botId }) })); }
         finally { operation.dispose(); }
       },
-      sessions: createAssistantTaskSessionTransport({ owner: options.owner, serverToken: options.serverToken, sessionApi }),
+      sessions: createAssistantTaskSessionTransport({ owner: options.owner, serverToken: options.serverToken, sessionApi, canSend: recovery.ready }),
       onError: (message, botId) => options.emit({ kind: "bot-unavailable", message: botId === null ? message : `Bot ${botId}: ${message}` }),
     });
     assistantTasks.registerApplication("watchdog", createWatchdogApplication(createWatchdogTransport(options), {
       onError: error => options.emit({ kind: "bot-unavailable", message: error instanceof Error ? error.message : "Watchdog evaluation failed." }),
     }));
     const runtime = createManagedAssistantRuntime({ owner: options.owner, store, remote, sessionApi, process: botProcess, deletion,
+      scanLocal: () => local.scan(),
       assistantTasks,
       canAdmitNewExecution: options.canAdmitNewExecution,
       pollIntervalMs: () => options.pollIntervalMs() ?? 1000,
@@ -98,10 +109,23 @@ export const createWorkerBotHost = (options: {
       ...(options.toolInspector === undefined ? {} : { toolInspector: options.toolInspector }),
       ...(options.toolLaunchForHost === undefined ? {} : { selectToolLaunch: async provider => provider === "claude" ? undefined : options.toolLaunchForHost!(provider) }),
       environment: { ...process.env, DN_CONFIG_DIR: options.paths.stateDirectory } });
-    let closed = false;
+    let closed = false, shutdownConfirmed = false;
+    let shutdownFailure: unknown, shutdownFailed = false, shuttingDown: Promise<void> | null = null;
+    const shutdown = (): Promise<void> => {
+      if (shutdownConfirmed) return Promise.resolve();
+      if (shuttingDown !== null) return shuttingDown;
+      // Explicit shutdown can re-observe a previous failure; close never retries
+      // process control implicitly while releasing resources.
+      const work = Promise.resolve().then(() => runtime.shutdown()).then(() => {
+        shutdownConfirmed = true; shutdownFailed = false; shutdownFailure = undefined;
+      }, cause => { shutdownFailed = true; shutdownFailure = cause; throw cause; });
+      shuttingDown = work.finally(() => { shuttingDown = null; });
+      return shuttingDown;
+    };
     return {
       run: runtime.run,
-      shutdown: runtime.shutdown,
+      confirmMachineReport: (): void => { if (!closed) machineReportConfirmed = true; },
+      shutdown,
       registerApplication: assistantTasks.registerApplication,
       requiresCopilot: (): boolean => store.list(options.owner).some(record => record.observed.deletion === null && record.definition?.resolvedConfiguration.provider === "copilot"),
       collect: async (operation: Operation, codexProbes?: CodexProbeOwner): Promise<AssistantHostSample | undefined> => {
@@ -112,6 +136,7 @@ export const createWorkerBotHost = (options: {
         return JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
       },
       activeToolSelections: (): ActiveToolSelection[] => store.list(options.owner).flatMap(record => {
+        if (record.migration !== undefined) return [];
         const intent = record.intent, tool = record.definition?.resolvedConfiguration.provider;
         if (intent === null || tool !== "codex" && tool !== "copilot") return [];
         const execution = executions!.get(record);
@@ -121,13 +146,18 @@ export const createWorkerBotHost = (options: {
       }),
       close: async (): Promise<void> => {
         if (closed) return;
-        closed = true;
         const failures: unknown[] = [];
         try { await collector.close(); } catch (error) { failures.push(error); }
+        try {
+          if (shutdownFailed) throw shutdownFailure;
+          await shutdown();
+        }
+        catch (error) { throw new AggregateError([...failures, error], "Bot shutdown is unconfirmed; process leases and storage locks are retained."); }
         try { await botProcess.close(); } catch (error) { failures.push(error); }
         try { executions!.close(); } catch (error) { failures.push(error); }
         try { store.close(); } catch (error) { failures.push(error); }
         if (failures.length) throw new AggregateError(failures, "Bot stores could not close.");
+        closed = true;
       },
     };
   } catch (error) {

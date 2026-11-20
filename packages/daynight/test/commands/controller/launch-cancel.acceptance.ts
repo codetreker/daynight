@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import path from "node:path";
@@ -59,14 +59,14 @@ it.skipIf(process.platform === "win32")("cancels the original installed Test Con
     await writeFile(path.join(state, "config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: controlled-token\n`);
     const native = path.join(root, "native.mjs"), requestLog = path.join(root, "native-requests.jsonl");
     const nativeSource = (await readFile(new URL("./fixtures/codex-native.mjs", import.meta.url), "utf8")).replace("from 'better-sqlite3'", `from ${JSON.stringify(import.meta.resolve("better-sqlite3"))}`);
-    await writeFile(native, nativeSource);
-    await writeFile(path.join(bin, "codex"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(native)} "$@"\n`, { mode: 0o755 });
+    await writeFile(native, `#!/usr/bin/env node\n${nativeSource}`, { mode: 0o755 });
+    await symlink(native, path.join(bin, "codex"));
     const environment = { ...process.env, HOME: home, USERPROFILE: home, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, ".codex"), CODEX_TEST_REQUEST_LOG: requestLog, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` };
     child = spawn(installed.receipt.launcherPath, ["controller", "codex"], { cwd: home, env: environment, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = ""; child.stdout!.on("data", chunk => { output += String(chunk); }); child.stderr!.on("data", chunk => { output += String(chunk); });
     closed = new Promise(resolve => child!.once("close", code => resolve(code)));
     await vi.waitFor(async () => {
-      expect(registration).toBeDefined();
+      expect(registration, output).toBeDefined();
       directory = path.join(state, "controller", "executions", registration!.testExecutionId!);
       proof = JSON.parse(await readFile(path.join(directory, "process.json"), "utf8")) as ProcessProof;
       expect(proof.pid).toBeGreaterThan(0);

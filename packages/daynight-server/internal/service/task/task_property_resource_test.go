@@ -52,7 +52,7 @@ func (f *propertyWriteFixture) expectClaimAdmission(workerID string) {
 	}
 }
 
-func (capture *propertyCapturer) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (capture *propertyCapturer) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, _ webhookmodel.Actor, facts []protocol.Fact) error {
 	capture.calls++
 	if !capture.expected {
 		capture.t.Fatal("unexpected property source capture")
@@ -362,7 +362,7 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 	current := target
 	for _, value := range []string{"true", "false"} {
 		props := maps.Clone(current.Properties)
-		props["paused"] = json.RawMessage(value)
+		props["blocked"] = json.RawMessage(value)
 		changed := propertyTaskResult(current, props)
 		t.Run("set "+value, func(t *testing.T) {
 			f := newPropertyWriteFixture(t, current, propertyCommit(t))
@@ -383,7 +383,7 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 			withoutPause.Version = target.Version
 			withoutPause.UpdatedAt = target.UpdatedAt
 			withoutPause.Properties = maps.Clone(actual.Properties)
-			delete(withoutPause.Properties, "paused")
+			delete(withoutPause.Properties, "blocked")
 			if !reflect.DeepEqual(withoutPause, target) {
 				t.Fatal("pause mutation changed active execution")
 			}
@@ -410,7 +410,7 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 		current = changed
 	}
 	props := maps.Clone(current.Properties)
-	delete(props, "paused")
+	delete(props, "blocked")
 	removed := propertyTaskResult(current, props)
 	t.Run("remove presence", func(t *testing.T) {
 		f := newPropertyWriteFixture(t, current, propertyCommit(t))
@@ -433,5 +433,24 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 			_, err := f.tasks.SetProperty(f.ctx, f.principal, f.project.ID, removed.ID, "paused", value, removed.Version)
 			requireFault(t, err, "invalid_input")
 		})
+	}
+}
+
+func TestMigratedBlockedWhitespaceIsNoOp(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		for _, name := range []string{"blocked", "paused"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				current := propertyActiveTask(t)
+				current.Properties["blocked"] = json.RawMessage(" \n" + value + " ")
+				f := newPropertyWriteFixture(t, current, propertyCommit(t))
+				actual, err := f.tasks.SetProperty(f.ctx, f.principal, f.project.ID, current.ID, name, value, current.Version)
+				if err != nil || !reflect.DeepEqual(actual, current) {
+					t.Fatalf("no-op lost migrated bytes: %#v %v", actual, err)
+				}
+				f = newPropertyWriteFixture(t, current, propertyCommit(t))
+				_, err = f.tasks.SetProperty(f.ctx, f.principal, f.project.ID, current.ID, name, value, current.Version-1)
+				requireFault(t, err, "version_conflict")
+			})
+		}
 	}
 }

@@ -1,5 +1,6 @@
-import type { GraphTask, TaskSummary, TaskTag, WorkerClaim } from '../../api/types';
+import type { GraphTask, TaskSummary, TaskTag, WorkerMachine } from '../../api/types';
 import { taskDetailUrl } from '../../app/router';
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import { useTaskPaused } from '../task-pause/TaskPause';
 import { useProjectTaskObservation } from '../task-session-summary/ProjectTaskObservationsProvider';
@@ -10,7 +11,7 @@ type ProjectRowInput = {
   readonly task: GraphTask;
   readonly title: string;
   readonly tags?: readonly TaskTag[];
-  readonly workerMachine: Pick<WorkerClaim, 'state' | 'machine'> | undefined;
+  readonly workerMachine: WorkerMachine | undefined;
   readonly hasSummary: boolean;
   readonly paused: boolean;
   readonly session: ProjectTaskObservation | null;
@@ -31,7 +32,7 @@ export const ProjectTaskRow = ({ projectId, task, title, summary, tags, workerMa
   readonly title: string;
   readonly summary?: TaskSummary;
   readonly tags?: readonly TaskTag[];
-  readonly workerMachine: Pick<WorkerClaim, 'state' | 'machine'> | undefined;
+  readonly workerMachine: WorkerMachine | undefined;
   readonly instanceId: string;
   readonly active?: boolean;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
@@ -39,7 +40,11 @@ export const ProjectTaskRow = ({ projectId, task, title, summary, tags, workerMa
 }) => {
   const paused = useTaskPaused(task.id);
   const session = useProjectTaskObservation(task, summary);
-  const model = projectTaskRowModel({ task, title, ...(tags === undefined ? {} : { tags }), workerMachine, hasSummary: summary !== undefined, paused, session });
+  const names = useWorkerNames(workerMachine === undefined ? [] : [workerMachine]);
+  let model = projectTaskRowModel({ task, title, ...(tags === undefined ? {} : { tags }), workerMachine, hasSummary: summary !== undefined, paused, session });
+  if (workerMachine !== undefined && (model.worker.kind === 'active' || model.worker.kind === 'historical')) {
+    model = { ...model, worker: { ...model.worker, currentName: names.name(workerMachine.userId, workerMachine.workerId, workerMachine.machine.name) } };
+  }
   return <TaskRow model={model} projectId={projectId} tagsActive={active} href={taskDetailUrl(projectId, task.id, { tab: 'overview', path: null })} instanceId={instanceId}
     assignee={<TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} />} onOpenTask={onOpenTask}
     {...(onOpenSession === undefined ? {} : { onOpenSession })} />;

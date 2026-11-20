@@ -227,7 +227,7 @@ func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 		t.Fatalf("audience fixture: %v %v", completion, err)
 	}
 	completion, err = f.db.WriteProject(ctx, f.project, func(sc store.ProjectWriteScope) error {
-		changed, err := sc.TaskDAO().UpdateTask(ctx, f.task, store.TaskWrite{Title: "source", Status: model.TaskInProgress, Properties: model.TaskProperties{"paused": json.RawMessage(`true`)}})
+		changed, err := sc.TaskDAO().UpdateTask(ctx, f.task, store.TaskWrite{Title: "source", Status: model.TaskInProgress, Properties: model.TaskProperties{"blocked": json.RawMessage(`true`)}})
 		if err != nil {
 			return err
 		}

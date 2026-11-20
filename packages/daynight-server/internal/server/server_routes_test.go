@@ -1259,6 +1259,11 @@ type mcpBotReader struct {
 	s *mcpBotCallScript
 }
 
+func (d *mcpBotReader) BotObservation(ctx context.Context, owner, id string) (store.BotObservationSource, error) {
+	r := d.s.call("BotObservation", owner, id)
+	return r[0].(store.BotObservationSource), mcpBotErr(r[1])
+}
+
 func (d *mcpBotReader) Bot(ctx context.Context, id string) (model.Bot, error) {
 	r := d.s.call("Bot", id)
 	return r[0].(model.Bot), mcpBotErr(r[1])
@@ -1345,6 +1350,30 @@ func (d *mcpBotWriteDAO) SetBotStartup(ctx context.Context, id string, version i
 }
 func (d *mcpBotWriteDAO) CommitBotPreferences(ctx context.Context, id string) error {
 	return mcpBotErr(d.s.call("CommitBotPreferences", id)[0])
+}
+
+func (d *mcpBotWriteDAO) RecoveryWorker(ctx context.Context, owner, worker string) (model.WorkerMachine, error) {
+	r := d.s.call("RecoveryWorker", owner, worker)
+	return r[0].(model.WorkerMachine), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) RegisterBotRecovery(ctx context.Context, id string, version int64, recovery model.BotRecovery) (model.Bot, error) {
+	r := d.s.call("RegisterBotRecovery", id, version, recovery)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) AdvanceBotRecovery(ctx context.Context, id string, version, generation int64, worker string, machine model.WorkerMachine) (model.Bot, error) {
+	r := d.s.call("AdvanceBotRecovery", id, version, generation, worker, machine)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) BotRecoveryOperation(ctx context.Context, id, operation string) (store.BotRecoveryOperation, error) {
+	r := d.s.call("BotRecoveryOperation", id, operation)
+	return r[0].(store.BotRecoveryOperation), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) SaveBotRecoveryOperation(ctx context.Context, id string, operation store.BotRecoveryOperation) error {
+	return mcpBotErr(d.s.call("SaveBotRecoveryOperation", id, operation)[0])
+}
+func (d *mcpBotWriteDAO) BotRecoveryTokenUsed(ctx context.Context, id, hash string) (bool, error) {
+	r := d.s.call("BotRecoveryTokenUsed", id, hash)
+	return r[0].(bool), mcpBotErr(r[1])
 }
 
 type mcpBotCredentialReader struct{ s *mcpBotCallScript }
@@ -1771,7 +1800,7 @@ func mcpPATClientWithOrigin(t *testing.T, address, token, origin string) *sdk.Cl
 func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	t.Helper()
 	want := map[string]bool{
-		"project_create": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_preview_repository": true, "project_set_repository": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
 		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
 		"team_member_set_role": true, "team_member_remove": true,
@@ -1787,6 +1816,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
 		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
 		"task_list": true, "task_ready": true, "task_search": true, "task_graph": true, "task_work_list": true,
+		"goal_dependencies_show": true, "goal_dependencies_edit": true,
 		"task_session_current": true, "task_session_list": true, "task_session_show": true,
 		"task_session_read": true, "task_session_entry": true,
 	}
@@ -2402,6 +2432,20 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 			}
 			return store.Completion{Outcome: store.TransactionCommitted}, nil
 		}
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+			if ctx.Err() != nil || project != current.ProjectID || id != current.ID {
+				unexpectedHTTPCall(t, "delete preflight Task identity")
+			}
+			return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+		}}
+		projectReader := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+			if ctx.Err() != nil || p != f.principal || project != current.ProjectID {
+				unexpectedHTTPCall(t, "delete preflight authorization")
+			}
+			return taskHTTPMockAccess(f.project, p), nil
+		}}
+		snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+		f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(snapshot) }
 	}
 	prepareWrite(false, nil)
 	assertProjectError(t, projectRequest(handler, http.MethodDelete, path, `{"version":2}`), 409, "version_conflict")
@@ -2482,27 +2526,29 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		t.Fatal("server.New not found")
 	}
 	want := map[string]int{
-		"oauthauthorization.NewAuthorizationHTTP": 1,
-		"granthttp.RegisterRoutes":                2,
-		"projecthttp.NewMembershipRoutes":         1,
-		"projecthttp.RegisterRoutes":              2,
-		"taghttp.RegisterRoutes":                  2,
-		"teamhttp.RegisterRoutes":                 2,
-		"workerhttp.RegisterRoutes":               2,
-		"prompthttp.RegisterRoutes":               2,
-		"workerhttp.NewReadOnlyRoutes":            1,
-		"taskhttp.TaskRoutes":                     3,
-		"sessionhttp.RegisterInspectionRoutes":    2,
-		"sessionhttp.RegisterHistoryRoutes":       2,
-		"taskhttp.TaskSearchRoutes":               2,
-		"taskhttp.TaskStepsRoutes":                2,
-		"taskhttp.TaskThreadRoutes":               2,
-		"taskhttp.TaskSyncRoutes":                 2,
-		"attachmenthttp.RegisterRoutes":           2,
-		"webhookhttp.NewRoutes":                   1,
-		"sessionhttp.NewRoutes":                   1,
-		"bothttp.RegisterRoutes":                  3,
-		"bothttp.RegisterRuntimeRoutes":           3,
+		"oauthauthorization.NewAuthorizationHTTP":  1,
+		"granthttp.RegisterRoutes":                 2,
+		"projecthttp.NewMembershipRoutes":          1,
+		"projecthttp.RegisterRoutes":               2,
+		"taghttp.RegisterRoutes":                   2,
+		"teamhttp.RegisterRoutes":                  2,
+		"workerhttp.RegisterRoutes":                2,
+		"prompthttp.RegisterRoutes":                2,
+		"workerhttp.NewReadOnlyRoutes":             1,
+		"taskhttp.TaskRoutes":                      3,
+		"sessionhttp.RegisterInspectionRoutes":     2,
+		"sessionhttp.RegisterHistoryRoutes":        2,
+		"sessionhttp.RegisterGroupDirectoryRoutes": 2,
+		"taskhttp.TaskSearchRoutes":                2,
+		"taskhttp.TaskStepsRoutes":                 2,
+		"taskhttp.TaskThreadRoutes":                2,
+		"taskhttp.TaskSyncRoutes":                  2,
+		"attachmenthttp.RegisterRoutes":            2,
+		"webhookhttp.NewRoutes":                    1,
+		"sessionhttp.NewRoutes":                    1,
+		"bothttp.RegisterRoutes":                   3,
+		"bothttp.RegisterRuntimeRoutes":            3,
+		"bothttp.RegisterRecoveryRoutes":           2,
 	}
 	seen := make(map[string]int)
 	constructors, authRoutes, authBindings := 0, 0, 0
@@ -2957,5 +3003,8 @@ func TestRootSharedIdentityAndSessionEngine(t *testing.T) {
 }
 
 func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
- if identity == "" { panic("missing creation identity") }; return false,nil
+	if identity == "" {
+		panic("missing creation identity")
+	}
+	return false, nil
 }

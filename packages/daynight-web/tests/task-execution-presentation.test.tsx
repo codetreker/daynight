@@ -96,8 +96,8 @@ describe("task execution presentation", () => {
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(layout).toHaveBeenCalledTimes(1);
     for (const node of nodes) {
-      expect(node.style.width).toBe("220px");
-      expect(node.style.height).toBe("96px");
+      expect(node.style.width).toBe("320px");
+      expect(node.style.height).toBe("144px");
     }
     expect(card.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
   });
@@ -165,7 +165,7 @@ describe("task execution presentation", () => {
       expect(description).toBeTruthy();
       expect(document.getElementById(description)).toHaveTextContent(start);
       expect(row).toHaveAccessibleDescription(new RegExp(start.replaceAll(".", "\\.")));
-      expect(row.closest(".task-row")).toHaveTextContent("Paused");
+      expect(row.closest(".task-row")).toHaveTextContent("Blocked");
       fireEvent.click(row);
     }
     expect(select.mock.calls).toEqual([[item.id, first], [item.id, second]]);

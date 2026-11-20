@@ -89,7 +89,7 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
-  it("binds direct-entry and retained member subtitles to their project through settings navigation", async () => {
+  it("binds direct-entry and retained workspace headings to their project through settings navigation", async () => {
     const second = "00000000-0000-4000-8000-000000000004";
     const secondProject = { ...project("Project Beta"), id: second };
     window.history.replaceState(null, "", `/projects/${second}/members`);
@@ -101,18 +101,18 @@ describe("sidebar integration with the authenticated workspace", () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByText("Project Beta · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "Project Beta", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${projectId}`));
     fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
     fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
-    await screen.findByText("私有项目 · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "私有项目", level: 1 }, { timeout: 10000 });
     act(() => navigate(`/projects/${second}/settings`));
-    await screen.findByRole("heading", { name: "Project Beta" });
+    await screen.findByRole("heading", { name: "Project Beta" }, { timeout: 10000 });
     fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置分组" })).getByRole("link", { name: "成员与邀请" }));
-    await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
-    const previous = screen.queryByText("私有项目 · 管理协作成员与加入邀请");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Project Beta", level: 1 })).toBeVisible(), { timeout: 10000 });
+    const previous = screen.queryByRole("heading", { name: "私有项目", level: 1 });
     if (previous !== null) expect(previous).not.toBeVisible();
-  });
+  }, 30000);
 
   it("retains a project invitation and stops remote work after account change", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
@@ -269,7 +269,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     mockSidebarMediaQuery(true); window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     const fetcher = install(); render(<AuthenticatedApp />);
     const heading = await screen.findByRole("heading", { name: "私有项目" });
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);

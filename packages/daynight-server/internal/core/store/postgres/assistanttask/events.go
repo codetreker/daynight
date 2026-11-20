@@ -24,18 +24,26 @@ func (d *DAO) Event(ctx context.Context, owner, task, id string) (model.Assistan
 }
 func (d *DAO) Events(ctx context.Context, q store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 	after, id, limit := page(q)
-	return many(ctx, d.tx, "list assistant events", `SELECT `+eventColumns+` FROM assistant_task_events WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3) AND ($4::uuid IS NULL OR target_bot_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)>($5,$6::uuid)) ORDER BY created_at,id LIMIT $7`, scanEvent, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.TargetBotID), after, id, limit)
+	// The paused-task predicate reads the task row in this statement, so a
+	// page never mixes a task's state with events read at another time.
+	return many(ctx, d.tx, "list assistant events", `SELECT `+eventColumns+` FROM assistant_task_events e WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3) AND ($4::uuid IS NULL OR target_bot_id=$4) AND ($8='' OR type=$8) AND ($9='' OR type<>$9) AND (NOT $10::boolean OR NOT EXISTS (SELECT 1 FROM assistant_tasks t WHERE t.id=e.task_id AND t.owner_user_id=e.owner_user_id AND t.state='paused')) AND ($5::timestamptz IS NULL OR (created_at,id)>($5,$6::uuid)) ORDER BY created_at,id LIMIT $7`, scanEvent, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.TargetBotID), after, id, limit, q.EventType, q.ExcludeEventType, q.ExcludePausedTasks)
 }
 func eventValues(v model.AssistantTaskEvent) []any {
 	return []any{v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.SeenAt, v.AckOperationID, v.AckFingerprint}
 }
 func (d *DAO) InsertEvent(ctx context.Context, v model.AssistantTaskEvent) (bool, error) {
-	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, eventValues(v)...)
+	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint,settled_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,CASE WHEN $6='pending' THEN NULL ELSE COALESCE($11::timestamptz,$10::timestamptz) END) ON CONFLICT DO NOTHING`, eventValues(v)...)
 }
 func (d *DAO) SaveEvent(ctx context.Context, v model.AssistantTaskEvent, state string) (bool, error) {
 	// SeenAt is advanced only by MarkAttentionSeen, which can commit independently
 	// of a task-scoped acknowledgement using an earlier event snapshot.
-	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
+	// settled_at is set once, when the event leaves pending; retention of
+	// settled inbound events is measured from it because an expired event has no
+	// delivery time.
+	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13,settled_at=CASE WHEN $6='pending' THEN NULL WHEN state='pending' THEN COALESCE($11,clock_timestamp()) ELSE settled_at END WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
+}
+func (d *DAO) RetargetPendingInbound(ctx context.Context, owner, task, target string) error {
+	return d.execute(ctx, "retarget assistant inbound events", `UPDATE assistant_task_events SET target_bot_id=$3 WHERE owner_user_id=$1 AND task_id=$2 AND type='inbound' AND state='pending' AND target_bot_id<>$3::uuid`, owner, task, target)
 }
 func (d *DAO) MarkAttentionSeen(ctx context.Context, owner, target string, at time.Time, exceptTypes []string) error {
 	if exceptTypes == nil {

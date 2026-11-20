@@ -46,6 +46,9 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 	var metadata service.TaskWriteMetadata
 	task, err := h.tasks.SetStatus(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, taskcore.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID})
 	if err != nil {
+		if writeGoalOutcomeUnknown(w, request, logger, "set_status", err) {
+			return
+		}
 		httpx.WriteError(w, request, logger, "task", "set_status", err)
 		return
 	}

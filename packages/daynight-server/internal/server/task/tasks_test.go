@@ -100,6 +100,7 @@ func TestExternalDependencyHTTPReadsAndWritePreservation(t *testing.T) {
 		t.Fatal("todo response lost classification")
 	}
 	f.mutation(&current, nil, nil, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(current)
 	assertProjectError(t, projectRequest(f.handler, http.MethodPut, taskPath(target)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: target.Version, Status: "in_progress"})), http.StatusConflict, "dependency_unsatisfied")
 	f.page([]model.Task{done, pending, current}, nil, nil)
 	page := decodeResponse[api.TaskPage](t, projectRequest(f.handler, http.MethodGet, taskCollection(f.project.ID), ""), http.StatusOK)
@@ -491,6 +492,7 @@ func (f *externalHTTPFixture) status(before, after model.Task) api.Task {
 		result = &after
 	}
 	f.mutation(&before, &values, result, nil, false, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, externalHTTPAPI(before), string(after.Status))
 	externalHTTPCheck(f.t, got, externalHTTPAPI(after))
 	return got
@@ -857,6 +859,7 @@ func platformHTTPStatus(f *taskHTTPFixture, before model.Task, to model.TaskStat
 	values := platformHTTPValues(before)
 	values.Status = to
 	platformHTTPWrite(f, &before, values, after, true, store.TransactionCommitted)
+	f.expectLifecyclePreflight(before)
 	got := setHTTPTask(f.t, f.handler, platformHTTPAPI(before), string(to))
 	platformHTTPCheck(f.t, got, platformHTTPAPI(after))
 	return after

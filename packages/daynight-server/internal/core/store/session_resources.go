@@ -122,6 +122,12 @@ type SessionMediaState struct {
 type SessionUploadMediaDAO interface {
 	SessionUploadMediaRequests(context.Context, string, string, string) ([]SessionMediaRequest, error)
 }
+
+// SessionResourceUploadDAO resolves the original upload owner independently of
+// later captures that reuse its resource. The caller holds the Session lock.
+type SessionResourceUploadDAO interface {
+	SessionUploadByResource(context.Context, string, string) (SessionUploadRecord, error)
+}
 type SessionMediaDAO interface {
 	SessionMediaRequest(context.Context, string, string) (SessionMediaRequest, error)
 	SaveSessionMediaRequest(context.Context, SessionMediaRequest) error

@@ -1,3 +1,6 @@
+import { usageCompactMetric, UsageSummaryView, usageWords } from '../usage/UsageSummaryView';
+import { useTaskUsage } from '../usage/useTaskUsage';
+import { navigate, taskDetailUrl } from '../../app/router';
 import { memo, useCallback, useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { completedAtFor } from '../task-completion/model';
@@ -34,6 +37,9 @@ type TaskRowProps = {
 
 export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, goal, onOpenTask, onOpenSession }: TaskRowProps) => {
   const { locale, messages: { workspace: { standalone, project }, common, graph, inspection: { detail } }, format } = useI18n();
+  const usage = useTaskUsage(projectId, model.id, tagsActive);
+  const usageSummary = usage.summary !== null && usageCompactMetric(usage.summary) !== null ? usage.summary : null;
+  const usageHref = taskDetailUrl(projectId, model.id, { tab: 'usage', path: null });
   const execution = useTaskExecution(model);
   const completion = useCompletionTime(completedAtFor(model));
   const hint = useCompletionHint(completion);
@@ -81,7 +87,8 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
     if (selection !== null && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(event.currentTarget)) return;
     if (titleRef.current !== null) onOpenTask(model.id, titleRef.current);
   };
-  const worker = model.worker.kind === 'active' ? graph.claimMachine({ name: model.worker.name })
+  const worker = (model.worker.kind === 'active' || model.worker.kind === 'historical') && model.worker.currentName !== undefined && model.worker.currentName !== model.worker.name ? graph.currentWorkerName({ name: model.worker.currentName })
+    : model.worker.kind === 'active' ? graph.claimMachine({ name: model.worker.name })
     : model.worker.kind === 'historical' ? graph.recordedMachine({ name: model.worker.name })
       : model.worker.kind === 'none' ? graph.noMachineRecord
         : model.worker.kind === 'unknown' ? locale === 'zh-CN' ? 'Worker 记录未知' : 'Worker record unknown'
@@ -115,7 +122,13 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
             event.preventDefault(); goal.onOpen(event.currentTarget);
           }}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{goal.title}</span><span aria-hidden="true">↗</span></a>}
         </div>
-        {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
+        {usageSummary !== null && <section className="task-usage-summary" aria-label={usageWords(locale === 'zh-CN').title} data-task-row-selectable>
+          <a className="usage-summary-link" href={usageHref} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            event.preventDefault(); navigate(usageHref);
+          }}><UsageSummaryView summary={usageSummary} compact /></a>
+        </section>}
+        {typeof model.tags === 'string' ? <span className="task-row-meta task-row-tag-state">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
         {model.paused && <TaskPausedBadge />}

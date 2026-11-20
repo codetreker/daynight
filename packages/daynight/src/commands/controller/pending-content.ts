@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import type Database from "better-sqlite3";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -58,7 +59,7 @@ const assertPendingTimelineIdentity = (journal: string, sessionId: string): stri
 /** Only committed SQL pointers authorize importing a candidate body. */
 export const forEachCommittedPendingEntry = (db: Database.Database, sessionId: string, visit: (entry: TimelineEntry) => void): void => {
   if (!db.inTransaction) throw new Error("Pending entry import requires the journal migration transaction.");
-  const directory = assertPendingTimelineIdentity(db.name, sessionId);
+  const directory = assertPendingTimelineIdentity(sqliteDisplayFilename(db.name), sessionId);
   // better-sqlite3 disallows writes while an iterator is active. Keyset reads
   // release each statement before the caller inserts the corresponding SQL body.
   const first = db.prepare("SELECT * FROM content_index ORDER BY id LIMIT 1"), next = db.prepare("SELECT * FROM content_index WHERE id>? ORDER BY id LIMIT 1");
@@ -83,7 +84,7 @@ export const captureCommittedPendingTimeline = (db: Database.Database, sessionId
     byteLength,
     iterate: (visit: (entry: TimelineEntry) => void): void => {
       if (!db.inTransaction) throw new Error("Captured timeline import requires the original migration transaction.");
-      const directory = assertPendingTimelineIdentity(db.name, sessionId);
+      const directory = assertPendingTimelineIdentity(sqliteDisplayFilename(db.name), sessionId);
       for (const pointer of pointers) {
         const result: unknown = visit(readPendingEntry(directory, pointer));
         if (typeof result === "object" && result !== null && "then" in result && typeof result.then === "function") throw new Error("Timeline import callbacks must be synchronous.");
@@ -165,10 +166,10 @@ const entryBody = (value: Record<string, unknown>, seq: string): Record<string, 
 export const migratePendingContent = (db: Database.Database, sessionId: string | undefined, schemaSql: string, permit: ControllerStoragePermit): void => {
   if (!db.inTransaction) throw new Error("Pending content migration requires the journal migration transaction.");
   assertControllerStoragePermit(permit, permit.journalFile);
-  if (!db.memory && db.name !== permit.journalFile) throw new Error("Pending content migration permit belongs to another database.");
+  if (!db.memory && sqliteDisplayFilename(db.name) !== permit.journalFile) throw new Error("Pending content migration permit belongs to another database.");
   const pointers: { id: string; contentHash: string; revision: string; entrySeq: string }[] = [];
   if (sessionId !== undefined) {
-    const root = `${db.name}.pending-content`, timeline = join(root, "timeline"), resources = join(root, "resources"), blobs = join(root, "blobs");
+    const root = `${sqliteDisplayFilename(db.name)}.pending-content`, timeline = join(root, "timeline"), resources = join(root, "resources"), blobs = join(root, "blobs");
     const makeDirectory = (directory: string): void => {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       const stat = lstatSync(directory);
@@ -232,7 +233,7 @@ export const migratePendingContent = (db: Database.Database, sessionId: string |
 
 type PendingTimelineSize = { entryCount: number; byteLength: number; timelineBytes: number };
 const forEachLegacyPendingEntry = (db: Database.Database, sessionId: string, visit: (entry: TimelineEntry) => void): PendingTimelineSize => {
-  const root = `${db.name}.pending-content`, directory = join(root, "timeline");
+  const root = `${sqliteDisplayFilename(db.name)}.pending-content`, directory = join(root, "timeline");
   const rootStat = lstatSync(root), directoryStat = lstatSync(directory), manifest = join(root, "manifest.json"), manifestStat = lstatSync(manifest);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !directoryStat.isDirectory() || directoryStat.isSymbolicLink() || !manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error("Legacy pending archive source is corrupt.");
   const identity = JSON.parse(readFileSync(manifest, "utf8")) as { schemaVersion: unknown; sessionId: unknown };
@@ -283,8 +284,8 @@ export const migrationDirectoryExists = (directory: string): boolean => {
 export const migratePendingEntryPointers = (db: Database.Database, _sessionId: string | undefined, schemaSql: string, permit: ControllerStoragePermit): void => {
   if (!db.inTransaction) throw new Error("Pending entry migration requires the journal migration transaction.");
   assertControllerStoragePermit(permit, permit.journalFile);
-  if (!db.memory && db.name !== permit.journalFile) throw new Error("Pending entry migration permit belongs to another database.");
-  const root = `${db.name}.pending-content`, entries = join(root, "entries"), timeline = join(root, "timeline");
+  if (!db.memory && sqliteDisplayFilename(db.name) !== permit.journalFile) throw new Error("Pending entry migration permit belongs to another database.");
+  const root = `${sqliteDisplayFilename(db.name)}.pending-content`, entries = join(root, "entries"), timeline = join(root, "timeline");
   const rows = db.prepare("SELECT id,entry_seq FROM content_index ORDER BY id").all() as { id: string; entry_seq: string }[];
   const written: { id: string; file: string; sha256: string; bytes: number }[] = [], sequences = new Set<string>();
   const sourceExists = rows.some(row => typeof row.id === "string" && typeof row.entry_seq === "string") && migrationDirectoryExists(root) && migrationDirectoryExists(timeline);

@@ -179,6 +179,10 @@ func (mock *taskHTTPSnapshotScopeMock) UserCandidateDAO() store.UserCandidateRea
 	return mock.UserCandidateDAOFn()
 }
 
+func (mock *taskHTTPSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (mock *taskHTTPSnapshotScopeMock) CredentialDAO() store.CredentialReader {
 	mock.need("CredentialDAO", mock.CredentialDAOFn != nil)
 	return mock.CredentialDAOFn()
@@ -226,11 +230,28 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
-	CaptureDAOFn              func() store.WebhookCaptureDAO
-	ProjectDAOFn              func() store.ProjectWriteDAO
-	TaskDAOFn                 func() store.TaskWriteDAO
-	SessionDAOFn              func() store.ProjectSessionDAO
-	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
+	BotBarrierDAOFn            func() store.BotBarrierDAO
+	CaptureDAOFn               func() store.WebhookCaptureDAO
+	ProjectDAOFn               func() store.ProjectWriteDAO
+	TaskDAOFn                  func() store.TaskWriteDAO
+	SessionDAOFn               func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn  func() store.WorkerClaimAdmissionDAO
+	GoalDependencyDAOFn        func() store.GoalDependencyDAO
+	ProjectGoalDependencyDAOFn func() store.ProjectGoalDependencyDAO
+}
+
+func (mock *taskHTTPProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
+	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
+	mock.need("GoalDependencyDAO", mock.GoalDependencyDAOFn != nil)
+	return mock.GoalDependencyDAOFn()
 }
 
 func (mock *taskHTTPProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -890,6 +911,25 @@ func (f *taskHTTPFixture) require(ctx context.Context, projectID string) {
 	}
 }
 
+func (f *taskHTTPFixture) expectLifecyclePreflight(target model.Task) {
+	f.t.Helper()
+	base := newTaskHTTPMockBase(f.t, "Task HTTP lifecycle preflight")
+	reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+		if ctx.Err() != nil || project != f.project.ID || id != target.ID {
+			f.t.Fatal("lifecycle preflight changed target")
+		}
+		return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+	}}
+	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
+		if ctx.Err() != nil || actor != f.principal || project != f.project.ID {
+			f.t.Fatal("lifecycle preflight changed authorization")
+		}
+		return taskHTTPMockAccess(f.project, actor), nil
+	}}
+	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(scope) }
+}
+
 func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*taskHTTPReaderMock, *taskHTTPProjectReaderMock, *taskHTTPSessionReaderMock, *taskHTTPSnapshotScopeMock, *httpCallPlan)) {
 	f.t.Helper()
 	counts := make(map[string]int, len(want)+2)
@@ -1151,4 +1191,9 @@ type taskHTTPClaimAdmission struct {
 
 func (m taskHTTPClaimAdmission) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 	return m.read(ctx, user, worker)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

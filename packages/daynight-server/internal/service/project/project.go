@@ -10,6 +10,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 	"github.com/google/uuid"
@@ -198,16 +199,26 @@ func (s *Projects) TransferPreview(ctx context.Context, p model.Principal, id, t
 	return result, err
 }
 func (s *Projects) Transfer(ctx context.Context, p model.Principal, id string, input core.TransferInput) (core.TransferReceipt, error) {
+	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
+	defer cancel()
 	id, source, target, err := core.ValidateTransfer(p, id, input)
 	if err != nil {
 		return core.TransferReceipt{}, err
 	}
 	var result core.TransferReceipt
 	c, err := s.store.WriteProject(ctx, id, func(scope store.ProjectWriteScope) error {
+		if err := scope.ProjectGoalDependencyDAO().LockTeam(ctx); err != nil {
+			return err
+		}
 		var err error
 		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
 		if err != nil {
 			return err
+		}
+		if result.Changed {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+				return err
+			}
 		}
 		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id})
 	})

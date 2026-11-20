@@ -9,10 +9,13 @@ export const SESSION_ARCHIVE_HISTORY_MAX_BYTES = SESSION_ARCHIVE_TIMELINE_MAX_BY
 export const SESSION_ARCHIVE_RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export const SESSION_ARCHIVE_MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 export const SESSION_ARCHIVE_BLOB_MAX_BYTES = 10 * 1024 * 1024;
+export const TASK_BODY_HISTORY_VERSION_HEADER = "Daynight-Task-Body-History-Version";
+export const SESSION_CONTENT_POLICY_HEADER = "Daynight-Session-Content-Policy";
 export type SessionArchiveFileReference = { readonly fileId: string; readonly sha256: string; readonly byteLength: string };
 export type SessionArchiveResourceReference = { readonly resource: SessionResource; readonly blobId: string | null };
 export type SessionArchiveManifest = {
   readonly schemaVersion: 3; readonly contentKind: "native_timeline"; readonly recordId: string; readonly fence: SessionFence;
+  readonly contentPolicy?: "task_body";
   readonly provider: SessionProvider; readonly nativeSessionId: string | null; readonly controllerId: string; readonly controllerInstanceId: string;
   readonly timeline: SessionArchiveFileReference; readonly resources: readonly SessionArchiveResourceReference[]; readonly completeness: "complete" | "partial";
 };
@@ -89,9 +92,11 @@ export const parseSessionArchiveStatus = (value: unknown): SessionArchiveStatus 
 };
 
 export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManifest => {
-  const data = exact(value, ["schemaVersion", "contentKind", "recordId", "fence", "provider", "nativeSessionId", "controllerId", "controllerInstanceId", "timeline", "resources", "completeness"]);
+  const bodyOnly = !!value && typeof value === "object" && Object.hasOwn(value, "contentPolicy");
+  const data = exact(value, ["schemaVersion", "contentKind", "recordId", "fence", "provider", "nativeSessionId", "controllerId", "controllerInstanceId", "timeline", "resources", "completeness", ...(bodyOnly ? ["contentPolicy"] : [])]);
   if (data.schemaVersion !== 3 || data.contentKind !== "native_timeline" || !["codex", "claude", "copilot"].includes(String(data.provider)) || !["complete", "partial"].includes(String(data.completeness))) return invalid();
   const binding = sessionFence(data.fence as SessionFence);
+  if (bodyOnly && (data.contentPolicy !== "task_body" || binding.claimId === undefined)) return invalid();
   exact(data.fence, ["sessionId", binding.claimId !== undefined ? "claimId" : "testExecutionId", "executionGeneration"]);
   if (uuid(data.recordId) !== binding.sessionId) return invalid();
   if (data.nativeSessionId !== null && (typeof data.nativeSessionId !== "string" || !data.nativeSessionId.trim() || !data.nativeSessionId.isWellFormed() || /\p{Cc}/u.test(data.nativeSessionId) || new TextEncoder().encode(data.nativeSessionId).length > 256)) return invalid();
@@ -105,7 +110,7 @@ export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManif
     else if (blobId !== null) return invalid(); return { resource, blobId };
   });
   if (bytes > 1073741824n || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_MANIFEST_MAX_BYTES) return invalid();
-  return { schemaVersion: 3, contentKind: "native_timeline", recordId: binding.sessionId, fence: binding, provider: data.provider as SessionProvider, nativeSessionId: data.nativeSessionId as string | null, controllerId: uuid(data.controllerId), controllerInstanceId: uuid(data.controllerInstanceId), timeline: { fileId: uuid(file.fileId), sha256: hash(file.sha256), byteLength }, resources, completeness: data.completeness as "complete" | "partial" };
+  return { schemaVersion: 3, contentKind: "native_timeline", ...(bodyOnly ? { contentPolicy: "task_body" as const } : {}), recordId: binding.sessionId, fence: binding, provider: data.provider as SessionProvider, nativeSessionId: data.nativeSessionId as string | null, controllerId: uuid(data.controllerId), controllerInstanceId: uuid(data.controllerInstanceId), timeline: { fileId: uuid(file.fileId), sha256: hash(file.sha256), byteLength }, resources, completeness: data.completeness as "complete" | "partial" };
 };
 
 export const parseSessionArchiveTimeline = (value: unknown): SessionArchiveTimeline => {
@@ -135,6 +140,7 @@ export const verifySessionArchiveMetadata = async (manifest: SessionArchiveManif
   if (String(bytes.byteLength) !== manifest.timeline.byteLength || await digest(bytes) !== manifest.timeline.sha256) return invalid();
   let raw: unknown; try { raw = decodeStrictSessionJson(bytes, SESSION_ARCHIVE_TIMELINE_MAX_BYTES); } catch { return invalid(); }
   const timeline = parseSessionArchiveTimeline(raw), refs = sessionArchiveReferences(timeline.entries), descriptors = new Map(manifest.resources.map(ref => [ref.resource.resourceId, ref]));
+  if (manifest.contentPolicy === "task_body" && timeline.entries.some(entry => entry.kind !== "user_message" && entry.kind !== "assistant_message")) return invalid();
   for (const entry of timeline.entries) await verifyTimelineImageMetadata(entry);
   for (const id of refs.resources) if (!descriptors.has(id)) return invalid();
   for (const ref of manifest.resources) {

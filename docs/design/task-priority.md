@@ -71,7 +71,7 @@ MCP summary/full、同步 summary、搜索行、个人列表、图与 Goal 成�
 候选查询另需两个**内部派生列**，不新增业务表或公开可写字段：
 `automatic_execution_paused boolean NOT NULL DEFAULT false` 和
 `worker_claim_active boolean NOT NULL DEFAULT false`。
-它们分别投影 `properties.paused` 的有效 true 与 `properties.worker.state`
+它们分别投影 `properties.blocked` 的有效 true 与 `properties.worker.state`
 的 active；worker 属性存在但为 completed 时必须为 false。
 `taskproperty` 的既有 Go 解码器定义含义，core 在形成最终 TaskWrite 后统一
 计算二者，DAO 仅保存明确的布尔值，禁止通过 SQL JSON 提取、trigger 或 generated
@@ -385,8 +385,8 @@ claim 仍走现有 endpoint、descriptor、version、tag filter key 和事务。
 所选 Task 的 priority 修改也推进版本，使旧候选 claim 冲突。
 父 Goal/前置/权限/许可/暂停/平台/标签变化即使未改候选版本，也必须由
 claim 的事务门禁重验，不能依赖候选查询替代。基线 `ClaimAdmission` 未独立检查
-paused；实施时在共享自动领取 admission 增加通过 `taskproperty` 解码的
-paused=true 拒绝，返回 409 `invalid_transition`。这明确补齐优先级候选的
+blocked；实施时在共享自动领取 admission 增加通过 `taskproperty` 解码的
+blocked=true 拒绝，返回 409 `invalid_transition`。这明确补齐优先级候选的
 原子准入，不把新增检查误称为基线已有机制，也不改变已取得的 claim。
 两个 Worker 不会合法共享同一 active claim；排序选择并不令多项目原子化。
 

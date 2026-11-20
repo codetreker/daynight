@@ -1,5 +1,23 @@
 import { expect, test } from '@playwright/test';
+import { expectChartLabelsFit } from './bar-chart-geometry';
 const fixture = '/tests/navigation/bar-chart-fixture.html';
+
+for (const width of [320, 1280]) test(`label rows contain their content at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(fixture);
+  const scrolls = page.locator('.bar-chart__scroll');
+  for (const variant of ['normal', 'large', 'zoom'] as const) {
+    await page.reload();
+    await page.locator('.bar-chart__labels').evaluateAll((nodes, value) => {
+      for (const node of nodes) (node as HTMLElement).style.fontSize = value === 'large' ? '14px' : '';
+    }, variant);
+    await page.locator('main').evaluate((node, value) => { node.style.zoom = value === 'zoom' ? '2' : ''; }, variant);
+    await expectChartLabelsFit(scrolls.first());
+    await expectChartLabelsFit(scrolls.last());
+    await page.getByRole('button', { name: 'Zero' }).click();
+    await expectChartLabelsFit(scrolls.first());
+  }
+});
 
 test('keyboard, stable selection, pointer and precise scale', async ({ page }) => {
   await page.goto(fixture);
@@ -64,6 +82,9 @@ test('320px and desktop keep labels contained and touch reads a point', async ({
   await page.keyboard.press('End');
   expect(await page.locator('.bar-chart__scroll').first().evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   const scroll = page.locator('.bar-chart__scroll').first();
+  await page.keyboard.press('Home');
+  expect(await scroll.evaluate(element => element.scrollLeft)).toBe(0);
+  await page.keyboard.press('End');
   await scroll.evaluate(element => { element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2; });
   const visibleLabels = await scroll.locator('.bar-chart__labels span').evaluateAll(nodes => nodes.filter(node => {
     const parent = node.closest('.bar-chart__scroll')!.getBoundingClientRect(), rect = node.getBoundingClientRect();

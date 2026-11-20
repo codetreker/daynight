@@ -65,6 +65,7 @@ type executorWriteDAO struct {
 	claim      func(context.Context, store.GitHubClaim) (bool, error)
 	renew      func(context.Context, store.GitHubLease, time.Time) (bool, error)
 	valid      func(context.Context, store.GitHubLease) (bool, error)
+	facts      func(context.Context, store.GitHubLease, int64, int64, *time.Time) (store.GitHubPublicationFacts, bool, error)
 	publish    func(context.Context, store.GitHubLease, []githubpr.PullRequest) (bool, error)
 	repository func(context.Context, store.GitHubLease, store.GitHubRepositoryObservation) (bool, error)
 	unseen     func(context.Context, store.GitHubLease, string, int64, int) ([]int64, bool, error)
@@ -91,6 +92,9 @@ func (d executorWriteDAO) Renew(ctx context.Context, l store.GitHubLease, t time
 }
 func (d executorWriteDAO) ValidLease(ctx context.Context, l store.GitHubLease) (bool, error) {
 	return d.valid(ctx, l)
+}
+func (d executorWriteDAO) PublicationFacts(ctx context.Context, l store.GitHubLease, repo, number int64, at *time.Time) (store.GitHubPublicationFacts, bool, error) {
+	return d.facts(ctx, l, repo, number, at)
 }
 func (d executorWriteDAO) Publish(ctx context.Context, l store.GitHubLease, p []githubpr.PullRequest) (bool, error) {
 	return d.publish(ctx, l, p)
@@ -125,6 +129,7 @@ type executorRemote struct {
 	verify       func(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	resolve      func(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	list         func(context.Context, int64, string, string, func([]githubpr.Observation) error) error
+	listAll      func(context.Context, int64, int64, string, string, func([]remote.PullSummary) error) (bool, error)
 	pull         func(context.Context, int64, string, string, int64) (githubpr.Observation, error)
 }
 
@@ -143,4 +148,11 @@ func (r executorRemote) ListOpen(c context.Context, i int64, o, n string, visit 
 }
 func (r executorRemote) PullRequest(c context.Context, i int64, o, repo string, n int64) (githubpr.Observation, error) {
 	return r.pull(c, i, o, repo, n)
+}
+
+func (r executorRemote) ListAll(c context.Context, i, repositoryID int64, o, n string, visit func([]remote.PullSummary) error) (bool, error) {
+	if r.listAll == nil {
+		return false, nil
+	}
+	return r.listAll(c, i, repositoryID, o, n, visit)
 }

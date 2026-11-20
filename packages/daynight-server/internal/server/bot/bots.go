@@ -30,13 +30,15 @@ type deletion interface {
 }
 
 type botsHandler struct {
-	bots   definitions
-	relay  deletion
-	logger *slog.Logger
+	bots         definitions
+	relay        deletion
+	observations observations
+	logger       *slog.Logger
 }
 
 func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &botsHandler{bots: bots, relay: relay, logger: logger}
+	h.observations, _ = bots.(observations)
 	admit := func(handler httpx.AuthenticatedHandler) http.HandlerFunc {
 		return auth.Require(h.withAttention(handler))
 	}
@@ -47,6 +49,8 @@ func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *
 	mux.HandleFunc("GET "+base+"/defaults", admit(h.defaults))
 	mux.HandleFunc(base+"/defaults", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc(base+"/{botId}", admit(h.detail))
+	mux.HandleFunc("GET "+base+"/{botId}/observation", admit(h.observation))
+	mux.HandleFunc(base+"/{botId}/observation", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	const worker = "/api/v1/me/workers/{workerId}/bots"
 	mux.HandleFunc("GET "+worker, admit(h.list))
 	mux.HandleFunc(worker, admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))

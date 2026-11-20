@@ -76,10 +76,10 @@ for (const locale of ['en', 'zh-CN'] as const) {
       const names = panel.getByRole('heading', { level: 3 });
       await expect(names).toHaveCount(2);
       const headingStyle = await heading.evaluate(element => { const s = getComputedStyle(element); return { size: parseFloat(s.fontSize), weight: Number(s.fontWeight), family: s.fontFamily, lineHeight: s.lineHeight }; });
-      expect(headingStyle.size).toBeCloseTo(16.38, 2); expect(headingStyle.weight).toBe(700);
+      expect(headingStyle.size).toBe(18); expect(headingStyle.weight).toBe(700);
       for (const name of await names.all()) {
         const style = await name.evaluate(element => { const s = getComputedStyle(element); return { size: parseFloat(s.fontSize), weight: Number(s.fontWeight), family: s.fontFamily, lineHeight: s.lineHeight }; });
-        expect(style.size).toBe(width <= 600 ? 14 : 15); expect(style.weight).toBe(650);
+        expect(style.size).toBe(14); expect(style.weight).toBe(650);
         expect(style.family).toBe(headingStyle.family); expect(headingStyle.size).toBeGreaterThan(style.size); expect(headingStyle.weight).toBeGreaterThan(style.weight);
       }
       await expect(names.nth(1)).toHaveText(longName); await expect(panel).toContainText(longSlug);
@@ -121,7 +121,7 @@ for (const input of ['pointer', 'keyboard'] as const) test(`list loading, retry,
     const manage = panel.getByRole('button', { name: 'Manage' }).first();
     if (input === 'keyboard') { await manage.focus(); await page.keyboard.press('Enter'); } else await manage.click();
     await expect(page).toHaveURL(new RegExp(`/github-apps/${appId}$`));
-    await expect(page.getByRole('heading', { name: 'App configuration' })).toHaveCSS('font-size', '15px');
+    await expect(page.getByRole('heading', { name: 'App configuration' })).toHaveCSS('font-size', '18px');
     expect(state.writes).toHaveLength(0);
   } finally { gate.resolve(); }
 });

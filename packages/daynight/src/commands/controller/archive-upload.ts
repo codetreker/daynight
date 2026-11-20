@@ -1,3 +1,4 @@
+import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { ArchiveRepairRequiredError, ArchiveRequestError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
 import Database from "better-sqlite3";
 import path from "node:path";
@@ -13,19 +14,20 @@ import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journa
 import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
 import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { openSessionContent } from "./content/session-content.js";
+import { openSessionContent, readSessionHistoryContentPolicy, retireStoppedOnlineContent } from "./content/session-content.js";
+import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
 import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
 
 const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket): ControllerSnapshot => {
   const version = Number(db.pragma("user_version", { simple: true }));
-  if (version < 2 || version > currentSqliteVersion(controllerJournalFormat)) throw new SqliteAccessError("unsupported-version", { database: controllerJournalFormat.name, file: db.name, phase: "archive-admission", fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
+  if (version < 2 || version > currentSqliteVersion(controllerJournalFormat)) throw new SqliteAccessError("unsupported-version", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-admission", fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
   inspectSqlite(db, controllerJournalFormat);
   const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
   let observed: ControllerSnapshot | null;
   try { observed = row === undefined ? null : JSON.parse(row.snapshot) as ControllerSnapshot; }
-  catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: db.name, phase: "archive-decode" }, { cause }); }
+  catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-decode" }, { cause }); }
   if (!observed || row?.ticket_hash !== controllerPayloadHash(ticket) || !observed.nativeStopped || observed.lifecycle !== "stopped" || observed.sessionId !== ticket.sessionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId) throw new Error("Session archive requires the original stopped controller generation.");
   return observed;
 };
@@ -33,9 +35,9 @@ const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
   let result: T | undefined, failed = false, failure: unknown;
   try { result = action(); } catch (cause) { failed = true; failure = cause; }
   const outcome = failed ? failure instanceof SqliteAccessError ? failure.outcome : sqliteTransactionOutcome(failure) : "committed";
-  try { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, outcome); }
+  try { closeSqliteDatabase(db, { file: sqliteDisplayFilename(db.name), format: controllerJournalFormat }, outcome); }
   catch (close) {
-    throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: db.name, phase: "archive-close" }, {
+    throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-close" }, {
       cause: failed ? new AggregateError([failure, close], "Archive journal operation and shutdown failed.", { cause: failure }) : close,
       outcome, connectionClosed: !db.open,
     });
@@ -50,7 +52,7 @@ const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
 /** Metadata admission only. A receipt is an opportunity to reconcile, never proof of success. */
 export const probeStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal }): Promise<ArchiveProbeResult> => {
   options.signal?.throwIfAborted();
-  const db = new Database(options.journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+  const db = new Database(sqliteFilename(options.journalPath), { readonly: true, fileMustExist: true, timeout: 1000 });
   const result = withClosedJournal(db, () => db.transaction((): ArchiveProbeResult => {
     stoppedSnapshot(db, options.ticket);
     if (existsSync(`${options.journalPath}.archive-receipt-${options.ticket.executionGeneration}.json`)) return { kind: "attempt" };
@@ -113,6 +115,7 @@ const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<voi
 
 export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
+  let bodyOnly = false;
   const fence = { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration };
   const identity = { fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
   const base = ticket.testExecutionId !== undefined ? `/api/v1/test-sessions/${ticket.sessionId}` : `/api/v1/projects/${ticket.projectId}/tasks/${ticket.taskId}/sessions/${ticket.sessionId}`;
@@ -123,7 +126,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     for (let retries = 0; ; retries++) {
       operationSignal.throwIfAborted();
       const signal = AbortSignal.any([operationSignal, AbortSignal.timeout(15_000)]);
-      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
+      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}), ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
+      if (bodyOnly && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body archives.");
       if (response.ok) return response.json();
       const payload: unknown = await response.json().catch(() => undefined);
       const detail = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined;
@@ -145,12 +149,12 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   };
   const status = async (): Promise<SessionArchiveStatus> => parseSessionArchiveStatus((await call("GET", "", true) as { archive: unknown }).archive);
   let original: Database.Database;
-  try { original = new Database(journalPath, { readonly: true, fileMustExist: true }); }
+  try { original = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true }); }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: journalPath, phase: "archive-open" }, { cause, connectionClosed: true }); }
   const observed = withClosedJournal(original, () => original.transaction(() => stoppedSnapshot(original, ticket)).deferred());
   const assertOriginal = (db: Database.Database): void => { if (JSON.stringify(stoppedSnapshot(db, ticket)) !== JSON.stringify(observed)) throw new Error("The stopped controller evidence changed before archival."); };
   const inspectOriginal = <T>(inspect: (db: Database.Database) => T): T => {
-    const current = new Database(journalPath, { readonly: true, fileMustExist: true });
+    const current = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true });
     return withClosedJournal(current, () => current.transaction(() => { assertOriginal(current); assertJournalMigrationAllowed(current, inspectSqlite(current, controllerJournalFormat)); return inspect(current); }).deferred());
   };
   const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, assertOriginal }, action);
@@ -166,6 +170,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     return value!;
   };
   const receiptPath = `${journalPath}.archive-receipt-${ticket.executionGeneration}.json`;
+  bodyOnly = inspectOriginal(readSessionHistoryContentPolicy) === "task_body";
+  const retireOnline = () => { if (bodyOnly) local(db => retireStoppedOnlineContent(journalPath, ticket.sessionId, db)); };
   if (existsSync(receiptPath)) {
     const receipt = parseSessionArchiveStatus(JSON.parse(readFileSync(receiptPath, "utf8"))), current = await status();
     const sameRepresentation = current.sha256 === receipt.sha256 && current.byteLength === receipt.byteLength;
@@ -173,6 +179,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     if (receipt.state !== "ready" || current.state !== "ready" || current.schemaVersion !== 3 || !(receipt.schemaVersion === 3 ? sameRepresentation : migratedOriginal)) throw new Error("Server archive differs from the confirmed receipt.");
     inspectOriginal(() => undefined);
     if (receipt.schemaVersion === undefined) localFiles(() => writeDurableJson(receiptPath, current));
+    retireOnline();
     return current;
   }
   const admission = await probeStoppedControllerArchive({ journalPath, ticket, signal: roundSignal });
@@ -251,7 +258,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", true, JSON.stringify(identity)));
   if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
   const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
-  const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
+  const historyBytes = Buffer.from(JSON.stringify({ ...(bodyOnly ? { contentPolicy: "task_body", onlineImageOccurrences: [] } : {}), historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
   const intent = localFiles((): ArchiveIntent => {
     let intent: ArchiveIntent;
     if (existsSync(intentPath)) {
@@ -312,7 +319,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));
   if (sealed.phase!=="sealed"||sealed.recordId!==ticket.sessionId||sealed.historyEpoch!==intent.historyEpoch||sealed.sourceThrough!==intent.sourceThrough) throw new Error("Archive seal was not confirmed.");
   const partial=frozen.refs.unavailable||frozen.resources.some(resource=>resource.status!=="available");
-  const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
+  const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",...(bodyOnly?{contentPolicy:"task_body"}:{}),recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
   await transfer("timeline",intent.timeline,(offset,limit)=>timelineBytes.subarray(Number(offset),Number(offset)+limit));
   const body=JSON.stringify(manifest),hash=sha256(Buffer.from(body)),length=String(Buffer.byteLength(body));
   const matches=(value:SessionArchiveStatus)=>value.state==="ready"&&value.schemaVersion===3&&value.sha256===hash&&value.byteLength===length&&value.completeness===manifest.completeness;
@@ -325,5 +332,6 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
   assertFrozen();
   localFiles(() => writeDurableJson(receiptPath,current));
+  retireOnline();
   return current;
 };

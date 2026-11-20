@@ -12,7 +12,7 @@ import type { Project, Task, TaskAttachment, TaskGraph } from "../../src/api/typ
 import { actorId as observationActorId, observedFixtureResponse, withTaskObservation, withGraphObservations, workPage } from "../fixtures/task-observation.js";
 
 const executable = fileURLToPath(new URL("../../dist/main.js", import.meta.url));
-const grammarRunner = fileURLToPath(new URL("../fixtures/compiled-task-grammar.mjs", import.meta.url));
+const batchRunner = fileURLToPath(new URL("../fixtures/compiled-task-batch.mjs", import.meta.url));
 const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
@@ -88,8 +88,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   };
   const start = (args: readonly string[], options?: InvokeOptions) => startProgram(executable, ["task", ...args], options);
   const invoke = (args: readonly string[], options?: InvokeOptions) => start(args, options).result;
-  const invokeGrammar = async (argumentSets: readonly (readonly string[])[], blocked: readonly string[]) => {
-    const batch = await startProgram(grammarRunner, [JSON.stringify(argumentSets)], { blocked }).result;
+  const invokeBatch = async (argumentSets: readonly (readonly string[])[], blocked: readonly string[] = blockedExplicit) => {
+    const batch = await startProgram(batchRunner, [JSON.stringify(argumentSets)], { blocked }).result;
     expect(batch.code, batch.stderr).toBe(0);
     expect(batch.stderr).toBe("");
     const results = JSON.parse(batch.stdout) as Pick<Result, "code" | "stdout" | "stderr">[];
@@ -137,7 +137,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     }
     await rm(root, { recursive: true, force: true });
   };
-  return { root, home, caller, invoke, invokeGrammar, start, serve, git, initializeRepository, close };
+  return { root, home, caller, invoke, invokeBatch, start, serve, git, initializeRepository, close };
 };
 
 const explicit = ["--project", projectId];
@@ -422,7 +422,7 @@ describe("compiled task commands", () => {
       };
       for (const args of [[], ["attachment", "put", "--help"]]) checkHelp(args, await f.invoke(args, { blocked: helpBlocked }));
       const helpArgs = [["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["list", "read", "remove"].map((name) => ["attachment", name, "--help"])];
-      (await f.invokeGrammar(helpArgs, helpBlocked)).forEach((result, index) => checkHelp(helpArgs[index]!, result));
+      (await f.invokeBatch(helpArgs, helpBlocked)).forEach((result, index) => checkHelp(helpArgs[index]!, result));
 
       const validationBlocked = ["/api/client.js", "/api/operation.js", "/config/", "/repository/", "/commands/server/", "/commands/task/rendering.js", "better-sqlite3"];
       const checkInvalid = (args: readonly string[], result: Pick<Result, "code" | "stdout" | "stderr">) => {
@@ -452,7 +452,7 @@ describe("compiled task commands", () => {
         ["attachment", "list", "invalid"], ["attachment", "list", taskId, "--tree", "--json"],
         ["attachment", "read", taskId, "/absolute"], ["attachment", "remove", taskId, "a//b"],
       ];
-      (await f.invokeGrammar(invalidArgs, validationBlocked)).forEach((result, index) => checkInvalid(invalidArgs[index]!, result));
+      (await f.invokeBatch(invalidArgs, validationBlocked)).forEach((result, index) => checkInvalid(invalidArgs[index]!, result));
       await expect(readdir(f.home)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readdir(f.caller)).toEqual([]);
     } finally { await f.close(); }
@@ -476,14 +476,18 @@ describe("compiled task commands", () => {
         else if (request.pathname === taskPath) respond(response, { items: [current], nextCursor: null });
         else respond(response, current);
       });
-      for (const command of ["show", "list", "ready", "graph"]) {
+      const commands = ["show", "list", "ready", "graph"];
+      const output = await f.invokeBatch(commands.flatMap(command => {
         const args = (command === "show" || command === "graph") ? [command, taskId] : [command];
-        const human = await f.invoke([...args, ...explicit]);
+        return [[...args, ...explicit], [...args, "--json", ...explicit]];
+      }));
+      for (const [index, command] of commands.entries()) {
+        const human = output[index * 2]!;
         expect(human.code, human.stderr).toBe(0);
         expect(human.stdout).toContain("Automatic execution: true");
         expect(human.stdout).toContain(`Depends on: ${secondId}, ${thirdId}`);
         expect(human.stdout).toContain(`External dependencies (1): ${thirdId}`);
-        const json = await f.invoke([...args, "--json", ...explicit]);
+        const json = output[index * 2 + 1]!;
         expect(json.code, json.stderr).toBe(0);
         const resource = parseApiJson(json.stdout);
         expect(resource).toEqual(command === "list" ? [taskListItem(current)] : command === "ready" ? [current] : command === "graph" ? withGraphObservations(graphValue, taskId) : withTaskObservation(current));
@@ -715,13 +719,15 @@ describe("compiled task commands", () => {
         { args: ["--status", "done", "--ready"], expected: [], query: { status: "done", ready: "true", limit: "100" } },
         { args: ["--status", "cancelled", "--ready"], expected: [], query: { status: "cancelled", ready: "true", limit: "100" } },
       ];
-      for (const { args, expected, query } of cases) {
-        const result = await f.invoke(["list", ...args, "--json", ...explicit]);
+      const output = await f.invokeBatch(cases.map(({ args }) => ["list", ...args, "--json", ...explicit]));
+      expect(requests.map(({ pathname }) => pathname)).toEqual(cases.flatMap(() => [projectPath, taskPath]));
+      for (const [index, { expected, query }] of cases.entries()) {
+        const result = output[index]!;
         expect(result.code, result.stderr).toBe(0);
         const listed = parseApiJson(result.stdout) as Record<string, unknown>[];
         expect(listed).toEqual(expected.map(taskListItem));
         for (const item of listed) expect(item).not.toHaveProperty("description");
-        expect(Object.fromEntries(requests.at(-1)!.query)).toEqual({ ...query, include: "session" });
+        expect(Object.fromEntries(requests[index * 2 + 1]!.query)).toEqual({ ...query, include: "session" });
       }
     } finally { await f.close(); }
   }, 60_000);
@@ -770,15 +776,17 @@ describe("compiled task commands", () => {
       expect(set.stdout).not.toContain("Description:");
       const values = await f.invoke(["properties", taskId, "--json", ...explicit]);
       expect(values.code, values.stderr).toBe(0); expect(parseApiJson(values.stdout)).toEqual(resource());
-      for (const command of [["show", taskId], ["list"]]) {
-        const json = await f.invoke([...command, "--json", ...explicit]);
+      const reads = [["show", taskId], ["list"]];
+      const output = await f.invokeBatch(reads.flatMap(command => [[...command, "--json", ...explicit], [...command, ...explicit]]));
+      for (const [index, command] of reads.entries()) {
+        const json = output[index * 2]!;
         expect(json.code, json.stderr).toBe(0);
         const parsed = parseApiJson(json.stdout);
         expect(parsed).toEqual(command[0] === "list" ? [taskListItem(current)] : withTaskObservation(current));
         if (command[0] === "list") expect((parsed as Record<string, unknown>[])[0]).not.toHaveProperty("description");
         else expect(parsed).toHaveProperty("description", current.description);
         expect(json.stdout).toContain(`"version":${current.version}`);
-        const text = await f.invoke([...command, ...explicit]);
+        const text = output[index * 2 + 1]!;
         expect(text.code, text.stderr).toBe(0);
         expect(text.stdout).toContain(" 标题\\n\\u001b[2J "); expect(text.stdout).toContain("\\u0000not a URL");
         expect(text.stdout).toContain('future: {"version":7}'); expect(text.stdout).not.toContain("\u001b");

@@ -14,6 +14,7 @@ import { completionProgress } from './completion-progress';
 import type { GraphIndex } from './model';
 import { GoalTaskGraph } from './GoalTaskGraph';
 import { TaskGraphDialogShell } from './TaskGraphDialogShell';
+import { UsageAggregateDisclosure } from '../usage-aggregate/UsageAggregatePanel';
 
 export const GoalGraphDialog = ({ projectId, index, summaries, goalId, onOpenTask, onClose, onRestoreFocus, renderNested, onRootChange, graphError, onRefreshGraph }: {
   readonly projectId: string;
@@ -55,7 +56,7 @@ export const GoalGraphDialog = ({ projectId, index, summaries, goalId, onOpenTas
         <button className="button secondary" type="button" aria-haspopup="dialog" onClick={(event) => onOpenTask(goalId, event.currentTarget)}>{goals.details}</button>
       </div>
     </header></TaskDetailNotifications>}>
-    {(fullscreen) => <><GoalTaskGraph projectId={projectId} index={index} summaries={summaries} goalId={goalId} direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} onOpenTask={onOpenTask} fullscreen={fullscreen} />
+    {(fullscreen) => <><UsageAggregateDisclosure projectId={projectId} scope="goal" scopeId={goalId} onOpenTask={onOpenTask} /><GoalTaskGraph projectId={projectId} index={index} summaries={summaries} goalId={goalId} direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} onOpenTask={onOpenTask} fullscreen={fullscreen} />
       {graphError != null && <div className="task-detail-graph-error" role="alert"><h2>{project.refreshFailed}</h2><p>{project.showingSnapshot}</p><ProjectGraphErrorDetail error={graphError} />{onRefreshGraph !== undefined && <button className="button" type="button" onClick={onRefreshGraph}>{project.retryRefresh}</button>}</div>}</>}
   </TaskGraphDialogShell>;
 };

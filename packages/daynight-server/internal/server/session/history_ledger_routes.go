@@ -24,6 +24,7 @@ func (h *Routes) registerHistoryLedgerRoutes(mux *http.ServeMux) {
 	}
 }
 func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Daynight-Task-Body-History-Version", "1")
 	w.Header().Set("Cache-Control", "no-store")
 	protocol, err := selectedSessionProtocol(r)
 	if err != nil || protocol != sp.Protocol {
@@ -103,7 +104,9 @@ func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {
 		out, err = op.HistoryLedgerStatus(r.Context(), writer, r.PathValue("fileId"))
 	} else {
 		var data []byte
-		data, err = readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576, false)
+		readRequest, finishRead := archiveReadRequest(r, op)
+		data, err = readUnifiedArchiveBody(w, readRequest, "application/octet-stream", 1048576, false)
+		finishRead()
 		if err == nil {
 			out, err = op.PutHistoryLedger(r.Context(), writer, r.PathValue("fileId"), offset, length, r.Header.Get("Daynight-File-SHA256"), r.Header.Get("Daynight-Chunk-SHA256"), data)
 		}

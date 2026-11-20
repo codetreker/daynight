@@ -33,20 +33,24 @@ func (authStub) Require(f httpx.AuthenticatedHandler) http.HandlerFunc {
 }
 
 type readerStub struct {
-	calls            int
-	input            coregithub.ListRequest
-	number           int64
-	id               string
-	ctx              context.Context
-	status           coregithub.Status
-	page             coregithub.Page
-	detail           coregithub.Detail
-	authorsInput     coregithub.AuthorsRequest
-	authorsPage      coregithub.AuthorsPage
-	statisticsInput  coregithub.StatisticsRequest
-	statisticsResult coregithub.Statistics
-	principal        model.Principal
-	err              error
+	calls             int
+	input             coregithub.ListRequest
+	number            int64
+	repositoryID      *int64
+	repositoriesInput coregithub.RepositoriesRequest
+	repositoriesPage  coregithub.RepositoriesPage
+	id                string
+	ctx               context.Context
+	status            coregithub.Status
+	page              coregithub.Page
+	detail            coregithub.Detail
+	reviewAssignment  coregithub.ReviewAssignmentResult
+	authorsInput      coregithub.AuthorsRequest
+	authorsPage       coregithub.AuthorsPage
+	statisticsInput   coregithub.StatisticsRequest
+	statisticsResult  coregithub.Statistics
+	principal         model.Principal
+	err               error
 }
 
 func (s *readerStub) Statistics(ctx context.Context, p model.Principal, id string, in coregithub.StatisticsRequest) (coregithub.Statistics, error) {
@@ -74,12 +78,23 @@ func (s *readerStub) List(ctx context.Context, p model.Principal, id string, in 
 	s.input = in
 	return s.page, s.err
 }
-func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n int64) (coregithub.Detail, error) {
+func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n int64, repositoryID *int64) (coregithub.Detail, error) {
 	s.calls++
 	s.id = id
 	s.ctx = ctx
 	s.number = n
+	s.repositoryID = repositoryID
 	return s.detail, s.err
+}
+func (s *readerStub) ReviewAssignment(ctx context.Context, p model.Principal, id string, n int64, repositoryID *int64) (coregithub.ReviewAssignmentResult, error) {
+	s.calls++
+	s.id, s.ctx, s.principal, s.number, s.repositoryID = id, ctx, p, n, repositoryID
+	return s.reviewAssignment, s.err
+}
+func (s *readerStub) Repositories(ctx context.Context, p model.Principal, id string, in coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error) {
+	s.calls++
+	s.id, s.ctx, s.principal, s.repositoriesInput = id, ctx, p, in
+	return s.repositoriesPage, s.err
 }
 func newMux(s *readerStub) *http.ServeMux {
 	m := http.NewServeMux()
@@ -94,10 +109,14 @@ func call(m *http.ServeMux, method, path string) *httptest.ResponseRecorder {
 func pointer[T any](v T) *T { return &v }
 func fixture() (githubpr.Connection, githubpr.PullRequestSummary) {
 	t := time.Date(2026, 1, 1, 4, 0, 0, 123, time.FixedZone("x", 3600))
-	return githubpr.Connection{ProjectID: projectID, Version: 9007199254740993, Revision: 9, Generation: 3, Enabled: true, SyncEnabled: true, InstallationID: pointer(int64(43)), InstallationAccountLogin: pointer("owner"), RepositoryID: pointer(int64(9007199254740995)), RepositoryFullName: pointer("owner/repo"), RepositoryPrivate: pointer(true), PollIntervalMinutes: 5, AccessState: "available", ClaimKind: pointer("poll"), LastFullGeneration: pointer(int64(2)), LastPollAttemptAt: &t, PollErrorCode: pointer("failure"), PollErrorMessage: pointer("failed"), PollErrorAt: &t}, githubpr.PullRequestSummary{Number: 9007199254740993, GitHubID: 9007199254740994, Title: "title", URL: "https://example.test", State: "open", BaseRef: "main", HeadSHA: "abc", GitHubCreatedAt: t, GitHubUpdatedAt: t, ObservedAt: t, Revision: 9}
+	return githubpr.Connection{ProjectID: projectID, Version: 9007199254740993, Revision: 9, Generation: 3, Enabled: true, SyncEnabled: true, InstallationID: pointer(int64(43)), InstallationAccountLogin: pointer("owner"), RepositoryID: pointer(int64(9007199254740995)), RepositoryFullName: pointer("owner/repo"), RepositoryPrivate: pointer(true), PollIntervalMinutes: 5, AccessState: "available", ClaimKind: pointer("poll"), LastFullGeneration: pointer(int64(2)), LastPollAttemptAt: &t, PollErrorCode: pointer("failure"), PollErrorMessage: pointer("failed"), PollErrorAt: &t}, githubpr.PullRequestSummary{RepositoryID: 9007199254740995, RepositoryFullName: "owner/repo", Number: 9007199254740993, GitHubID: 9007199254740994, Title: "title", URL: "https://example.test", State: "open", BaseRef: "main", HeadSHA: "abc", GitHubCreatedAt: t, GitHubUpdatedAt: t, ObservedAt: t, Revision: 9}
 }
 func TestReadResponses(t *testing.T) {
 	c, pr := fixture()
+	// A retained PR is projected from its own source even when the current
+	// connection refers to a different repository.
+	c.RepositoryID = pointer(int64(99))
+	c.RepositoryFullName = pointer("other/current")
 	s := &readerStub{status: coregithub.Status{Connection: c, ServiceAvailable: false}, page: coregithub.Page{Connection: c, Items: []githubpr.PullRequestSummary{pr}, Total: 1, Counts: store.GitHubPRCounts{Active: 1, All: 1}}, detail: coregithub.Detail{Connection: c, PullRequest: githubpr.PullRequest{PullRequestSummary: pr, Description: pointer("")}}}
 	m := newMux(s)
 	w := call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests?state=all&q=%23hello&limit=6&cursor=token")
@@ -105,7 +124,7 @@ func TestReadResponses(t *testing.T) {
 	if e := json.Unmarshal(w.Body.Bytes(), &page); e != nil || w.Code != 200 {
 		t.Fatalf("page %d %s %v", w.Code, w.Body, e)
 	}
-	if s.input.State != "all" || s.input.Query != "#hello" || s.input.Limit != 6 || s.input.Cursor != "token" || page.Total != "1" || page.Counts.Active != "1" || page.Items[0].Number != "9007199254740993" || page.Items[0].Author != nil || page.Items[0].Head.RepositoryID != nil || strings.Contains(w.Body.String(), "description") || strings.Contains(w.Body.String(), "authorId") || strings.Contains(w.Body.String(), "projectTotal") {
+	if s.input.State != "all" || s.input.Query != "#hello" || s.input.Limit != 6 || s.input.Cursor != "token" || page.Total != "1" || page.Counts.Active != "1" || page.Items[0].Number != "9007199254740993" || page.Items[0].Base.RepositoryID != "9007199254740995" || page.Items[0].Base.RepositoryFullName != "owner/repo" || page.Items[0].Author != nil || page.Items[0].Head.RepositoryID != nil || strings.Contains(w.Body.String(), "description") || strings.Contains(w.Body.String(), "authorId") || strings.Contains(w.Body.String(), "projectTotal") {
 		t.Fatalf("page %s input %+v", w.Body, s.input)
 	}
 	author := int64(9007199254740993)
@@ -117,7 +136,7 @@ func TestReadResponses(t *testing.T) {
 	}
 	s.page.AuthorID = nil
 	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests/9007199254740993")
-	if w.Code != 200 || s.number != 9007199254740993 || !strings.Contains(w.Body.String(), `"description":""`) {
+	if w.Code != 200 || s.number != 9007199254740993 || !strings.Contains(w.Body.String(), `"description":""`) || !strings.Contains(w.Body.String(), `"repositoryFullName":"owner/repo"`) {
 		t.Fatalf("detail %d %s", w.Code, w.Body)
 	}
 	if w.Header().Get("Daynight-User-ID") != userID || w.Header().Get("Cache-Control") != "no-store" {
@@ -185,17 +204,17 @@ func TestErrorsAndProjection(t *testing.T) {
 		}
 	}
 	pr.AuthorID = pointer(int64(3))
-	if _, err := summaryResponse(c, pr); err == nil {
+	if _, err := summaryResponse(pr); err == nil {
 		t.Fatal("accepted incomplete author")
 	}
 	pr.AuthorLogin = pointer("name")
 	pr.HeadRepositoryID = pointer(int64(4))
-	out, err := summaryResponse(c, pr)
+	out, err := summaryResponse(pr)
 	if err != nil || out.Author.ID != "3" || *out.Head.RepositoryID != "4" {
 		t.Fatal(out, err)
 	}
-	c.RepositoryID = nil
-	if _, err := summaryResponse(c, pr); err == nil {
+	pr.RepositoryID = 0
+	if _, err := summaryResponse(pr); err == nil {
 		t.Fatal("accepted missing base")
 	}
 	if _, err := pageResponse(coregithub.Page{Connection: c, Items: []githubpr.PullRequestSummary{pr}}); err == nil {

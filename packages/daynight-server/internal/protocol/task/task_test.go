@@ -17,7 +17,7 @@ import (
 func TestTaskWireMatchesProductionEncoding(t *testing.T) {
 	now := time.Date(2026, 11, 7, 9, 0, 0, 0, time.FixedZone("other", 3600))
 	parent := "d41a4e82-6bf0-4c7f-b519-47076dafc425"
-	task := model.Task{ID: "id", ProjectID: "project", Type: model.TaskTypeTask, ParentID: &parent, Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "paused": json.RawMessage(`false`)}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&世界"}}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
+	task := model.Task{ID: "id", ProjectID: "project", Type: model.TaskTypeTask, ParentID: &parent, Title: "<&世界", Description: "line\nquote\"", Properties: model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"<","title":"&"}]`), "blocked": json.RawMessage(`false`)}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&世界"}}, Version: 9223372036854775807, CreatedAt: now, UpdatedAt: now, DependsOn: []string{"d"}}
 	for _, extended := range []bool{false, true} {
 		value, err := RESTTask(task, extended)
 		if err != nil {
@@ -224,5 +224,97 @@ func TestRESTProductionMarshalMatchesOriginal(t *testing.T) {
 	task.Properties["worker"] = json.RawMessage(strings.Repeat(" ", 1025))
 	if _, err = EncodeREST(io.Discard, task, false, 1024); !errors.Is(err, ErrLegacyWorkerIndeterminate) {
 		t.Fatalf("expected indeterminate, got %v", err)
+	}
+}
+
+func TestBlockedAliasProjectionsAndByteCost(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		delta int64
+	}{{"", 0}, {"true", 15}, {"false", 16}} {
+		props := model.TaskProperties{}
+		if tc.value != "" {
+			props["blocked"] = json.RawMessage(tc.value)
+		}
+		projected := Properties(props)
+		if string(projected["blocked"]) != tc.value || string(projected["paused"]) != tc.value || AliasBytes(props) != tc.delta {
+			t.Fatalf("%q: %#v", tc.value, projected)
+		}
+		if tc.value == "" {
+			if len(projected) != 0 {
+				t.Fatal("absent property appeared")
+			}
+		} else {
+			legacy, _ := json.Marshal(map[string]json.RawMessage{"paused": json.RawMessage(tc.value)})
+			dual, _ := json.Marshal(projected)
+			if int64(len(dual)-len(legacy)) != tc.delta {
+				t.Fatalf("unexpected delta: %s %s", legacy, dual)
+			}
+			projected["paused"][0] = 'x'
+			if string(props["blocked"]) != tc.value || string(projected["blocked"]) != tc.value {
+				t.Fatal("projection aliases source or sibling")
+			}
+		}
+		task := model.Task{Properties: props}
+		rest, err := RESTTask(task, true)
+		if err != nil || string(rest.Properties["paused"]) != tc.value {
+			t.Fatalf("REST: %#v %v", rest.Properties, err)
+		}
+		if string(MCPTask(task).Properties["paused"]) != tc.value || string(RESTSyncRecord(model.TaskViewRecord{Properties: props}).Properties["paused"]) != tc.value {
+			t.Fatal("inconsistent projection")
+		}
+	}
+	if AliasBytes(model.TaskProperties{"blocked": json.RawMessage(" \n false \t")}) != 16 {
+		t.Fatal("whitespace around a stored boolean changed its byte allowance")
+	}
+	defs := PropertyDefinitions()
+	if _, ok := defs["blocked"]; !ok {
+		t.Fatal("missing blocked definition")
+	}
+	if _, ok := defs["paused"]; !ok {
+		t.Fatal("missing paused definition")
+	}
+	if _, ok := taskproperty.Definitions()["paused"]; ok {
+		t.Fatal("alias entered storage registry")
+	}
+}
+
+func TestBlockedAliasCollectionByteGrowth(t *testing.T) {
+	for _, n := range []int{100, 1000} {
+		var inventory, legacyInventory []REST
+		var sync, legacySync []SyncRecord
+		var total int64
+		for i := 0; i < n; i++ {
+			value := "true"
+			if i%2 == 1 {
+				value = "false"
+			}
+			props := model.TaskProperties{"blocked": json.RawMessage(value)}
+			item, err := RESTTask(model.Task{Properties: props}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := item
+			old.Properties = map[string]json.RawMessage{"paused": json.RawMessage(value)}
+			inventory, legacyInventory = append(inventory, item), append(legacyInventory, old)
+			row := RESTSyncRecord(model.TaskViewRecord{Properties: props})
+			oldRow := row
+			oldRow.Properties = map[string]json.RawMessage{"paused": json.RawMessage(value)}
+			sync, legacySync = append(sync, row), append(legacySync, oldRow)
+			total += AliasBytes(props)
+		}
+		for name, pair := range map[string][2]any{"inventory": {inventory, legacyInventory}, "sync": {sync, legacySync}} {
+			got, err := json.Marshal(pair[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, err := json.Marshal(pair[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if int64(len(got)-len(old)) != total {
+				t.Fatalf("%s %d: growth %d want %d", name, n, len(got)-len(old), total)
+			}
+		}
 	}
 }

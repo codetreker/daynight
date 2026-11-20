@@ -122,6 +122,17 @@ func (tx *DAO) SessionImageUploadExists(ctx context.Context, s, image string) (b
 	e := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_image_uploads WHERE session_id=$1 AND image_id=$2)`, s, image).Scan(&found)
 	return found, mediaQueryError("read image upload identity", e)
 }
+
+func (tx *DAO) SessionUploadByResource(ctx context.Context, session, resource string) (store.SessionUploadRecord, error) {
+	var upload string
+	// The unique (session_id, blob_id) key identifies the original owner even
+	// when several later capture attempts reference the same resource.
+	err := tx.tx.QueryRow(ctx, `SELECT upload_id::text FROM session_image_uploads WHERE session_id=$1 AND blob_id=$2`, session, resource).Scan(&upload)
+	if err != nil {
+		return store.SessionUploadRecord{}, mediaQueryError("read resource upload owner", err)
+	}
+	return tx.SessionUpload(ctx, session, upload)
+}
 func (tx *DAO) SaveSessionUpload(ctx context.Context, r store.SessionUploadRecord) error {
 	spec, err := json.Marshal(r.Spec)
 	if err != nil {

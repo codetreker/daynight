@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -225,6 +226,24 @@ func (m *Module) GetItem(ctx context.Context, dao store.AssistantTaskDAO, actor 
 	}
 	_, err = finish(ctx, dao, actor, nil)
 	return item, err
+}
+
+// MetricsWindow is the trailing capability-metrics window.
+const MetricsWindow = 30 * 24 * time.Hour
+
+// Metrics reads the task's capability metrics for the trailing window. The
+// task is loaded without a lock: the aggregate is one read-only statement.
+func (m *Module) Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	task, err := loadTask(ctx, dao, actor, taskID, false)
+	if err != nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	metrics, err := dao.Metrics(ctx, task.OwnerUserID, task.ID, MetricsWindow)
+	if err != nil {
+		return metrics, err
+	}
+	_, err = finish(ctx, dao, actor, nil)
+	return metrics, err
 }
 
 func (m *Module) workingTask(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input Mutation) (model.AssistantTask, error) {

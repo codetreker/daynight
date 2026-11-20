@@ -5,6 +5,8 @@ import { ClockInputProvider } from '../src/features/task-execution/TaskExecution
 import { TaskRow, type TaskRowModel } from '../src/features/task-row/TaskRow';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
+vi.mock('../src/features/usage/useTaskUsage', () => ({ useTaskUsage: () => ({ summary: null, error: null, pending: true, retry: vi.fn() }) }));
+
 const colors = vi.hoisted(() => ({ value: { items: new Map(), loading: false, error: null as unknown, retry: vi.fn() }, listeners: new Set<() => void>() }));
 vi.mock('../src/features/task-tags/useTagColors', () => ({ useTagColors: () => useSyncExternalStore(
   (listener: () => void) => { colors.listeners.add(listener); return () => { colors.listeners.delete(listener); }; }, () => colors.value,
@@ -21,10 +23,17 @@ const base: TaskRowModel = {
 };
 const clock = { observedAt: '2026-10-20T10:01:00Z', receivedMonotonic: 0, warningMinutes: 1 } as const;
 const tree = (model: TaskRowModel, open = vi.fn(), session = vi.fn(), instanceId = 'instance') =>
-  <ClockInputProvider input={clock}><ul><TaskRow projectId="project" model={model} href={`/projects/p/tasks/${model.id}`} instanceId={instanceId}
+  <ClockInputProvider input={clock}><ul><TaskRow projectId="10000000-0000-4000-8000-000000000001" model={model} href={`/projects/p/tasks/${model.id}`} instanceId={instanceId}
     assignee={<span>Assignee: Unassigned</span>} onOpenTask={open} onOpenSession={session} /></ul></ClockInputProvider>;
 
 describe('shared task row', () => {
+  it('distinguishes a current alias from a recorded execution hostname', () => {
+    const view = renderWithLocale(tree({ ...base, worker: { kind: 'historical', name: 'worker host', currentName: 'Current office' } }), { locale: 'en' });
+    expect(screen.getByText('Worker: Current office')).toBeVisible();
+    expect(screen.queryByText('Recorded machine: Current office')).toBeNull();
+    view.rerender(tree(base));
+    expect(screen.getByText('Recorded machine: worker host')).toBeVisible();
+  });
   it('keeps task, copy and Session actions independent, including modified links and readable ID', async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText: write } });
@@ -76,7 +85,7 @@ describe('shared task row', () => {
 
   it('gives each rendered instance distinct descriptions while retaining the same target', () => {
     const model = { ...base, status: 'done' as const, startedAt: '2026-10-20T10:00:00Z', completedAt: '2026-10-20T10:00:30Z' };
-    renderWithLocale(<ClockInputProvider input={clock}><ul>{['first', 'second'].map(instanceId => <TaskRow key={instanceId} projectId="project" model={model} href={`/projects/p/tasks/${id}`} instanceId={instanceId} assignee={null} onOpenTask={() => {}} />)}</ul></ClockInputProvider>, { locale: 'en' });
+    renderWithLocale(<ClockInputProvider input={clock}><ul>{['first', 'second'].map(instanceId => <TaskRow key={instanceId} projectId="10000000-0000-4000-8000-000000000001" model={model} href={`/projects/p/tasks/${id}`} instanceId={instanceId} assignee={null} onOpenTask={() => {}} />)}</ul></ClockInputProvider>, { locale: 'en' });
     const links = screen.getAllByRole('link', { name: 'Complete task title' });
     expect(links.map(link => link.id)).toEqual(['first', 'second']);
     expect(links[0]!.getAttribute('aria-describedby')).not.toBe(links[1]!.getAttribute('aria-describedby'));

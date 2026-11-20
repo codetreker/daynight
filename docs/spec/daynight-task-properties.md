@@ -4,7 +4,7 @@
 
 ## 目标与范围
 
-Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker、sessionStartup。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
+Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、blocked 和服务端拥有的只读 worker、sessionStartup；兼容名称 paused 与 blocked 表示同一值。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
 
 | 编号 | 必需行为 |
 |---|---|
@@ -20,7 +20,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 写入入口拒绝非法输入并返回 400 invalid_input；读取保存的规范属性不重复结构、字段或容量校验。自然解码、查询和事务错误沿原错误链传播，不返回局部成功或丢弃属性。 |
 | TP12 | 网页保持只读 PR 展示和原有视觉；通用读取保留缺失与空值，PR 展示本身可把缺失和空列表显示为同一空态。 |
-| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 抑制 Worker 的自动输入，false 或缺席适用原有策略，读取不注入默认键。 |
+| TP13 | blocked 为可写布尔值，允许在执行中设置与移除；true 抑制 Worker 的自动输入，false 或缺席适用原有策略。兼容名称 paused 接受相同操作，存在时公开读取同时返回两个同值键，缺席时均不注入。 |
 
 ## 属性对象与值
 
@@ -45,9 +45,9 @@ sessionStartup 存在时必须是绑定当前执行身份的合法启动报告�
 
 ## 暂停自动输入
 
-paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
+blocked 和兼容名称 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 抑制 Web Worker 的首次 assignment、恢复 assignment 和后续周期 ping 的自动递交；原生派发前重新检查暂停与原执行归属。标记不停止已运行的 agent，不改变任务领取资格、Task 状态、人工交互或原运行停止。解除暂停后按当前输入资格恢复自动递交，未知结果仍按原操作身份核对。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。旧 Herdr claim 和资源由用户处理，不由 Worker 恢复或自动输入。
+blocked:true 抑制 Web Worker 的首次 assignment、恢复 assignment 和后续周期 ping 的自动递交；原生派发前重新检查暂停与原执行归属。标记不停止已运行的 agent，不改变任务领取资格、Task 状态、人工交互或原运行停止。解除暂停后按当前输入资格恢复自动递交，未知结果仍按原操作身份核对。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。旧 Herdr claim 和资源由用户处理，不由 Worker 恢复或自动输入。
 
 ## 属性 HTTP 资源
 
@@ -58,7 +58,7 @@ paused:true 抑制 Web Worker 的首次 assignment、恢复 assignment 和后续
 | PUT .../properties/{name} | 正 int64 version、原始 valueText；设置一个完整属性值，返回 200 PropertyResource |
 | DELETE .../properties/{name} | 正 int64 version；真正移除一项属性，返回 200 PropertyResource |
 
-PropertyResource 包含 projectId、taskId、version 和完整 properties。目录包含属性名称、说明、readOnly 和真实值 schema，不声明读取时自动生成的默认值。所有入口沿用认证、项目权限、no-store 和 requestId 规则。
+PropertyResource 包含 projectId、taskId、version 和完整 properties。目录包含规范名称 blocked 和兼容名称 paused，二者具有相同的布尔约束；属性存在时公开资源均返回两个同值键，缺席时均省略。目录还包含说明、readOnly 和真实值 schema，不声明读取时自动生成的默认值。所有入口沿用认证、项目权限、no-store 和 requestId 规则。
 
 PUT 的 valueText 是未经 CLI JSON 解析的原始参数文本：
 
@@ -72,7 +72,7 @@ PUT 的 valueText 是未经 CLI JSON 解析的原始参数文本：
 
 ## 创建、设置和移除
 
-创建省略 properties 或其中的键时，不创建对应属性行。普通 create/PATCH 仅接受可写定义，提供 worker 或 sessionStartup 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留公开属性，新 claim 清除前次执行的 sessionStartup；公开属性更新保留全部只读执行属性。
+创建省略 properties 或其中的键时，不创建对应属性行。blocked 和 paused 在写入前归一为 blocked；同一对象中两者同值合并，异值整体拒绝。任一名称的删除均移除唯一存储行。普通 create/PATCH 仅接受可写定义，提供 worker 或 sessionStartup 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留公开属性，新 claim 清除前次执行的 sessionStartup；公开属性更新保留全部只读执行属性。
 
 | 输入或操作 | 结果 |
 |---|---|
@@ -110,16 +110,16 @@ daynight task properties <task-id> --json
 daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"修复同步"}]' --if-version <observed-version>
 daynight task set-property <task-id> pullRequests '[]' --if-version <observed-version>
 daynight task remove-property <task-id> pullRequests --if-version <observed-version>
-daynight task set-property <task-id> paused true --if-version <observed-version>
-daynight task set-property <task-id> paused false --if-version <observed-version>
-daynight task remove-property <task-id> paused --if-version <observed-version>
+daynight task set-property <task-id> blocked true --if-version <observed-version>
+daynight task set-property <task-id> blocked false --if-version <observed-version>
+daynight task remove-property <task-id> blocked --if-version <observed-version>
 ~~~
 
 create/update 不提供 PR 专用选项。创建后的属性通过通用设置命令维护；原生 HTTP create/PATCH 的原子多字段能力保留。设置 PR 时提交完整有序数组，保留仍需要的所有关联。
 
 显式 --if-version 直接提交；省略时先 GET 属性资源取得任务版本，再提交一次修改。版本冲突不重试；预读不能替代先前决定所依据的版本，不确定结果只读回核对后重新决定。
 
-读取 --json 返回完整 PropertyResource 或定义目录；普通读取按名称打印完整属性 JSON，所有输出使用既有终端安全转义。set/remove 成功后输出服务确认的当前 PropertyResource，不推测 no-op 的额外结果字段。非法写入属性值的服务端 400 保持操作失败，不改成 CLI 语法错误；正常读取、解码和数据库故障继续传播。所有读取均不补默认值、不截断或静默丢键。
+读取 --json 返回完整 PropertyResource 或定义目录；普通读取按名称打印完整属性 JSON，所有输出使用既有终端安全转义。set/remove 成功后输出服务确认的当前 PropertyResource，不推测 no-op 的额外结果字段。非法写入属性值的服务端 400 保持操作失败，不改成 CLI 语法错误；正常读取、解码和数据库故障继续传播。设置回执必须包含请求的键；删除 blocked 或 paused 时，回执必须同时省略两个键，否则写入结果未确认。所有读取均不补默认值、不截断或静默丢键。新版 CLI 与 Worker 要求服务端支持 blocked。
 
 操作系统不能承载的进程参数可通过 HTTP API 提交；传输限制不产生 URL/title 内容规则。[CLI 需求](daynight-project-task.md)拥有共享语法、补全和完整命令契约。
 
@@ -135,9 +135,11 @@ create/update 不提供 PR 专用选项。创建后的属性通过通用设置�
 
 每个 task/property 对应独立记录，值保存为完整 JSON 文本。属性记录没有独立版本、更新时间或删除标记，任务仍是鉴权、并发和提交单位。任务软删除保留其属性数据。
 
-迁移包含软删除任务，保留所有已有 pullRequests 值，包括无法区分来源的空数组；非 null worker 保存归属，worker:null 转为缺失。迁移冻结旧格式验证和规范化语义，不通过运行时 fallback 读取旧列。表创建、数据转换、旧列删除及 migration ledger 原子提交，任务版本、业务时间和 Session 身份不变。
+blocked 迁移在同一事务将已有 paused 行改名，包含软删除任务；非法值或同任务的键冲突使迁移和 ledger 回滚，不改变任务版本、业务时间、项目 epoch、claim 或事件。旧服务端与后台写入方必须在迁移前排空；迁移提交后优先前滚，回退旧服务端须恢复与其 ledger 匹配的数据库备份，并按原操作流程处理备份后的写入。
 
-客户端解析完整的通用属性对象。历史属性模型切换通过 Web 缓存 schema 1→2 清理旧必填或 `null` 详情；后续完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 `properties` 解释为 `{}`。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除，同版本属性差异拒绝，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
+属性行迁移包含软删除任务，保留所有已有 pullRequests 值，包括无法区分来源的空数组；非 null worker 保存归属，worker:null 转为缺失。迁移冻结旧格式验证和规范化语义，不通过运行时 fallback 读取旧列。表创建、数据转换、旧列删除及 migration ledger 原子提交，任务版本、业务时间和 Session 身份不变。
+
+客户端解析完整的通用属性对象。历史属性模型切换通过 Web 缓存 schema 1→2 清理旧必填或 `null` 详情；后续完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 `properties` 解释为 `{}`。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除；Web 先将合法的 blocked/paused 别名规整为同一私有表示，再拒绝同版本的实质属性差异，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
 
 ## 错误与验收
 
@@ -153,4 +155,4 @@ create/update 不提供 PR 专用选项。创建后的属性通过通用设置�
 | TP-V6 | CLI 的值/schema 模式、原始值文本、空值、-- 参数、精确版本和补全一致；读写不预取 schema，未知/只读/错误值到达服务端，完整输出不丢键。CLI/Web 不补默认值，精确外壳版本不影响属性内同名 version，旧详情缓存不能造成同版本冲突。 |
 | TP-V7 | PR 展示覆盖缺失、空、重复、空标题、长内容和不可导航地址，以及 100/101 项分页、末页、替换重置、焦点和窄屏。 |
 | TP-V8 | 列表保留分页和快照语义；snapshot/delta 同快照批量读取完整属性并传播删除；图节点不承载属性。读取不复查存储属性结构或容量，自然解码及数据库故障继续传播；网络/配额失败不截断、局部提交或推进水位，旧摘要升级完整重建。 |
-| TP-V9 | paused 的 true、false、缺席、设置、移除、同值和陈旧版本遵守存在性与版本规则；错误类型拒绝，执行中的更新保留状态、时间和 claim，完整资源与 worker inventory 保留当前值。 |
+| TP-V9 | blocked 与兼容名称 paused 的 true、false、缺席、设置、移除、同值和陈旧版本遵守存在性与版本规则；错误类型拒绝，执行中的更新保留状态、时间和 claim，完整资源与 worker inventory 保留当前值。 |

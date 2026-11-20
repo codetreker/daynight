@@ -41,6 +41,7 @@ func TestAppExecutorRealProviderAndPublicationFence(t *testing.T) {
 			mustQueryExec(t, db, `INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, grant, app, project.Ownership.TeamID)
 			mustQueryExec(t, db, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id,app_resource_id,team_grant_id,credential_version,access_state,repository_full_name,installation_account_login,next_poll_at) VALUES($1,1,true,true,$2,20,30,$3,$4,1,'available','owner/repo','owner',now())`, project.ID, appID, app, grant)
 			entered, release := make(chan struct{}), make(chan struct{})
+			pull := `{"id":420,"number":42,"html_url":"https://github.com/owner/repo/pull/42","title":"Observed PR","state":"open","draft":false,"user":null,"base":{"ref":"main","repo":{"id":30}},"head":{"ref":"feature","sha":"current-sha","repo":null},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:01Z","closed_at":null,"merged_at":null,"body":"Observed body"}`
 			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
@@ -57,13 +58,17 @@ func TestAppExecutorRealProviderAndPublicationFence(t *testing.T) {
 						io.WriteString(w, `[]`)
 						return
 					}
-					close(entered)
-					select {
-					case <-release:
-					case <-r.Context().Done():
-						return
+					if r.URL.Query().Get("state") == "all" {
+						close(entered)
+						select {
+						case <-release:
+						case <-r.Context().Done():
+							return
+						}
 					}
-					io.WriteString(w, `[{"id":420,"number":42,"html_url":"https://github.com/owner/repo/pull/42","title":"Observed PR","state":"open","draft":false,"user":null,"base":{"ref":"main","repo":{"id":30}},"head":{"ref":"feature","sha":"current-sha","repo":null},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:01Z","closed_at":null,"merged_at":null,"body":"Observed body"}]`)
+					io.WriteString(w, "["+pull+"]")
+				case "/repos/owner/repo/pulls/42":
+					io.WriteString(w, pull)
 				default:
 					t.Errorf("unexpected GitHub request: %s", r.URL.Path)
 					w.WriteHeader(http.StatusInternalServerError)

@@ -71,7 +71,7 @@ Project 包含以下字段：
 
 一个 Project 关联一个 repo。同一普通或 Personal Team 对同一仓库身份最多拥有一个活跃 Project；
 不同 Team 可以分别拥有该仓库的 Project。软删除和成功转出释放原 Team 的占用，历史数据继续保留。
-仓库身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写，不访问远端推断别名。支持 HTTPS URL、
+仓库占用身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
 名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
 UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
@@ -81,6 +81,10 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 目标 Team 已有活跃同仓库项目时，HTTP 返回 `409 project_repository_conflict`，MCP 使用既有
 错误信封返回同名代码。拒绝不依赖冲突项目的可见性，不透露其 ID、名称、地址、成员或其他私有详情，
 也不留下新 Project、授权、归属变化或集成副作用。请求及成功回执格式保持不变。
+
+有效 Project admin 可预览和确认仓库改址。原文不变保持版本；等价地址或可信 GitHub 稳定 ID 证明同库时保存新地址并保留绑定。稳定 ID 证实不同则按换仓处理；无法确认时必须明确选择按换仓处理。已知相反 ID 优先于地址等价。预览绑定地址版本、归属版本、分类和目标 ID；任何事实漂移要求重新预览。只有 owner Team admin 且现有 App grant 有效时才按候选路径探查，Project admin 可按现有连接读取旧稳定 ID 的当前路径。
+
+换仓在同一事务保存地址、解除项目侧 GitHub App 连接并停止旧同步，同时移除本次快照中已选择该项目的 Worker 云端目标配置。旧 PR 来源及项目历史保留，管理员可手工连接新仓库。快照后的新选择和首次导入按普通配置处理；已有 claim 不构成换仓条件，Worker 应用配置前仍可能领取工作，应用移除时可能停止现有执行。本地仓库及映射由使用者管理。确定拒绝不产生部分修改；提交结果未知时先只读核对，不自动重放。
 
 升级在开放业务流量前检查全部存量：同 Team 活跃等价仓库或重复的无法解析原文使迁移失败，
 报告 Team 与 Project ID 并回滚；不得自行合并、删除或转移。单个无法解析的历史地址保留原文与
@@ -114,6 +118,8 @@ MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调
 确认并执行创建事务；创建权限通过后，不可见占用或并发竞争返回 `project_repository_conflict`。历史 NULL 身份不参与匹配。
 跨 Team 的可见匹配仍可使独立仓库发现报告歧义。
 
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 沿用转移预览权限，返回项目 ID、名称、来源与目标 Team、精确 ownership 与目标 Team 版本，以及永久清理范围。实际转移会原子移除本项目任一端的全部 Goal 依赖，包括项目内与跨项目两方向，影响其他项目且转回不恢复；同归属空操作保留关系。宿主必须先展示本次项目、目标 Team 和清理范围，取得明确用户答复；未答复或拒绝时零次调用写工具。确认后 `project_transfer` 携带 `confirm:true`、`confirmGoalDependencyRemoval:true`，以及预览原值 `ifVersion` 和 `ifTargetVersion`；清理确认缺少任一版本时拒绝。版本冲突必须重新预览并确认，结果未知不得自动重放。旧请求未声明清理确认时，有边的实际转移被拒绝并保留关系，无边及同归属操作保留既有行为。经其他受支持入口删除项目时，MCP 宿主同样先取得对项目和永久清理范围的明确确认。
+
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
 列表在数据库中先按当前成员关系过滤，再进行分页。创建后 `repoUrl` 不可通过 task 或设置更新改变。
@@ -126,11 +132,11 @@ MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调
 过期同值请求仍冲突，当前版本同值保存返回未改变 Project；实际数值变化只递增一次设置版本并更新 project.updatedAt，
 不改 createdAt 或任务时间。降权/移除、版本冲突或存储失败不能留下部分设置更新。
 
-Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。
+Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。REST 删除以唯一 header 值 `Daynight-Confirm-Goal-Dependency-Removal: true` 确认永久清理 Goal 验收边；省略代表未确认，空值、其他字面值、重复值或逗号列表返回 `400 invalid_input`。该 header 进入 CORS allow-list，不改变空正文、预览与成功回执合同。
 
 预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；按条数返回完整阻塞项，不按标题或响应字节缩短页面。
 
-成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、依赖、成员关系、历史和附件文件；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
+成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、普通 Task 依赖、成员关系、历史和附件文件；涉及该项目的全部 Goal 验收依赖在明确确认后与项目删除原子清除，项目内及跨项目两方向均受影响，无关 Goal 边保留。缺少确认且存在 Goal 边时以 `400 invalid_input` 拒绝，项目与全部关系保持原值，并提示更新客户端或更换入口。每个实际失去出边的下游 Goal 关系修订仅推进一次，已确认未提交的失败保留项目及关系，取消与提交故障沿用下述未知结果规则，操作预算十五秒；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
 
 ## Task 与依赖
 
@@ -272,6 +278,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version，真正移除可写属性，返回 200 属性资源 |
 | `GET` | `/api/v1/projects/{projectId}/task-graph?taskId={taskId}` | 返回同一快照中的 project、完整本链及一层外部前置、相应统计 |
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta 及完整轻量 sessions，使用 epoch 与任务最大 updatedAt 水位 |
+| `GET/PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立的授权关系读取与精确修订编辑，见 [Goal 依赖协议](goal-dependencies.md) |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，五状态精确版本设置，返回完整任务 |
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除；可选 removeDepends=true 原子解除全部传入引用，成功 `204`，保留任务与附件数据 |
@@ -280,8 +287,18 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
 | `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
 | `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
+| `GET, HEAD, PUT` | `/api/v1/me/workers/{workerId}/review-participation` | 读取或按独立版本修改账号自己的 PR review 参与开关，默认关闭；[资源合同](../design/worker-review-participation.md) |
 
 项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧 REST 标签和 Task/Goal 引用响应不包含颜色。
+
+标签重名创建及重命名只有在精确名称唯一索引冲突、事务确认未提交且回滚清理可靠时，才返回 HTTP 409 `tag_name_conflict`。同一故障的外层数据库包装不改变此业务结果。附加数据库故障、清理失败、提交已尝试或未知事务结果不得被降格为普通名称冲突；确认未提交的重名拒绝不得新增标签、覆盖原记录或推进目录 epoch；未知结果仍须保留可能已提交的事实。正常创建、改名、改色和删除的既有权限、版本与事务合同保持不变。
+
+重名冲突的验收必须包括：
+
+1. 使用真实 PostgreSQL、标签 service 和 REST 处理链验证完全同名、ASCII 大小写变体与重命名冲突均返回 409，并读回确认目录、版本、时间和颜色未改变。
+2. 在完整错误链上验证附加故障、回滚清理失败、提交尝试和未知结果保留其失败语义；仅模拟一个数据库错误包装不构成生产路径证明。
+3. 在真实浏览器中确认既有重名提示可操作，名称与颜色草稿保留且可编辑，修正名称后可继续保存，不进入“操作结果尚未确认”流程。
+4. 通过正常标签 CRUD 与相关服务端门禁，保留修复前复现证据及修复后产品复测结果。
 
 颜色 resolve 接收 `tagIds` 和可省略的 `catalogEpoch`，在同一授权读取快照校验 epoch 并规范化去重 ID。返回 `catalogEpoch` 和每个唯一 ID 的一项：存在时为 `{id,state:"found",version,color}`，缺失、已删除或跨项目时为 `{id,state:"missing"}`。非法 UUID、权限或 epoch 错误拒绝整批；epoch 不匹配返回 `catalog_changed`。请求沿用 1 MiB JSON 上限，实际编码结果超过 512 KiB 时拒绝，不返回部分结果。
 

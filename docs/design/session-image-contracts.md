@@ -2,7 +2,7 @@
 
 ## 状态与责任
 
-本文定义统一 Session 消息、服务原件、Controller 存储和完整解码器。基础层使用统一输入、资源客户端和 manifest 归档；原生图片编码、来源解析、预览与草稿由各自消费者交付。图片 Provider profile 保持关闭，基础层验证不表示原生识图或完整产品链路已验收。需求分别由[图片输入与草稿规格](../spec/session-image-input.md)、[显示与归档规格](../spec/session-image-history.md)及[验收与容量规格](../spec/session-image-acceptance.md)拥有。
+本文定义统一 Session 消息、服务原件、Controller 存储和完整解码器。基础层使用统一输入、资源客户端和 manifest 归档；原生图片编码、来源解析、预览与草稿由各自消费者交付。图片 Provider profile 只对[已发布资格](session-image-providers.md#已发布资格)中的精确 Codex 组合开放 send，其他组合保持关闭；基础层验证不表示原生识图或完整产品链路已验收。需求分别由[图片输入与草稿规格](../spec/session-image-input.md)、[显示与归档规格](../spec/session-image-history.md)及[验收与容量规格](../spec/session-image-acceptance.md)拥有。
 
 本文是基础图片 DTO、身份、能力、上传、读取、来源登记、错误和跨层预算的唯一设计定义。[来源设计](session-image-sources.md)拥有 Markdown part/binding/retained 的完整结构和采集算法；[归档设计](session-image-archives.md)拥有 schema3、完整历史同步和封存文件 DTO；[Provider 设计](session-image-providers.md)拥有原生 payload、接受证据和历史映射；[浏览器设计](session-image-browser.md)拥有持久草稿和唯一预览接口。各消费者复用这些定义，不再建立同名竞争类型。
 
@@ -94,7 +94,7 @@ Controller 在标记 dispatching 前以及异步文件读取、编码结束后�
 
 Provider 按实际 executable、SDK、backend、精确模型、平台和操作匹配资格，资格记录绑定证据及已验证的原始输入限制、适用条件。目录中的 image modality、版本字符串或通用 decoder 上限不能独立建立资格。真实历史、工具、恢复及压缩观察限定证据范围；不把本条图数当累计上下文上限，也不要求推导不可观测的全部原生内部算法。原生可以正常转换及压缩，但已知会静默省略本次输入的条件不能匹配 supported。组合缺项、不匹配或资格不足时保持 unknown。
 
-服务取原生报告与当前上传、解码、存储、历史读取、归档及策略能力的交集；不能只将 Provider 的 supported 原样转发。双方已确认限额逐项向下取交集，Web、上传 complete 及最终派发消费同一有效值，显式更小限制对用户可见。发送前若可观测上下文条件、模型、权限或资格改变，重新计算并推进 revision，拒绝旧 revision 后保稿重核；不能偷偷继续用旧 profile。当前生产资格目录为空，支持合成机制不会自行授予图片资格。
+服务取原生报告与当前上传、解码、存储、历史读取、归档及策略能力的交集；不能只将 Provider 的 supported 原样转发。双方已确认限额逐项向下取交集，Web、上传 complete 及最终派发消费同一有效值，显式更小限制对用户可见。发送前若可观测上下文条件、模型、权限或资格改变，重新计算并推进 revision，拒绝旧 revision 后保稿重核；不能偷偷继续用旧 profile。支持合成机制不会自行授予图片资格；生产资格目录只包含[已发布资格](session-image-providers.md#已发布资格)列出的精确组合。
 
 服务[能力合成](../../packages/daynight-server/internal/core/session/image_capabilities.go)严格解析 Provider 报告，并与同一状态帧的 native 身份、模型及 controls 核对；Controller 传入的有效 Images 不是服务权威值。状态应用保留服务自己的有效 revision，使用该帧 controls 后重新合成。组件条件包括 content revision 2、完整 decoder、原件文件与清理能力，以及资源、输入意图和归档持久化能力；未知或关闭的原生动作不会因组件齐全而升级。三态按 send/steer 分别保留，MIME、字节、张数及 geometry 与服务通用限制取交集。
 
@@ -487,7 +487,7 @@ core 拥有图片协议、状态转换、期限、正文和摘要的校验，以
 
 source ACK 的保留策略由 core 拥有：先核原 identity/hash，再按当前 epoch 和通过序列计算2048序列窗口，将明确 cutoff 交给 DAO 删除旧记录；读取真实 count 后执行8192条准入。相同原 ACK 重放先返回既有摘要，不因满额清理或创建新身份；窗口外缺失的旧 ACK 明确拒绝，未知提交不重放。
 
-实际内容发布在 Session 锁内读取最新完整索引、可用资源和已发布 manifest，并用实测候选计算总量；相同 Session 的并发发布因该锁串行。跨 Session、账户与部署的媒体 lease 并发集合仍由部署准入锁协调，锁等待传递 context 与 deadline，后续 I/O 由 durable lease 和精确文件锁保护。
+实际内容发布在 Session 锁内读取最新完整索引、可用资源和已发布 manifest，并用实测候选计算总量；相同 Session 的并发发布因该锁串行。跨 Session、账户与部署的媒体 lease 并发集合仍由部署准入锁协调，锁等待传递 context 与 deadline，后续 I/O 由 持久媒体 lease 和[精确键存储租约](daynight-task-attachments.md#storage-接口与本地实现)保护。
 
 ### 两端块确认与提交恢复
 
@@ -537,9 +537,9 @@ GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 uploa
 | 实际写入 | 不预留未来副本或归档空间；实际磁盘不足和文件失败按真实结果返回，原身份与清理责任保留 |
 | 临时拒绝 | 并发、速率及实际存储失败按各自错误返回；未知写仍查询原身份，实际内容总量超限返回 409 quota_exceeded |
 
-共享持久 admission 原子协调，进程内 semaphore 只是优化。租约到期只撤提交资格，不返物理槽；失联、心跳丢失、DB lease 到期、WS 重连均非执行单元停止证明。只有 cancel+join 或监督器确认原进程终止后回收。新实例先协调旧占用，再另取空闲槽，不能把计数清零或继承未释放槽；无可靠终止证明则保守拒绝超额。解码/缓冲/队列实测包含语言运行时副本，512KiB块不等于RSS上限。
+共享持久 admission 原子协调，进程内 semaphore 提供本地准入。失联、心跳丢失、DB lease 到期和 WS 重连只改变提交资格。解码与其他需要确认执行单元停止的操作在 cancel+join 或监督器确认原进程终止后返还物理槽。媒体 I/O 按下述精确键租约恢复；新实例先协调旧占用，再另取空闲槽，保留其余活跃占用。解码、缓冲和队列实测计入语言运行时副本，512 KiB 块只是协议上限。
 
-普通媒体 I/O 在取得新槽之前读取部署内持久 lease，结束该数据库事务后逐项非阻塞尝试原 owner 使用的精确文件锁。busy 表示原 owner 仍可能执行 I/O，保留其行；成功取得锁后持锁到删除该原 lease 的短事务确认提交，再关闭锁。列举、提交结果或锁关闭未知均返回错误，不凭 TTL 清空计数。该恢复覆盖 Session、账户及部署级计数，服务重启后的孤儿占用无需通过删除 Session 才能回收。
+普通媒体 I/O 在取得新槽之前读取部署内持久 lease，结束该数据库事务后逐项非阻塞尝试原 owner 使用的精确键存储租约。busy 表示原 owner 仍可能执行 I/O，保留其行；成功取得锁后持锁到删除该原 lease 的短事务确认提交，再关闭锁。Redis 租约到期后由恢复者重新取得该键，并在持有期间收尾持久记录。仅观察到 TTL 到期不足以删除持久行。列举、提交结果或锁释放未知均返回错误。该恢复覆盖 Session、账户及部署级计数，服务重启后的孤儿占用无需通过删除 Session 才能回收。
 
 统一 codec 计量已接纳的完整正文、索引、资源和 manifest；最终提交按最新事实检查，完整旧 envelope 仅在旧数据读取或迁移边界计量。准备与发送身份、原 operation 和 pin 的协调不预留未来 Session 容量。ENOSPC 和清理失败按实际结果处理，不删旧图腾空间。
 
@@ -651,7 +651,7 @@ GC事务核全部pin并标deleting，阻止新acquire；事务外unlink、刷目
 
 ## 发布、回滚与验证责任
 
-先部署严格协议、schema3/旧表示读取和容量guard，再部署私有blob、Controller与Provider，最后完整Web接线。新图片写入和来源采集默认关闭；只有明确组合和同一真实路径的上传、校验、完整原生交付、接受、保存、读取、归档和权限全部满足，才可发布对应 supported。来源采集按其权限、安全和持久读取条件独立准入，不借输入 profile 绕过来源限制。局部发布不要求其他尚未验证组合先通过，也不代表 A6 完成；当前空资格目录不因合成机制存在而开放。既有原件读取不因新输入能力unknown而失效。
+先部署严格协议、schema3/旧表示读取和容量guard，再部署私有blob、Controller与Provider，最后完整Web接线。新图片写入和来源采集默认关闭；只有明确组合和同一真实路径的上传、校验、完整原生交付、接受、保存、读取、归档和权限全部满足，才可发布对应 supported。来源采集按其权限、安全和持久读取条件独立准入，不借输入 profile 绕过来源限制。局部发布不要求其他尚未验证组合先通过，也不代表 A6 完成；未列入资格目录的组合不因合成机制存在而开放。既有原件读取不因新输入能力unknown而失效。
 
 回滚关闭新写入，保留统一schema3/blob reader、旧数据边界、原upload/operation查询及unknown恢复直到保留期结束。只能使用理解新journal/schema的兼容程序，不能安装旧二进制后删存储重建。原生恢复路径可用与服务历史可读分别报告。
 

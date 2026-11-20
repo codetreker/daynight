@@ -1,3 +1,9 @@
+// Detail sequence fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
 import * as client from '../src/api/client';
 import { useResourceHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';

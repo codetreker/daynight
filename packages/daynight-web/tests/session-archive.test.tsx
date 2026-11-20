@@ -60,6 +60,16 @@ it('renders Daynight notifications from read-only archived history', async () =>
   expect(f.api.channel).not.toHaveBeenCalled();
   expect(f.api.command).not.toHaveBeenCalled();
 });
+it('identifies body archives without claiming retained tool details', async () => {
+  const f = fixture();
+  vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, schemaVersion: 3, contentPolicy: 'task_body', resources: [], completeness: 'complete' });
+  await f.client.start();
+  const view = render(<SessionView userId={userId} client={f.client} active current />);
+  expect(screen.getByText('This archive contains messages and their images. Tool details were available during the live session.')).toBeVisible();
+  view.setLocale('zh-CN');
+  expect(screen.getByText('此归档保留消息正文及其图片。工具详情仅在会话在线期间提供。')).toBeVisible();
+  expect(f.client.snapshot().archiveContentPolicy).toBe('task_body');
+});
 it.each([false, true])('allows reading resolved and expired requests in archived history (standalone=%s)', async standalone => {
   const f = fixture('archived', standalone);
   vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, entries: [
@@ -153,6 +163,7 @@ it.each([false, true])('loads authenticated archive content through the shared A
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ archive: f.archive }), { headers: { 'Daynight-User-ID': userId, 'Content-Type': 'application/json' } })));
   const api = standalone ? createTestSessionApi(f.s.sessionId, userId, vi.fn()) : createSessionApi(f.s.identity.projectId!, f.s.identity.taskId!, userId, vi.fn());
   expect(await api.archiveContent(f.s.sessionId, new AbortController().signal)).toEqual(f.archive);
+  expect(new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers).get('Daynight-Task-Body-History-Version')).toBe('1');
 });
 it('rejects archive responses from a different principal', async () => {
   const f = fixture(); const mismatch = vi.fn();

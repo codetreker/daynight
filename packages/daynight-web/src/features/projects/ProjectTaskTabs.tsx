@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { TaskView } from "./useProjectViewPreferences";
 
@@ -14,6 +14,29 @@ type ProjectTaskTabsProps = {
 
 export const ProjectTaskTabs = ({ activeView, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange }: ProjectTaskTabsProps) => {
   const { messages: { workspace: { tabs: m } }, format } = useI18n();
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const reveal = (tab: HTMLElement) => {
+    const tabs = tabsRef.current;
+    if (!tabs || tabs.clientWidth === 0) return;
+    const bounds = tabs.getBoundingClientRect();
+    const target = tab.getBoundingClientRect();
+    if (target.left < bounds.left) tabs.scrollLeft += target.left - bounds.left;
+    else if (target.right > bounds.right) tabs.scrollLeft += target.right - bounds.right;
+  };
+  useLayoutEffect(() => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    const revealSelected = () => {
+      const selected = tabs.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (selected) reveal(selected);
+    };
+    revealSelected();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(revealSelected);
+    observer.observe(tabs);
+    for (const tab of tabs.children) observer.observe(tab);
+    return () => { observer.disconnect(); };
+  }, [activeView]);
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, view: TaskView) => {
     const position = views.indexOf(view);
     const target = event.key === "ArrowRight" ? views[(position + 1) % views.length]
@@ -24,11 +47,11 @@ export const ProjectTaskTabs = ({ activeView, unfinishedStandaloneTaskCount, unf
     onViewChange(target);
     document.getElementById(`project-task-tab-${target}`)!.focus({ preventScroll: true });
   };
-  return <div className="project-task-tabs" role="tablist" aria-label={m.label}>{views.map((view) => (
+  return <div className="project-task-tabs-container"><div ref={tabsRef} className="project-task-tabs" role="tablist" aria-label={m.label}>{views.map((view) => (
     <button className="project-task-tab" type="button" role="tab" id={`project-task-tab-${view}`} key={view}
       aria-label={m[view]} aria-selected={activeView === view} aria-controls={`project-task-panel-${view}`} tabIndex={activeView === view ? 0 : -1}
-      onClick={() => { onViewChange(view); }} onKeyDown={(event) => { onKeyDown(event, view); }}>
+      onClick={() => { onViewChange(view); }} onFocus={(event) => { reveal(event.currentTarget); }} onKeyDown={(event) => { onKeyDown(event, view); }}>
       {m[view]}<span className="graph-count-pill" title={view === "goals" ? m.unfinishedGoalCount : view === "chains" ? m.unfinishedChainCount : m.unfinishedCount} aria-hidden="true">{format.number(view === "standalone" ? unfinishedStandaloneTaskCount : view === "chains" ? unfinishedChainCount : unfinishedGoalCount)}</span>
     </button>
-  ))}</div>;
+  ))}</div></div>;
 };

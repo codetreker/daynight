@@ -627,8 +627,8 @@ it.each(["paused", "revoked", "changed_claim"] as const)("rechecks %s before res
   let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
   record = webStore.initializeWebExecution(record, 2);
   webStore.beginCleanup(record, { kind: "shutdown", deadline: 1000 }, 3);
-  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, paused: true } }
-    : state === "revoked" ? { ...remote, allowAgents: false, properties: { ...remote.properties, paused: true } }
+  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, blocked: true } }
+    : state === "revoked" ? { ...remote, allowAgents: false, properties: { ...remote.properties, blocked: true } }
     : { ...remote, properties: { ...remote.properties, worker: { ...readWorkerClaim(remote.properties)!, claimId: uuid(999) } } };
   vi.mocked(f.remote.readTask).mockResolvedValue(fresh);
   const advance = vi.fn(async (value: WebTask) => value);
@@ -661,7 +661,7 @@ it.each(["eligible", "paused", "revoked"] as const)("rechecks a frozen Web retry
   let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
   record = webStore.initializeWebExecution(record, 2);
   webStore.beginCleanup(record, { kind: "shutdown", deadline: 1000 }, 3);
-  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, paused: true } } : state === "revoked" ? { ...remote, allowAgents: false } : remote;
+  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, blocked: true } } : state === "revoked" ? { ...remote, allowAgents: false } : remote;
   vi.mocked(f.remote.readTask).mockResolvedValueOnce(remote).mockResolvedValue(fresh);
   const advance = vi.fn(async (value: WebTask) => value);
   const advanceResult = vi.fn<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["advanceResult"]>(async (value, signal, _admit, authority) => {

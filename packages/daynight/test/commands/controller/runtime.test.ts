@@ -31,9 +31,9 @@ vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCode
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ validateControllerLocalRequest: (value: unknown) => value }));
-const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.ProcessEnv | undefined, read: vi.fn(async () => ({})) }));
+const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.ProcessEnv | undefined, prepare: vi.fn(), read: vi.fn(async () => ({})) }));
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: aliasFixture.read }));
-vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv }) => ({ environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }) }));
+vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv; stateDirectory: string; storageDirectory?: string }) => { aliasFixture.prepare(options); return { environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }; } }));
 const toolSelectionFixture = vi.hoisted(() => ({ read: null as null | (() => Promise<unknown>) }));
 vi.mock("../../../src/commands/controller/launch-tool-selection.js", () => ({ readLaunchToolSelection: async (_home: string, ticket: { configuration: { toolLaunch?: unknown } }) => toolSelectionFixture.read ? toolSelectionFixture.read() : ticket.configuration.toolLaunch }));
 import { runController } from "../../../src/commands/controller/runtime.js";
@@ -193,7 +193,7 @@ test.each(["codex", "claude", "copilot"] as const)("%s fatal native loss release
   fixture.journal().patchSnapshot({ nativeSessionId: "same-native-session", initialInputState: "unknown" });
   fixture.open.mockResolvedValue({ nativeSessionId: "same-native-session", close: fixture.close });
   const errorLog = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-  const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
+  const running = runController({ homeDirectory: "/private", provider, launchId: "launch", storageStateDirectory: path.resolve("bot-storage") });
   try {
     await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce()); await new Promise(resolve => setImmediate(resolve));
     const nativeOptions = fixture.options as { onFatalError?: (error: Error) => void };
@@ -329,13 +329,15 @@ test("shutdown while cleanup awaits cancellation prevents its later native input
 test.each(["codex", "claude", "copilot"] as const)("passes prepared aliases to %s without changing the parent environment", async provider => {
   setup(); fixture.provider = provider;
   const original = process.env.PATH;
-  aliasFixture.environment = { ...process.env, PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
+  aliasFixture.environment = { ...process.env, PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev", DAYNIGHT_CONTROLLER_STORAGE_DIR: "/private/bot" };
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
-  const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
+  const running = runController({ homeDirectory: "/private", provider, launchId: "launch", storageStateDirectory: path.resolve("bot-storage") });
   try {
     await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
     expect((fixture.options as { env: NodeJS.ProcessEnv }).env).toMatchObject({ PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" });
     expect((fixture.options as { agentCliEnvironment: NodeJS.ProcessEnv }).agentCliEnvironment).toEqual({ PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" });
+    expect((fixture.options as ProviderOptions).env?.DAYNIGHT_CONTROLLER_STORAGE_DIR).toBeUndefined();
+    expect(aliasFixture.prepare).toHaveBeenCalledWith(expect.objectContaining({ storageDirectory: "/private/controller" }));
     expect(process.env.PATH).toBe(original);
   } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
 });
@@ -359,7 +361,7 @@ test.each(["codex", "claude", "copilot"] as const)("passes frozen role options t
     fixture.journal().patchSnapshot({ initialInputState: "not_required" });
     const send = vi.fn();
     fixture.open.mockClear(); fixture.open.mockResolvedValue({ nativeSessionId: "original-native", close: fixture.close, send });
-    const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
+    const running = runController({ homeDirectory: "/private", provider, launchId: "launch", storageStateDirectory: path.resolve("bot-storage") });
     try {
       await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
       await new Promise(resolve => setImmediate(resolve));
@@ -772,7 +774,7 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
 test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
   setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const db = new Database(":memory:");
-  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=14");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=15");
   const quarantine = vi.fn(), originalExec = db.exec.bind(db);
   if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
   const publication = createNativeInputPublication({

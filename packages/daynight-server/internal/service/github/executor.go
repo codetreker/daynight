@@ -20,6 +20,7 @@ type Remote interface {
 	VerifyAccess(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	ResolveRepository(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	ListOpen(context.Context, int64, string, string, func([]githubpr.Observation) error) error
+	ListAll(ctx context.Context, installationID, repositoryID int64, owner, repo string, visit func([]remote.PullSummary) error) (bool, error)
 	PullRequest(context.Context, int64, string, string, int64) (githubpr.Observation, error)
 }
 
@@ -28,6 +29,7 @@ var errUnknown = errors.New("github sync transaction outcome unknown")
 var errTransaction = errors.New("github sync transaction failed")
 var errCheckpoint = errors.New("github sync checkpoint failed")
 var errAccessStop = errors.New("github access check stopped work")
+var errObservationConflict = errors.New("github observation conflicts with confirmed state")
 
 type run struct {
 	remote     Remote
@@ -39,6 +41,7 @@ type run struct {
 	connection githubpr.Connection
 	kind       string
 	log        *slog.Logger
+	confirmed  map[int64]*githubpr.PullRequest
 }
 
 func (r *run) tx(ctx context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {

@@ -7,7 +7,8 @@ import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { createOperationStore, sessionBodyHash } from "../../../../src/commands/task/session/operation-store.js";
 import type { OperationStore, SessionOperationRecord } from "../../../../src/commands/task/session/operation-store.js";
 import { actorId, origin, inspection, operationId, projectId, sessionId, taskId } from "./fixtures.js";
-import { powershellOracleScript, runOracleCommand } from "../../../helpers/windows-oracle.js";
+import { runOracleCommand } from "../../../helpers/windows-oracle.js";
+import { assertPrivateWindowsAcl } from "../../../helpers/windows-acl.js";
 let root: string;
 const stores: OperationStore[] = [];
 const aclProcessMs = 30_000;
@@ -73,28 +74,11 @@ it.each(["prepared", "dispatch_unknown"] as const)("recovers a real child-proces
 it.skipIf(process.platform !== "win32")("uses real protected current-user Windows DACLs and rejects an added public ACE", async () => {
   const f = await create(); await f.store.acquire(); await f.store.write(base); await f.store.close();
   const target = path.join(f.actor, `${operationId}.json`);
-  // Windows PowerShell's .NET Framework reads the OS ACL without module autoloading.
-  const script = powershellOracleScript(`
-Write-OraclePhase 'get-access-control-start'
-$acl = [System.IO.File]::GetAccessControl($env:DAYNIGHT_ACL_PROBE, [System.Security.AccessControl.AccessControlSections]::Access)
-Write-OraclePhase 'get-access-control-completed'
-Write-OraclePhase 'get-access-rules-start'
-$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-Write-OraclePhase 'get-access-rules-completed'
-Write-OraclePhase 'current-identity-start'
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-Write-OraclePhase 'current-identity-completed'
-Write-OraclePhase 'acl-assertion-start'
-if (!$acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].IsInherited -or $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) { throw 'Unexpected ACL' }
-Write-OraclePhase 'acl-assertion-completed'
-[Console]::WriteLine('private')
-`);
-  const observed = await runOracleCommand({ stage: "private-acl-readback", executable: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", script], timeoutMs: aclProcessMs, killSignal: "SIGKILL", env: { ...process.env, DAYNIGHT_ACL_PROBE: target } });
-  expect(observed.stdout.trim()).toBe("private");
+  await assertPrivateWindowsAcl(target);
   await runOracleCommand({ stage: "public-ace-grant", executable: "icacls.exe", args: [target, "/grant", "*S-1-1-0:(R)"], timeoutMs: aclProcessMs, killSignal: "SIGKILL" });
   await expect(f.store.read()).rejects.toThrow("exactly one current-user allow ACE");
   process.stderr.write(`${JSON.stringify({ kind: "session-acl-probe", stage: "unsafe-acl-rejection", state: "completed" })}\n`);
-}, 2 * aclProcessMs + 5_000);
+}, aclProcessMs + 5_000);
 
 it.skipIf(process.platform !== "win32")("durably writes and recovers Windows records whose directory and files exceed MAX_PATH", async () => {
   const directory = path.join(root, "deep-state-" + "x".repeat(110), "next-level-" + "y".repeat(110));

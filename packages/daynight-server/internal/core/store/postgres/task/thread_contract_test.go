@@ -402,7 +402,7 @@ func testThreadSourceReadsOnlyWorkerAttribution(t *testing.T, database *postgres
 	ctx := context.Background()
 	ordinary := writerTask(t, database, project.ID, 10, model.TaskTodo)
 	reference := testutil.SetSnapshotTaskClaim(t, database.Pool, database, project.ID, 11, principal.UserID, testutil.QueryID(900))
-	testutil.PutTaskProperty(t, database.Pool, reference.TaskID, "paused", []byte(`false`))
+	testutil.PutTaskProperty(t, database.Pool, reference.TaskID, "blocked", []byte(`false`))
 	if err := writerThreadWrite(t, database, ctx, func(rawTx pgx.Tx, tx *taskpg.ThreadAccess) error {
 		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
 			return err

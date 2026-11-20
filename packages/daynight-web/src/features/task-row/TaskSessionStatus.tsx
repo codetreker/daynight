@@ -10,13 +10,13 @@ const labels = {
     no_session: '无当前 Session', not_registered: 'Session 未注册', pending: 'Session 待同步',
     working: 'Session 工作中', notice: 'Session 需要响应', warning: 'Session 需要检查',
     unavailable: 'Session 不可用', unobserved: 'Session 尚未观测', expired: 'Session 观测过期', accessible: '当前 Session 可访问',
-    attention: '需要关注', open: '打开 Session',
+    attention: '需要关注', warningAttention: 'Session 需要关注', open: '打开 Session',
   },
   en: {
     no_session: 'No current Session', not_registered: 'Session not registered', pending: 'Session pending',
     working: 'Session working', notice: 'Session needs a response', warning: 'Session needs checking',
     unavailable: 'Session unavailable', unobserved: 'Session not observed', expired: 'Session observation expired', accessible: 'Current Session accessible',
-    attention: 'Needs attention', open: 'Open Session',
+    attention: 'Needs attention', warningAttention: 'Session needs attention', open: 'Open Session',
   },
 } as const;
 
@@ -30,7 +30,8 @@ export function TaskSessionStatus({ title, status, statusId, observation, allowA
   const m = labels[locale];
   const detail = observation?.state == null || (!allowAgents && observation.state === 'no_session') ? null : m[observation.state];
   const attention = observation?.needsAttention === true ? m.attention : null;
-  const description = [detail, attention].filter(Boolean).join(' · ');
+  const description = observation?.state === 'warning' && observation.needsAttention === true
+    ? m.warningAttention : [detail, attention].filter(Boolean).join(' · ');
   const open = observation?.canOpen === true && onActivate !== undefined;
   if (!showTaskStatus && !description && !open) return null;
   const separator = locale === 'zh-CN' ? '，' : ', ';

@@ -28,15 +28,19 @@ type workflowFixture struct {
 
 func workflow(t *testing.T) *workflowFixture {
 	t.Helper()
-	db := testutil.OpenStore(t, postgres.Open)
+	return workflowInStore(t, testutil.OpenStore(t, postgres.Open), 400)
+}
+
+func workflowInStore(t *testing.T, db *postgres.Store, number int) *workflowFixture {
+	t.Helper()
 	owner, _, project := testutil.ProjectMembershipFixture(t, db)
-	task := testutil.QueryTask(t, db, project.ID, 400, model.TaskInProgress)
+	task := testutil.QueryTask(t, db, project.ID, number, model.TaskInProgress)
 	patID := uuid.NewString()
-	hash := sha256.Sum256([]byte("isolated-test-parent"))
+	hash := sha256.Sum256([]byte(patID))
 	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'usage fixture',clock_timestamp())`, patID, owner.UserID, hash[:])
 	owner.Kind = model.PATCredential
 	owner.CredentialID = patID
-	claim := testutil.WorkerClaim(400, owner.UserID, uuid.NewString(), model.WorkerActive)
+	claim := testutil.WorkerClaim(number, owner.UserID, uuid.NewString(), model.WorkerActive)
 	claim.Agent = model.AgentCopilot
 	claim.AgentControlMode = model.AgentControlModeWeb
 	for name, raw := range testutil.TaskProperties(t, claim) {
@@ -44,7 +48,7 @@ func workflow(t *testing.T) *workflowFixture {
 	}
 	testutil.MustExec(t, db.Pool, `UPDATE tasks SET allow_agents=true WHERE id=$1`, task.ID)
 	sessionID := uuid.NewString()
-	native := "native-fixture"
+	native := "native-fixture-" + sessionID
 	instance := uuid.NewString()
 	snapshot := sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: sessionID, ClaimID: claim.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "1"}, Identity: sp.Identity{Provider: "copilot", ControllerInstanceID: instance, NativeSessionID: &native, WorkerID: claim.WorkerID}, Lifecycle: "active"}
 	raw, err := json.Marshal(snapshot)

@@ -59,6 +59,17 @@ describe("Agent-scoped CLI aliases", () => {
     expect((await execute("/bin/sh", ["-c", "daynight; dn"], { env: prepared.environment })).stdout).toBe("original-dn\noriginal-daynight\n");
   });
 
+  it.skipIf(process.platform === "win32")("stores Bot shims separately while commands retain the original CLI configuration", async () => {
+    const { root, bin, stateDirectory, executable } = await fixture();
+    const target = await executable("config-reader", "unused");
+    await writeFile(target, '#!/bin/sh\nprintf "%s" "$DN_CONFIG_DIR"\n');
+    const storageDirectory = path.join(root, "bot");
+    const prepared = await prepareAgentCliAliases({ aliases: { daynight: target }, environment: { PATH: bin }, stateDirectory, storageDirectory });
+    expect(path.dirname(prepared.directory!)).toBe(path.join(storageDirectory, "agent-cli-aliases"));
+    expect((await execute("/bin/sh", ["-c", "daynight"], { env: prepared.environment })).stdout).toBe(stateDirectory);
+    await expect(stat(path.join(stateDirectory, "agent-cli-aliases"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.skipIf(process.platform === "win32")("fails before creating shims when any target is missing or not executable", async () => {
     const { bin, stateDirectory, executable } = await fixture();
     const target = await executable("not-executable", "ignored"); await chmod(target, 0o600);

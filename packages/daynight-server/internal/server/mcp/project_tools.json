@@ -42,8 +42,32 @@
     }
   },
   {
+    "name": "project_transfer_preview",
+    "description": "Read the Project, source and destination Teams, exact ownership and target Team versions, and permanent Goal dependency removal scope. Show these facts to the user and obtain explicit confirmation for this transfer before calling project_transfer. No answer or refusal means no write call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "toTeam": {
+          "type": "string",
+          "description": "Canonical Team UUID or exact same-service /teams/{uuid} link."
+        }
+      },
+      "required": ["projectId", "toTeam"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "project_transfer",
-    "description": "Transfer project ownership with the observed ownership version.",
+    "description": "Transfer project ownership. First call project_transfer_preview, show the Project, target Team and permanent removal of all internal and cross-Project Goal dependencies, and obtain the user's explicit confirmation for this operation. No answer or refusal means no write call. Submit confirm:true, confirmGoalDependencyRemoval:true and both exact preview versions. On a version conflict, preview again and obtain new user confirmation; never replay an unknown write outcome.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -58,7 +82,16 @@
         "ifVersion": {
           "type": "string",
           "pattern": "^[1-9][0-9]{0,18}$",
-          "description": "Exact positive int64 decimal; omit only where current CLI reads a version before writing."
+          "description": "Exact positive int64 ownership version from project_transfer_preview. Required with confirmGoalDependencyRemoval; legacy requests may omit."
+        },
+        "ifTargetVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 target Team version from project_transfer_preview. Required with confirmGoalDependencyRemoval."
+        },
+        "confirmGoalDependencyRemoval": {
+          "const": true,
+          "description": "The user explicitly confirmed this Project transfer and permanent removal of all its Goal dependencies, including internal and cross-Project incoming and outgoing relationships. Requires both preview versions."
         },
         "confirm": {
           "const": true
@@ -69,12 +102,60 @@
         "toTeam",
         "confirm"
       ],
+      "dependentRequired": {
+        "confirmGoalDependencyRemoval": ["ifVersion", "ifTargetVersion"]
+      },
       "additionalProperties": false
     },
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": true,
       "openWorldHint": false
+    }
+  },
+  {
+    "name": "project_preview_repository",
+    "description": "Preview a Project repository address change. Show the Project, old and new addresses, classification and binding effects to the user before requesting explicit confirmation. An unverified identity can be treated as a switch only with separate explicit agreement.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "repoUrl": {"type": "string", "description": "Repository address, at most 4096 UTF-8 bytes."}
+      },
+      "required": ["projectId", "repoUrl"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "project_set_repository",
+    "description": "Save a confirmed Project repository change. First preview and show the Project, old and new addresses, classification and effects. A switch disconnects the Project GitHub App binding and removes existing Worker cloud selections; Worker synchronization has a window and running executions may stop. Obtain explicit user confirmation; for unverified identity also obtain explicit agreement to treat it as a switch. No answer or refusal means no write call. Submit confirm:true and the exact preview versions, classification and nullable target ID without refreshing them. On conflict, preview again and obtain new confirmation. For an unknown outcome, read the current state; never replay automatically.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "repoUrl": {"type": "string", "description": "Exactly the candidate address from the confirmed preview, at most 4096 UTF-8 bytes."},
+        "repositoryVersion": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$", "description": "Exact positive int64 decimal string from the confirmed preview."},
+        "ownershipVersion": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$", "description": "Exact positive int64 decimal string from the confirmed preview."},
+        "classification": {"enum": ["unchanged", "same_repository", "different_repository", "unverified"]},
+        "targetGitHubRepositoryId": {"anyOf": [{"type": "string", "pattern": "^[1-9][0-9]{0,18}$"}, {"type": "null"}], "description": "Exact nullable target ID from the confirmed preview; a string is a positive decimal int64."},
+        "treatUnverifiedAsSwitch": {"type": "boolean", "description": "True only when the user explicitly agrees to treat an unverified identity as a switch."},
+        "confirm": {"const": true}
+      },
+      "required": ["projectId", "repoUrl", "repositoryVersion", "ownershipVersion", "classification", "targetGitHubRepositoryId", "confirm"],
+      "allOf": [
+        {"if": {"properties": {"classification": {"const": "unverified"}}, "required": ["classification"]}, "then": {"properties": {"treatUnverifiedAsSwitch": {"const": true}}, "required": ["treatUnverifiedAsSwitch"]}, "else": {"properties": {"treatUnverifiedAsSwitch": {"const": false}}}}
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {

@@ -478,10 +478,10 @@ describe('authoritative project management', () => {
   it('reads regular member state without requesting administrator invitations', async () => {
     actorRole = 'member';
     vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
-    members({ projectName: 'Very long project name' }); await readyMembers();
+    members(); await readyMembers();
     expect(screen.getByText(/成员与邀请由项目管理员管理/)).toBeInTheDocument();
     expect(auth.listInvitations).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull(); expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
-    expect(screen.getByText('Very long project name · 管理协作成员与加入邀请')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '项目成员', level: 2 })).toBeVisible();
   });
 
   it('allows the last direct admin to change grants and submits the exact observed int64 version on confirmed promotion', async () => {

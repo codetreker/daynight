@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -48,7 +49,7 @@ it("retains the recording source lock while journal closure is unconfirmed", asy
   vi.spyOn(instanceLock, "acquireInstanceLockSync").mockImplementation((...args) => { const lock = acquire(...args); held = lock; [lockFile, gateFile] = args; return lock; });
   const failure = new Error("controlled journal close failure");
   vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
-    if (db.name === journalPath) { unclosed = db; throw failure; }
+    if (sqliteDisplayFilename(db.name) === journalPath) { unclosed = db; throw failure; }
     closeDatabase(db, options, outcome);
   });
   try {

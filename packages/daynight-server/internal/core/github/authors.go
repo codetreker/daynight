@@ -11,10 +11,12 @@ import (
 )
 
 type AuthorsRequest struct {
+	RepositoryID  *int64
 	Query, Cursor string
 	Limit         int
 }
 type AuthorsPage struct {
+	Repository *githubpr.Repository
 	Connection githubpr.Connection
 	Items      []githubpr.Author
 	NextCursor *string
@@ -22,6 +24,9 @@ type AuthorsPage struct {
 
 // Authors reads the canonical directory within the same authorized snapshot as its revision.
 func (r *Reader) Authors(ctx context.Context, principal model.Principal, projectID string, request AuthorsRequest) (AuthorsPage, error) {
+	if request.RepositoryID != nil && *request.RepositoryID <= 0 {
+		return AuthorsPage{}, invalid("Repository ID must be positive.")
+	}
 	if request.Limit < 1 || request.Limit > 100 {
 		return AuthorsPage{}, invalid("Limit must be between 1 and 100.")
 	}
@@ -32,7 +37,7 @@ func (r *Reader) Authors(ctx context.Context, principal model.Principal, project
 	if err != nil {
 		return AuthorsPage{}, err
 	}
-	query := store.GitHubAuthorQuery{ProjectID: id, Query: request.Query, Limit: request.Limit}
+	query := store.GitHubAuthorQuery{ProjectID: id, RepositoryID: request.RepositoryID, Query: request.Query, Limit: request.Limit}
 	var cursor *authorCursor
 	if request.Cursor != "" {
 		cursor, err = decodeAuthorCursor(request.Cursor, id, request)
@@ -46,6 +51,10 @@ func (r *Reader) Authors(ctx context.Context, principal model.Principal, project
 		dao := s.GitHubDAO()
 		var e error
 		result.Connection, e = dao.Connection(ctx, id)
+		if e != nil {
+			return e
+		}
+		result.Repository, e = selectedRepository(ctx, dao, id, request.RepositoryID)
 		if e != nil {
 			return e
 		}

@@ -231,6 +231,38 @@ describe('Project reading history', () => {
     expect(readProjectHistory(projectHistory(user, project, description), user, project)).toEqual(description);
   });
 
+  it('restores Usage readers in project Goal modals and nested task history', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const usage = { ...selection, view: 'goals', detail: { ...selection.detail!,
+      navigation: { tab: 'usage', path: null },
+      goalChildren: { graphRootId: child, task: { id: child, navigation: { tab: 'usage', path: null } } },
+    } } as const;
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => result.current.select(selection));
+      const overview = history.state;
+      act(() => result.current.select(usage));
+      const saved = history.state;
+      expect(result.current.error).toBe(false);
+      expect(result.current.selection).toEqual(usage);
+      expect(readProjectHistory(projectHistory(user, project, usage), user, project)).toEqual(usage);
+      arrival(overview, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual(selection);
+      arrival(saved, `${path}?tab=tasks`);
+      expect(result.current.error).toBe(false);
+      expect(result.current.selection).toEqual(usage);
+
+      const personal = { projectPages: {}, detail: { projectId: project, id: root,
+        navigation: usage.detail.navigation, goalChildren: usage.detail.goalChildren } };
+      expect(readMyTasksHistory(myTasksHistory(user, personal), user)).toEqual(personal);
+      const resource = { goalChildren: usage.detail.goalChildren, externalGoal: { id: root, witness: child,
+        navigation: usage.detail.navigation, goalChildren: usage.detail.goalChildren } };
+      expect(readResourceHistory(resourceHistory(user, project, root, resource), user, project, root)).toEqual(resource);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
   it('keeps a Goal address pending until its reader is admitted and closes it atomically behind the draft guard', () => {
     history.replaceState(null, '', `${path}?tab=tasks&goalGraph=${root}#chain=${child}`);
     const navigation = browserNavigation();

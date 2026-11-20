@@ -6,7 +6,6 @@ import (
 	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -85,14 +84,15 @@ func (r *run) hints(ctx context.Context) error {
 func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name string, pollID *string) error {
 	// Each hint retains its own context through fetch, publication and acknowledgement.
 	job := *r
-	job.log = r.log.With("hint_id", h.RequestID, "delivery_id", h.DeliveryID)
+	job.log = r.log.With("source", "hint", "hint_id", h.RequestID, "delivery_id", h.DeliveryID)
 	r = &job
+	defer func() { delete(r.confirmed, h.Number) }()
 	ctx = r.checkpointContext(ctx)
 	r.log.InfoContext(ctx, "github hint fetch", "phase", "fetch")
 	if err := r.runtime(ctx, func(w *store.GitHubRuntimeWrite, _ githubpr.Connection, now time.Time) { core.WebhookAttempt(w, now) }); err != nil {
 		return err
 	}
-	o, err := r.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, h.Number)
+	o, err := r.checkedDetail(ctx, owner, name, h.Number, nil)
 	if err == nil && o.Number != h.Number {
 		err = errors.New("github pull request number mismatch")
 	}
@@ -109,22 +109,6 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 	if err != nil {
 		return r.hintFailure(ctx, h, err)
 	}
-	known := true
-	if o.State != "open" {
-		c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
-		defer cancel()
-		err = r.snapshot.ReadSnapshot(c, func(s store.SnapshotScope) error {
-			_, e := s.GitHubDAO().PullRequest(c, r.project, h.Number)
-			if errors.Is(e, model.ErrNotFound) {
-				known = false
-				return nil
-			}
-			return e
-		})
-		if err != nil {
-			return errors.Join(errTransaction, err)
-		}
-	}
 	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		_, e := d.Connection(c)
 		if e != nil {
@@ -134,7 +118,14 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 		if e != nil {
 			return e
 		}
-		if known {
+		facts, valid, e := d.PublicationFacts(c, r.lease, *r.connection.RepositoryID, p.Number, terminalAt(p))
+		if e = require(valid, e); e != nil {
+			return e
+		}
+		if core.StaleObservation(p, facts) || r.changedSinceConfirmation(p, facts) {
+			return errObservationConflict
+		}
+		if core.EligibleFirstPublication(p, facts) {
 			p.ObservedAt = now
 			ok, e := d.Publish(c, r.lease, []githubpr.PullRequest{p})
 			if e = require(ok, e); e != nil {
@@ -158,13 +149,13 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 		ok, e := d.SaveRuntime(c, r.lease, w)
 		return require(ok, e)
 	})
+	if c.Outcome == store.TransactionNotCommitted && errors.Is(e, errObservationConflict) {
+		return r.hintFailure(ctx, h, e)
+	}
 	if e = committed(c, e); e != nil {
 		return e
 	}
-	if known {
-		return r.renew(ctx)
-	}
-	return nil
+	return r.renew(ctx)
 }
 func (r *run) hintFailure(ctx context.Context, h store.GitHubPendingPR, cause error) error {
 	if fatal(cause) {

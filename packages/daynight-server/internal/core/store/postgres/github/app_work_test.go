@@ -14,8 +14,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type appWorkFixture struct {
@@ -159,6 +161,9 @@ func assertAppWorkFenced(t *testing.T, w store.GitHubAppWorkDAO, lease store.Git
 	}
 	if _, valid, err := w.HasPending(ctx, lease); err != nil || valid {
 		t.Fatalf("has pending escaped: %v %v", valid, err)
+	}
+	if _, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now); err != nil || valid {
+		t.Fatalf("publication facts escaped: %v %v", valid, err)
 	}
 }
 
@@ -412,5 +417,387 @@ func TestAppWorkLeaseAndDueFailuresPreserveState(t *testing.T) {
 	mustExec(t, tx, `ROLLBACK TO SAVEPOINT missing_pending`)
 	if due, err := w.HasDuePending(ctx, now.Add(time.Second)); err != nil || !due {
 		t.Fatalf("pending changed after error: %v %v", due, err)
+	}
+}
+
+func TestPublicationFactsAndHintAcknowledgementAreAtomic(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	end := start.Add(30 * time.Second)
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, f.db, pgx.TxOptions{})
+	w, lease, now := f.claimed(t, tx)
+	facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period == nil || !facts.Period.StartedAt.Equal(start) || facts.Period.EndedAt == nil || !facts.Period.EndedAt.Equal(end) {
+		t.Fatalf("facts: %+v valid=%v err=%v", facts, valid, err)
+	}
+	if _, valid, err = w.PublicationFacts(ctx, lease, 31, 42, &start); err != nil || valid {
+		t.Fatalf("wrong repo accepted: %v %v", valid, err)
+	}
+	p := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "https://github.com/owner/repo/pull/42", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: start, GitHubClosedAt: &start, ObservedAt: now}}
+	if !core.EligibleFirstPublication(p, facts) {
+		t.Fatal("start should be included")
+	}
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{p}); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	if ok, err := w.AckPending(ctx, lease, 42, f.request); err != nil || !ok {
+		t.Fatalf("ack: %v %v", ok, err)
+	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n, pending int
+	if err = f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_pull_requests WHERE project_id=$1), (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2)`, f.project, f.request).Scan(&n, &pending); err != nil || n != 0 || pending != 1 {
+		t.Fatalf("rollback: rows=%d pending=%d err=%v", n, pending, err)
+	}
+	tx2 := begin(t, f.db, pgx.TxOptions{})
+	w, lease, _ = f.claimed(t, tx2)
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &end)
+	p.GitHubClosedAt = &end
+	if err != nil || !valid || core.EligibleFirstPublication(p, facts) {
+		t.Fatalf("end boundary facts=%+v valid=%v err=%v", facts, valid, err)
+	}
+}
+
+func TestCoverageClosedByIntentRemovalAndOldClaimFenced(t *testing.T) {
+	for _, action := range []string{"grant", "project"} {
+		t.Run(action, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+				t.Fatal(err)
+			}
+			claimTx := begin(t, f.db, pgx.TxOptions{})
+			_, lease, _ := f.claimed(t, claimTx)
+			if err := claimTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			stopTx := begin(t, f.db, pgx.TxOptions{})
+			if action == "project" {
+				if err := github.InvalidateProject(ctx, stopTx, f.project); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				stop := github.NewConnectionStopWriter(stopTx, f.app)
+				if ok, err := stop.StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision()); err != nil || !ok {
+					t.Fatalf("stop %v %v", ok, err)
+				}
+			}
+			if err := stopTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var end *time.Time
+			if err := f.db.Pool.QueryRow(ctx, `SELECT ended_at FROM project_github_coverage WHERE project_id=$1`, f.project).Scan(&end); err != nil || end == nil || !end.After(start) || end.Nanosecond() != 0 {
+				t.Fatalf("closed period: %v %v", end, err)
+			}
+			checkTx := begin(t, f.db, pgx.TxOptions{})
+			_, err := github.NewAppWorkWriter(ctx, checkTx, f.project, &f.identity)
+			if !errors.Is(err, store.ErrGitHubAppWorkUnavailable) {
+				t.Fatalf("old claim %s admitted: %v", lease.Token, err)
+			}
+		})
+	}
+}
+
+func TestPublicationAndHintCommitEligibility(t *testing.T) {
+	for _, eligible := range []bool{true, false} {
+		t.Run(fmt.Sprintf("eligible_%v", eligible), func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			end := start.Add(30 * time.Second)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end); err != nil {
+				t.Fatal(err)
+			}
+			tx := begin(t, f.db, pgx.TxOptions{})
+			w, lease, now := f.claimed(t, tx)
+			at := start
+			if !eligible {
+				at = end
+			}
+			facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &at)
+			if err != nil || !valid {
+				t.Fatalf("facts %v %v", valid, err)
+			}
+			p := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "https://github.com/owner/repo/pull/42", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: at, GitHubClosedAt: &at, ObservedAt: now}}
+			if core.EligibleFirstPublication(p, facts) != eligible {
+				t.Fatal("incorrect eligibility")
+			}
+			if eligible {
+				if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{p}); err != nil || !ok {
+					t.Fatalf("publish %v %v", ok, err)
+				}
+			}
+			if ok, err := w.AckPending(ctx, lease, 42, f.request); err != nil || !ok {
+				t.Fatalf("ack %v %v", ok, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var state *string
+			var pending int
+			if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT state FROM project_pull_requests WHERE project_id=$1 AND number=42),(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2)`, f.project, f.request).Scan(&state, &pending); err != nil || pending != 0 || (state != nil) != eligible || (state != nil && *state != "closed") {
+				t.Fatalf("state=%v pending=%d err=%v", state, pending, err)
+			}
+		})
+	}
+}
+
+func TestCoverageConfigurationTransitionsFenceClaim(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+		t.Fatal(err)
+	}
+	claimTx := begin(t, f.db, pgx.TxOptions{})
+	_, lease, _ := f.claimed(t, claimTx)
+	if err := claimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	change := func(sync, enabled bool, version, generation int64) {
+		t.Helper()
+		tx := begin(t, f.db, pgx.TxOptions{})
+		d := github.NewProjectAppWriter(tx, f.project)
+		c := store.GitHubConfigurationWrite{ExpectedVersion: version, Version: version + 1, Generation: generation, Revision: 7 + generation, Enabled: enabled, SyncEnabled: sync, AppID: ptr(int64(91)), InstallationID: ptr(int64(20)), RepositoryID: ptr(int64(30)), PollIntervalMinutes: 5, AccessState: "available"}
+		w := store.GitHubProjectAppWrite{Configuration: c, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}
+		if !enabled {
+			w.AppResourceID = nil
+			w.GrantID = nil
+			w.CredentialVersion = nil
+			c.AppID = nil
+			c.InstallationID = nil
+			c.AccessState = "unknown"
+			w.Configuration = c
+		}
+		if ok, err := d.Save(ctx, w); err != nil || !ok {
+			t.Fatalf("save %v %v", ok, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	change(false, true, 2, 2)
+	var ended *time.Time
+	if err := f.db.Pool.QueryRow(ctx, `SELECT ended_at FROM project_github_coverage WHERE project_id=$1`, f.project).Scan(&ended); err != nil || ended == nil || !ended.After(start) {
+		t.Fatalf("disable ended=%v err=%v", ended, err)
+	}
+	change(true, true, 3, 3)
+	var open int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL`, f.project).Scan(&open); err != nil || open != 1 {
+		t.Fatalf("reenable open=%d err=%v", open, err)
+	}
+	check := begin(t, f.db, pgx.TxOptions{})
+	w, err := github.NewAppWorkWriter(ctx, check, f.project, &f.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := w.ValidLease(ctx, lease); err != nil || valid {
+		t.Fatalf("old lease valid=%v err=%v", valid, err)
+	}
+	if err := check.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	change(false, false, 4, 4)
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL`, f.project).Scan(&open); err != nil || open != 0 {
+		t.Fatalf("disconnect open=%d err=%v", open, err)
+	}
+}
+
+type connectionStopState struct {
+	connection, coverage, pending string
+	coverageTable, pendingTable   uint32
+	revisionColumn                int16
+}
+
+func readConnectionStopState(t *testing.T, f appWorkFixture) connectionStopState {
+	t.Helper()
+	var state connectionStopState
+	var intact bool
+	err := f.db.Pool.QueryRow(t.Context(), `SELECT
+ to_jsonb(c)::text,
+ (SELECT jsonb_agg(to_jsonb(x) ORDER BY repository_id,started_at)::text FROM project_github_coverage x WHERE project_id=c.project_id),
+ (SELECT jsonb_agg(to_jsonb(p) ORDER BY number)::text FROM project_github_pending_prs p WHERE project_id=c.project_id),
+ 'project_github_coverage'::regclass::oid,
+ 'project_github_pending_prs'::regclass::oid,
+ (SELECT attnum FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='revision' AND NOT attisdropped),
+ c.sync_enabled AND c.generation=1
+   AND EXISTS(SELECT FROM project_github_coverage WHERE project_id=c.project_id AND ended_at IS NULL)
+   AND to_regclass('inaccessible_coverage') IS NULL
+   AND to_regclass('inaccessible_pending') IS NULL
+   AND NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='inaccessible_revision' AND NOT attisdropped)
+ FROM project_github c WHERE c.project_id=$1`, f.project).
+		Scan(&state.connection, &state.coverage, &state.pending, &state.coverageTable, &state.pendingTable, &state.revisionColumn, &intact)
+	if err != nil || !intact {
+		t.Fatalf("connection stop fixture is not intact: %v, %v", intact, err)
+	}
+	return state
+}
+
+func TestCoverageFailureAbortsConnectionStops(t *testing.T) {
+	f := newAppWorkFixture(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if _, err := f.db.Pool.Exec(t.Context(), `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+		t.Fatal(err)
+	}
+	before := readConnectionStopState(t, f)
+	const missingCoverage = `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`
+	for _, test := range []struct {
+		name, ddl, state, phase string
+	}{
+		{"grant", missingCoverage, "42P01", "remove empty github coverage"},
+		{"project", missingCoverage, "42P01", "remove empty github coverage"},
+		{"unbound retirement", missingCoverage, "42P01", "remove empty github coverage"},
+		{"unbound pending failure", `ALTER TABLE project_github_pending_prs RENAME TO inaccessible_pending`, "42P01", "clear unbound retirement pending"},
+		{"unbound revision failure", `ALTER TABLE project_github RENAME COLUMN revision TO inaccessible_revision`, "42703", "read unbound retirement versions"},
+	} {
+		// Commit the unbound baseline even when the preceding subtests are filtered out.
+		if test.name == "unbound retirement" {
+			tag, err := f.db.Pool.Exec(t.Context(), `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`, f.project)
+			if err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("prepare unbound connection: %v, %v", tag, err)
+			}
+			before = readConnectionStopState(t, f)
+		}
+		if !t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			var retirement store.GitHubProjectRetirementDAO
+			if strings.HasPrefix(test.name, "unbound") {
+				retirement = github.NewProjectRetirement(tx, f.project)
+				if _, err := retirement.LockBinding(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mustExec(t, tx, test.ddl)
+			var err error
+			switch test.name {
+			case "grant":
+				_, err = github.NewConnectionStopWriter(tx, f.app).StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision())
+			case "project":
+				err = github.InvalidateProject(ctx, tx, f.project)
+			default:
+				err = retirement.Stop(ctx, core.DisconnectionDecision())
+			}
+			var databaseErr *store.Error
+			var cause *pgconn.PgError
+			if !errors.As(err, &databaseErr) || !databaseErr.DatabaseFailure || databaseErr.Phase != test.phase ||
+				!errors.As(err, &cause) || cause.Code != test.state {
+				t.Fatalf("stop error = %v, want SQLSTATE %s from %s", err, test.state, test.phase)
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			testutil.AssertPoolReusable(t, f.db.Pool)
+			if after := readConnectionStopState(t, f); after != before {
+				t.Fatalf("failed stop changed state: before=%+v after=%+v", before, after)
+			}
+		}) {
+			return
+		}
+	}
+}
+
+func TestPublicationFactsExposeDatabaseFailures(t *testing.T) {
+	for _, table := range []string{"project_pull_requests", "project_github_coverage"} {
+		t.Run(table, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			w, lease, now := f.claimed(t, tx)
+			mustExec(t, tx, `ALTER TABLE `+table+` RENAME TO inaccessible_facts`)
+			_, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now)
+			if err == nil || valid {
+				t.Fatalf("missing %s accepted: valid=%v err=%v", table, valid, err)
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("database failure lost: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var pending int
+			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2`, f.project, f.request).Scan(&pending); err != nil || pending != 1 {
+				t.Fatalf("failed facts changed pending: %d %v", pending, err)
+			}
+		})
+	}
+}
+
+func TestRepositorySourcesIsolateLegacyReadsAndLeasePublications(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	tx := begin(t, f.db, pgx.TxOptions{})
+	mustExec(t, tx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,30,'owner/current'),($1,31,'owner/legacy')`, f.project)
+	mustExec(t, tx, `UPDATE project_github SET legacy_repository_id=31 WHERE project_id=$1`, f.project)
+	mustExec(t, tx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision)
+	 VALUES($1,31,42,4200,'legacy-url','legacy',7,'legacy-author','open',false,'main','sha',now(),now(),now(),1),
+	       ($1,31,43,4300,'legacy-url-43','legacy-only',7,'legacy-author','open',false,'main','sha',now(),now(),now(),1)`, f.project)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	end := start.Add(30 * time.Second)
+	mustExec(t, tx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,31,$2,$3)`, f.project, start, end)
+	w, lease, now := f.claimed(t, tx)
+	facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period != nil {
+		t.Fatalf("another repository's PR and coverage leaked into active facts: %+v valid=%v err=%v", facts, valid, err)
+	}
+	mustExec(t, tx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end)
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period == nil || !facts.Period.StartedAt.Equal(start) || facts.Period.EndedAt == nil || !facts.Period.EndedAt.Equal(end) {
+		t.Fatalf("active coverage: %+v valid=%v err=%v", facts, valid, err)
+	}
+	atEnd, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &end)
+	terminal := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "current-url", Title: "current", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: start, GitHubClosedAt: &start, ObservedAt: now}}
+	if err != nil || !valid || !core.EligibleFirstPublication(terminal, facts) || core.EligibleFirstPublication(githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{State: "closed", GitHubClosedAt: &end}}, atEnd) {
+		t.Fatalf("coverage interval eligibility: start=%+v end=%+v valid=%v err=%v", facts, atEnd, valid, err)
+	}
+	active := terminal
+	active.Number, active.GitHubID, active.State, active.Title, active.GitHubClosedAt = 44, 440, "open", "current-only", nil
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{terminal, active}); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	if got, valid, err := w.UnseenActive(ctx, lease, uuid.NewString(), 0, 100); err != nil || !valid || !reflect.DeepEqual(got, []int64{44}) {
+		t.Fatalf("active unseen: %v valid=%v err=%v", got, valid, err)
+	}
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current == nil || facts.Current.Title != "current" {
+		t.Fatalf("current fact: %+v valid=%v err=%v", facts, valid, err)
+	}
+	var oldTitle, newTitle string
+	if err := tx.QueryRow(ctx, `SELECT (SELECT title FROM project_pull_requests WHERE project_id=$1 AND repository_id=31 AND number=42), (SELECT title FROM project_pull_requests WHERE project_id=$1 AND repository_id=30 AND number=42)`, f.project).Scan(&oldTitle, &newTitle); err != nil || oldTitle != "legacy" || newTitle != "current" {
+		t.Fatalf("same-number rows: old=%q new=%q err=%v", oldTitle, newTitle, err)
+	}
+	r := github.NewReader(tx)
+	detail, err := r.PullRequest(ctx, f.project, 42, nil)
+	if err != nil || detail.Title != "legacy" {
+		t.Fatalf("legacy detail: %+v %v", detail, err)
+	}
+	page, err := r.PullRequests(ctx, store.GitHubPRQuery{ProjectID: f.project, State: "all", Limit: 10})
+	if err != nil || page.Total != 2 || !reflect.DeepEqual(numbers(page.Items), []int64{43, 42}) {
+		t.Fatalf("legacy page: %+v %v", page, err)
+	}
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: f.project})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 2, All: 2, ProjectTotal: 2}) {
+		t.Fatalf("legacy counts: %+v %v", counts, err)
+	}
+	authors, err := r.Authors(ctx, store.GitHubAuthorQuery{ProjectID: f.project, Limit: 10})
+	if err != nil || len(authors.Items) != 1 || authors.Items[0].Login != "legacy-author" {
+		t.Fatalf("legacy authors: %+v %v", authors, err)
+	}
+	stats, err := r.PullRequestStatistics(ctx, store.GitHubPRStatisticsQuery{ProjectID: f.project, Boundaries: []time.Time{start, now.Add(time.Hour)}, DateIndices: []int32{0, -1}})
+	if err != nil || len(stats.Buckets) != 1 || stats.Buckets[0].Total != 2 {
+		t.Fatalf("legacy statistics: %+v %v", stats, err)
+	}
+	mustExec(t, tx, `UPDATE project_github SET enabled=false,sync_enabled=false WHERE project_id=$1`, f.project)
+	if detail, err := r.PullRequest(ctx, f.project, 42, nil); err != nil || detail.Title != "legacy" {
+		t.Fatalf("disconnected legacy detail: %+v %v", detail, err)
+	}
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{active}); err != nil || ok {
+		t.Fatalf("stale publication accepted: %v %v", ok, err)
 	}
 }

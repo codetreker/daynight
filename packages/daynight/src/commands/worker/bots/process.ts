@@ -1,3 +1,4 @@
+import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -28,6 +29,7 @@ import { createControllerJobLeases, type ControllerJobLeases } from "../backends
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { assertBotMigrationExecutable } from "./migration-state.js";
 
 export class BotAdmissionBlockedError extends Error {
   constructor(options?: ErrorOptions) {
@@ -50,7 +52,9 @@ const blockedAdmission = (cause: unknown): BotAdmissionBlockedError | undefined 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
+  sessionApi: Omit<BotSessionApi, "registerRecovery">; recoveryLimit: number | (() => number); now?: () => number;
+  reconcileHosting?: (record: BotRecord) => boolean;
+  canControl?: (record: BotRecord) => boolean;
   canAdmitNewExecution(): boolean;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
@@ -130,13 +134,20 @@ export const createBotProcess = (options: {
   const current = (input: BotRecord, stopping = false): BotRecord => {
     const record = options.store.get(input.owner, input.botId);
     if (record === null || !stopping && record.observed.deletion !== null || record.definition === null) throw new Error("Bot execution requires its original active definition.");
+    assertBotMigrationExecutable(record);
     return record;
   };
   const checkedTicket = async (record: BotRecord): Promise<ControllerLaunchTicket> => {
     const intent = record.intent;
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
-    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
+    const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
+    if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
+      || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
+    if (ticket.claudeBotRecovery !== undefined && (ticket.claudeBotRecovery.botId !== record.botId
+      || ticket.claudeBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory)) throw new Error("Bot Claude recovery location conflicts with its original ownership.");
+    if (ticket.copilotBotRecovery !== undefined && (ticket.copilotBotRecovery.botId !== record.botId
+      || ticket.copilotBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).copilotRecoveryDirectory)) throw new Error("Bot Copilot recovery location conflicts with its original ownership.");
     if (toolLaunch !== undefined && (intent.toolLaunch === undefined || controllerPayloadHash(toolLaunch) !== controllerPayloadHash(intent.toolLaunch))
       || toolObservation !== undefined && (intent.toolObservation === undefined || controllerPayloadHash(toolObservation) !== controllerPayloadHash(intent.toolObservation))) throw new Error("Bot ticket tool selection differs from the original frozen intent.");
     if (config.selection !== undefined) {
@@ -166,16 +177,16 @@ export const createBotProcess = (options: {
     const provider = record.definition!.resolvedConfiguration.provider;
     if (provider === "claude") return record;
     let ticket: ControllerLaunchTicket | undefined;
-    try { await readLaunchTicket(options.homeDirectory, record.intent!.launchId); ticket = await checkedTicket(record); }
+    try { await readLaunchTicket(options.homeDirectory, record.intent!.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)); ticket = await checkedTicket(record); }
     catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-    let selected = ticket === undefined ? record.intent!.toolLaunch : await readLaunchToolSelection(options.homeDirectory, ticket);
+    let selected = ticket === undefined ? record.intent!.toolLaunch : await readLaunchToolSelection(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
     if (selected === undefined) {
       record = assertUnsubmitted(record);
       selected = record.intent!.toolLaunch ?? await options.selectToolLaunch?.(provider, signal);
       if (selected === undefined) throw missingSelection(record);
       signal.throwIfAborted(); assertUnsubmitted(record);
       checkAdmission(record);
-      if (ticket !== undefined) await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(record); });
+      if (ticket !== undefined) await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(record); }, resolveBotControllerStateDirectory(options.homeDirectory, record));
     }
     if (record.intent!.toolLaunch === undefined) {
       assertUnsubmitted(record);
@@ -231,6 +242,7 @@ export const createBotProcess = (options: {
         if (["starting", "ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped) {
           const observed = remember(record, snapshot);
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
@@ -241,6 +253,7 @@ export const createBotProcess = (options: {
         const observed = remember(record, observation.snapshot);
         if (["starting", "ready", "working"].includes(observed.lifecycle) && !observed.nativeStopped) {
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original controller remains observable but is not available for recovery.");
@@ -260,7 +273,7 @@ export const createBotProcess = (options: {
         }
         throw new Error("Bot native session identity is missing; a blank replacement is forbidden.");
       }
-      const toolLaunch = ticket.provider === "claude" ? undefined : record.intent!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket);
+      const toolLaunch = ticket.provider === "claude" ? undefined : record.intent!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
       if (ticket.provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
       if (prior.recoveryBlocked !== null) throw new Error(prior.recoveryBlocked);
       if (!(prior.restartAfterShutdown && saved.error === null) && prior.recoveryCount >= record.intent!.recoveryLimit) {
@@ -312,9 +325,9 @@ export const createBotProcess = (options: {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
         const intent = record.intent!, config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
         if (intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot registration did not establish its frozen role and Session.");
-        await mkdir(controllerExecutionDirectory(options.homeDirectory, intent.executionId), { recursive: true, mode: 0o700 });
+        await mkdir(controllerExecutionDirectory(options.homeDirectory, intent.executionId, resolveBotControllerStateDirectory(options.homeDirectory, record)), { recursive: true, mode: 0o700 });
         const previous = options.executions.get(record)!.previous;
-        const previousTicket = previous === null ? null : await readLaunchTicket(options.homeDirectory, previous.launchId);
+        const previousTicket = previous === null ? null : await readLaunchTicket(options.homeDirectory, previous.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record));
         const nativeHome = previousTicket?.nativeHome ?? (config.provider === "codex" ? prepared.environment.CODEX_HOME ?? path.join(options.homeDirectory, ".codex")
           : config.provider === "claude" ? prepared.environment.CLAUDE_CONFIG_DIR ?? path.join(options.homeDirectory, ".claude")
           : prepared.environment.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
@@ -324,9 +337,15 @@ export const createBotProcess = (options: {
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
             ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
+          ...(config.provider === "codex" && (previousTicket?.codexBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { codexBotRecovery: previousTicket?.codexBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory } } : {}),
+          ...(config.provider === "claude" && (previousTicket?.claudeBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { claudeBotRecovery: previousTicket?.claudeBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory } } : {}),
+          ...(config.provider === "copilot" && (previousTicket?.copilotBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { copilotBotRecovery: previousTicket?.copilotBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).copilotRecoveryDirectory } } : {}),
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
-          credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
-        await writeLaunchTicket(options.homeDirectory, ticket);
+          credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
+        await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
       }
       const previous = options.executions.get(current(record))!.previous;
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
@@ -334,12 +353,13 @@ export const createBotProcess = (options: {
       const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
       current(record); signal.throwIfAborted();
       checkAdmission(record);
-      if (ticket.provider !== "claude" && (await readLaunchToolSelection(options.homeDirectory, ticket))?.selectionKey !== record.intent!.toolLaunch?.selectionKey) throw missingSelection(record);
+      if (ticket.provider !== "claude" && (await readLaunchToolSelection(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record)))?.selectionKey !== record.intent!.toolLaunch?.selectionKey) throw missingSelection(record);
       checkAdmission(record);
       await writeControllerCredential(ticket.credentialFile, grant);
       record = current(record);
       checkAdmission(record);
-      return await launch({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,
+      const storageStateDirectory = resolveBotControllerStateDirectory(options.homeDirectory, record);
+      return await launch({ ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }), homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,
         onSubmitting: () => { checkAdmission(record); options.executions.update(current(record), { launchSubmission: "unknown" }); },
         onSpawned: proof => { options.executions.update(current(record, true), { controllerProcess: proof }); },
         onObserved: async snapshot => {
@@ -371,7 +391,10 @@ export const createBotProcess = (options: {
   const shutdown = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
     const retained = options.store.get(input.owner, input.botId);
     if (retained === null) throw new Error("Bot shutdown lost its original inventory record.");
+    // Migration required proven stop and fences every launch until takeover.
+    if (retained.migration !== undefined) return;
     if (retained.intent === null) return;
+    if (options.canControl?.(retained) === false) throw new Error("Bot hosting is unconfirmed; the original writer and recovery evidence are retained.");
     const record = current(retained, true);
     const execution = options.executions.get(record);
     if (execution === null || execution.launchSubmission === "not-submitted") return;
@@ -496,6 +519,7 @@ export const createBotProcess = (options: {
   };
   const stopForDeletion = async (input: BotRecord, signal: AbortSignal): Promise<BotDeletionStop | null> => {
     signal.throwIfAborted();
+    assertBotMigrationExecutable(input);
     let record = deletionRecord(input);
     const preparation = pendingCleanup.get(record.botId);
     if (preparation !== undefined) { await preparation.retryCleanup(); pendingCleanup.delete(record.botId); }
@@ -538,6 +562,8 @@ export const createBotProcess = (options: {
      * A persisted deletion receipt lets the caller skip stop after journal removal.
      */
     withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
+      assertBotMigrationExecutable(record);
+      if (record.cleanup === undefined && options.canControl?.(record) === false) throw new Error("Bot deletion requires confirmed local hosting.");
       signal.throwIfAborted(); deletionRecord(record);
       let active = true;
       try { return await action(() => {
@@ -553,7 +579,7 @@ export const createBotProcess = (options: {
       catch (cause) {
         const latest = options.store.get(record.owner, record.botId);
         const blocked = latest !== null && initialUnsubmitted(latest) ? blockedAdmission(cause) : undefined;
-        if (blocked === undefined && latest?.intent !== null && latest !== null && options.executions.get(latest) !== null) {
+        if (blocked === undefined && latest?.intent !== null && latest !== null && latest.migration === undefined && options.executions.get(latest) !== null) {
           options.executions.update(latest, { lastError: cause instanceof Error ? cause.message : "Bot recovery is unavailable." });
         }
         throw blocked === undefined || blocked === cause ? cause : new BotAdmissionBlockedError({ cause });
@@ -566,7 +592,9 @@ export const createBotProcess = (options: {
       if (execution === null || execution.launchSubmission === "not-submitted" || execution.snapshot?.nativeStopped) return;
       const ticket = await checkedTicket(record);
       if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, now())) return;
-      const grant = await options.sessionApi.grant(sessionRecord(record), signal);
+      const snapshot = remember(record, await observe(ticket, signal));
+      if (!["starting", "ready", "working"].includes(snapshot.lifecycle) || snapshot.nativeStopped) return;
+      const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal);
       current(record); signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     }),

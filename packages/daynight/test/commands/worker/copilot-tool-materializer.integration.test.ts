@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, constants, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { createCopilotToolMaterializer } from "../../../src/commands/worker/copilot-tool-materializer.js";
 import { fingerprintToolArtifact, resolveToolLaunch, type ToolArtifact } from "../../../src/platform/tool-executables.js";
@@ -60,24 +60,47 @@ vi.mock("../../../src/platform/tool-executables.js", async original => {
 });
 const execute = promisify(execFile), roots: string[] = [], operations: Operation[] = [];
 const op = () => { const value = createOperation({ limits: { totalMs: 30_000 } }); operations.push(value); return value; };
-const fixture = async () => {
-  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-materializer-tests"); await mkdir(base, { recursive: true });
-  const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
-  const native = path.join(root, "extract-fixture"), source = path.join(root, "extract.c"), marker = path.join(root, "runs");
+const fixtureBase = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-materializer-tests");
+let seedRoot: string | undefined, compiledSeed: Promise<string> | undefined;
+const compileSeed = async (): Promise<string> => {
+  await mkdir(fixtureBase, { recursive: true });
+  const root = await mkdtemp(path.join(fixtureBase, "seed-"));
+  seedRoot = root;
+  const native = path.join(root, "extract-fixture"), source = path.join(root, "extract.c");
   const declarations = Object.entries(files).map(([name, text]) => `write_data(base, ${JSON.stringify(name)}, ${JSON.stringify(text)});`).join("\n");
   await writeFile(source, `#include <sys/stat.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <errno.h>\nvoid directory(const char *p){if(mkdir(p,0700)&&errno!=EEXIST)exit(21);}\nvoid write_data(const char *base,const char *name,const char *data){char p[8192];snprintf(p,sizeof(p),"%s/%s",base,name);FILE*f=fopen(p,"wb");if(!f)exit(22);fwrite(data,1,strlen(data),f);fclose(f);}\nint main(int argc,char **argv){if(argc!=3||strcmp(argv[1],"--binary-version")||strcmp(argv[2],"--no-auto-update"))return 23;FILE*m=fopen(getenv("FIXTURE_MARKER"),"a");if(!m)return 24;fputs("extract\\n",m);fclose(m);if(getenv("FIXTURE_FAIL"))return 25;const char*cache=getenv("COPILOT_PKG_CACHE_HOME");if(!cache||!getenv("COPILOT_SEA_EXTRACT_ONLY"))return 26;char p[8192],base[8192];snprintf(p,sizeof(p),"%s/pkg",cache);directory(p);snprintf(p,sizeof(p),"%s/pkg/darwin-arm64",cache);directory(p);snprintf(base,sizeof(base),"%s/pkg/darwin-arm64/1.0.105",cache);directory(base);snprintf(p,sizeof(p),"%s/prebuilds",base);directory(p);snprintf(p,sizeof(p),"%s/prebuilds/darwin-arm64",base);directory(p);snprintf(p,sizeof(p),"%s/data",base);directory(p);${declarations}\nreturn 0;}\n`);
-  await execute("/usr/bin/cc", [source, "-o", native], { timeout: 15_000 }); await chmod(native, 0o755);
+  await execute("/usr/bin/cc", [source, "-o", native], { timeout: 15_000 });
+  return native;
+};
+
+const caseFixture = async () => {
+  await mkdir(fixtureBase, { recursive: true });
+  const root = await mkdtemp(path.join(fixtureBase, "case-"));
+  roots.push(root);
+  const marker = path.join(root, "runs"), workerDirectory = path.join(root, "worker");
+  const environment = { ...process.env, FIXTURE_MARKER: marker };
+  const create = (extra: NodeJS.ProcessEnv = {}) => createCopilotToolMaterializer({ workerDirectory, environment: { ...environment, ...extra } });
+  return { root, marker, workerDirectory, create };
+};
+
+const fixture = async () => {
+  const { root, marker, workerDirectory, create } = await caseFixture();
+  const native = path.join(root, "extract-fixture");
+  await copyFile(await (compiledSeed ??= compileSeed()), native, constants.COPYFILE_EXCL);
+  await chmod(native, 0o755);
   const launch = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "path", path: native }, cwd: root, environment: process.env }, op());
   controlled.source = launch.executablePath;
   const preload = path.join(root, "preload.mjs"); await writeFile(preload, "// controlled adapter\n"); controlled.preload = await realpath(preload);
   controlled.support = [await fingerprintToolArtifact({ role: "interpreter", path: await realpath(process.execPath) }, op()), await fingerprintToolArtifact({ role: "support", path: controlled.preload }, op())];
-  const workerDirectory = path.join(root, "worker"), environment = { ...process.env, FIXTURE_MARKER: marker };
-  const create = (extra: NodeJS.ProcessEnv = {}) => createCopilotToolMaterializer({ workerDirectory, environment: { ...environment, ...extra } });
   const count = async () => (await readFile(marker, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
   return { root, launch, native, workerDirectory, create, count };
 };
 beforeEach(() => { controlled.source = ""; controlled.support = []; controlled.preload = ""; controlled.supportFailure = false; controlled.cleanup = undefined; controlled.beforeOpen = undefined; controlled.beforeRename = undefined; controlled.afterRead = undefined; });
 afterEach(async () => { controlled.beforeOpen = undefined; controlled.beforeRename = undefined; controlled.afterRead = undefined; for (const operation of operations.splice(0)) operation.dispose(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterAll(async () => {
+  await Promise.allSettled([compiledSeed]);
+  if (seedRoot !== undefined) await rm(seedRoot, { recursive: true, force: true });
+});
 const supported = process.platform === "darwin";
 const rejectHistoricalCleanup = () => {
   const cleanup = vi.fn(async () => { throw new Error("The historical extraction PID now belongs to another process."); });
@@ -166,7 +189,7 @@ const preparation = async (directory: string, key: string, pid: number) => {
 };
 
 test.skipIf(!supported)("shutdown joins every historical extraction owner when an earlier owner remains unknown", async () => {
-  const f = await fixture(), first = await preparation(f.workerDirectory, "a".repeat(64), 100001), second = await preparation(f.workerDirectory, "b".repeat(64), 100002);
+  const f = await caseFixture(), first = await preparation(f.workerDirectory, "a".repeat(64), 100001), second = await preparation(f.workerDirectory, "b".repeat(64), 100002);
   const cleanup = vi.fn(async ({ pid }: { pid: number }) => { if (pid === 100001) throw new Error("original scope is unknown"); }); controlled.cleanup = cleanup;
   const materializer = f.create();
   await expect(materializer.close(op())).rejects.toThrow();

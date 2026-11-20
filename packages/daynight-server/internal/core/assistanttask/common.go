@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -49,25 +50,14 @@ func authorize(ctx context.Context, dao store.AssistantTaskDAO, actor Actor) err
 		return err
 	}
 	if actor.BotID != nil {
-		return botOwner(ctx, dao, actor.Principal.UserID, *actor.BotID)
+		return botcore.AdmitDeclaredBot(ctx, dao, actor.Principal, *actor.BotID)
 	}
 	return nil
 }
+
+// botOwner applies the shared Bot ownership rule used by declared Bot writes.
 func botOwner(ctx context.Context, dao store.AssistantTaskDAO, owner, id string) error {
-	if !strictID(id) {
-		return invalid("Bot ID must be a canonical nonzero UUID.")
-	}
-	bot, err := dao.Bot(ctx, id)
-	if errors.Is(err, model.ErrNotFound) {
-		return forbidden()
-	}
-	if err != nil {
-		return err
-	}
-	if bot.OwnerUserID != owner || bot.Deletion != nil {
-		return forbidden()
-	}
-	return nil
+	return botcore.RequireOwnedBot(ctx, dao, owner, id)
 }
 func finish(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, until *time.Time, extraBots ...string) (time.Time, error) {
 	if err := authorize(ctx, dao, actor); err != nil {

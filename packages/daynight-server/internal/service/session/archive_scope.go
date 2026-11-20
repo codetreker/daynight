@@ -29,7 +29,11 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 				return err
 			}
 		}
-		access, err := loadSession(ctx, op, scope, id)
+		load := loadSession
+		if project != "" {
+			load = loadTaskReadSession
+		}
+		access, err := load(ctx, op, scope, id)
 		if err != nil {
 			return err
 		}
@@ -40,6 +44,9 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 			if err = authorizeTest(ctx, op, scope, principal, access); err != nil {
 				return err
 			}
+		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+			return err
 		}
 		return work(access)
 	})

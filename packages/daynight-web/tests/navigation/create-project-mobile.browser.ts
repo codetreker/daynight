@@ -2,15 +2,16 @@ import { expect, test, type Page } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000201', personalId = '00000000-0000-4000-8000-000000000701', time = '2026-10-20T09:00:00Z';
 async function install(page: Page) {
-  const state = { writes: 0, meReads: 0, failIdentity: false, identityGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>(), repositoryConflict: false };
+  const state = { writes: 0, meReads: 0, teamReads: 0, teamGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>(), repositoryConflict: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': userId } });
     const error = { error: { code: 'internal_error', message: 'Fixture refusal', requestId: 'fixture-error' } };
-    if (path === '/api/v1/me') { state.meReads++; if (state.identityGate) await state.identityGate; return state.failIdentity ? send(error, 503) : send({ id: userId, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
+    if (path === '/api/v1/me') { state.meReads++; return send({ id: userId, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects' && request.method() === 'POST') { state.writes++; await state.createGate.promise; return state.repositoryConflict ? send({ error: { code: 'project_repository_conflict', message: 'Fixture refusal', requestId: 'repository-conflict' } }, 409) : send(error, 400); }
-    if (path === '/api/v1/projects' || path === '/api/v1/teams') return send({ items: [], nextCursor: null });
+    if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === '/api/v1/teams') { state.teamReads++; await state.teamGate; return send({ items: [], nextCursor: null }); }
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     return send(error, 404);
   });
@@ -49,28 +50,30 @@ for (const locale of ['en', 'zh-CN'] as const) for (const [width, repositoryConf
   });
 }
 
-test('same-account check failure closes the mobile drawer and releases its scroll lock', async ({ page, context }) => {
+test('same-account Team revalidation preserves the mobile drawer and its focus', async ({ page, context }) => {
   const state = await install(page); await page.goto('/projects');
-  const opener = page.getByRole('button', { name: 'Expand sidebar', exact: true }); await opener.click();
-  const drawer = page.getByRole('dialog', { name: 'Workspace navigation', exact: true }), workspace = page.locator('.workspace'), shell = page.locator('.auth-shell');
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+  const opener = page.getByRole('button', { name: 'Open navigation', exact: true }); await opener.click();
+  const drawer = page.getByRole('dialog', { name: 'Workspace navigation', exact: true }), workspace = page.locator('.workspace');
   const focused = drawer.getByRole('link', { name: 'My Workers', exact: true }); await focused.focus();
-  await expect(workspace).toHaveAttribute('inert', ''); await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
   const primary = await context.newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
   const other = await context.newPage(); await other.goto('about:blank');
   const secondary = await context.newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
-  const gate = Promise.withResolvers<void>(); state.identityGate = gate.promise; state.failIdentity = true;
+  const gate = Promise.withResolvers<void>(); state.teamGate = gate.promise;
+  const retained = async () => {
+    await expect(drawer).toBeVisible(); await expect(focused).toBeFocused();
+    await expect(workspace).toHaveAttribute('inert', ''); await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+  };
   try {
     await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
-    const reads = state.meReads; await page.bringToFront(); await expect.poll(() => state.meReads).toBeGreaterThan(reads);
-    await expect(drawer).toBeVisible(); await expect(focused).toBeFocused(); await expect(workspace).toHaveAttribute('inert', ''); await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
-    state.identityGate = null; gate.resolve();
-    const overlay = page.getByRole('dialog', { name: 'Confirm current account', exact: true });
-    await expect(overlay.getByRole('heading', { name: 'The current account could not be confirmed' })).toBeVisible();
-    await expect(drawer).toHaveCount(0); await expect(workspace).not.toHaveAttribute('inert', ''); await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
-    await expect(shell).toHaveAttribute('inert', '');
-    state.failIdentity = false; await overlay.getByRole('button', { name: 'Confirm account again', exact: true }).click();
-    await expect(overlay).toHaveCount(0); await expect(shell).not.toHaveAttribute('inert', ''); await expect(drawer).toHaveCount(0);
-    expect(state.writes).toBe(0);
+    const reads = state.teamReads, meReads = state.meReads;
+    await page.bringToFront(); await expect.poll(() => state.teamReads).toBeGreaterThan(reads);
+    await retained(); expect(state.meReads).toBe(meReads);
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/teams');
+    state.teamGate = null; gate.resolve(); await (await completed).finished();
+    await retained(); expect(state.meReads).toBe(meReads); expect(state.writes).toBe(0);
+    await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0); await expect(opener).toBeFocused();
+    await expect(workspace).not.toHaveAttribute('inert'); await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
   } finally { gate.resolve(); state.createGate.resolve(); await other.close(); }
 });
 

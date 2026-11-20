@@ -88,6 +88,13 @@ export type DraftUpload = NewDraftUpload & {
   readonly pendingAction: DraftUploadAction | null;
   readonly outcomeUnknown: boolean;
   readonly releaseIntent: boolean;
+  /**
+   * The service refused the release because a message, operation, archive or
+   * native resume still references the original. The draft no longer owns a
+   * release obligation; the remaining upload reference follows the service
+   * expiry rules. Rows written before this field existed omit it.
+   */
+  readonly releaseRetained?: boolean;
 };
 export type DraftSubmission = {
   readonly ownerKey: string;

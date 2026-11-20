@@ -252,8 +252,10 @@ Fixture credentials remain in a separate private, retained directory outside
 uploaded results. Before Chromium starts, the fixture records a browser launch
 intent and binds the original process-group leader's identity. Cleanup confirms
 that recorded group has stopped, including after a failed Playwright run; a
-missing or conflicting proof cannot establish browser shutdown. An interrupted
-Worker or Test Session may leave detached helpers. If their original stop cannot
+missing or conflicting proof cannot establish browser shutdown. A Linux process
+group identity that remains unavailable after bounded retries also fails cleanup
+rather than establishing a stop. An interrupted Worker or Test Session may leave
+detached helpers. If their original stop cannot
 be proved, or build or environment setup has not reached a confirmed boundary,
 recovery fails and retains the original state for inspection instead of reporting
 cleanup success. A failed build that has joined all of its commands records the

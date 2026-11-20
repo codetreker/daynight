@@ -3,7 +3,7 @@ import { latestScopedCompletion } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
 import { ChainCompletionTime } from '../task-completion/ChainCompletionTime';
 import { forwardRef, memo, useCallback, useMemo } from 'react';
-import type { TaskSummary, WorkerClaim } from '../../api/types';
+import type { TaskSummary, WorkerMachine } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { compareTaskMembers } from '../projects/task-order';
 import { SessionStatus } from '../task-session-summary/SessionStatus';
@@ -20,7 +20,7 @@ export type ScopedTaskChainRowProps = {
   readonly rootId: string;
   readonly memberIds: readonly string[];
   readonly progress: ScopedChainProgress;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, 'state' | 'machine'>>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
   readonly instanceId: string;
   readonly expanded: boolean;
   readonly onExpandedChange: (expanded: boolean) => void;

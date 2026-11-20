@@ -13,14 +13,18 @@ let compiled: string, openHelper: typeof OpenHelper;
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(accept => { resolve = accept; }); return { promise, resolve }; };
 const observeExit = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise<void>(resolve => child.once("exit", () => resolve()));
 beforeAll(async () => {
-  await mkdir(".tmp", { recursive: true }); compiled = await mkdtemp(path.resolve(".tmp/claude-helper-code-")); await mkdir(path.join(compiled, "providers"));
+  await mkdir(".tmp", { recursive: true }); compiled = await mkdtemp(path.resolve(".tmp/claude-helper-code-"));
+  const controller = path.join(compiled, "commands", "controller");
+  await mkdir(path.join(controller, "providers"), { recursive: true });
+  await mkdir(path.join(compiled, "platform"));
+  await writeFile(path.join(compiled, "platform", "sqlite-filename.js"), stripTypeScriptTypes(await readFile("src/platform/sqlite-filename.ts", "utf8"), { mode: "transform" }));
   // The actual fork executes the production module as emitted JavaScript; no loader or subprocess double is installed.
   for (const name of ["claude-text", "claude-transcript-json", "claude-transcript", "claude-transcript-helper"]) {
     const source = await readFile(path.resolve(`src/commands/controller/providers/${name}.ts`), "utf8");
-    await writeFile(path.join(compiled, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
+    await writeFile(path.join(controller, "providers", `${name}.js`), stripTypeScriptTypes(source, { mode: "transform" }));
   }
-  for (const name of ["bootstrap-error", "process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(compiled, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
-  openHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(compiled, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
+  for (const name of ["bootstrap-error", "process-proof", "linux-process-proof", "windows-job", "windows-process-proof"]) await writeFile(path.join(controller, `${name}.js`), stripTypeScriptTypes(await readFile(`src/commands/controller/${name}.ts`, "utf8"), { mode: "transform" }));
+  openHelper = (await import(/* @vite-ignore */ pathToFileURL(path.join(controller, "providers", "claude-transcript-helper.js")).href)).openClaudeTranscriptHelper;
 });
 afterEach(async () => {
   for (const child of children.splice(0)) {

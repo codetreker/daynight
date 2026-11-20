@@ -6,14 +6,47 @@ import (
 	"fmt"
 	"time"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 )
 
 type Capturer interface {
-	CaptureBatch(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+	CaptureBatch(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
+}
+
+type declaredBotKey struct{}
+
+// WithDeclaredBot attaches the Bot identity that a Task, Step or Thread write
+// request declares for its authenticated user. The declaration is a
+// cooperation signal within one user, not a security boundary: it changes
+// only the stored event actor after the write transaction verifies it.
+func WithDeclaredBot(ctx context.Context, botID string) context.Context {
+	return context.WithValue(ctx, declaredBotKey{}, botID)
+}
+
+// DeclaredBot returns the Bot identity attached by WithDeclaredBot.
+func DeclaredBot(ctx context.Context) (string, bool) {
+	botID, declared := ctx.Value(declaredBotKey{}).(string)
+	return botID, declared
+}
+
+// sourceActor records the authenticated credential owner of a Task, Step or
+// Thread write, or the declared Bot after verifying it under the shared Bot
+// deletion barrier. Callers run it after their Project admission and before
+// any Task Session lock: Bot deletion locks the Bot before its Sessions.
+func sourceActor(ctx context.Context, scope interface{ BotBarrierDAO() store.BotBarrierDAO }, principal model.Principal) (wm.Actor, error) {
+	botID, declared := DeclaredBot(ctx)
+	if !declared {
+		return wm.UserActor(principal.UserID), nil
+	}
+	if err := botcore.AdmitDeclaredBot(ctx, scope.BotBarrierDAO(), principal, botID); err != nil {
+		return wm.Actor{}, err
+	}
+	return wm.BotActor(principal.UserID, botID), nil
 }
 
 func capturer(optional []Capturer) Capturer {
@@ -24,7 +57,7 @@ func capturer(optional []Capturer) Capturer {
 }
 
 func pausedProperty(properties model.TaskProperties) (bool, error) {
-	raw, exists := properties["paused"]
+	raw, exists := properties["blocked"]
 	if !exists {
 		return false, nil
 	}
@@ -41,7 +74,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	}
 	currentPaused, err := pausedProperty(current.Properties)
 	if err != nil {
-		return nil, fmt.Errorf("decode current paused property: %w", err)
+		return nil, fmt.Errorf("decode current blocked property: %w", err)
 	}
 	base := protocol.Fact{ProjectID: current.ProjectID, TaskID: current.ID, OccurredAt: current.UpdatedAt, TaskVersion: current.Version}
 	if mutationCreate {
@@ -50,7 +83,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	}
 	previousPaused, err := pausedProperty(previous.Properties)
 	if err != nil {
-		return nil, fmt.Errorf("decode previous paused property: %w", err)
+		return nil, fmt.Errorf("decode previous blocked property: %w", err)
 	}
 	facts := make([]protocol.Fact, 0, 2)
 	if previous.Status != current.Status {
@@ -66,7 +99,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	return facts, nil
 }
 
-func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope, projectID, taskID, stepID, action string, observed time.Time, from, to *int64, before, after *model.TaskStep) error {
+func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope, actor wm.Actor, projectID, taskID, stepID, action string, observed time.Time, from, to *int64, before, after *model.TaskStep) error {
 	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
 	if err != nil {
 		return err
@@ -85,5 +118,5 @@ func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope,
 			f.Status = string(after.Status)
 		}
 	}
-	return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
+	return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 }

@@ -10,6 +10,13 @@ import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/
 import { focusProjectList } from '../src/features/projects/project-list-focus';
 import type { RefObject } from 'react';
 
+// Focus fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
+
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
@@ -245,7 +252,9 @@ describe('project dialog focus restoration', () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await screen.findByRole('heading', { name: '暂无任务链' });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: '暂无任务链' })).not.toBeNull();
+    }, { container: document.body });
     await waitFor(() => expect(screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expectModalReleased();

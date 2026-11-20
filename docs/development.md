@@ -136,13 +136,14 @@ owns the mechanism's alternatives and limits.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
-and the total length. The Task help and invalid-argument matrix uses separate
-guarded processes for its two import policies. Each invocation gets a fresh
-context from the compiled CLI. Representative cases still run the executable
-from a cold process; tests of HTTP, Git, files and process lifetime continue to
-run the executable. The
-[Task grammar fixture decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
-owns the test boundary.
+and the total length. Task help and invalid-argument matrices use separate
+guarded processes for their import policies. Selected Task read-only matrices
+use the same compiled batch runner and send real loopback HTTP requests. Each
+invocation gets a fresh CLI context and captures its own output. Representative
+grammar cases exercise the cold executable. Git, versioned writes, byte-stream
+contracts, and process lifetime tests also use executable invocations. The
+[Task CLI batching decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
+owns these boundaries.
 
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
@@ -278,16 +279,25 @@ and validates canonical Base64 plus strict UTF-8 decoding, preserving Unicode
 independently of the console code page. Its sixty-second allowance belongs to a
 ninety-second test; production capture and inspection do not use it as a
 fallback. Mismatch diagnostics retain hashes, lengths and qualification flags
-without raw command text. Both this CIM oracle and the independent Session
-operation-store ACL oracle use a shared test-only command runner. It records
-process spawn, script checkpoints, deadline, exit and close observations;
-failures retain bounded phase history and output diagnostics with the original
-command error. Script checkpoints distinguish PowerShell entry, ACL operations,
-CIM module initialization/query and output conversion. The unused command input
-is closed explicitly. Their existing 60-second CIM and 30-second ACL command
-deadlines remain unchanged; neither oracle retries failed commands. The
+without raw command text. The CIM oracle and the Session operation-store's
+icacls public-ACE grant use a shared test-only command runner. It records process
+spawn, deadline, exit and close observations; failures retain bounded phase
+history and output diagnostics with the original command error. CIM script
+checkpoints distinguish PowerShell entry, module initialization/query and output
+conversion. The unused command input is closed explicitly. The CIM command has
+a 60-second deadline and the icacls grant has a 30-second deadline; neither
+command retries failures. The
 [oracle evidence decision](../.agents/notes/implemented/testing/2026-11-18-windows-oracle-phase-evidence.md)
 records the unresolved historical cause and retained independent assertions.
+The Session operation-store's private ACL observation runs in the test's Node
+process through an independent Koffi/Win32 helper. It checks the current-user
+owner, present protected DACL, and exactly one explicit current-user FullControl
+allow ACE with no inheritance flags. Its token, file handle and returned security
+descriptor are released on success and failure; native errors retain their stage
+and Win32 code, including cleanup failures. The real icacls grant and production
+store rejection still prove the unsafe ACL path. The
+[native ACL observer decision](../.agents/notes/implemented/testing/2026-11-19-native-windows-acl-observer.md)
+owns this replacement of the PowerShell readback dependency.
 The child is stopped and its close joined even when an assertion fails. The
 [native Windows proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)
 owns the implementation and its dependency limits; the
@@ -362,7 +372,8 @@ installed CLI changes. They write `.tmp/completion-module-evidence.json` and
 `.tmp/completion-evidence.json`, respectively, unless the receipt path is overridden.
 The dedicated Ubuntu 24.04 job in the
 [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-runs both suites on every `main` push and through `workflow_dispatch`.
+is triggered by `main` pushes and `workflow_dispatch` to run both suites; main
+concurrency can replace a pending run before it starts.
 Its result belongs to that workflow's checked-out revision and does not gate
 ordinary PR `checks`. The `daynight-completion-acceptance` artifact contains
 both available JSON receipts. Upload runs after the module harness starts,
@@ -409,7 +420,8 @@ records the original parallel model; the [independent macOS validation decision]
 owns the current macOS topology and its allocation trade-off. The
 [Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
 owns the Windows ordinary allocation and completeness checks.
-Main pushes run every module. The checkout includes the required history.
+Main pushes select every module, subject to workflow concurrency. The checkout
+includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
 reads the selected file sequentially and records its byte count, SHA-256 and
@@ -567,6 +579,14 @@ wait. The fixture holds only the subsequent retry so IPC cancellation reaches
 the waiting Controller before a second synchronous acquisition. The
 [Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
 owns the cancellation boundary.
+The Controller IPC waiter-capacity regression observes all 32 authenticated
+response-waiter registrations before probing rejection. Its controlled schedule
+holds duplicate client frames to verify that first native dispatch alone does
+not establish capacity. Finalization cancels and joins requests and the
+Controller before deleting the SQLite fixture; the ordinary test deadline stays
+unchanged. The
+[IPC admission decision](../.agents/notes/implemented/testing/2026-11-19-ipc-waiter-admission-barrier.md)
+owns the ordering proof and its historical attribution limits.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -677,9 +697,22 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
+independent `.tmp/dev-builds/build-*/` snapshot. Each resolved physical package
+has its own `.dev-store/<id>/node_modules/<package-name>/` directory, with links
+to its dependencies inside the snapshot. This preserves package names needed by
+native shared-library lookup and keeps different versions and peer resolutions
+separate. Dependency file symlinks are materialized; no dependency link points
+back to the source checkout's mutable `node_modules`.
+
+Before atomically replacing the installed symlink, the installer verifies the
+snapshot's version and runs separate Node processes that process a tiny in-memory
+image with sharp, query an in-memory better-sqlite3 database, and load Koffi.
+A native verification failure names the module and leaves the previous entry and
+snapshot available. These checks require no `LD_LIBRARY_PATH` workaround or
+system libvips installation. `--build-info` reports the
 source checkout, commit, dirty state, version, build time and snapshot directory.
+The [native dependency requirements](spec/development-snapshot-native-layout.md)
+define closure independence, failure behavior and runtime acceptance.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
 while any execution can use them. Removing a worktree also removes its snapshots;
@@ -785,7 +818,8 @@ API examples, logs, updates and volume removal.
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
-`DAYNIGHT_TEST_DATABASE_URL` to an isolated database and run:
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
+PostgreSQL and Redis instances, then run:
 
 ```bash
 bash scripts/check.sh
@@ -1335,16 +1369,19 @@ gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref. Each main run
-has its own group by workflow, ref, full commit SHA and run ID, so later runs
-do not replace or cancel it; runner availability still controls job scheduling.
+Workflow concurrency cancels an older PR run for the same ref. Each workflow has
+its own group for main: the running run continues, and a new pending run replaces
+the older pending run. Intermediate commits can therefore be skipped; runner
+availability still controls job scheduling. Manual shell/browser runs on main
+share that workflow's main group.
 Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
 
 The separate [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-contains `verify-completion` and `verify-web-browser`. It runs both jobs on every
-`main` push and on `workflow_dispatch`, without module detection or a PR trigger.
+contains `verify-completion` and `verify-web-browser`. A `main` push or
+`workflow_dispatch` triggers both jobs, without module detection or a PR trigger;
+main concurrency can replace a pending run before either job starts.
 Each job checks out its event's source and installs its own locked dependencies.
 Shell validation retains the Bash 4.2, modern Bash and zsh behavior matrix and
 artifact acceptance. Browser validation retains the complete assistant suite,

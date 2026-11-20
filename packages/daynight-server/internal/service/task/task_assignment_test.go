@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -54,7 +55,7 @@ type assignmentCapture struct {
 	fn func(context.Context, []protocol.Fact) error
 }
 
-func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, _ wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if c.fn == nil {
 		c.t.Fatal("unexpected source capture")
@@ -128,6 +129,25 @@ func newAssignmentFixture(t *testing.T, current model.Task, prerequisites []mode
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(ctx context.Context, projectID, id string) (model.TaskHeader, error) {
+		if ctx != f.ctx || projectID != project.ID || id != current.ID {
+			t.Fatal("preflight Task identity/context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: current.Type}, nil
+	}}
+	projects := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != f.ctx || p != principal || projectID != project.ID {
+			t.Fatal("preflight authorization scope")
+		}
+		return taskMockAccess(project, principal), nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight-snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+		if ctx != f.ctx {
+			t.Fatal("preflight changed caller context")
+		}
+		return work(snapshot)
+	}
 	f.tasks = taskservice.NewTasks(f.database, f.capture)
 	return f
 }
@@ -399,7 +419,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 
 	before := after
 	v = taskcore.CurrentWrite(before)
-	v.Properties["paused"] = []byte("true")
+	v.Properties["blocked"] = []byte("true")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -415,7 +435,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	}
 	before = after
 	v = taskcore.CurrentWrite(before)
-	delete(v.Properties, "paused")
+	delete(v.Properties, "blocked")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -645,7 +665,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	t.Run("active properties", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
-		v.Properties["paused"] = []byte("true")
+		v.Properties["blocked"] = []byte("true")
 		after := assignmentResult(active, v)
 		f.ExpectUpdate(v, after)
 		f.ExpectCapture([]protocol.Fact{{Type: protocol.Paused, ProjectID: active.ProjectID, TaskID: active.ID, TaskVersion: after.Version, OccurredAt: after.UpdatedAt, Paused: true}})
@@ -653,7 +673,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		assertReturned(t, got, after, err)
 		f = workerMockWrite(t, after, owner)
 		v = taskcore.CurrentWrite(after)
-		delete(v.Properties, "paused")
+		delete(v.Properties, "blocked")
 		removed := assignmentResult(after, v)
 		f.ExpectUpdate(v, removed)
 		got, err = f.Tasks.RemoveProperty(f.Context, owner, after.ProjectID, after.ID, "paused", after.Version)

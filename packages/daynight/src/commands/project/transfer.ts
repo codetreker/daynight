@@ -9,7 +9,6 @@ import type { ParsedCommand } from "../../cli/schema.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import type { ServerSession } from "../server/runtime.js";
-import { confirmTeamChange, requireTeamConfirmation } from "../team/confirmation.js";
 import { parseTeamIdentifier } from "../team/identifier.js";
 
 const help = "daynight project transfer --help";
@@ -31,20 +30,19 @@ export const prepareTransfer = (command: Extract<ParsedCommand, { kind: "run" }>
     catch { throw new UsageError("--if-version must be a positive 64-bit integer.", help); }
   }
   const confirmed = command.options.has("--confirm");
-  requireTeamConfirmation(context, confirmed, "Project transfer");
+  if (!confirmed) throw new UsageError("Project transfer requires --confirm.", help);
   return { rawTarget, projectId, version, confirmed };
 };
 
 export const runTransfer = async (command: Extract<ParsedCommand, { kind: "run" }>, context: CliContext, session: ServerSession, prepared: ReturnType<typeof prepareTransfer>, resolve = resolveProject) => {
-  const { projectId, version, confirmed } = prepared;
+  const { projectId, version } = prepared;
   const target = parseTeamIdentifier(prepared.rawTarget, session.serverUrl);
   const user = await session.api.getTeamCurrentUser();
   const project = await resolve(session, context, user.id, projectId);
   const preview = await session.api.previewProjectTransfer(user.id, project.id, target);
   session.operation.check();
   if (version !== undefined && version !== preview.ownership.version) throw new Error(`Ownership version differs from --if-version; current version is ${preview.ownership.version}. Recheck the Project before confirming a new transfer.`);
-  const description = `Transfer Project ${terminalText(JSON.stringify(project.name))} (${project.id})\nFrom: ${describeTeam(preview.sourceTeam)}\nTo: ${describeTeam(preview.targetTeam)}\nOwnership version: ${preview.ownership.version}; target version: ${preview.targetTeam.version}\nYour access after transfer: ${preview.actorRole ?? "none"}. Continue?`;
-  await confirmTeamChange(context, confirmed, description, session.operation.signal, undefined, "Project transfer");
+  context.stderr(`Transfer Project ${terminalText(JSON.stringify(project.name))} (${project.id})\nFrom: ${describeTeam(preview.sourceTeam)}\nTo: ${describeTeam(preview.targetTeam)}\nOwnership version: ${preview.ownership.version}; target version: ${preview.targetTeam.version}\nYour access after transfer: ${preview.actorRole ?? "none"}.\nAn actual transfer permanently removes all Goal dependencies involving this Project, including within and across Projects; affected relationships cannot be restored.\n`);
   const requestId = randomUUID();
   let receipt: ProjectTransferReceipt;
   try { receipt = await session.api.transferProject(user.id, project.id, preview, requestId); }

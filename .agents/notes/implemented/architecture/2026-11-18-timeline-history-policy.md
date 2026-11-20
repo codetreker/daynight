@@ -5,10 +5,11 @@ Status: implemented
 ## Problem
 
 Task body history must exclude independent tool output without changing message
-text or charging excluded output against the retained history budget. The current
-SQL timeline also owns live reconstruction, revision allocation, pending approval
-discovery and tool image positions. Filtering that shared source automatically
-would lose online state before its consumers can distinguish body history.
+text or charging excluded output against the retained history budget. When the
+save policy was introduced, the SQL timeline also owned live reconstruction,
+revision allocation, pending approval discovery and tool image positions.
+Filtering that shared source automatically would have lost online state before
+its consumers could distinguish body history.
 
 ## Decision
 
@@ -20,9 +21,12 @@ body capacity. Exclusion cannot replace an existing retained identity.
 
 The lifecycle history entry accepts stable, caller-assigned identity and owns its
 original journal transaction. It does not publish online events or acknowledge
-pending operations. Existing projection calls this entry with `legacy`: its live
-consumers still require detailed history. The full contract and activation
-conditions belong to the [SQLite content design](../../../../docs/design/session-sqlite-content.md).
+pending operations. Initial production projection used `legacy` because its live
+consumers still required the shared detailed history. The subsequent
+[Controller activation decision](2026-11-19-controller-task-body-history.md)
+separates online ownership and enables body history for newly created Task
+executions. Existing executions retain their stored policy. The current contract
+belongs to the [SQLite content design](../../../../docs/design/session-sqlite-content.md).
 
 The [storage contract decision](2026-11-18-session-storage-contracts.md) remains
 the requirement owner. Policy support in this module does not advertise the
@@ -48,10 +52,12 @@ identity without deriving it from retained history.
 Real SQLite tests can prove selective persistence, exact current totals, message
 preservation, revisions, rollback and operation independence. They do not prove
 production body-only synchronization, reconnect behavior or bounded transport
-storage. Existing production execution continues to retain detailed history.
+storage. Those guarantees belong to the Controller activation and protocol
+owners; this save interface alone never established them.
 
-Activation requires separate live state, preserved approvals and tool resources,
-source acknowledgements and versioned synchronization/archive consumers. A caller
+The activation prerequisites were separate live state, preserved approvals and
+tool resources, source acknowledgements and versioned synchronization/archive
+consumers. The linked activation decision owns their implementation. A caller
 must not mix a legacy source with a body-only capability declaration. This API
 does not purge existing rows or store identity metadata for excluded entries;
 their revisions and ordering remain the online owner's responsibility. Save

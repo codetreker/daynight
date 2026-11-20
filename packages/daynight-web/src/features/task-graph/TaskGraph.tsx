@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskSummary } from '../../api/types';
 import { getTaskNodeHeight, layoutGraph, type CanvasLayout, type GraphDirection } from './layout';
+import { scaleGraph, useGraphFontScale } from './graph-scale';
 import { projectChain, tracePrerequisites, type GraphIndex, type ChainProjection } from './model';
 import type { TaskFlowNode } from './TaskNode';
 import { getInitialTaskViewport } from './chain-viewport';
@@ -92,6 +93,7 @@ type GraphVisibility = {
 };
 
 const VisibleTaskGraph = ({ projection, ...props }: TaskGraphProps & { projection: ChainProjection }) => {
+  const fontScale = useGraphFontScale();
   const topologyKey = [...projection.mainIds].join(',');
   const [visibility, setVisibility] = useState<GraphVisibility>(() => ({
     projection, topologyKey, ids: createGraphOverview(props.index, projection), action: null, inspectionId: null,
@@ -114,11 +116,11 @@ const VisibleTaskGraph = ({ projection, ...props }: TaskGraphProps & { projectio
     try {
       performance.clearMeasures('daynight:task-layout');
       const started = performance.now();
-      const geometry = layoutGraph(visibleProjection, new Map([...expansions].map(([id, directions]) => [id, getTaskNodeHeight(directions, projection.externalIds.has(id))])), props.direction ?? 'horizontal');
+      const geometry = scaleGraph(layoutGraph(visibleProjection, new Map([...expansions].map(([id, directions]) => [id, getTaskNodeHeight(directions, projection.externalIds.has(id))])), props.direction ?? 'horizontal'), fontScale);
       performance.measure('daynight:task-layout', { start: started, end: performance.now(), detail: { rootId: props.rootId } });
       return { kind: 'ready' as const, geometry };
     } catch (error) { return { kind: 'error' as const, error }; }
-  }, [visibleProjection, expansions, projection.externalIds, props.rootId, props.direction]);
+  }, [visibleProjection, expansions, projection.externalIds, props.rootId, props.direction, fontScale]);
   const onInspectTask = useCallback((id: string) => {
     setVisibility((current) => ({ ...current, inspectionId: current.inspectionId === id ? null : id }));
   }, []);

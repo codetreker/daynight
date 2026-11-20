@@ -18,6 +18,7 @@ type operations interface {
 	EnableWatchdog(context.Context, core.Actor, string, string) (core.TaskResult, error)
 	Create(ctx context.Context, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
 	Get(ctx context.Context, actor core.Actor, taskID string) (core.TaskResult, error)
+	Metrics(ctx context.Context, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error)
 	List(ctx context.Context, actor core.Actor, input core.PageInput) (model.AssistantTaskPage[core.TaskResult], error)
 	Update(ctx context.Context, actor core.Actor, input core.UpdateInput) (core.TaskResult, error)
 	Claim(ctx context.Context, actor core.Actor, input core.ClaimInput) (model.AssistantTaskClaimResult, error)
@@ -27,6 +28,7 @@ type operations interface {
 	ListAppendix(ctx context.Context, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskAppendix], error)
 	AddAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
 	UpdateAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
+	ValidateAppendix(ctx context.Context, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error)
 	ListProposals(ctx context.Context, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskProposal], error)
 	Propose(ctx context.Context, actor core.Actor, input core.ProposalInput) (core.ProposalResult, error)
 	Decide(ctx context.Context, actor core.Actor, input core.DecisionInput) (model.AssistantTaskProposal, error)
@@ -66,7 +68,7 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 				httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, p)
 				return
 			}
-			botID, err := botIdentity(r)
+			botID, err := httpx.BotIdentity(r)
 			actor := core.Actor{Principal: p, BotID: botID}
 			taskID, id := r.PathValue("taskId"), r.PathValue("id")
 			if err == nil && taskID != "" {
@@ -102,10 +104,12 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 	register(task+"/manual/rollback", "POST", map[string]requestOperation{"POST": h.rollback})
 	register(task+"/appendix", "GET, HEAD, POST", map[string]requestOperation{"GET": h.appendices, "POST": h.addAppendix})
 	register(task+"/appendix/{id}", "PATCH, DELETE", map[string]requestOperation{"PATCH": h.updateAppendix, "DELETE": h.deleteAppendix})
+	register(task+"/appendix/{id}/validations", "POST", map[string]requestOperation{"POST": h.validateAppendix})
 	register(task+"/proposals", "GET, HEAD, POST", map[string]requestOperation{"GET": h.proposals, "POST": h.propose})
 	register(task+"/proposals/{id}/decision", "POST", map[string]requestOperation{"POST": h.decide})
 	register(task+"/items", "GET, HEAD, POST", map[string]requestOperation{"GET": h.items, "POST": h.addItem})
 	register(task+"/items/{id}", "GET, HEAD, PATCH", map[string]requestOperation{"GET": h.item, "PATCH": h.updateItem})
+	register(task+"/metrics", "GET, HEAD", map[string]requestOperation{"GET": h.metrics})
 	register(task+"/records", "GET, HEAD, POST", map[string]requestOperation{"GET": h.records, "POST": h.addRecord})
 	register(task+"/events", "GET, HEAD, POST", map[string]requestOperation{"GET": h.events, "POST": h.addEvent})
 	register(task+"/events/{id}/ack", "POST", map[string]requestOperation{"POST": h.ackEvent})

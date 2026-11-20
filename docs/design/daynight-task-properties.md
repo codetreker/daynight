@@ -21,9 +21,9 @@ flowchart LR
 
 core 使用通用 TaskProperties map。internal/core/model/taskproperty 拥有静态注册表、值 codec、规范化与 typed reader；internal/core/task/properties 使用同一注册表执行公开写权限与 Worker/sessionStartup 关联规则。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、blocked、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，blocked 必须是布尔值，worker 必须是合法归属对象，sessionStartup 必须是合法执行观察对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
 ## 值解析与规范化
 
@@ -37,9 +37,9 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 ## 暂停标记的消费
 
-paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
+blocked 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-CLI/Web 通用属性对象保持所有键，typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+兼容写入入口把 paused 归一为 blocked，两个名称同值合并、异值拒绝。协议投影在属性存在时生成同值的 blocked 与 paused，缺席时均省略；属性目录同时列出兼容名称。共享编码器计量实际回执，相对旧 paused 单键按每个对象的 true 15 字节或 false 16 字节补偿，MCP 按实际出现次数和原 RPC ID 转义规则计量。CLI/Web 通用属性对象保持所有键。新版 CLI、Worker 与 Controller 的 typed reader 在消费处严格解释 blocked；旧客户端仍读取兼容的 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -100,11 +100,13 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 属性行迁移将键缺失纳入完整资源契约。当时依赖旧必填键的客户端需要升级，服务端没有通过读取默认值延长旧格式。Web IDB 从 schema 1 升到 2，重建可再生的项目、摘要和详情并轮换 user fence，清理旧必填或 `null` 详情和旧水位，避免同一任务版本的新旧值冲突。数据库提交迁移后，回退需要恢复数据库或执行经过验证的反向迁移；更换旧二进制不足以恢复被删除的列。
 
+blocked 迁移直接改名属性行，验证旧布尔值并让主键冲突或坏行回滚迁移及 ledger，包含软删除任务，不触碰任务版本、业务时间、项目 epoch、claim 和事件。排空旧服务端及后台写入方后运行迁移，再启动包含兼容 Web 的新制品，验证服务端后才分发新版客户端。提交后优先前滚；旧服务端回退须恢复匹配其 ledger 的备份，并按原操作流程处理备份后的写入。
+
 后续变更按[组件交付与启用规则](../development.md#component-delivery-and-activation)分别评估 PR 边界和受支持的运行时版本组合。
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、blocked、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 

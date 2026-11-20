@@ -22,6 +22,11 @@ export type ConfigurationDraft = {
 export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'controlMode' | 'toolPath' | 'tagName';
 export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValue | null; readonly errors: Readonly<Record<string, DraftIssue>> };
 export type ConfigurationDraftOptions = { readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean; readonly platform?: ExecutionPlatform };
+export const configurationNumberRanges = {
+  maxConcurrent: { minimum: 1, maximum: 64 },
+  pollIntervalMs: { minimum: 1_000, maximum: 60_000 },
+  recoveryLimit: { minimum: 0, maximum: 10 },
+} as const;
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
 const tools: readonly Tool[] = ['codex', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
@@ -59,7 +64,8 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     try { parseToolPathChoice(choice, options.platform); }
     catch { errors[`toolPaths.${tool}`] = 'toolPath'; }
   }
-  const number = (raw: string, key: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number => {
+  const number = (key: keyof typeof configurationNumberRanges): number => {
+    const raw = draft[key], { minimum, maximum } = configurationNumberRanges[key];
     const value = Number(raw);
     if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < minimum || value > maximum) errors[key] = 'integer';
     return value;
@@ -76,7 +82,7 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     if (!Array.isArray(value) || !value.every(isConfigurationText)) { errors[key] = 'args'; return []; }
     return value as string[];
   };
-  const maxConcurrent = number(draft.maxConcurrent, 'maxConcurrent', 1), pollIntervalMs = number(draft.pollIntervalMs, 'pollIntervalMs', 1, 2_147_483_647), recoveryLimit = number(draft.recoveryLimit, 'recoveryLimit', 0);
+  const maxConcurrent = number('maxConcurrent'), pollIntervalMs = number('pollIntervalMs'), recoveryLimit = number('recoveryLimit');
   if (!agents.includes(draft.native.agent)) errors['native.agent'] = 'agent';
   if (controlModeSupported && draft.agentControlMode !== null && draft.agentControlMode !== 'herdr' && draft.agentControlMode !== 'web') errors.agentControlMode = 'controlMode';
   const native: WorkerConfigurationNative = { agent: draft.native.agent, model: model(draft.native.model, 'native.model', true), args: args(draft.native.args, 'native.args') };
@@ -120,7 +126,11 @@ export const configurationDraftsEqual = (left: ConfigurationDraft, right: Config
 };
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
   // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
-  const baseline = { ...draftFromValue(desired), projects: [] };
+  const baseline = { ...draftFromValue(desired), projects: [],
+    maxConcurrent: String(configurationNumberRanges.maxConcurrent.minimum),
+    pollIntervalMs: String(configurationNumberRanges.pollIntervalMs.minimum),
+    recoveryLimit: String(configurationNumberRanges.recoveryLimit.minimum),
+  };
   const native = parseConfigurationDraft({ ...baseline, native: draft.native }, undefined, { toolPathsSupported: false }).value?.native;
   const projects = new Map(desired.projects.map(project => [project.projectId, project.nativeOverrides]));
   return {

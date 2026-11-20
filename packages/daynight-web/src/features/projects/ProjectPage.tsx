@@ -24,10 +24,11 @@ import type { OverviewTaskTarget } from "./overview-progress";
 import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
+import { ProjectSettingsActionContent } from "./ProjectHeaderActions";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { focusProjectList, focusVisible, type ProjectListOrigin } from "./project-list-focus";
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from "./project-graph-target";
-import { useProjectAssigneeFilter, useProjectStatusFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useProjectAssigneeFilter, useProjectStatusFilter, useProjectSection, useTaskView, useProjectScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph, type GraphSnapshot } from "./useTaskGraph";
 import { useProjectPageRead } from "./useProjectPageRead";
@@ -43,8 +44,26 @@ import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
 import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
+import { usePullRequestRepositories } from "../pull-requests/usePullRequestRepositories";
 import { NativeSelect } from "../../ui/native-select/NativeSelect";
+import { ValueCopyButton, type CopyState } from "../../ui/copy-button/ValueCopyButton";
 import "../../styles/project.css";
+
+const RepositoryCopyFeedback = ({ state, event, success, failure }: {
+  readonly state: CopyState; readonly event: string; readonly success: string; readonly failure: string;
+}) => {
+  const [expired, setExpired] = useState<string | null>(null);
+  useEffect(() => {
+    if (state !== "copied") return;
+    const timer = window.setTimeout(() => setExpired(event), 3000);
+    return () => window.clearTimeout(timer);
+  }, [state, event]);
+  const visible = state === "copied" && expired !== event;
+  return <>
+    <span className="project-repository-success" role={visible ? "status" : undefined} aria-hidden={!visible}>{success}</span>
+    {state === "failed" && <span className="project-repository-error" role="alert">{failure}</span>}
+  </>;
+};
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -102,6 +121,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   historyRef.current = history;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
+  const prSources = usePullRequestRepositories({ userId: viewer.userId, projectId,
+    active: (section === "prs" || section === "statistics") && !history.error,
+    canRead: projectRead.project !== null && !viewer.isInvalidated,
+    onPrincipalMismatch: viewer.principalMismatch, onAccessError: () => { void projectAccess.session.revalidate(); } });
   const [tasksMounted, setTasksMounted] = useState(false);
   const [tagsMounted, setTagsMounted] = useState(false);
   const [statisticsMounted, setStatisticsMounted] = useState(false);
@@ -194,27 +217,27 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const currentView = useRef<TaskView>("chains");
   const currentSection = useRef<ProjectSection>(section);
   currentSection.current = section;
-  const overviewPosition = useRef(0);
-  const prPosition = useRef(0);
   const snapshot = graph.displaySnapshot;
   const currentSnapshot = graph.snapshot;
   const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, platformFilter, value: tagFilter.value, invalid: tagFilter.invalid });
   overviewFence.current = { snapshot, assigneeFilter, statusFilter, platformFilter, value: tagFilter.value, invalid: tagFilter.invalid };
   useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, platformFilter, tagFilter.value, tagFilter.invalid]);
   const snapshotReady = snapshot !== null;
-  const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
+  const [panelReadiness, setPanelReadiness] = useState({ prs: false, tags: false, statistics: false });
+  const setPRScrollReady = useCallback((ready: boolean) => setPanelReadiness(previous => previous.prs === ready ? previous : { ...previous, prs: ready }), []);
+  const setTagScrollReady = useCallback((ready: boolean) => setPanelReadiness(previous => previous.tags === ready ? previous : { ...previous, tags: ready }), []);
+  const setStatisticsScrollReady = useCallback((ready: boolean) => setPanelReadiness(previous => previous.statistics === ready ? previous : { ...previous, statistics: ready }), []);
+  const projectReady = projectRead.project !== null && projectRead.error === null && !viewer.isInvalidated && !viewer.isProjectSuspended(projectId) && !history.error;
+  const sectionReady = section === "overview" || section === "tasks"
+    ? snapshotReady && currentSnapshot !== null && currentSnapshot.receivedAt !== null && graph.error === null && (section !== "tasks" || !searchActive || !search.busy && search.error === null && search.total !== null)
+    : panelReadiness[section];
+  const explicitTarget = location.hash !== "" || new URLSearchParams(location.search).has("chain") || new URLSearchParams(location.search).has("goalGraph");
+  const { savePosition, cancelRestore, issue: scrollIssue } = useProjectScroll(projectId, viewer.userId, section, projectReady && sectionReady, explicitTarget, activeView);
   useLayoutEffect(() => {
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
   }, [snapshotReady, section]);
   useLayoutEffect(() => { if (section === "tags") setTagsMounted(true); if (section === "statistics") setStatisticsMounted(true); }, [section]);
-  useLayoutEffect(() => {
-    if (section !== "overview" || !snapshotReady) return;
-    window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
-  }, [section, snapshotReady]);
-  useLayoutEffect(() => {
-    if (section === "prs") window.scrollTo({ top: prPosition.current, behavior: "instant" });
-  }, [section]);
   currentView.current = activeView;
   const categories = useMemo(() => {
     if (snapshot === null) return null;
@@ -270,23 +293,24 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
   const pageGoals = goals.slice(goalPagination.start - 1, goalPagination.end);
-  const selectChainPage = (page: number) => { chainPagination.onPageChange(page); setPageNavigation("chains"); };
-  const selectStandalonePage = (page: number) => { standalonePagination.onPageChange(page); setPageNavigation("standalone"); };
+  const selectChainPage = (page: number) => { cancelRestore(); chainPagination.onPageChange(page); setPageNavigation("chains"); };
+  const selectStandalonePage = (page: number) => { cancelRestore(); standalonePagination.onPageChange(page); setPageNavigation("standalone"); };
   const changeAssigneeFilter = (filter: AssigneeFilter) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); setAssigneeFilter(filter); };
   const changeStatusFilter = (filter: readonly TaskStatus[]) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); setStatusFilter(filter); };
   const changePlatformFilter = (filter: PlatformFilter) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setPlatformFilter(filter); };
-  const selectOverviewPage = (page: number) => { overviewPagination.onPageChange(page); setPageNavigation("overview"); };
+  const selectOverviewPage = (page: number) => { cancelRestore(); overviewPagination.onPageChange(page); setPageNavigation("overview"); };
   useLayoutEffect(() => {
     if (pageNavigation === null) return;
     const id = pageNavigation === "overview" ? "project-overview-progress" : pageNavigation === "chains" ? "project-chain-list" : "project-standalone-list";
     const target = document.getElementById(id);
     if (target !== null && target.closest('[hidden], [inert]') === null) {
+      cancelRestore();
       target.scrollIntoView({ block: "start", behavior: "instant" });
       target.focus({ preventScroll: true });
       savePosition();
     }
     setPageNavigation(null);
-  }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
+  }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition, cancelRestore]);
   if (graphWitness !== null) lastGraphResource.current = graphWitness;
   const openGraphTarget = section === "tasks" && (activeView === "chains" || activeView === "goals")
     ? resolveProjectGraphTarget(graphWitness, snapshot?.index ?? null, activeView === "goals" ? snapshot?.summaries : undefined) : null;
@@ -436,20 +460,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     history.select({ ...selection, view, projectGraphWitness: null }, false, () => onViewChange(view));
   }, [activeView, history.select, selection, onViewChange]);
 
-  const saveSectionPosition = useCallback(() => {
-    if (section === "tasks") savePosition();
-    else if (section === "overview" && snapshotReady) overviewPosition.current = window.scrollY;
-    else if (section === "prs") prPosition.current = window.scrollY;
-  }, [section, savePosition, snapshotReady]);
-
   const selectSection = useCallback((next: ProjectSection, onCommit?: () => void) => {
     if (next === section) return;
     history.select({ ...selection, section: next, projectGraphWitness: null }, false, () => {
-      saveSectionPosition();
+      cancelRestore();
       if (next !== "statistics") onSectionChange(next);
       onCommit?.();
     });
-  }, [section, saveSectionPosition, onSectionChange, history.select, selection]);
+  }, [section, cancelRestore, onSectionChange, history.select, selection]);
 
   const clearTargetHighlight = useCallback(() => {
     if (highlightedTarget.current === null) return;
@@ -499,6 +517,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     }
     const view = snapshot.index.components.get(representative)!.memberIds.size === 1 ? "standalone" : "chains";
     const commit = () => {
+      cancelRestore();
       if (detailSelection !== null) suppressRestore.current = true;
       if (originalTrigger.current === null) originalTrigger.current = trigger;
       if (search.applied !== null) search.clear();
@@ -507,13 +526,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value) && matchesPlatform(member, platformFilter))) {
         chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setPlatformFilter("all");
       }
-      if (section !== "tasks") { saveSectionPosition(); if (!fromFragment) onSectionChange("tasks"); }
+      if (section !== "tasks" && !fromFragment) onSectionChange("tasks");
       if (!fromFragment && view !== activeView) onViewChange(view);
       setNavigationWitness(id);
     };
     if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null && !fromFragment) commit();
     else select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
-  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, platformFilter, chainPagination.onPageChange, standalonePagination.onPageChange, section, saveSectionPosition, onSectionChange, onViewChange]);
+  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, platformFilter, chainPagination.onPageChange, standalonePagination.onPageChange, section, cancelRestore, onSectionChange, onViewChange]);
 
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement, fromFragment: boolean | 'chain' = false) => {
     const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
@@ -545,11 +564,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         if (detailSelection !== null) suppressRestore.current = true;
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
-        if (section !== "tasks") { saveSectionPosition(); if (!fromFragment) onSectionChange("tasks"); }
+        if (section !== "tasks") { cancelRestore(); if (!fromFragment) onSectionChange("tasks"); }
         if (!fromFragment && activeView !== view) onViewChange(view);
       });
     }
-  }, [snapshot, onNavigateExternalTask, detailSelection, openGraphTarget, history.select, selection, activeView, section, saveSectionPosition, onSectionChange, onViewChange]);
+  }, [snapshot, onNavigateExternalTask, detailSelection, openGraphTarget, history.select, selection, activeView, section, cancelRestore, onSectionChange, onViewChange]);
 
   const onOpenChainTask = useCallback((id: string, trigger: HTMLElement) => {
     if (trigger.closest(".task-chain-dialog") !== null && snapshot?.index.nodes.get(id)?.parentId != null) onNavigateExternalTask(id, trigger);
@@ -557,6 +576,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [snapshot, onNavigateExternalTask, onOpenTask]);
 
   const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
+    cancelRestore();
     overviewTagCheck.current?.abort();
     if (target.kind === "chain" && snapshot?.index.nodes.get(target.taskId)?.parentId != null) {
       onNavigateExternalTask(target.taskId, document.activeElement instanceof HTMLElement ? document.activeElement : heading.current!);
@@ -571,6 +591,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       matchesTaskStatus(filters.status, task.status) && matchesTaskTags(snapshot, task, tagFilter.value);
     const tagBlocks = snapshot !== null && tasks.length > 0 && !(target.kind === "standalone" ? tasks.every(matches) : tasks.some(matches));
     const navigateToTarget = (clearTags: boolean, blocked: boolean) => history.select({ ...selection, section: "tasks", view, projectGraphWitness: null }, false, () => {
+      cancelRestore();
       if (search.applied !== null) search.clear();
       setNotice(null);
       if (snapshot !== null) {
@@ -593,7 +614,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       }
       setListTarget(blocked ? null : target);
       if (view !== activeView) onViewChange(view);
-      if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
+      if (section !== "tasks") onSectionChange("tasks");
     });
     if (tagFilter.invalid) { navigateToTarget(false, true); return; }
     if (!tagBlocks || tagFilter.value.tagIds.length === 0) { navigateToTarget(tagBlocks, false); return; }
@@ -618,7 +639,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
       navigateToTarget(verified, missing);
     })();
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, cancelRestore, onSectionChange]);
 
   const goalUrl = parseGoalGraphUrl(location.pathname, location.search);
   useEffect(() => {
@@ -676,11 +697,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     else {
       const target = document.getElementById(`standalone-task-${navigationWitness}`);
       if (target === null) return;
+      cancelRestore();
       target.scrollIntoView({ block: "center", behavior: "instant" });
       target.focus({ preventScroll: true });
     }
     setNavigationWitness(null);
-  }, [navigationWitness, snapshot, section, activeView, rootIds, standaloneIds, chainPagination, standalonePagination]);
+  }, [navigationWitness, snapshot, section, activeView, rootIds, standaloneIds, chainPagination, standalonePagination, cancelRestore]);
 
   useLayoutEffect(() => {
     if (listTarget === null || section !== "tasks") return;
@@ -704,13 +726,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!focusVisible(document.getElementById(`project-task-tab-${view}`))) focusVisible(document.getElementById("project-section-tab-tasks"));
       return;
     }
-    // Explicit overview navigation runs after the task list restores its saved position.
+    cancelRestore();
     target.scrollIntoView({ block: listTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
     target.focus({ preventScroll: true });
     savePosition();
     target.classList.add("overview-progress-target");
     highlightedTarget.current = { element: target, timer: setTimeout(clearTargetHighlight, 2_200) };
-  }, [listTarget, section, activeView, snapshot, rootIds, chainPagination, standalonePagination, savePosition, clearTargetHighlight]);
+  }, [listTarget, section, activeView, snapshot, rootIds, chainPagination, standalonePagination, savePosition, cancelRestore, clearTargetHighlight]);
 
   const detailInsideGraph = detailSelection?.source === "summary" && detailSelection.insideProjectGraph === true && openGraphTarget !== null;
   const detailOwner = useMemo(() => detailInsideGraph && chainOverlay !== null
@@ -744,16 +766,20 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
       </div>
-      <div className="page-heading project-heading">
+      <div className="project-heading-container"><div className="page-heading project-heading">
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
             <h1 ref={heading} tabIndex={-1}>{projectRead.project?.name ?? app.projectTasks}</h1>
-            {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
+            {projectRead.project !== null && <div className="project-repository">
+              <span className="project-repository-value">{projectRead.project.repoUrl}</span>
+              <ValueCopyButton key={projectRead.project.id} value={projectRead.project.repoUrl} label={m.copyRepositoryUrl} className="project-repository-copy"
+                feedback={(state, event) => <RepositoryCopyFeedback key={projectRead.project?.repoUrl} state={state} event={event} success={m.repositoryUrlCopied} failure={m.copyRepositoryUrlFailed} />} />
+            </div>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
-      </div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button project-header-secondary"><ProjectSettingsActionContent label={auth.projectSettings} /></span></span>}<button className="button project-header-secondary" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing} aria-busy={graph.refreshing} aria-label={graph.refreshing ? m.refreshing : projects.refresh} title={graph.refreshing ? m.refreshing : projects.refresh}><svg className={`project-header-action-icon${graph.refreshing ? " project-header-refreshing" : ""}`} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="project-header-action-label">{graph.refreshing ? m.refreshing : projects.refresh}</span><span className="project-header-action-tooltip" aria-hidden="true">{graph.refreshing ? m.refreshing : projects.refresh}</span></button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
+      </div></div>
       {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} />}
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
         <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>
@@ -782,8 +808,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel" id="project-section-panel-statistics" role="tabpanel"
             aria-labelledby="project-section-tab-statistics" hidden={section !== "statistics"} inert={section !== "statistics"} tabIndex={0}>
             {(statisticsMounted || section === "statistics") && <ProjectStatistics userId={viewer.userId} projectId={projectId}
+              repositoryId={prSources.repositoryId}
+              sourceError={prSources.error} sourceLoading={prSources.loading} sourceLoaded={prSources.loaded} retrySources={prSources.retry}
               canRead={projectRead.project !== null && !viewer.isInvalidated} active={section === "statistics" && !history.error}
-              snapshot={currentSnapshot} taskError={graph.error} onTaskRetry={graph.refresh} refreshRevision={statisticsRefresh}
+              snapshot={currentSnapshot} taskError={graph.error} onTaskRetry={graph.refresh} refreshRevision={statisticsRefresh} onScrollReady={setStatisticsScrollReady}
               onPrincipalMismatch={viewer.principalMismatch} onAccessError={() => { void projectAccess.session.revalidate(); }} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
@@ -792,7 +820,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />} />
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} observationStore={graph.observationStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
-              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><TaskStatusFilter value={statusFilter} onChange={changeStatusFilter} />{!searchActive && activeView !== "goals" && <label className="task-status-filter">{locale === "zh-CN" ? "平台" : "Platform"}<NativeSelect density="filter" touchMode="responsive" focusTone="task" value={platformFilter} onChange={(event) => changePlatformFilter(event.currentTarget.value as PlatformFilter)}><option value="all">{locale === "zh-CN" ? "所有任务" : "All tasks"}</option><option value="any">{locale === "zh-CN" ? "任何平台" : "Any platform"}</option><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></NativeSelect></label>}{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
+              filter={<div className="project-task-filter-region"><div className="task-list-filters project-task-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><TaskStatusFilter value={statusFilter} onChange={changeStatusFilter} />{!searchActive && activeView !== "goals" && <label className="task-status-filter"><span>{locale === "zh-CN" ? "平台" : "Platform"}</span><NativeSelect density="filter" touchMode="responsive-target" focusTone="task" value={platformFilter} onChange={(event) => changePlatformFilter(event.currentTarget.value as PlatformFilter)}><option value="all">{locale === "zh-CN" ? "所有任务" : "All tasks"}</option><option value="any">{locale === "zh-CN" ? "任何平台" : "Any platform"}</option><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></NativeSelect></label>}{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div></div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
               unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
@@ -807,14 +835,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel project-prs" id="project-section-panel-prs" role="tabpanel"
             aria-labelledby="project-section-tab-prs" hidden={section !== "prs"} inert={section !== "prs"} tabIndex={0}>
             <PullRequestWorkspace userId={viewer.userId} projectId={projectId}
+              repositories={prSources.repositories} currentRepositoryId={prSources.currentRepositoryId} repositoryId={prSources.repositoryId}
+              setRepositoryId={prSources.setRepositoryId} sourceLoading={prSources.loading} sourceLoaded={prSources.loaded}
+              sourceError={prSources.error} retrySources={prSources.retry}
               canRead={projectRead.project !== null && !viewer.isInvalidated}
-              active={section === "prs" && !history.error}
+              active={section === "prs" && !history.error} onScrollReady={setPRScrollReady}
               onPrincipalMismatch={viewer.principalMismatch}
               onAccessError={() => { void projectAccess.session.revalidate(); }} />
           </section>
           <section className="project-section-panel" id="project-section-panel-tags" role="tabpanel"
             aria-labelledby="project-section-tab-tags" hidden={section !== "tags"} inert={section !== "tags"} tabIndex={0}>
-            {(tagsMounted || section === "tags") && <ProjectTags projectId={projectId} active={section === "tags"} />}
+            {(tagsMounted || section === "tags") && <ProjectTags projectId={projectId} active={section === "tags"} onScrollReady={setTagScrollReady} />}
           </section>
         </div>
       </div>

@@ -7,6 +7,7 @@ import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 const select = vi.hoisted(() => vi.fn());
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: ({ reveal }: { reveal: { path: string | null } }) => <span>Attachment: {reveal.path}</span> }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
@@ -32,7 +33,7 @@ const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog'
 it.each(['dialog', 'page'] as const)('keeps description and information with keyboard tabs and attachment navigation in %s', (presentation) => {
   renderWithLocale(surface('# Goal text\n\n[Guide](docs/guide.md)\n\n![Diagram](images/diagram.png)', presentation), { locale: 'en', taskCache: true, container: root });
   const tabs = screen.getAllByRole('tab');
-  expect(tabs.map(tab => tab.textContent)).toEqual(['Description', 'Attachments', 'Discussion']);
+  expect(tabs.map(tab => tab.textContent)).toEqual(['Description', 'Attachments', 'Discussion', 'Usage']);
   expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
   expect(screen.queryByRole('tab', { name: 'Tasks' })).toBeNull();
   expect(screen.getByRole('complementary', { name: 'Goal information' })).toBeVisible();
@@ -49,8 +50,9 @@ it.each(['dialog', 'page'] as const)('keeps description and information with key
   expect(select).toHaveBeenCalledWith('docs/guide.md');
   expect(screen.getByText('Attachment: docs/guide.md')).toBeVisible();
   fireEvent.keyDown(tabs[1]!, { key: 'End' });
-  expect(tabs[2]).toHaveFocus();
-  fireEvent.keyDown(tabs[2]!, { key: 'ArrowRight' });
+  expect(tabs[3]).toHaveFocus();
+  expect(screen.getByRole('tabpanel', { name: 'Usage' })).toBeVisible();
+  fireEvent.keyDown(tabs[3]!, { key: 'ArrowRight' });
   expect(tabs[0]).toHaveFocus();
 });
 

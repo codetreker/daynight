@@ -59,6 +59,16 @@ partial output, Claude exposes partial root-message input, and Codex cumulative
 snapshots do not enter the counted plane. Current Chain and Goal membership
 provides views over the same ledger, not another accounting store.
 
+Web usage reads remain separate from Task synchronization. Cards share bounded
+batch summaries, while Detail reads execution and measurement pages with their
+own snapshot tokens. Decimal strings stay exact through formatting with BigInt.
+Unknown totals retain their metric labels and coverage instead of being inferred
+from available input or output. The usage tab uses the existing Detail route and
+retained panels, preserving unrelated reading and drafts through pagination resets.
+Chain and Goal views consume server aggregates and their missing-member cursors
+directly. Current graph filters never redefine accounting membership; the UI
+shows known coverage and unknown members independently of completeness categories.
+
 Controller journal format 014 keeps usage source identities, grants and pending
 events separate from timeline acknowledgements. Copilot's live immutable event
 plane enters this journal before history buffering; only the exact advertised
@@ -185,6 +195,11 @@ Only one business table is added, and usage does not change Task versions or
 sorting. Unknown totals remain null; profile limitations are visible rather
 than hidden behind estimated complete totals. Consumers must support partial
 metrics, source conflicts and pagination resets.
+
+Usage needs its own refresh and account-scoped lifetime because usage writes
+deliberately leave Task versions unchanged. A successful Task refresh alone is
+not evidence that its usage summary is current. Batching avoids per-card reads,
+and independent paginated Detail queries bound the cost of opening large histories.
 
 Late uploads remain bounded by the original grant and parent credential.
 Losing the only token after an execution ends can leave an explicit data gap.

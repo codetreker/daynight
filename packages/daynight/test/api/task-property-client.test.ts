@@ -65,6 +65,31 @@ describe("generic property API resources", () => {
     expect(String(fetch.mock.calls[0]![1]!.body)).toBe('{"version":9007199254740993}');
   });
 
+  it.each(["blocked", "paused"])("confirms the requested %s key on set and both aliases absent on removal", async name => {
+    const both = { ...resource, version: version + 1n, properties: { blocked: true, paused: true } };
+    const absent = { ...resource, version: version + 1n, properties: {} };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(both)).mockResolvedValueOnce(json(absent));
+    const api = client(fetch);
+    expect(await api.setTaskProperty(projectId, taskId, name, { version, valueText: "true" })).toEqual(both);
+    expect(await api.removeTaskProperty(projectId, taskId, name, { version })).toEqual(absent);
+    expect(fetch.mock.calls.map(([url]) => String(url))).toEqual(Array(2).fill(`http://localhost:8787/api/v1/projects/${projectId}/tasks/${taskId}/properties/${name}`));
+    expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["PUT", "DELETE"]);
+  });
+
+  it.each(["blocked", "paused"])("does not confirm setting %s from only its alias", async name => {
+    const alias = name === "blocked" ? "paused" : "blocked";
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...resource, properties: { [alias]: true } }));
+    await expect(client(fetch).setTaskProperty(projectId, taskId, name, { version, valueText: "true" })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(["blocked", "paused"])("does not confirm removing %s while its alias remains", async name => {
+    const alias = name === "blocked" ? "paused" : "blocked";
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ ...resource, properties: { [alias]: false } }));
+    await expect(client(fetch).removeTaskProperty(projectId, taskId, name, { version })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { projectId: otherId }, { taskId: otherId }, { version: 1.5 }, { version: 0 },
     { properties: null }, { properties: [] }, { properties: undefined },

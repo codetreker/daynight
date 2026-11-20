@@ -14,7 +14,7 @@ func readPage(r *http.Request, allowed ...string) (core.PageInput, error) {
 		return core.PageInput{}, err
 	}
 	query := r.URL.Query()
-	result := core.PageInput{Limit: page.Limit, State: query.Get("state"), ItemID: query.Get("itemId"), TargetBotID: query.Get("targetBotId")}
+	result := core.PageInput{Limit: page.Limit, State: query.Get("state"), ItemID: query.Get("itemId"), TargetBotID: query.Get("targetBotId"), Type: query.Get("type"), ExcludeType: query.Get("excludeType")}
 	if page.Cursor != nil {
 		result.Cursor = *page.Cursor
 	}
@@ -63,6 +63,13 @@ func (h *handler) manual(_ http.ResponseWriter, r *http.Request, a core.Actor, t
 	}
 	value, err := h.tasks.GetManual(r.Context(), a, taskID, version)
 	return manualResponse(value), err
+}
+func (h *handler) metrics(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
+	if err := noQuery(r); err != nil {
+		return nil, err
+	}
+	value, err := h.tasks.Metrics(r.Context(), a, taskID)
+	return metricsResponse(value), err
 }
 func (h *handler) item(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, id string) (any, error) {
 	if err := noQuery(r); err != nil {
@@ -123,7 +130,7 @@ func (h *handler) records(_ http.ResponseWriter, r *http.Request, a core.Actor, 
 }
 
 func (h *handler) events(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
-	page, err := readPage(r, "state", "targetBotId")
+	page, err := readPage(r, "state", "targetBotId", "type", "excludeType")
 	if err != nil {
 		return nil, err
 	}

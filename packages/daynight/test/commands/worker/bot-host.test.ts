@@ -8,6 +8,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botStores from "../../../src/commands/worker/bots/store.js";
 import * as executionStores from "../../../src/commands/worker/bots/execution-store.js";
+import * as assistantRuntime from "../../../src/commands/worker/bots/runtime.js";
 import { bot } from "./bot-store.fixtures.js";
 
 const mocks = vi.hoisted(() => ({ collector: vi.fn() }));
@@ -21,6 +22,10 @@ const fixture = async () => {
   vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => openStore(createMemoryDatabase(), options));
   vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((_file, options) => openExecutions(createMemoryDatabase(), options));
   const paths = resolveWorkerPaths(home); await mkdir(paths.workerDirectory, { recursive: true });
+  // Routing checks the source migration receipt independently of the controlled
+  // inventory collaborators, so retain a real current-format source database.
+  const source = openStore(paths.databaseFile, { onMigration: () => {} });
+  source.close();
   let configuration: ExecutionConfiguration | null = null;
   const options = { homeDirectory: home, packageDirectory: home, workingDirectory: home, paths,
     owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" },
@@ -31,6 +36,22 @@ const fixture = async () => {
   return { options, collect, sample, set: (value: ExecutionConfiguration | null) => { configuration = value; } };
 };
 const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
+
+it("retains resources after failed shutdown and permits an explicit successful re-observation before close", async () => {
+  const f = await fixture(), failure = new Error("Original writer stop is unconfirmed");
+  const shutdown = vi.fn<() => Promise<void>>(async () => { throw failure; });
+  vi.spyOn(assistantRuntime, "createManagedAssistantRuntime").mockReturnValue({ run: async () => {}, shutdown } as never);
+  const host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  await expect(host.shutdown()).rejects.toBe(failure);
+  await expect(host.close()).rejects.toThrow("storage locks are retained");
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(host.requiresCopilot()).toBe(false);
+  shutdown.mockImplementation(async () => {});
+  await host.shutdown();
+  await host.close();
+  expect(shutdown).toHaveBeenCalledTimes(2);
+  expect(() => host.requiresCopilot()).toThrow(/closed|closing/);
+});
 
 it("omits unsupported configuration and discards a capability probe spanning a cloud change", async () => {
   const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);

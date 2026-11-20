@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestBackupInventoryIncludesReadyIdentityAndBothOriginalRepresentations(t *testing.T) {
@@ -62,46 +66,109 @@ func TestBackupInventoryIncludesReadyIdentityAndBothOriginalRepresentations(t *t
 	}
 }
 
+type backupInventoryFixture struct {
+	database  *Store
+	id, owner string
+}
+
+func newBackupInventoryFixture(t *testing.T) backupInventoryFixture {
+	t.Helper()
+	f := backupInventoryFixture{database: isolatedStore(t), id: uuid.NewString(), owner: uuid.NewString()}
+	mustQueryExec(t, f.database, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, f.id, f.owner, uuid.NewString())
+	return f
+}
+
+func (f backupInventoryFixture) requireCleanInventory(t *testing.T, ctx context.Context) {
+	t.Helper()
+	calls := 0
+	err := f.database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+		calls++
+		if v.SessionID != f.id || v.OwnerID != f.owner || v.ProjectID != "" || v.Archive != nil || v.Migration != nil ||
+			len(v.Resources)+len(v.InlineResources)+len(v.Objects) != 0 {
+			return fmt.Errorf("restored inventory differs: %+v", v)
+		}
+		return nil
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("inventory fixture after restoration: callbacks=%d error=%v", calls, err)
+	}
+}
+
 func TestBackupInventoryRejectsCorruptRestoredMetadataAndMissingRelations(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, kind := range []string{"descriptor", "ready-identity", "missing-resources", "missing-chunks", "missing-archives", "canceled"} {
-		t.Run(kind, func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx := t.Context()
-			owner, id, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
-			if _, e := database.Pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, id, owner, execution); e != nil {
-				t.Fatal(e)
+	shared := newBackupInventoryFixture(t)
+	for _, test := range []struct{ kind, relation string }{
+		{kind: "descriptor"},
+		{kind: "ready-identity"},
+		{kind: "missing-resources", relation: "session_resources"},
+		{kind: "missing-chunks", relation: "session_image_chunks"},
+		{kind: "missing-archives", relation: "session_archives"},
+		{kind: "canceled"},
+	} {
+		if !t.Run(test.kind, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(t.Context(), 15*time.Second)
+			defer stop()
+			f := shared
+			var restore func(context.Context)
+			if test.kind == "ready-identity" {
+				f = newBackupInventoryFixture(t)
+			} else {
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if restore != nil {
+						restore(ctx)
+					}
+					f.requireCleanInventory(t, ctx)
+				})
 			}
-			var e error
-			switch kind {
+			switch test.kind {
 			case "descriptor":
-				_, e = database.Pool.Exec(ctx, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,'{}')`, id, uuid.NewString())
-			case "ready-identity":
-				if _, e = database.Pool.Exec(ctx, `ALTER TABLE session_archives DROP CONSTRAINT session_archive_body`); e == nil {
-					_, e = database.Pool.Exec(ctx, `INSERT INTO session_archives(session_id,state) VALUES($1,'ready')`, id)
+				resource := uuid.NewString()
+				mustQueryExec(t, f.database, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,'{}')`, f.id, resource)
+				restore = func(ctx context.Context) {
+					tag, err := f.database.Pool.Exec(ctx, `DELETE FROM session_resources WHERE session_id=$1 AND resource_id=$2`, f.id, resource)
+					if err != nil || tag.RowsAffected() != 1 {
+						t.Fatalf("remove corrupt descriptor: %v, %v", tag, err)
+					}
 				}
-			case "missing-resources":
-				_, e = database.Pool.Exec(ctx, `ALTER TABLE session_resources RENAME TO missing_session_resources`)
-			case "missing-chunks":
-				_, e = database.Pool.Exec(ctx, `ALTER TABLE session_image_chunks RENAME TO missing_session_image_chunks`)
-			case "missing-archives":
-				_, e = database.Pool.Exec(ctx, `ALTER TABLE session_archives RENAME TO missing_session_archives`)
+			case "ready-identity":
+				mustQueryExec(t, f.database, `ALTER TABLE session_archives DROP CONSTRAINT session_archive_body`)
+				mustQueryExec(t, f.database, `INSERT INTO session_archives(session_id,state) VALUES($1,'ready')`, f.id)
 			case "canceled":
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
-			}
-			if e != nil {
-				t.Fatal(e)
+			default:
+				restore = testutil.HideRelation(t, ctx, f.database.Pool, test.relation)
 			}
 			calls := 0
-			e = database.VerifyStorageInventory(ctx, func(store.StorageInventory) error { calls++; return nil })
-			if e == nil || calls != 0 {
-				t.Fatal("invalid restored cut reached the closure verifier", kind, calls, e)
+			err := f.database.VerifyStorageInventory(ctx, func(store.StorageInventory) error { calls++; return nil })
+			if err == nil || calls != 0 {
+				t.Fatalf("invalid restored cut reached the closure verifier: callbacks=%d error=%v", calls, err)
 			}
-			if kind == "canceled" && !errors.Is(e, context.Canceled) {
-				t.Fatal("inventory cancellation cause replaced", e)
+			switch test.kind {
+			case "descriptor":
+				_, want := sp.DecodeResource([]byte("{}"))
+				if !errors.Is(err, want) {
+					t.Fatalf("descriptor decode cause replaced: %v", err)
+				}
+			case "ready-identity":
+				if err.Error() != "ready archive has incomplete storage identity" {
+					t.Fatalf("missing archive identity cause replaced: %v", err)
+				}
+			case "canceled":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("inventory cancellation cause replaced: %v", err)
+				}
+			default:
+				var pg *pgconn.PgError
+				if !errors.As(err, &pg) || pg.Code != "42P01" {
+					t.Fatalf("inventory did not report missing %s: %v", test.relation, err)
+				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }

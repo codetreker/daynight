@@ -8,6 +8,7 @@ import type { TimerOptions } from "node:timers";
 import { afterEach, expect, it, vi } from "vitest";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
@@ -375,7 +376,19 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
       expect(stream === "stdout" ? gitProcess.stdoutClosed : gitProcess.stderrClosed).toBe(false);
       expect(gitProcess.childClosed).toBe(false);
     }
-    interrupt.abort(new Error("controlled mutation cancellation"));
+    const cancellation = new Error("controlled mutation cancellation");
+    if (process.platform === "win32" && (stream === "child" || stream === "helper")) {
+      interrupt.abort(cancellation);
+    } else {
+      // The observed leader exit or POSIX stop path leaves only the Git cleanup grace timer.
+      const grace = captureSynchronousDeadline(() => interrupt.abort(cancellation));
+      try {
+        expect(grace.count).toBe(1);
+        expect(grace.requested).toBe(1_000);
+        grace.markReady();
+        await grace.expire();
+      } finally { grace.restore(); }
+    }
     await vi.waitFor(() => expect(pending).toBeDefined(), { timeout: 15_000, interval: 20 });
     expect(pending).toMatchObject({ projectId: f.project.projectId, owner, command: "worktree-remove", error: { code: "repository_git_cleanup_pending" } });
     const contains = (error: unknown, target: unknown): boolean => error === target || error instanceof Error && (contains(error.cause, target) || error instanceof AggregateError && error.errors.some((entry: unknown) => contains(entry, target)));

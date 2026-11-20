@@ -50,7 +50,7 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 		}
 		exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
 	}
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, ids[0])
+	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, ids[0])
 	exec(`INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, ids[0], ids[3])
 	page := model.PageRequest{Limit: 1}
 	_, err := s.DeletionPreview(ctx, model.Principal{}, project.ID, page)
@@ -72,6 +72,9 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 	}
 	if first.Project.ID != project.ID || first.Summary.TaskCount != 3 || first.Summary.UnfinishedTaskCount != 2 || first.Summary.AttachmentCount != 1 || len(first.ActiveClaims) != 1 || first.ActiveClaims[0].TaskID != ids[0] || !first.ActiveClaims[0].Paused || first.ActiveClaims[0].Connectivity != "unknown" || first.NextCursor == nil {
 		t.Fatalf("first page: %+v", first)
+	}
+	if first.ActiveClaims[0].UserID != claim.UserID || first.ActiveClaims[0].WorkerID != claim.WorkerID {
+		t.Fatalf("claim identity changed: %+v", first.ActiveClaims[0])
 	}
 	exec(`INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now()-interval '10 minutes','{}','{}')`, actor.UserID, claim.WorkerID)
 	page.Cursor = first.NextCursor

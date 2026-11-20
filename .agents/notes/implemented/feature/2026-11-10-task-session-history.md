@@ -17,7 +17,9 @@ The [storage contract decision](../architecture/2026-11-18-session-storage-contr
 defines separately negotiated body-only retention and expiry requirements.
 The complete-entry behavior below remains the existing reader contract for
 available live sources and legacy archives; it does not assert that the new
-retention capability is implemented.
+retention capability is enabled. The [retention persistence decision](../architecture/2026-11-19-task-archive-retention.md)
+owns first-success recording and protected deadline calculations; directory and
+cleanup consumers retain their own implementation requirements.
 
 Task Session history uses shared domain and service operations behind HTTP, MCP
 and CLI adapters. Explicit Session identity is preserved across every read. The

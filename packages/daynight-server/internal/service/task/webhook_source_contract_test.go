@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -31,12 +32,20 @@ type sourceCapture struct {
 	trace *[]string
 	facts []protocol.Fact
 	cause error
+	actor *wm.Actor
 }
 
-func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if ctx.Value(sourceContextKey{}) != c || dao != c.dao {
 		c.t.Fatal("source capture escaped its context or transaction DAO")
+	}
+	want := wm.UserActor(sourceUserID)
+	if c.actor != nil {
+		want = *c.actor
+	}
+	if actor != want {
+		c.t.Fatalf("source capture actor = %+v, want %+v", actor, want)
 	}
 	c.calls = append(c.calls, "capture")
 	*c.trace = append(*c.trace, "capture")
@@ -154,7 +163,7 @@ func (d *sourceTaskDAO) UpdateTask(_ context.Context, id string, values store.Ta
 
 func (d *sourceTaskDAO) CreateTask(_ context.Context, id string, values store.TaskWrite) (model.Task, error) {
 	d.t.Helper()
-	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["paused"]) != "true" {
+	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["blocked"]) != "true" {
 		d.t.Fatalf("unexpected source creation: %#v", values)
 	}
 	d.writes = append(d.writes, values)
@@ -257,12 +266,19 @@ type sourceWriteScope struct {
 	projects sourceProjectDAO
 	sessions sourceSessionDAO
 	capture  store.WebhookCaptureDAO
+	bots     store.BotBarrierDAO
 }
 
 func (s sourceWriteScope) TaskDAO() store.TaskWriteDAO         { return s.tasks }
 func (s sourceWriteScope) ProjectDAO() store.ProjectWriteDAO   { return s.projects }
 func (s sourceWriteScope) SessionDAO() store.ProjectSessionDAO { return s.sessions }
 func (s sourceWriteScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
+func (s sourceWriteScope) BotBarrierDAO() store.BotBarrierDAO {
+	if s.bots == nil {
+		s.tasks.t.Fatal("unexpected Bot barrier")
+	}
+	return s.bots
+}
 func (s sourceWriteScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	if !s.tasks.allowClock {
 		s.tasks.t.Fatal("unexpected claim admission")
@@ -283,10 +299,46 @@ type sourceWriteStore struct {
 	calls int
 }
 
-func (d *sourceWriteStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	d.t.Helper()
-	d.t.Error("source write unexpectedly entered a separate snapshot")
-	panic("unexpected source snapshot")
+func (d *sourceWriteStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if ctx.Value(sourceContextKey{}) != d.ctx.Value(sourceContextKey{}) || run == nil {
+		d.t.Fatal("lifecycle preflight lost context")
+	}
+	if ctx != d.ctx {
+		d.t.Fatal("lifecycle preflight changed caller context")
+	}
+	return run(sourceSnapshot{t: d.t})
+}
+
+type sourceSnapshot struct {
+	store.SnapshotScope
+	t *testing.T
+}
+
+func (s sourceSnapshot) ProjectDAO() store.ProjectReader { return sourceProjectReader{t: s.t} }
+func (s sourceSnapshot) TaskDAO() store.TaskReader       { return sourceTaskReader{t: s.t} }
+
+type sourceProjectReader struct {
+	store.ProjectReader
+	t *testing.T
+}
+
+func (d sourceProjectReader) ProjectAccess(_ context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+	if p.UserID != sourceUserID || project != sourceProjectID {
+		d.t.Fatal("preflight changed principal or project")
+	}
+	return model.ProjectAccess{ProjectID: project, UserID: p.UserID, Role: model.ProjectAdmin}, nil
+}
+
+type sourceTaskReader struct {
+	store.TaskReader
+	t *testing.T
+}
+
+func (d sourceTaskReader) TaskHeader(_ context.Context, project, id string) (model.TaskHeader, error) {
+	if project != sourceProjectID || id != sourceTaskID {
+		d.t.Fatal("preflight changed task")
+	}
+	return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
 }
 
 func (d *sourceWriteStore) WriteProject(ctx context.Context, project string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
@@ -355,10 +407,10 @@ func TestTaskStatusSourcesUseAuthoritativeRows(t *testing.T) {
 func TestTaskCreationCapturesCreatedPausedFactInSourceScope(t *testing.T) {
 	created := sourceTask(model.TaskProposed)
 	created.Version = 1
-	created.Properties = model.TaskProperties{"paused": []byte(`true`)}
+	created.Properties = model.TaskProperties{"blocked": []byte(`true`)}
 	db, record, ctx, calls := newSourceWrite(t, model.Task{}, created)
 	db.scope.tasks.create, db.scope.tasks.allowLookup = true, true
-	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"paused": []byte(`true`)}})
+	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"blocked": []byte(`true`)}})
 	if err != nil || len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"create", "capture"}) {
 		t.Fatalf("creation capture: %#v %v, %v", record.facts, err, *calls)
 	}

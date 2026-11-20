@@ -58,9 +58,10 @@ func TestPreviewRetryReplacesOnceAndPreservesTarget(t *testing.T) {
 }
 
 func TestPreviewRetryRejectsWrongSessionExpiryAndRollsBack(t *testing.T) {
+	db := isolatedStore(t)
 	for _, scenario := range []string{"wrong_user", "wrong_session", "expired_login", "expired_session", "revoked_session", "rollback"} {
-		t.Run(scenario, func(t *testing.T) {
-			f := newPreviewFixture(t)
+		if !t.Run(scenario, func(t *testing.T) {
+			f := newPreviewFixtureInStore(t, db)
 			f.authorize(t)
 			principal := f.principal
 			switch scenario {
@@ -100,7 +101,10 @@ func TestPreviewRetryRejectsWrongSessionExpiryAndRollsBack(t *testing.T) {
 			if err := f.db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM preview_sso_logins WHERE id=$1`, f.login.ID).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("old record changed: %d %v", count, err)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, db.Pool)
 	}
 }
 

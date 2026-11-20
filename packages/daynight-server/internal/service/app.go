@@ -10,7 +10,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -26,6 +25,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/reviewassignment"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	usageapp "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
@@ -52,6 +53,8 @@ type App struct {
 	Webhooks             *webhook.Service
 	webhookRuntime       *webhookRuntime
 	githubRuntime        *githubRuntime
+	archiveCleanup       *sessionservice.ArchiveCleanupRunner
+	reviewAssignment     *reviewassignment.Runner
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
 	PreviewSSOError      error
@@ -181,7 +184,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 		logger = slog.Default()
 	}
 	return openApp(ctx, c, logger, appOpeners{
-		files: func(root string) (appStorage, error) { return local.New(root) },
+		files: func(root string) (appStorage, error) { return openFileStorage(root, c.Monitoring.Redis.RedisURL) },
 		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
 			return openPostgresWithLogger(ctx, databaseURL, logger)
 		},
@@ -242,6 +245,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
+	app.Projects.SetRepositoryLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
@@ -299,6 +303,12 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		return failOpen(err)
 	}
 	if err := app.assembleGitHub(database.Transactions, logger); err != nil {
+		return failOpen(err)
+	}
+	if err := app.assembleReviewAssignment(database.Transactions, logger); err != nil {
+		return failOpen(err)
+	}
+	if err := app.assembleArchiveCleanup(database.Transactions, files, logger); err != nil {
 		return failOpen(err)
 	}
 	if app.ImageValidationError != nil {

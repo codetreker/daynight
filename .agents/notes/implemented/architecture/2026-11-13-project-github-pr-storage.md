@@ -19,3 +19,5 @@ Store connection facts, pull requests and pending refresh hints in separate Proj
 ## Consequences
 
 The storage provides coordination primitives independently of the connection endpoint and worker. Retained raw descriptions and nullable source identities preserve upstream facts. Separate counters and explicit writes require producers to honor the same boundaries; the database does not implement their business state machine. Replacing a pending request ID prevents an older acknowledgement from consuming a newer hint, at the cost of a possible additional fetch. The [synchronization setting decision](2026-11-14-project-github-sync-setting.md) extends the same generation and lease fence to independent Project synchronization intent.
+
+The [repository source isolation decision](2026-11-19-github-pr-repository-sources.md) extends the PR identity and fixes the source used by legacy reads. The [terminal discovery decision](2026-11-18-github-terminal-pr-discovery.md) extends this mechanism with coverage intervals and bounded all-state discovery.

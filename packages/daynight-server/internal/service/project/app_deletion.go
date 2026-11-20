@@ -10,15 +10,20 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
 
 func (s *AppProjects) Delete(ctx context.Context, p model.Principal, id string) (DeletionReceipt, error) {
+	return s.DeleteWithInput(ctx, p, id, core.DeletionInput{})
+}
+
+func (s *AppProjects) DeleteWithInput(ctx context.Context, p model.Principal, id string, input core.DeletionInput) (DeletionReceipt, error) {
 	id, err := core.ValidateRead(p, id)
 	if err != nil {
 		return DeletionReceipt{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, github.OperationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
 	defer cancel()
 	access, err := s.Access(ctx, p, id)
 	if err != nil {
@@ -52,6 +57,9 @@ func (s *AppProjects) Delete(ctx context.Context, p model.Principal, id string) 
 		}
 		if active {
 			return &model.Fault{Code: "active_worker_claims", Message: "Project has active Worker claims."}
+		}
+		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			return err
 		}
 		connection := scope.GitHubDAO()
 		if _, err = connection.LockBinding(ctx); err != nil {

@@ -98,7 +98,7 @@ describe("claim tool reservations", () => {
   it.each(["revoked", "paused"] as const)("takes responsibility for the original active grant after it is %s without choosing new tools", state => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
     const task = granted({}, state === "revoked" ? { allowAgents: false } : {});
-    const observed = state === "paused" ? { ...task, properties: { ...task.properties, paused: true } } : task;
+    const observed = state === "paused" ? { ...task, properties: { ...task.properties, blocked: true } } : task;
     expect(store.acceptClaimToolReservation(observed, reservation.workerId)?.status).toBe("pending");
     expect(store.getNativeConfiguration(reservation)).toEqual(reservation.nativeConfiguration);
     expect(store.listClaimToolReservations()).toEqual([]);

@@ -133,6 +133,20 @@ func measureContent(s contentState) (contentCost, error) {
 		cost.IndexBytes = int64(len(index))
 	}
 	resources := append([]sp.Resource(nil), s.resources...)
+	if s.ledger != nil && s.ledger.ContentPolicy == "task_body" {
+		// Online-only captured resources retain their independent image quota;
+		// they must not consume the retained body history allowance.
+		body := map[string]bool{}
+		for _, resource := range s.ledger.Resources {
+			body[resource.ResourceID] = true
+		}
+		resources = resources[:0]
+		for _, resource := range s.resources {
+			if body[resource.ResourceID] {
+				resources = append(resources, resource)
+			}
+		}
+	}
 	sort.Slice(resources, func(i, j int) bool { return resources[i].ResourceID < resources[j].ResourceID })
 	for i, r := range resources {
 		if r.ResourceID == "" || i > 0 && resources[i-1].ResourceID == r.ResourceID {

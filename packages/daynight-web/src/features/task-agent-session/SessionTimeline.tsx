@@ -1,5 +1,5 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { legacySubagentActivity } from './legacy-subagent-activity';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
@@ -15,6 +15,7 @@ import { useSessionMessages } from './messages';
 import { useSessionHistoryPagination } from './useSessionHistoryPagination';
 import { usePendingInteractionLocator } from './usePendingInteractionLocator';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
+import { useSessionImageScope } from './images/SessionImageScope';
 import { selectSessionDisplayEntries, type SessionDisplayMode } from './display-mode';
 import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHistoryPreview, type SessionHistoryCoverage } from './history-preview';
 import { toolSummary } from './tool-summary';
@@ -43,6 +44,18 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   readonly historyReady?: boolean; readonly historyRevision?: number; readonly connectionGeneration?: number;
 }) {
   const m = useSessionMessages();
+  const shell = useRef<HTMLDivElement>(null);
+  const [compactNavigation, setCompactNavigation] = useState(false);
+  useLayoutEffect(() => {
+    const node = shell.current;
+    if (!node) return;
+    const measure = () => setCompactNavigation(node.getBoundingClientRect().height <= 120);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener('resize', measure);
+    measure();
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, []);
   const preview = matchingSessionHistoryPreview(state, historyPreview);
   const rows = useMemo(() => selectSessionHistoryRows(state, preview, historyLoaded, historyCoverage), [state, preview, historyLoaded, historyCoverage]);
   const renderedEntries = useMemo(() => rows.map(row => row.entry), [rows]);
@@ -68,6 +81,12 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
     for (const key of disclosures.current.values.keys()) if (!retained.has(key.split('/')[0]!)) disclosures.current.values.delete(key);
   }, [originalKeys]);
   const currentScroll = useRef(scroll); currentScroll.current = scroll;
+  const imagePreview = useSessionImageScope()?.preview;
+  useLayoutEffect(() => imagePreview?.subscribe(() => {
+    // The browser may have scrolled before activation without delivering its
+    // scroll event yet. The preview lock will ignore that pending event.
+    if (imagePreview.snapshot()) currentScroll.current.onScroll();
+  }), [imagePreview]);
   const readingHandle = useMemo<SessionTimelineReadingHandle>(() => ({
     captureBookmark: () => currentScroll.current.captureBookmark(),
     restoreBookmark: bookmark => currentScroll.current.restoreBookmark(bookmark),
@@ -86,7 +105,7 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   const history = useSessionHistoryPagination({ scroll, identity: historyIdentity, mode: displayMode, active, ready: historyReady, generation: connectionGeneration, revision: historyRevision, hasOlder, loading: loadingOlder, error: historyError, load: onLoadOlder });
   const pendingInteractions = useMemo(() => state.snapshot?.activity === 'waiting_input' ? entries.flatMap(entry => !previewIds.has(entry.entryId) && entry.kind === 'interaction' && entry.interaction.state === 'pending' && sessionRespondGate(state, canRespond, entry.interaction) ? [{ entryId: entry.entryId, title: entry.interaction.title }] : []) : [], [entries, state, canRespond, previewIds]);
   const pending = usePendingInteractionLocator(scroll, active, pendingInteractions);
-  return <div className="session-timeline-shell">
+  return <div ref={shell} className={`session-timeline-shell${compactNavigation ? ' session-timeline-shell-compact' : ''}`}>
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={history.onScroll} onWheel={history.onWheel} onTouchStart={history.onTouchStart} onTouchMove={history.onTouchMove} onPointerDown={history.onPointerDown} onKeyDown={history.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
         {previewIds.size > 0 ? <p className="session-history-preview-label">{m.historyPreview}</p> : null}
@@ -96,15 +115,23 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
       </div>
     </div>
     {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
-      {pending.target ? <button type="button" className="button session-pending-request" onClick={pending.reveal}><span>{m.pendingRequest} · {pending.target.title}</span><span aria-hidden="true">{pending.target.direction === 'up' ? '↑' : '↓'}</span></button> : null}
-      {scroll.showLatest ? <button type="button" className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
+      {pending.target ? <button type="button" className="button session-pending-request" aria-label={`${m.pendingRequest} · ${pending.target.title}`} onClick={pending.reveal}><span className="session-pending-label"><span className="session-pending-prefix">{m.pendingRequest} · </span><span>{pending.target.title}</span></span><span aria-hidden="true">{pending.target.direction === 'up' ? '↑' : '↓'}</span></button> : null}
+      {scroll.showLatest ? <button type="button" className="button session-latest" aria-label={`${m.latest} ↓`} title={m.latest} onClick={history.latest}><span className="session-latest-label">{m.latest} </span><span aria-hidden="true">↓</span></button> : null}
     </div> : null}
   </div>;
 }
 
-function LazyDetails({ className, summary, children, disclosures, disclosureKey }: { readonly className: string; readonly summary: ReactNode; readonly children: ReactNode; readonly disclosures?: Map<string, boolean>; readonly disclosureKey?: string }) {
+function LazyDetails({ className, summary, summaryLabel, children, disclosures, disclosureKey }: { readonly className: string; readonly summary: ReactNode; readonly summaryLabel?: string; readonly children: ReactNode; readonly disclosures?: Map<string, boolean>; readonly disclosureKey?: string }) {
   const [expanded, setExpanded] = useState(disclosureKey ? disclosures?.get(disclosureKey) ?? false : false);
-  return <details className={className} open={expanded} onToggle={(event) => { const open = event.currentTarget.open; if (disclosureKey) disclosures?.set(disclosureKey, open); setExpanded(open); }}><summary>{summary}</summary>{expanded ? children : null}</details>;
+  return <details className={className} open={expanded} onToggle={(event) => { const open = event.currentTarget.open; if (disclosureKey) disclosures?.set(disclosureKey, open); setExpanded(open); }}><summary aria-label={summaryLabel}>{summary}</summary>{expanded ? children : null}</details>;
+}
+function compactToolName(name: string): string {
+  if (!name.startsWith('mcp__')) return name;
+  const operation = name.split('__').at(-1);
+  if (!operation || operation === name) return name;
+  if (operation.length <= 20) return `…${operation}`;
+  const tokens = operation.split('_');
+  return tokens.length > 2 ? `${tokens[0]}_…_${tokens.slice(-2).join('_')}` : `…${operation.slice(-18)}`;
 }
 type EntryProps = {
   readonly disclosures: Map<string, boolean>;
@@ -146,7 +173,12 @@ const SessionEntry = memo(function SessionEntry({ entry, operations, resources, 
       }
       case 'assistant_message': return <div className={`session-message ${entry.kind} markdown-content`}><SessionParts entryId={entry.entryId} content={entry.content} resources={resources} active={active} onLoadResource={onLoadResource} resourceAccess={resourceAccess} onInvalidBindings={invalid} /></div>;
       case 'reasoning': return <LazyDetails disclosures={disclosures} disclosureKey={`${entry.entryId}/reasoning`} className="session-reasoning" summary={m.reasoning}>{entry.markdown ? <BoundMarkdown entryId={entry.entryId} text={entry.text} metadata={entry.markdown} resources={resources} active={active} onLoadResource={onLoadResource} resourceAccess={resourceAccess} onInvalidBindings={invalid} /> : <SessionMarkdown text={entry.text} />}</LazyDetails>;
-      case 'tool_call': return <LazyDetails disclosures={disclosures} disclosureKey={`${entry.entryId}/${entry.callId}`} className={`session-tool session-tool-${entry.status}`} summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={entry.name} lang={entry.name === 'commandExecution' || entry.name === 'fileChange' ? 'en' : undefined}>{entry.name === 'commandExecution' ? timelineNativeLabels.command : entry.name === 'fileChange' ? timelineNativeLabels.fileChanges : entry.name}</strong><span className="session-tool-summary">{toolSummary(entry.input, entry.name)}</span><small className="session-tool-status">{labels[entry.status]}</small></>}><h5>{m.input}</h5><pre className="session-tool-input" tabIndex={0}>{entry.input}</pre><h5>{m.output}</h5><div>{entry.output.length ? <SessionParts entryId={entry.entryId} raw content={entry.output} resources={resources} active={active} onLoadResource={onLoadResource} resourceAccess={resourceAccess} onInvalidBindings={invalid} /> : <p>{labels.noOutput}</p>}</div>{entry.truncated ? <p className="session-notice">{m.truncated}</p> : null}</LazyDetails>;
+      case 'tool_call': {
+        const name = entry.name === 'commandExecution' ? timelineNativeLabels.command : entry.name === 'fileChange' ? timelineNativeLabels.fileChanges : entry.name;
+        const summary = toolSummary(entry.input, entry.name);
+        const compactName = compactToolName(name);
+        return <LazyDetails disclosures={disclosures} disclosureKey={`${entry.entryId}/${entry.callId}`} className={`session-tool session-tool-${entry.status}`} summaryLabel={[entry.name, summary, labels[entry.status]].filter(Boolean).join(" · ")} summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={entry.name} lang={entry.name === 'commandExecution' || entry.name === 'fileChange' ? 'en' : undefined}>{compactName === name ? name : <><span className="session-tool-name-wide" aria-hidden="true">{name}</span><span className="session-tool-name-compact" aria-hidden="true">{compactName}</span></>}</strong><span className="session-tool-summary">{summary}</span><small className="session-tool-status">{labels[entry.status]}</small></>}><h5>{labels.toolName}</h5><p className="session-tool-exact-name"><code>{entry.name}</code></p><h5>{m.input}</h5><pre className="session-tool-input" tabIndex={0}>{entry.input}</pre><h5>{m.output}</h5><div>{entry.output.length ? <SessionParts entryId={entry.entryId} raw content={entry.output} resources={resources} active={active} onLoadResource={onLoadResource} resourceAccess={resourceAccess} onInvalidBindings={invalid} /> : <p>{labels.noOutput}</p>}</div>{entry.truncated ? <p className="session-notice">{m.truncated}</p> : null}</LazyDetails>;
+      }
       case 'interaction': return <SessionInteractionCard readOnly={resourceAccess === 'none'} key={`${entry.interaction.interactionId}/${entry.interaction.revision}`} interaction={entry.interaction} {...(operations ? { operations } : {})} enabled={canRespond && !pendingResponse} actionAdmitted={actionAdmitted} onRespond={(response) => onRespond(entry.interaction, response)} />;
       case 'error': {
         if (entry.code === 'input_cancelled' || entry.code === 'turn_interrupted') return <p className="session-cancellation" role="status">{entry.code === 'input_cancelled' ? labels.inputCancelled : labels.turnInterrupted}</p>;

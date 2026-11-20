@@ -16,6 +16,10 @@ export type PullRequestAuthorsPage = {
   readonly projectId: string; readonly revision: string; readonly items: readonly PullRequestAuthor[];
   readonly nextCursor: string | null;
 };
+export type PullRequestRepository = { readonly repositoryId: string; readonly fullName: string };
+export type PullRequestRepositoriesPage = {
+  readonly currentRepositoryId: string | null; readonly items: readonly PullRequestRepository[]; readonly nextCursor: string | null;
+};
 type SyncError = { readonly code: string; readonly message: string; readonly at: string | null };
 export type GitHubStatus = {
   readonly projectId: string; readonly version: string; readonly revision: string; readonly serviceAvailable: boolean; readonly syncEnabled: boolean;
@@ -32,6 +36,22 @@ const count = (value: unknown) => parseConfigurationRevision(value, true);
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const choice = <T extends string>(value: unknown, choices: readonly T[]): T => typeof value === 'string' && choices.includes(value as T) ? value as T : malformed();
 const syncError = (value: unknown): SyncError => { const data = record(value); return { code: string(data.code), message: string(data.message), at: nullable(data.at, timestamp) }; };
+export const parseRepository = (value: unknown, expected: string): PullRequestRepository => {
+  const data = record(value), repositoryId = decimal(data.repositoryId), fullName = nonemptyString(data.fullName);
+  if (repositoryId !== decimal(expected)) return malformed();
+  return { repositoryId, fullName };
+};
+
+export const parsePullRequestRepositoriesPage = (value: unknown): PullRequestRepositoriesPage => {
+  const data = record(value), items = array(data.items, value => {
+    const repository = record(value);
+    return { repositoryId: decimal(repository.repositoryId), fullName: nonemptyString(repository.fullName) };
+  });
+  const nextCursor = nullable(data.nextCursor, nonemptyString);
+  if (items.length > 100 || items.some((item, index) => index > 0 && BigInt(items[index - 1]!.repositoryId) >= BigInt(item.repositoryId)) ||
+      items.length === 0 && nextCursor !== null) return malformed();
+  return { currentRepositoryId: nullable(data.currentRepositoryId, decimal), items, nextCursor };
+};
 
 export const parsePullRequestSummary = (value: unknown): PullRequestSummary => {
   const data = record(value), base = record(data.base), head = record(data.head);
@@ -46,8 +66,12 @@ export const parsePullRequestSummary = (value: unknown): PullRequestSummary => {
   };
 };
 
-export const parsePullRequestPage = (value: unknown, projectId: string, authorId: string | null = null): PullRequestPage => {
+export const parsePullRequestPage = (value: unknown, projectId: string, authorId: string | null = null, repositoryId: string | null = null): PullRequestPage => {
   const data = record(value), project = id(data.projectId), counts = record(data.counts), items = array(data.items, parsePullRequestSummary);
+  if (repositoryId !== null) {
+    parseRepository(data.repository, repositoryId);
+    if (items.some(item => item.base.repositoryId !== repositoryId)) return malformed();
+  }
   if (project !== requestId(projectId) || items.length > 6 || new Set(items.map(item => item.number)).size !== items.length || items.some((item, index) => index > 0 && BigInt(items[index - 1]!.number) <= BigInt(item.number))) return malformed();
   const all = count(counts.all);
   if (authorId !== null && (decimal(data.authorId) !== decimal(authorId) || items.some(item => item.author?.id !== authorId))) return malformed();
@@ -68,8 +92,9 @@ export const comparePullRequestAuthors = (a: PullRequestAuthor, b: PullRequestAu
   return BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0;
 };
 
-export const parsePullRequestAuthorsPage = (value: unknown, projectId: string): PullRequestAuthorsPage => {
+export const parsePullRequestAuthorsPage = (value: unknown, projectId: string, repositoryId: string | null = null): PullRequestAuthorsPage => {
   const data = record(value), project = id(data.projectId);
+  if (repositoryId !== null) parseRepository(data.repository, repositoryId);
   const items = array(data.items, value => {
     const author = record(value), login = string(author.login);
     if (!login.isWellFormed() || login.includes('\0')) return malformed();
@@ -105,22 +130,34 @@ const read = async <T>(url: string, signal: AbortSignal, admission: PullRequestA
 export const getGitHubStatus = (projectId: string, signal: AbortSignal, admission: PullRequestAdmission): Promise<GitHubStatus> =>
   read(`/api/v1/projects/${requestId(projectId)}/github`, signal, admission, value => parseGitHubStatus(value, projectId));
 
+export const getPullRequestRepositories = (projectId: string, cursor: string | null, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestRepositoriesPage> => {
+  const project = requestId(projectId);
+  if (cursor === '') throw new ApiError('protocol');
+  const params = new URLSearchParams({ limit: '100' });
+  if (cursor !== null) params.set('cursor', cursor);
+  return read(`/api/v1/projects/${project}/pull-request-repositories?${params}`, signal, admission, parsePullRequestRepositoriesPage);
+};
+
 const validQuery = (q: string, cursor: string | null) => q.isWellFormed() && !q.includes('\0') && new TextEncoder().encode(q).length <= 1024 && cursor !== '';
 
-export const getPullRequests = (projectId: string, query: { readonly state: PullRequestState; readonly q: string; readonly cursor: string | null; readonly authorId?: string | null }, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestPage> => {
+export const getPullRequests = (projectId: string, query: { readonly state: PullRequestState; readonly q: string; readonly cursor: string | null; readonly authorId?: string | null; readonly repositoryId?: string | null | undefined }, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestPage> => {
   const project = requestId(projectId);
   if (!['active', 'merged', 'closed', 'all'].includes(query.state) || !validQuery(query.q, query.cursor)) throw new ApiError('protocol');
   const authorId = query.authorId == null ? null : decimal(query.authorId);
+  const repositoryId = query.repositoryId == null ? null : decimal(query.repositoryId);
   const params = new URLSearchParams({ state: query.state, q: query.q, limit: '6' });
   if (query.cursor !== null) params.set('cursor', query.cursor);
   if (authorId !== null) params.set('authorId', authorId);
-  return read(`/api/v1/projects/${project}/pull-requests?${params}`, signal, admission, value => parsePullRequestPage(value, project, authorId));
+  if (repositoryId !== null) params.set('repositoryId', repositoryId);
+  return read(`/api/v1/projects/${project}/pull-requests?${params}`, signal, admission, value => parsePullRequestPage(value, project, authorId, repositoryId));
 };
 
-export const getPullRequestAuthors = (projectId: string, query: { readonly q: string; readonly cursor: string | null }, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestAuthorsPage> => {
+export const getPullRequestAuthors = (projectId: string, query: { readonly q: string; readonly cursor: string | null; readonly repositoryId?: string | null | undefined }, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestAuthorsPage> => {
   const project = requestId(projectId);
   if (!validQuery(query.q, query.cursor)) throw new ApiError('protocol');
   const params = new URLSearchParams({ q: query.q, limit: '50' });
+  const repositoryId = query.repositoryId == null ? null : decimal(query.repositoryId);
   if (query.cursor !== null) params.set('cursor', query.cursor);
-  return read(`/api/v1/projects/${project}/pull-request-authors?${params}`, signal, admission, value => parsePullRequestAuthorsPage(value, project));
+  if (repositoryId !== null) params.set('repositoryId', repositoryId);
+  return read(`/api/v1/projects/${project}/pull-request-authors?${params}`, signal, admission, value => parsePullRequestAuthorsPage(value, project, repositoryId));
 };

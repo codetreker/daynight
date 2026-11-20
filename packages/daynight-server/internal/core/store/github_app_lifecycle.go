@@ -1,16 +1,22 @@
 package store
 
-import "context"
+import (
+	"context"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
+)
 
 // App lifecycle scopes retain the existing resource locks and bind every DAO
 // to one transaction. Their callers decide when a resource must be retired.
 type GitHubProjectTransferScope interface {
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	ProjectDAO() ProjectWriteDAO
 	GitHubDAO() GitHubProjectRetirementDAO
 	EligibilityDAO() WebhookEligibilityDAO
 }
 
 type GitHubProjectDeletionScope interface {
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	ProjectDAO() ProjectDeletionDAO
 	GitHubDAO() GitHubProjectRetirementDAO
 	EligibilityDAO() WebhookEligibilityDAO
@@ -27,6 +33,29 @@ type GitHubProjectRetirementDAO interface {
 	// its current App ID after any concurrent App cleanup has completed.
 	LockBinding(context.Context) (*string, error)
 	Stop(context.Context, GitHubStopDecision) error
+	AdvanceImpact(context.Context) error
+}
+
+// GitHubRepositoryTarget is a verified target identity, or nil when unknown.
+type GitHubRepositoryTarget struct {
+	RepositoryID int64
+	FullName     string
+	Private      bool
+}
+
+type GitHubRepositorySwitchWrite struct {
+	ExpectedVersion, ExpectedGeneration, ExpectedRevision int64
+	Connection                                            githubpr.Connection
+	AppResourceID, GrantID                                *string
+	CredentialVersion                                     *int64
+	Source                                                *githubpr.Repository
+}
+
+// GitHubRepositorySwitchDAO is bound to the project repository transaction.
+// The caller locks the Project, ownership, Team and authorization first.
+type GitHubRepositorySwitchDAO interface {
+	LockBinding(context.Context) (*string, error)
+	SaveSwitch(context.Context, GitHubRepositorySwitchWrite) (bool, error)
 	AdvanceImpact(context.Context) error
 }
 

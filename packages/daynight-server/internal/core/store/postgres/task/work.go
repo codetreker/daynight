@@ -13,14 +13,14 @@ const workComponents = `WITH RECURSIVE reach(seed,id) AS (
  SELECT id,id FROM task_resource_rows WHERE project_id=$1 AND effective_deleted_at IS NULL AND type='task' AND status='in_progress' AND assigned_to=$2::uuid
  UNION
  SELECT member.seed,neighbor.id FROM reach member CROSS JOIN LATERAL (
- SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
- UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
+ SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND dependency_type='task' AND NOT external
+ UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND dependency_type='task' AND NOT external
  ) neighbor JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND effective_deleted_at IS NULL AND type='task' OFFSET 0) live ON true
 ), labels AS (SELECT seed,min(id::text) AS group_id FROM reach GROUP BY seed),
  members AS MATERIALIZED (SELECT DISTINCT labels.group_id,reach.id FROM reach JOIN labels USING(seed)),
  roots AS MATERIALIZED (SELECT m.group_id,t.id,t.created_at FROM members m JOIN tasks t ON t.id=m.id AND t.project_id=$1
  WHERE NOT EXISTS (SELECT 1 FROM task_dependencies d JOIN members p ON p.group_id=m.group_id AND p.id=d.depends_on_task_id
- WHERE d.project_id=$1 AND d.task_id=m.id AND NOT d.external)),
+ WHERE d.project_id=$1 AND d.task_id=m.id AND d.dependency_type='task' AND NOT d.external)),
  groups AS (SELECT m.group_id,count(*) AS member_count,
  count(*) FILTER(WHERE t.status='in_progress' AND t.assigned_to=$2::uuid) AS matched_count,
  count(*) FILTER(WHERE t.status='in_progress') AS in_progress_count,
@@ -82,8 +82,8 @@ func (s *Reader) TaskWorkGroups(ctx context.Context, projectID string, q store.T
 const workTargetComponents = `WITH RECURSIVE members(group_id,id) AS (
  SELECT id::text,id FROM task_resource_rows WHERE project_id=$1 AND id=ANY($2::uuid[]) AND effective_deleted_at IS NULL AND type='task'
  UNION SELECT member.group_id,neighbor.id FROM members member CROSS JOIN LATERAL (
- SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
- UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
+ SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND dependency_type='task' AND NOT external
+ UNION SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND dependency_type='task' AND NOT external
  ) neighbor JOIN LATERAL (SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=neighbor.id AND effective_deleted_at IS NULL AND type='task' OFFSET 0) live ON true
 ) `
 

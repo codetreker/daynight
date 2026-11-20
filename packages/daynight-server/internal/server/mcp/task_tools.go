@@ -6,9 +6,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -229,13 +229,13 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: stamp, Partial: observed.Session.Observation != "observed"}, Refs: map[string]any{"projectId": in.ProjectID, "taskId": in.TaskID}}, nil
 	case "task_properties":
 		if in.Mode == "schema" {
-			return ToolResult{Data: map[string]any{"properties": taskproperty.Definitions()}}, nil
+			return ToolResult{Data: map[string]any{"properties": taskprotocol.PropertyDefinitions()}}, nil
 		}
 		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
 		if err != nil {
 			return ToolResult{}, err
 		}
-		return ToolResult{Data: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version), "properties": task.Properties}}, nil
+		return ToolResult{Data: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version), "properties": taskprotocol.Properties(task.Properties)}}, nil
 	}
 	var all, external *[]string
 	if name == "task_update" {

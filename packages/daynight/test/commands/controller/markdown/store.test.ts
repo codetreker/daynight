@@ -51,6 +51,38 @@ test("metadata writes enforce identity and page limits before mutation", async (
   } finally { f.db.close(); }
 });
 
+test("metadata replacement reuses its budget and rejected growth preserves the original", async () => {
+  const f = await fixture();
+  try {
+    const store = createMarkdownSourceStore(f.db, f.transactions, { maxBytes: 8 });
+    store.put("projection", "entry", "123456");
+    store.put("projection", "entry", "abcdef");
+    expect(store.get("projection", "entry")).toBe("abcdef");
+    expect(() => store.put("projection", "entry", "abcdefg")).toThrow("capacity exceeded");
+    expect(store.get("projection", "entry")).toBe("abcdef");
+    store.put("projection", "entry", "ab");
+    store.put("source", "image", "cd");
+    expect(store.get("source", "image")).toBe("cd");
+  } finally { f.db.close(); }
+});
+
+test("metadata kinds share a UTF-8 byte budget without charging unrelated runtime state", async () => {
+  const f = await fixture();
+  try {
+    f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run("provider_images", JSON.stringify("x".repeat(100)));
+    const store = createMarkdownSourceStore(f.db, f.transactions, { maxBytes: 13 });
+    store.put("projection", "entry", "中"); // Five encoded bytes, including JSON quotes.
+    store.put("source", "image", "😀"); // Six encoded bytes.
+    store.put("context", "context", {}); // Two encoded bytes reach the shared limit.
+    expect(() => store.put("context", "context", "中")).toThrow("capacity exceeded");
+    expect(() => store.put("source", "another-image", "")).toThrow("capacity exceeded");
+    expect(store.get("projection", "entry")).toBe("中");
+    expect(store.get("source", "image")).toBe("😀");
+    expect(store.get("context", "context")).toEqual({});
+    expect(store.get("source", "another-image")).toBeNull();
+  } finally { f.db.close(); }
+});
+
 test("request limits survive reopen and clock rollback without an unbounded host table", async () => {
   const f = await fixture();
   for (let i = 0; i < 10; i++) expect(f.store.rate("image.example", 100000)).toBe(true);

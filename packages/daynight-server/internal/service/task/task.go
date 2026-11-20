@@ -147,6 +147,10 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			}
 			return err
 		}
+		actor, err := sourceActor(ctx, tx, principal)
+		if err != nil {
+			return err
+		}
 		mutation, err := prepare(tx)
 		if err != nil {
 			if requested != nil {
@@ -202,6 +206,11 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			return admitTaskResponse(ctx, result, tagsChanged)
 		}
 		if mutation.Delete {
+			if mutation.Current.Type == model.TaskTypeGoal {
+				if err := tx.GoalDependencyDAO().RemoveOutgoing(ctx, mutation.ID); err != nil {
+					return err
+				}
+			}
 			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 			if err != nil {
 				return err
@@ -219,7 +228,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			}
 			tombstone := applied.Tombstone
 			f := protocol.Fact{Type: protocol.Deleted, ProjectID: tombstone.ProjectID, TaskID: tombstone.ID, TaskVersion: tombstone.Version, OccurredAt: tombstone.DeletedAt, DeletedAt: &tombstone.DeletedAt}
-			return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
+			return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 		}
 		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
 		if err != nil {
@@ -274,7 +283,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 		if len(facts) == 0 {
 			return nil
 		}
-		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), facts)
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, facts)
 	})
 	if err != nil {
 		err = projectcore.ProjectWriteError(err)
@@ -297,11 +306,23 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, p
 }
 
 func (s *Tasks) versionedWriteTagged(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
+	return s.versionedWriteTaggedWithGoalLock(ctx, principal, projectID, id, version, requested, false, prepare)
+}
+
+func (s *Tasks) versionedWriteTaggedWithGoalLock(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, goal bool, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return model.Task{}, err
 	}
 	return s.writeTagged(ctx, principal, projectID, requested, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+		if goal {
+			if err := tx.GoalDependencyDAO().LockTeam(ctx); err != nil {
+				return taskcore.Mutation{}, err
+			}
+			if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+				return taskcore.Mutation{}, err
+			}
+		}
 		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskcore.Mutation{}, taskcore.NotFound(err)

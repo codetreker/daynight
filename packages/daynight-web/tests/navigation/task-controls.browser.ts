@@ -16,6 +16,8 @@ const step = { id: '00000001', title: 'Review', description: 'Read this', status
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
 type FixtureOptions = {
+  readonly locale?: 'en' | 'zh-CN';
+  readonly workerAlias?: string;
   readonly steps?: readonly TaskStep[];
   readonly outcome?: 'conflict' | 'lost' | 'malformed';
   readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
@@ -41,11 +43,12 @@ async function install(page: Page, running = false, linked = false, large = fals
   options.exposeDeleteTask?.(() => { taskRemoved = true; epoch = '00000000-0000-4000-8000-000000000901'; });
   let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), options.locale ?? 'en');
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
+    if (options.workerAlias && path.endsWith('/alias')) return send({ workerId: path.split('/')[5], alias: { value: options.workerAlias, version: '1' } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph().project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(graph().project);
@@ -59,7 +62,7 @@ async function install(page: Page, running = false, linked = false, large = fals
       return send({ projectId, total: 1, items: [{ id: task.id, type: task.type, parentId: task.parentId, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.dualPauseReceipt) {
-      expect(request.postDataJSON()).toEqual({ version: Number(task.version), properties: { paused: false } });
+      expect(request.postDataJSON()).toEqual({ version: Number(task.version), properties: { blocked: false } });
       task = { ...task, version: task.version + 1n, updatedAt: '2026-10-22T10:02:00Z', properties: { ...task.properties, paused: false, blocked: false } };
       return send(task);
     }
@@ -126,12 +129,42 @@ async function openDialog(page: Page) {
   return dialog;
 }
 
-test('confirms the existing unpause action with a dual-key service receipt', async ({ page }) => {
+test('task menu opens one native tab per Space press and preserves Enter and mouse activation', async ({ page, context }) => {
+  await install(page);
+  const dialog = await openDialog(page);
+  const trigger = dialog.getByRole('button', { name: 'More task actions' });
+  const link = dialog.getByRole('menuitem', { name: 'Open in new tab' });
+  const opened: Page[] = [];
+  context.on('page', tab => opened.push(tab));
+  for (const action of ['Space', 'Space', 'Enter', 'click', 'middle', 'control'] as const) {
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(link).toBeFocused();
+    const target = await link.getAttribute('href');
+    const nextTab = context.waitForEvent('page');
+    if (action === 'Space') {
+      await page.keyboard.down('Space');
+      await page.keyboard.down('Space');
+      await page.keyboard.up('Space');
+    } else if (action === 'Enter') await page.keyboard.press('Enter');
+    else await link.click(action === 'middle' ? { button: 'middle' } : action === 'control' ? { modifiers: ['ControlOrMeta'] } : {});
+    const tab = await nextTab;
+    await expect(tab).toHaveURL(new URL(target!, page.url()).href);
+    await expect(dialog.getByRole('menu')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(opened).toHaveLength(1);
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+    await tab.close();
+    opened.length = 0;
+  }
+});
+
+test('confirms the unblock action with a dual-key service receipt', async ({ page }) => {
   const writes = await install(page, true, false, false, false, true, undefined, {}, { dualPauseReceipt: true });
   const dialog = await openDialog(page);
-  await expect(dialog.getByText('Paused', { exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: 'Unpause' }).click();
-  await expect(dialog.getByText('The task is unpaused.')).toBeVisible();
+  await expect(dialog.getByText('Blocked', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Unblock' }).click();
+  await expect(dialog.getByText('The task is unblocked.')).toBeVisible();
   expect(writes).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${taskId}`]);
 });
 
@@ -184,6 +217,9 @@ test('ID search keeps long results readable and opens the correct task on narrow
   const result = page.getByRole('button', { name: `Open task: ${title}` });
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 700 });
+    await expect(result.locator('.task-search-title')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.root-status')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.task-search-meta')).toHaveCSS('font-size', '12px');
     await expect(result).toContainText(taskId);
     await expect(result).toContainText('ID match · Description match');
     await expect(result).toContainText('A long matching description');
@@ -1170,3 +1206,151 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     expect(detailReads).toEqual([]);
   });
 }
+
+
+for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (const kind of ['standalone', 'chain']) {
+  test(`shared project rows preserve Worker aliases ${kind} ${locale} ${width}px`, async ({ page }, info) => {
+    const alias = '上海办公室跨页面识别的 Windows 工作站 '.repeat(2).trim();
+    const workerId = '00000000-0000-4000-8000-000000000070';
+    const claim = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active', userId: TEST_VIEWER_ID, workerId, machine: { id: '00000000-0000-4000-8000-000000000072', name: 'Historical host' }, platform: 'windows', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000073', phase: 'executing', nativeSessionId: null, claimedAt: time };
+    await install(page, true, kind === 'chain', false, false, false, undefined, { ...(kind === 'chain' ? { status: 'done' as const, completedAt: '2026-10-22T10:00:00Z' } : {}), properties: kind === 'standalone' ? { worker: claim } : {} }, { workerAlias: alias, ...(kind === 'chain' ? { previousChanges: { status: 'in_progress', startedAt: time, ready: false, properties: { worker: claim } } } : {}) });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('.locale-control select').selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    if (kind === 'standalone') await page.locator('#project-task-tab-standalone').click();
+    else await page.locator('.root-toggle').first().click();
+    const row = page.locator('.task-row-item').filter({ has: page.getByRole('link', { name: kind === 'standalone' ? 'Target task' : 'History origin', exact: true }) });
+    await expect(row.locator('.task-row-machine')).toContainText(alias);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await row.locator('.task-row-machine').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await row.locator('.task-row-machine').scrollIntoViewIfNeeded();
+    await expect(row.locator('.task-row-machine')).toBeInViewport();
+    await page.screenshot({ path: info.outputPath(`${kind}-worker-alias.png`), fullPage: true });
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`search loading, failure and empty states remain usable at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    let release!: () => void;
+    let calls = 0;
+    await page.route(`**/api/v1/projects/${projectId}/tasks/search`, async route => {
+      calls++;
+      if (calls === 1) { await new Promise<void>(resolve => { release = resolve; }); return route.fulfill({ status: 500, json: { error: { code: 'unavailable', message: 'Unavailable', requestId: 'fixture' } } }); }
+      return route.fulfill({ json: { projectId, total: 0, items: [], nextCursor: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const input = page.locator('.task-search-form input');
+    await input.fill('missing'); await input.press('Enter');
+    await expect(page.locator('.task-search-results [role=status]')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    release();
+    const error = page.locator('.task-search-error'); await expect(error).toBeVisible();
+    await error.getByRole('button').click();
+    await expect(page.locator('.task-search-results .state-box')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390] as const) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) {
+  test(`Step touch editors retain readable drafts in ${presentation} at ${width}px (${locale})`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 800 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    try {
+      const writes = await install(page, false, false, false, false, false, undefined, {}, { locale });
+      let root;
+      if (presentation === 'direct') {
+        await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+        root = page.locator('.task-detail-page');
+      } else {
+        root = await openDialog(page);
+        if (presentation === 'fullscreen') await root.getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
+        await root.getByRole('tab', { name: /^(Steps|步骤)$/ }).click();
+      }
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      const add = root.getByRole('button', { name: /^(Add step|添加步骤)$/ });
+      await expect(add).toHaveText(locale === 'en' ? 'Add step' : '添加步骤');
+      await add.tap();
+      const form = root.locator('.step-add-form');
+      const title = form.locator('input');
+      const description = form.locator('textarea');
+      for (const field of [title, description]) await expect(field).toHaveCSS('font-size', '16px');
+      await form.locator('button[type=submit]').click();
+      await expect(title).toHaveAttribute('aria-invalid', 'true');
+      const text = 'Long Markdown description with wrapping. '.repeat(30);
+      await title.fill('Long title '.repeat(20)); await description.fill(text);
+      const geometry = await description.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth, height: element.clientHeight, scrollHeight: element.scrollHeight }));
+      expect(geometry.scroll).toBeLessThanOrEqual(geometry.client);
+      expect(geometry.scrollHeight).toBeGreaterThan(geometry.height);
+      expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      const bounds = await form.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      await description.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(5, 15); });
+      await form.getByRole('button', { name: /^(Preview|预览)$/ }).tap();
+      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '16px');
+      await form.getByRole('button', { name: /^(Edit|编辑)$/ }).tap();
+      await expect(description).toHaveValue(text);
+      expect(await description.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 15]);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      for (const field of [title, description]) await expect(field).toHaveCSS('font-size', '20px');
+      await title.focus(); await page.keyboard.press('Escape');
+      await page.getByRole('alertdialog').getByRole('button', { name: /^(Discard|放弃)$/ }).click();
+      await expect(add).toBeFocused();
+      const row = root.locator('.step-row[data-step-id="00000001"]');
+      await row.locator('.step-disclosure').tap();
+      await row.getByRole('button', { name: /^(Edit step|编辑步骤)$/ }).tap();
+      const edit = root.locator('.step-edit-form');
+      await expect(edit.locator('textarea')).toHaveCount(2);
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      for (const field of await edit.locator('textarea').all()) await expect(field).toHaveCSS('font-size', '16px');
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      for (const field of await edit.locator('textarea').all()) await expect(field).toHaveCSS('font-size', '20px');
+      expect(writes).toEqual([]);
+    } finally { await context.close(); }
+  });
+}
+
+for (const [width, touch] of [[768, false], [1360, false], [1360, true]] as const) {
+  test(`Step input typography follows pointer at ${width}px (touch=${touch})`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 900 }, hasTouch: touch, isMobile: touch });
+    const page = await context.newPage();
+    try {
+      await install(page); await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(touch);
+      await page.getByRole('button', { name: 'Add step', exact: true }).click();
+      const form = page.locator('.step-add-form');
+      await expect(form.locator('input, textarea')).toHaveCount(2);
+      for (const field of await form.locator('input, textarea').all()) await expect(field).toHaveCSS('font-size', touch ? '16px' : '14px');
+    } finally { await context.close(); }
+  });
+}
+
+test('Step touch fields retain their size while a save is pending', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await install(page);
+    await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}/steps`, async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      started.resolve(); await release.promise;
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: { code: 'forbidden', message: 'Refused', requestId: 'fixture' } }) });
+    });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+    await page.getByRole('button', { name: 'Add step', exact: true }).tap();
+    const form = page.locator('.step-add-form'), title = form.locator('input'), description = form.locator('textarea');
+    await title.fill('Pending'); await description.fill('Draft');
+    await title.focus(); await page.keyboard.press('Tab');
+    await expect(form.getByRole('combobox', { name: 'Initial status' })).toBeFocused();
+    await form.locator('button[type=submit]').tap(); await started.promise;
+    for (const field of [title, description]) { await expect(field).toBeDisabled(); await expect(field).toHaveCSS('font-size', '16px'); }
+    expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    release.resolve();
+    await expect(title).toBeEnabled(); await expect(title).toHaveValue('Pending'); await expect(description).toHaveValue('Draft');
+  } finally { release.resolve(); await context.close(); }
+});

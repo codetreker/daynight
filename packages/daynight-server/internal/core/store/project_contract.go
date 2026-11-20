@@ -55,14 +55,20 @@ type ProjectCreationTeam struct {
 }
 
 type ProjectWriteScope interface {
+	GoalRelationDAO() GoalRelationEditor
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	EligibilityDAO() WebhookEligibilityDAO
 	CaptureDAO() WebhookCaptureDAO
 	ProjectDAO() ProjectWriteDAO
 	TagDAO() TagWriteDAO
 	TaskTagDAO() TaskTagWriteDAO
 	TaskDAO() TaskWriteDAO
+	GoalDependencyDAO() GoalDependencyDAO
 	SessionDAO() ProjectSessionDAO
 	WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO
+	// BotBarrierDAO verifies a declared Bot after Project write admission and
+	// before any Task Session lock, matching Bot deletion's Bot-then-Session order.
+	BotBarrierDAO() BotBarrierDAO
 }
 
 type ProjectWriteDAO interface {

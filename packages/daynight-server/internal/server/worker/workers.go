@@ -25,6 +25,8 @@ type workersHandler struct {
 }
 
 type workerService interface {
+	ReviewParticipation(context.Context, model.Principal, string) (model.WorkerReviewParticipation, error)
+	PutReviewParticipation(context.Context, model.Principal, string, string, bool) (model.WorkerReviewParticipation, error)
 	Alias(context.Context, model.Principal, string) (model.WorkerAlias, error)
 	PutAlias(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
 	Report(context.Context, model.Principal, string, model.WorkerReport) (service.WorkerReportResult, error)
@@ -65,6 +67,9 @@ func RegisterRoutes(mux *http.ServeMux, workers workerService, auth *authhttp.Au
 func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
 	logger := handler.logger
 	base := "/api/v1/me/workers"
+	mux.HandleFunc("GET "+base+"/{workerId}/review-participation", require(handler.reviewParticipation))
+	mux.HandleFunc("PUT "+base+"/{workerId}/review-participation", require(handler.reviewParticipation))
+	mux.HandleFunc(base+"/{workerId}/review-participation", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
 	mux.HandleFunc("GET "+base+"/{workerId}/alias", require(handler.alias))
 	mux.HandleFunc("PUT "+base+"/{workerId}/alias", require(handler.alias))
 	mux.HandleFunc(base+"/{workerId}/alias", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))

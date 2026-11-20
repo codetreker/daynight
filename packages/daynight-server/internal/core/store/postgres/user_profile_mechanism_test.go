@@ -11,8 +11,10 @@ import (
 
 	coreidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -88,17 +90,24 @@ func TestEnsureUserInitializationFailureRollsBackAccount(t *testing.T) {
 
 func TestProfilePatchCompleteValidationRollsBackSparseWrite(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
 	for _, failure := range []string{"personal-team", "profile-capacity", "stored-field-capacity"} {
-		t.Run(failure, func(t *testing.T) {
-			database := isolatedStore(t)
+		if !t.Run(failure, func(t *testing.T) {
 			ctx := t.Context()
 			user, principal, _ := testAuthRecords(t, database)
+			var field string
+			var maxBytes int64
 			switch failure {
 			case "personal-team":
-				mustQueryExec(t, database, `DELETE FROM team_members WHERE team_id=$1`, user.PersonalTeam.ID)
+				result, err := database.Pool.Exec(ctx, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2 AND role='admin'`, user.PersonalTeam.ID, user.ID)
+				if err != nil || result.RowsAffected() != 1 {
+					t.Fatalf("remove Personal Team owner: rows=%d error=%v", result.RowsAffected(), err)
+				}
 			case "profile-capacity":
+				field, maxBytes = "profile", coreidentity.MaxProfileJSONBytes
 				mustQueryExec(t, database, `UPDATE users SET avatar_url=$2 WHERE id=$1`, user.ID, strings.Repeat("\"", coreidentity.MaxAvatarURLBytes))
 			case "stored-field-capacity":
+				field, maxBytes = "email", coreidentity.MaxProfileFieldBytes
 				mustQueryExec(t, database, `UPDATE users SET email=$2 WHERE id=$1`, user.ID, strings.Repeat("x", coreidentity.MaxProfileFieldBytes+1))
 			}
 			before := authorizationReceiverRow(t, ctx, database, "users", "id", user.ID)
@@ -107,10 +116,28 @@ func TestProfilePatchCompleteValidationRollsBackSparseWrite(t *testing.T) {
 			if err == nil || actual.ID != "" {
 				t.Fatalf("invalid complete account accepted: %+v %v", actual, err)
 			}
+			var rollback *store.TransactionError
+			if !errors.As(err, &rollback) || rollback.Phase != "operation" || rollback.Outcome != store.TransactionNotCommitted || rollback.CommitAttempted || rollback.CleanupFailed {
+				t.Fatalf("profile validation did not roll back the operation: completion=%+v error=%v", rollback, err)
+			}
+			if failure == "personal-team" {
+				if rollback.Cause == nil || rollback.Cause.Error() != "Personal Team owner membership is invalid" {
+					t.Fatalf("expected Personal Team owner refusal: %v", rollback.Cause)
+				}
+			} else {
+				var fault *model.Fault
+				var violation *limit.Violation
+				if !errors.As(err, &fault) || fault.Code != "invalid_input" || !errors.As(err, &violation) || violation.Field != field || violation.Max != maxBytes {
+					t.Fatalf("expected %s capacity refusal at %d bytes: fault=%+v violation=%+v", field, maxBytes, fault, violation)
+				}
+			}
 			if after := authorizationReceiverRow(t, ctx, database, "users", "id", user.ID); after != before {
 				t.Fatalf("sparse write survived validation refusal: before=%s after=%s", before, after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
@@ -122,10 +149,9 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			user, principal, _ := testAuthRecords(t, database)
-			expires := time.Now().UTC().Add(time.Second)
-			if kind == model.SessionCredential {
-				mustQueryExec(t, database, `UPDATE sessions SET expires_at=$2 WHERE id=$1`, principal.CredentialID, expires)
-			} else {
+			table := "sessions"
+			if kind == model.OAuthCredential {
+				table = "oauth_access_tokens"
 				var issued coreoauth.IssuedFamily
 				_, err := database.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 					var err error
@@ -136,7 +162,6 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 					t.Fatal(err)
 				}
 				principal = model.Principal{Kind: kind, UserID: user.ID, CredentialID: issued.AccessID}
-				mustQueryExec(t, database, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issued.AccessID, expires)
 			}
 			before := authorizationReceiverRow(t, ctx, database, "users", "id", user.ID)
 			holder, err := database.Pool.Begin(ctx)
@@ -147,31 +172,12 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 			if _, err = holder.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, user.ID); err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
 			name := "expired after contention"
-			go func() {
-				_, err := identityservice.New(database, nil, "https://example.test/auth/callback").PatchUser(ctx, principal, model.UserProfilePatch{Name: model.ProfileField{Present: true, Value: &name}})
-				done <- err
-			}()
-			waitIdentityLock(t, ctx, database, "UPDATE users SET %")
-			for {
-				var expired bool
-				if err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				case <-time.After(5 * time.Millisecond):
-				}
-			}
-			if err := holder.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			err = <-done
+			err = expireCredentialDuringRowWait(t, ctx, database.Pool, holder, table, principal.CredentialID,
+				"UPDATE users SET ", func(ctx context.Context) error {
+					_, err := identityservice.New(database, nil, "https://example.test/auth/callback").PatchUser(ctx, principal, model.UserProfilePatch{Name: model.ProfileField{Present: true, Value: &name}})
+					return err
+				})
 			var fault *model.Fault
 			if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 				t.Fatalf("expired user wait accepted: %v", err)

@@ -66,6 +66,10 @@ func TestHistoricalUpgradePreservesMaterialsAndCreatesOAuthTables(t *testing.T) 
 			t.Fatalf("upgrade changed %s: before=%s after=%s", key, facts[key], currentFacts[key])
 		}
 	}
+	var typedEdges int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM task_dependencies WHERE dependency_type='task' AND goal_edge_id IS NULL`).Scan(&typedEdges); err != nil || typedEdges != 1 {
+		t.Fatalf("upgrade did not preserve the legacy task edge type: count=%d err=%v", typedEdges, err)
+	}
 	var currentLedger string
 	var versions []int64
 	if err := pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=14`).Scan(&currentLedger); err != nil || currentLedger != statusLedger {
@@ -384,13 +388,13 @@ func TestT03PopulatedT02UpgradeAndSourceCapture(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT pg_get_expr(adbin,adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='webhook_deliveries'::regclass AND a.attname='queue_order'`).Scan(&defaultExpr); err != nil || !strings.Contains(defaultExpr, "webhook_delivery_queue_order_seq") {
 		t.Fatalf("queue default %q: %v", defaultExpr, err)
 	}
-	// Current Task DAO reads typed columns and tag references; supply their
-	// structural shape while keeping the webhook ledger at version 50 for the
-	// 50-to-51 proof.
+	// Current Task DAO reads typed columns, dependencies and tag references, and
+	// capture writes event actors; supply their structural shape while keeping
+	// the webhook ledger at version 50 for the 50-to-51 proof.
 	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN type text NOT NULL DEFAULT 'task'; ALTER TABLE tasks ADD COLUMN parent_id uuid`); err != nil {
 		t.Fatal(err)
 	}
-	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL} {
+	for _, schema := range []string{taskResourceRowsSQL, taskTagsSQL, dependencyTypesSQL, webhookEventActorSQL} {
 		if _, err = pool.Exec(ctx, schema); err != nil {
 			t.Fatal(err)
 		}

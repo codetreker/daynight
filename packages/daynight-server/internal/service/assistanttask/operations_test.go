@@ -88,6 +88,13 @@ func (m *operationMock) UpdateAppendix(ctx context.Context, dao store.AssistantT
 	}
 	return value.(model.AssistantTaskAppendix), err
 }
+func (m *operationMock) ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	value, err := m.call(ctx, dao, actor, "ValidateAppendix", input)
+	if value == nil {
+		return model.AssistantTaskAppendix{}, err
+	}
+	return value.(model.AssistantTaskAppendix), err
+}
 func (m *operationMock) ListProposals(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskProposal], error) {
 	value, err := m.call(ctx, dao, actor, "ListProposals", taskID, input)
 	if value == nil {
@@ -136,6 +143,13 @@ func (m *operationMock) SaveItem(ctx context.Context, dao store.AssistantTaskDAO
 		return model.AssistantTaskItem{}, err
 	}
 	return value.(model.AssistantTaskItem), err
+}
+func (m *operationMock) Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	value, err := m.call(ctx, dao, actor, "Metrics", taskID)
+	if value == nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	return value.(model.AssistantTaskMetrics), err
 }
 func (m *operationMock) ListRecords(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 	value, err := m.call(ctx, dao, actor, "ListRecords", taskID, input)

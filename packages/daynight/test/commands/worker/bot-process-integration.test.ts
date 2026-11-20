@@ -6,12 +6,12 @@ import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldEventLoop, setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -19,6 +19,13 @@ import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
 import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
+import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
+import { createBotReconciliation } from "../../../src/commands/worker/bots/reconciliation.js";
+import { createBotRecoveryApi } from "../../../src/commands/worker/bots/recovery-api.js";
+import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
+import type { BotRecoveryGrant, BotRecoveryRegistration, BotRecoveryResult } from "../../../src/commands/worker/bots/recovery-protocol.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
@@ -135,24 +142,24 @@ try {
 // teardown crosses the hook's captured fallback deadline; the next case
 // must retain both its environment and mock until its own teardown starts.
 describe("fixture teardown isolation", { concurrent: false, shuffle: false }, () => {
-  let teardownCompleted = false;
+  const teardownCompleted = Promise.withResolvers<void>();
   const subject = { read: () => "original" };
   const home = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-teardown-isolation");
   test("joins cleanup beyond the default hook deadline", () => {
     vi.stubEnv("DN_CONFIG_DIR", path.join(home, "first-state"));
     vi.spyOn(subject, "read").mockReturnValue("first");
-    cleanups.push(async () => { await delay(300); teardownCompleted = true; });
+    cleanups.push(async () => { await delay(teardownIsolationDefaultTimeout + 25); teardownCompleted.resolve(); });
   });
   test("keeps the next parent's ticket path aligned with its prepared child", async () => {
     const state = path.join(home, "second-state"), launchId = randomUUID();
     vi.stubEnv("DN_CONFIG_DIR", state);
     vi.spyOn(subject, "read").mockReturnValue("second");
     const preparedEnvironment = { ...process.env, DN_CONFIG_DIR: state };
-    await delay(350);
+    await teardownCompleted.promise;
+    await yieldEventLoop();
     const childTicket = path.join(resolveConfigurationPaths(home, path, preparedEnvironment).stateDirectory, "controller", "launches", `${launchId}.json`);
     expect(controllerTicketPath(home, launchId)).toBe(childTicket);
     expect(subject.read()).toBe("second");
-    expect(teardownCompleted).toBe(true);
   });
 });
 
@@ -264,20 +271,23 @@ test.skipIf(process.platform !== "darwin")("waits through a real same-birth comm
   await waiting;
 }, 20_000);
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean; dedicatedStorage?: boolean; relayToken?: () => string } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
-  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
+  const botId = randomUUID(), storageStateDirectory = options.dedicatedStorage ? path.join(state, "bots", botId) : undefined;
+  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture", process.platform, storageStateDirectory));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
   // The copied fixture runs outside this package's dependency tree.
-  const nativeSource = (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8"))
+  const nativeSource = (await readFile(path.resolve(import.meta.dirname, options.dedicatedStorage ? "../controller/fixtures/codex-bot-native.mjs" : "../controller/fixtures/codex-native.mjs"), "utf8"))
     .replace("from 'better-sqlite3'", `from ${JSON.stringify(import.meta.resolve("better-sqlite3"))}`)
-    .replaceAll("native-thread", nativeId);
+    .replaceAll("native-thread", nativeId)
+    .replaceAll("c7975cdc-936b-411e-9f63-cd0a37ad7cbf", nativeId)
+    .replaceAll("CODEX_BOT_REQUEST_LOG", "CODEX_TEST_REQUEST_LOG");
   await writeFile(nativeFixture, nativeSource);
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;
@@ -294,7 +304,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, argv: process.argv.slice(2) }) + '\\n');
 const { runController } = await import(${JSON.stringify(runtimeURL)});
-await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] });
+await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5], storageStateDirectory: process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR });
 `);
   const http = options.hosted ? createServer() : null;
   const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
@@ -302,9 +312,9 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
   const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
-  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  let bot: BotDefinition = { id: randomUUID(), ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
+  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  let bot: BotDefinition = { id: botId, ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
     resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: options.args ?? [] }, roleConfiguration: null, sessionId: null, testExecutionId: null,
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.observe(owner, bot, Date.now());
@@ -380,7 +390,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   const observerJobs = new Map<string, ControllerJobLease>();
   const managers: ReturnType<typeof createControllerJobLeases>[] = [];
   const observerFor = (proof: ProcessProof): ControllerJobLease | undefined => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
-  const create = () => {
+  const create = (sessionApi: Parameters<typeof createBotProcess>[0]["sessionApi"] = api) => {
     const owned = createControllerJobLeases(); managers.push(owned);
     const jobLeases = { ...owned, retain: async (launchId: string, proof: ProcessProof, deadline: number) => {
       const lease = await owned.retain(launchId, proof, deadline);
@@ -390,7 +400,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       }
       return lease;
     } };
-    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
+    return createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi, recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, jobLeases,
       ...(tools === undefined ? {} : { toolObservationFor: tools.toolObservationFor }), dependencies: { prepareEnvironment, stopProcesses } });
   };
   const botProcess = create();
@@ -399,7 +409,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
   const controllers = new Set<WebSocket>();
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
-    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-relay-grant") { socket.close(1008); return; }
+    if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== `Bearer ${options.relayToken?.() ?? "controlled-relay-grant"}`) { socket.close(1008); return; }
     controllers.add(socket); socket.once("close", () => controllers.delete(socket));
     socket.on("message", raw => {
       if (deleted) { socket.close(1008); return; }
@@ -415,13 +425,13 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       } catch (error) { relayErrors.push(error); socket.close(1008); }
     });
   });
-  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
+  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(intent.journalPath); };
   const collectEvidence = async () => {
     const record = current(), intent = record.intent;
     const saved = journal();
-    const childState = resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
+    const childState = storageStateDirectory ?? resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
     const expectedTicket = intent === null ? null : path.join(childState, "controller", "launches", `${intent.launchId}.json`);
-    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId);
+    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId, storageStateDirectory);
     const directory = intent === null ? null : path.join(childState, "controller", "executions", intent.executionId);
     const expectedJournal = directory === null ? null : readControllerSnapshot(path.join(directory, "journal.sqlite"));
     const summarize = (snapshot: typeof saved) => snapshot === null ? null : { lifecycle: snapshot.lifecycle, startup: snapshot.startup,
@@ -626,12 +636,14 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
 }, 180_000);
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
-  const f = await fixture(), signal = AbortSignal.timeout(60_000);
+  const f = await fixture({ dedicatedStorage: true }), signal = AbortSignal.timeout(60_000);
   if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
   expect(ticket).not.toHaveProperty("claimId"); expect(existsSync(path.join(f.cwd, ".git"))).toBe(false);
+  expect(f.current().intent!.journalPath.startsWith(path.join(f.home, "state", "bots", f.current().botId) + path.sep)).toBe(true);
+  expect(existsSync(path.join(f.home, "state", "controller"))).toBe(false);
   expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
   expect((await f.requests()).find(request => request.method === "thread/start")?.params).toMatchObject({ developerInstructions: ticket.instructions });
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
@@ -714,6 +726,97 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
 
+
+test("registers an unregistered stopped Bot at its retained service generation before granting the prepared successor", async () => {
+  let relayToken = "controlled-relay-grant";
+  const f = await fixture({ hosted: true, dedicatedStorage: true, relayToken: () => relayToken });
+  const signal = AbortSignal.timeout(90_000), parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
+  const errors: string[] = [], calls: string[] = [], receipts: BotRecoveryResult[] = [];
+  let registered = false, serverGeneration = "1", serverInstance: string | null = null, stoppedAt: string | null = null;
+  f.http!.on("request", (request, response) => {
+    void (async () => {
+      response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+      const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+      const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (pathname === "/api/usage/v1/capabilities") {
+        response.statusCode = 503;
+        return send({ error: { code: "capability_error", message: "Usage is outside this fixture", requestId: randomUUID() } });
+      }
+      calls.push(`${request.method} ${pathname}`);
+      expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
+      const record = f.current(), intent = record.intent!, bot = f.getBot();
+      if (request.method === "GET" && pathname === `/api/v1/me/bots/${bot.id}/observation`) {
+        const observedAt = new Date().toISOString();
+        return send({ schemaVersion: 1, botId: bot.id, botVersion: bot.version, workerId: f.owner.workerId,
+          machine: { id: f.owner.workerId, name: "fixture-machine" }, provider: "codex", sessionId: bot.sessionId, testExecutionId: bot.testExecutionId,
+          nativeSessionId: f.nativeId, hostingGeneration: registered ? "1" : null, executionGeneration: serverGeneration, connectionEpoch: "1",
+          state: "offline", reason: "controller_stopped", observedAt, workerLastSeenAt: observedAt, sessionLastSeenAt: observedAt, freshUntil: null, currentTurnId: null });
+      }
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as BotRecoveryRegistration | BotRecoveryGrant;
+      expect(request.method).toBe("POST");
+      expect(body.sessionId).toBe(bot.sessionId); expect(body.testExecutionId).toBe(bot.testExecutionId); expect(body.nativeSessionId).toBe(f.nativeId);
+      // The real process manager has already persisted beginRecovery locally.
+      expect(intent.executionGeneration).toBe("2");
+      const kind = pathname.endsWith("/register") ? "register" : "grant";
+      expect(pathname).toBe(`/api/v1/me/workers/${f.owner.workerId}/bots/${bot.id}/recovery/v1/${kind}`);
+      if (kind === "register") {
+        expect(registered).toBe(false); expect(serverGeneration).toBe("1");
+        expect(body).not.toHaveProperty("grant");
+        expect((body as BotRecoveryRegistration).botVersion).toBe(bot.version);
+        registered = true; f.setBot({ ...bot, version: String(BigInt(bot.version) + 1n) });
+      } else {
+        const grant = (body as BotRecoveryGrant).grant;
+        expect(registered).toBe(true); expect(grant.previousGeneration).toBe("1"); expect(grant.executionGeneration).toBe("2");
+        expect(grant.stopProof).toEqual({ previousControllerInstanceId: serverInstance, recordId: intent.launchId, stoppedAt });
+        expect(grant.controllerInstanceId).not.toBe(serverInstance);
+        serverGeneration = grant.executionGeneration; serverInstance = grant.controllerInstanceId;
+        relayToken = (body as BotRecoveryGrant).controllerToken;
+      }
+      const result: BotRecoveryResult = { current: true, receipt: {
+        botRecoveryVersion: 1, operationId: body.operationId, kind, workerId: f.owner.workerId, hostingGeneration: "1", botVersion: f.getBot().version,
+        sessionId: bot.sessionId!, testExecutionId: bot.testExecutionId!, nativeSessionId: f.nativeId, executionGeneration: serverGeneration,
+        controllerId: intent.registration.controllerId, controllerInstanceId: serverInstance!,
+        grantExpiresAt: kind === "register" ? null : new Date(Date.now() + 900_000).toISOString(),
+        controllerTokenHash: kind === "register" ? null : createHash("sha256").update(relayToken).digest("hex"),
+      } };
+      receipts.push(result); return send(result);
+    })().catch(error => { errors.push(String(error)); response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Controlled recovery HTTP failed", requestId: randomUUID() } })); });
+  });
+  await launchAndObserveReady(f, signal);
+  const original = f.current().intent!;
+  serverInstance = original.controllerInstanceId;
+  await f.process.shutdown(f.current(), signal);
+  expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true, nativeSessionId: f.nativeId });
+  stoppedAt = f.journal()!.stoppedAt;
+  const stateDirectory = resolveConfigurationPaths(f.home).stateDirectory, paths = resolveBotPaths(stateDirectory, f.getBot().id);
+  await chmod(paths.directory, 0o700);
+  const lock = acquireInstanceLockSync(paths.lockFile, paths.ownershipGateFile);
+  const store = openBotRecoveryStore({ stateDirectory, owner: f.owner, assertLocked: () => {
+    if (JSON.parse(readFileSync(paths.lockFile, "utf8")).owner !== lock.owner) throw new Error("Fixture lost its original Bot lock");
+  } });
+  expect(store.read(f.current())).toBeNull();
+  const recovery = createBotReconciliation({ owner: f.owner, store, api: createBotRecoveryApi({ owner: f.owner, serverToken: parentToken }), canSubmit: () => true });
+  const sessionApi = createBotSessionApi({ owner: f.owner, serverToken: parentToken, recovery, stateDirectory });
+  const restored = f.create(sessionApi);
+  cleanups.push(async () => { try { await restored.shutdown(f.current(), AbortSignal.timeout(30_000)); await restored.close(); } finally { lock.release(); } });
+  await restored.advance(f.current(), signal);
+  await vi.waitFor(async () => expect(await restored.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }), { timeout: 30_000, interval: 100 });
+  expect(receipts.map(result => [result.receipt.kind, result.receipt.executionGeneration, result.receipt.controllerInstanceId])).toEqual([
+    ["register", "1", original.controllerInstanceId], ["grant", "2", f.current().intent!.controllerInstanceId],
+  ]);
+  expect(store.read(f.current())).toMatchObject({ pending: null, registration: { receipt: { executionGeneration: "1", controllerInstanceId: original.controllerInstanceId } }, current: { receipt: { executionGeneration: "2" } } });
+  expect(f.current().intent).toMatchObject({ sessionId: original.sessionId, executionId: original.executionId, nativeSessionId: f.nativeId, executionGeneration: "2" });
+  expect(f.register).toHaveBeenCalledOnce(); expect(await f.launches()).toHaveLength(2);
+  const nativeRequests = await f.requests();
+  expect(nativeRequests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  const resumes = nativeRequests.filter(request => request.method === "thread/resume");
+  expect(resumes).toHaveLength(1);
+  expect(resumes[0]!.params).toMatchObject({ threadId: f.nativeId, developerInstructions: original.roleConfiguration!.instructions, excludeTurns: true });
+  expect(nativeRequests.filter(request => request.method === "turn/start")).toHaveLength(0);
+  expect(calls.some(call => call.includes("/test-sessions/"))).toBe(false);
+  expect(errors).toEqual([]); expect(f.relayErrors).toEqual([]);
+}, 120_000);
 
 test("deletes every private generation after real Controller stop while preserving cwd, native history and an independent Task worktree", async () => {
   const f = await fixture({ aliases: true }), signal = AbortSignal.timeout(100_000);

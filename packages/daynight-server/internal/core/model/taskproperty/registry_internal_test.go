@@ -39,7 +39,7 @@ func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t 
 			t.Fatalf("string input %q: got %q (%v), want %q", test.input, actual, err, test.want)
 		}
 	}
-	if !reflect.DeepEqual(propertyNames(), []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
+	if !reflect.DeepEqual(propertyNames(), []string{"blocked", "pullRequests", "sessionStartup", "worker"}) {
 		t.Fatal("string shorthand test registered a product property")
 	}
 }

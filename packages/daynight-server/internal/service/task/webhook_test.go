@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -18,7 +19,7 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 	current.Version = 2
 	current.UpdatedAt = now.Add(time.Second)
 	current.Status = model.TaskInProgress
-	current.Properties = model.TaskProperties{"paused": json.RawMessage(`true`)}
+	current.Properties = model.TaskProperties{"blocked": json.RawMessage(`true`)}
 	facts, err := taskFacts(false, old, current)
 	if err != nil || len(facts) != 2 || facts[0].Type != protocol.StatusChanged || facts[1].Type != protocol.Paused || facts[0].TaskVersion != 2 || !facts[0].OccurredAt.Equal(current.UpdatedAt) {
 		t.Fatalf("combined: %#v %v", facts, err)
@@ -37,14 +38,14 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 		t.Fatalf("unchanged: %#v %v", facts, err)
 	}
 	next := current
-	next.Properties = model.TaskProperties{"paused": json.RawMessage(`false`)}
+	next.Properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
 	facts, err = taskFacts(false, current, next)
 	if err != nil || len(facts) != 0 {
 		t.Fatalf("unpaused: %#v %v", facts, err)
 	}
-	next.Properties = model.TaskProperties{"paused": json.RawMessage(`"true"`)}
+	next.Properties = model.TaskProperties{"blocked": json.RawMessage(`"true"`)}
 	if _, err = taskFacts(false, current, next); err == nil {
-		t.Fatal("paused JSON type error was hidden")
+		t.Fatal("blocked JSON type error was hidden")
 	}
 }
 
@@ -80,15 +81,17 @@ type recordedCapture struct {
 	ctx   context.Context
 	dao   store.WebhookCaptureDAO
 	facts []protocol.Fact
+	actor wm.Actor
 	cause error
 }
 
-func (r *recordedCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, f []protocol.Fact) error {
+func (r *recordedCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, f []protocol.Fact) error {
 	r.t.Helper()
 	if ctx != r.ctx || dao != r.dao || len(r.facts) != 0 {
 		r.t.Fatal("Step capture escaped its source context or transaction DAO")
 	}
 	r.facts = append(r.facts, f...)
+	r.actor = actor
 	return r.cause
 }
 
@@ -103,8 +106,8 @@ func TestStepCaptureUsesFinalRevisionAndLogicalAction(t *testing.T) {
 	before := model.TaskStep{Status: model.TaskStepTodo, Title: "before", Description: "before"}
 	after := model.TaskStep{Status: model.TaskStepDone, Title: "after", Description: "after"}
 	now := sampleTimeForTaskTest()
-	err := s.captureStep(ctx, scope, "22222222-2222-4222-8222-222222222222", taskID, "abcdef01", "updated", now, nil, nil, &before, &after)
-	if err != nil || len(record.facts) != 1 || dao.calls != 1 {
+	err := s.captureStep(ctx, scope, wm.BotActor(sourceUserID, sourceClaimID), "22222222-2222-4222-8222-222222222222", taskID, "abcdef01", "updated", now, nil, nil, &before, &after)
+	if err != nil || len(record.facts) != 1 || dao.calls != 1 || record.actor != wm.BotActor(sourceUserID, sourceClaimID) {
 		t.Fatalf("capture: %v %#v", err, record.facts)
 	}
 	f := record.facts[0]

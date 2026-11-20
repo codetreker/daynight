@@ -58,7 +58,7 @@ func pullRequestsValue(t *testing.T, properties model.TaskProperties) []model.Pu
 func TestCodecRejectsInvalidInputStructures(t *testing.T) {
 	for _, invalid := range []string{
 		`null`, `[]`, `{`, `{} {}`, `{"unknown":[]}`, `{"worker":null}`, `{"pullRequests":[],"pullRequests":[]}`, `{"pullRequests":null}`, `{"pullRequests":{}}`,
-		`{"paused":null}`, `{"paused":"true"}`, `{"paused":1}`, `{"paused":[]}`, `{"paused":{}}`, `{"paused":true,"paused":false}`,
+		`{"blocked":null}`, `{"blocked":"true"}`, `{"blocked":1}`, `{"blocked":[]}`, `{"blocked":{}}`, `{"blocked":true,"blocked":false}`,
 		`{"pullRequests":[null]}`, `{"pullRequests":[{}]}`, `{"pullRequests":[{"url":null,"title":"x"}]}`,
 		`{"pullRequests":[{"url":"x"}]}`, `{"pullRequests":[{"url":"x","title":1}]}`,
 		`{"pullRequests":[{"url":"x","title":"y","extra":true}]}`, `{"pullRequests":[{"url":"x","title":"y","title":"z"}]}`,

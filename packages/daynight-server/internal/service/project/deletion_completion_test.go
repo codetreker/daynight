@@ -159,6 +159,7 @@ func TestDeletionServiceCompletionAndReadFailures(t *testing.T) {
 	t.Run("missing writer", func(t *testing.T) {
 		ctx := t.Context()
 		read := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{accessCall})
+		read.lifecycle = true
 		receipt, err := NewProjects(read).Delete(ctx, actor, projectID)
 		failure := requireDeletionFailure(t, receipt, err, store.TransactionNotCommitted)
 		if failure.Cause.Error() != "project deletion dependencies unavailable" {
@@ -168,6 +169,7 @@ func TestDeletionServiceCompletionAndReadFailures(t *testing.T) {
 	t.Run("nil engine", func(t *testing.T) {
 		ctx := t.Context()
 		read := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{accessCall})
+		read.lifecycle = true
 		db := &deletionResultStore{completionProjectReadPlan: read, projectID: project.ID}
 		receipt, err := NewProjects(db, nil).Delete(ctx, actor, projectID)
 		failure := requireDeletionFailure(t, receipt, err, store.TransactionNotCommitted)
@@ -178,6 +180,7 @@ func TestDeletionServiceCompletionAndReadFailures(t *testing.T) {
 	t.Run("preflight read failure", func(t *testing.T) {
 		ctx := t.Context()
 		read := newCompletionProjectReadPlan(t, ctx, nil)
+		read.lifecycle = true
 		read.begin = sentinel
 		db := &deletionResultStore{completionProjectReadPlan: read, projectID: project.ID}
 		receipt, err := NewProjects(db).Delete(ctx, actor, projectID)
@@ -201,6 +204,7 @@ func TestDeletionServiceCompletionAndReadFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
 			read := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{accessCall})
+			read.lifecycle = true
 			db := &deletionResultStore{
 				completionProjectReadPlan: read, projectID: project.ID, wantWrites: 1,
 				completion: test.completion, cause: test.cause,

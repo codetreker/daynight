@@ -169,7 +169,7 @@ test('Task Steps use the empty resource contract after Team navigation', async (
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
-for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+for (const width of [1440, 768, 601, 600, 390, 375, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const api = await install(page);
     api.members.get(bob)!.role = 'member';
@@ -184,10 +184,10 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     const geometry = await page.locator('.team-member-row').evaluateAll((rows) => rows.map((row) => {
       const rect = (selector: string) => row.querySelector(selector)!.getBoundingClientRect();
       const role = rect('select'), arrow = rect('.native-select__arrow'), person = rect('.person'), action = rect('button');
-      return { left: role.left, right: role.right, width: role.width, height: role.height, roleY: role.top + role.height / 2, personY: person.top + person.height / 2, actionY: action.top + action.height / 2, arrowY: arrow.top + arrow.height / 2, arrowInset: role.right - arrow.right };
+      return { left: role.left, right: role.right, width: role.width, height: role.height, roleY: role.top + role.height / 2, personBottom: person.bottom, personY: person.top + person.height / 2, actionLeft: action.left, actionY: action.top + action.height / 2, arrowY: arrow.top + arrow.height / 2, arrowInset: role.right - arrow.right };
     }));
     for (const item of geometry) {
-      expect(item.width).toBe(120);
+      expect(item.width).toBeCloseTo(136.5, 1);
       expect(item.height).toBe(32);
       expect(Math.abs(item.arrowY - item.roleY)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.arrowInset - 12)).toBeLessThanOrEqual(1);
@@ -195,15 +195,17 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
       expect(Math.abs(item.right - geometry[0]!.right)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.width - geometry[0]!.width)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.actionY - item.roleY)).toBeLessThanOrEqual(1);
+      expect(item.right).toBeLessThanOrEqual(item.actionLeft);
       if (width > 600) expect(Math.abs(item.personY - item.roleY)).toBeLessThanOrEqual(1);
+      else expect(item.personBottom).toBeLessThanOrEqual(item.roleY - item.height / 2);
     }
     await testInfo.attach('geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
-    const textSpace = await selects.nth(0).evaluate((element: HTMLSelectElement) => {
+    const textSpaces = await selects.evaluateAll((elements: HTMLSelectElement[]) => elements.map((element) => {
       const style = getComputedStyle(element), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
       context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-      return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: Math.max(...Array.from(element.options, (option) => context.measureText(option.text).width)) };
-    });
-    expect(textSpace.available).toBeGreaterThanOrEqual(textSpace.required);
+      return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: context.measureText(element.selectedOptions[0]!.text).width };
+    }));
+    for (const space of textSpaces) expect(space.available).toBeGreaterThanOrEqual(space.required);
     await expect(page.locator('.team-member-caption')).toHaveCount(0);
     const leave = page.getByRole('button', { name: locale === 'en' ? 'Leave Team' : '退出 Team', exact: true });
     const reason = locale === 'en' ? 'At least one admin must remain.' : '至少保留一名 Admin。';
@@ -249,9 +251,30 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     await selects.nth(1).click(); await page.keyboard.press('Escape');
     await selects.nth(1).selectOption('admin');
     await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0); await expect(selects.nth(1)).toHaveValue('member');
+    await expect(selects.nth(1)).toBeFocused(); expect(api.writes).toHaveLength(0);
   });
 }
+
+test('keyboard role selection and a pending write retain the role column', async ({ page }) => {
+  const api = await install(page); await page.setViewportSize({ width: 320, height: 640 }); await start(page);
+  const role = page.getByLabel('Team role: Bob');
+  await role.focus(); await page.keyboard.press(process.platform === 'darwin' ? 'm' : 'ArrowUp');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Bob'); await expect(dialog).toContainText('Administrator');
+  await page.keyboard.press('Escape');
+  await expect(role).toBeFocused(); await expect(role).toHaveValue('admin'); expect(api.writes).toHaveLength(0);
+  const before = await role.evaluate(element => element.getBoundingClientRect().width);
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdWrite = { started: started.resolve, wait: finish.promise };
+  try {
+    await role.selectOption('member'); await dialog.getByRole('button', { name: 'Confirm change' }).click();
+    await started.promise;
+    expect(await role.evaluate((element: HTMLSelectElement) => ({ disabled: element.disabled, width: element.getBoundingClientRect().width, value: element.value }))).toEqual({ disabled: true, width: before, value: 'admin' });
+    expect(api.writes).toHaveLength(1);
+  } finally { finish.resolve(); }
+  await expect(role).toHaveValue('member');
+});
 
 test('member loading and read failure retain a working retry', async ({ page }) => {
   const api = await install(page);

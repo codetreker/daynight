@@ -16,7 +16,9 @@
 
 [同步算法](github-sync-executor.md)负责访问检查、完整轮询、提示处理、标准化和失败调度；算法接收明确的远端、snapshot 与工作事务能力，不决定授权来源。执行入口使用 App-aware DAO。
 
-领取、发布及完成分别保留 committed、not_committed 与 unknown。独立 App 领取结果未知时停止本轮，数据库中的领取按原期限到期；不重放未知写入。续约或发布失败同样停止，不把旧远端响应表达为已发布。日志携带 App、凭据版本、grant、Team、Project、generation 和 lease 标识，不记录秘密或 PR 正文。
+领取、发布及完成分别保留 committed、not_committed 与 unknown。独立 App 领取结果未知时停止本轮，数据库中的领取按原期限到期；不重放未知写入。续约或发布失败同样停止，不把旧远端响应表达为已发布。
+
+确认领取后，日志上下文固定该轮 connection 的 `repository_id` 和 `installation_id`，并保留 App、凭据版本、grant、Team、ownership version、Project、generation 和 lease 标识。未选择工作或领取结果未确认时不解引用连接身份。阶段与进度记录继承这一上下文，提示另保留其捕获的 request/delivery 标识；不通过之后的 Project 绑定重新解释执行身份。具体字段、发现与详情阶段、计数定义和敏感信息排除见[同步执行器诊断](github-sync-executor.md#结构化诊断)。
 
 ## 调度与生命周期
 

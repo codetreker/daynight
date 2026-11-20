@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename, sqliteFilename } from "../../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
@@ -119,10 +120,10 @@ const checkpoint = (db: Database.Database, deadline?: number): { busy: number; l
 };
 
 const vacuum = (db: Database.Database, deadline?: number): void => {
-  const directory = `${db.name}.timeline-maintenance`;
+  const directory = `${sqliteDisplayFilename(db.name)}.timeline-maintenance`;
   mkdirSync(directory, { recursive: true, mode: 0o700 }); privateDirectory(directory);
   if (readdirSync(directory).length !== 0) throw new Error("Controller timeline maintenance has unrecognized retained temporary files.");
-  if (lstatSync(directory).dev !== lstatSync(path.dirname(db.name)).dev) throw new Error("Controller journal compaction requires temporary storage on its original volume.");
+  if (lstatSync(directory).dev !== lstatSync(path.dirname(sqliteDisplayFilename(db.name))).dev) throw new Error("Controller journal compaction requires temporary storage on its original volume.");
   accessSync(directory, constants.W_OK | (process.platform === "win32" ? 0 : constants.X_OK));
   syncDirectory(path.dirname(directory)); timeout(deadline);
   const names = ["SQLITE_TMPDIR", "TMPDIR", "TMP", "TEMP"] as const;
@@ -163,7 +164,7 @@ const validateCommitted = (db: Database.Database): ReturnType<ReturnType<typeof 
     return openTimelineStore(reader, { assertWrite: () => { throw new Error("Controller maintenance readback is read-only."); } }).totals();
   }).deferred();
   if (db.memory) return check(db);
-  const reader = new Database(db.name, { readonly: true, fileMustExist: true });
+  const reader = new Database(sqliteFilename(db.name), { readonly: true, fileMustExist: true });
   let value: ReturnType<typeof check> | undefined, failure: unknown;
   try { value = check(reader); } catch (cause) { failure = cause; }
   try { reader.close(); }
@@ -179,7 +180,7 @@ export const maintainControllerTimeline = (options: {
 }): ControllerStoragePreparation => {
   const { db, request, storagePermit } = options;
   assertControllerStoragePermit(storagePermit, request.journalFile);
-  if (db.inTransaction || db.memory || db.name !== request.journalFile) throw new Error("Controller timeline maintenance requires its original idle connection.");
+  if (db.inTransaction || db.memory || sqliteDisplayFilename(db.name) !== request.journalFile) throw new Error("Controller timeline maintenance requires its original idle connection.");
   const assertAccess = (): void => {
     assertControllerStoragePermit(storagePermit, request.journalFile);
     timeout(request.deadline);

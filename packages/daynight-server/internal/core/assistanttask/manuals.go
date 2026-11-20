@@ -28,11 +28,21 @@ func (m *Module) AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, ac
 	if !strictID(input.ID) || !textValid(input.Text, true) {
 		return result, invalid("Appendix ID and text are required.")
 	}
+	scope, err := appendixScope(input.Scope)
+	if err != nil {
+		return result, err
+	}
 	task, err := m.workingTask(ctx, dao, actor, input.Mutation)
 	if err != nil {
 		return result, err
 	}
-	hash, err := fingerprint([]any{input.ID, input.TaskID, actor.BotID, input.Text, input.SourceRecords})
+	request := []any{input.ID, input.TaskID, actor.BotID, input.Text, input.SourceRecords}
+	// Appending only a declared scope keeps fingerprints of appendices added
+	// before scopes existed valid for their replays.
+	if input.Scope != nil {
+		request = append(request, scope)
+	}
+	hash, err := fingerprint(request)
 	if err != nil {
 		return result, err
 	}
@@ -54,7 +64,7 @@ func (m *Module) AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, ac
 	if err != nil {
 		return result, err
 	}
-	result = model.AssistantTaskAppendix{ID: input.ID, TaskID: task.ID, OwnerUserID: task.OwnerUserID, Text: input.Text, State: "active", SourceRecords: input.SourceRecords, AuthorBotID: actor.BotID, Version: 1, RequestFingerprint: hash, CreatedAt: now, UpdatedAt: now}
+	result = model.AssistantTaskAppendix{ID: input.ID, TaskID: task.ID, OwnerUserID: task.OwnerUserID, Text: input.Text, State: "active", SourceRecords: input.SourceRecords, AuthorBotID: actor.BotID, Version: 1, RequestFingerprint: hash, CreatedAt: now, UpdatedAt: now, Scope: scope}
 	ok, err := dao.InsertAppendix(ctx, result)
 	if err != nil {
 		return result, err
@@ -75,8 +85,12 @@ func (m *Module) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO,
 	if actor.BotID != nil {
 		return result, forbidden()
 	}
-	if !strictID(input.ID) || !validState(input.State, "edited", "deleted") || input.State != "deleted" && !textValid(input.Text, true) {
+	if !strictID(input.ID) || !validState(input.State, "edited", "deleted") || input.State != "deleted" && !textValid(input.Text, true) || input.State == "deleted" && input.Scope != nil {
 		return result, invalid("Appendix update is invalid.")
+	}
+	scope, err := appendixScope(input.Scope)
+	if err != nil {
+		return result, err
 	}
 	task, err := loadTask(ctx, dao, actor, input.TaskID, true)
 	if err != nil {
@@ -99,10 +113,20 @@ func (m *Module) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO,
 	}
 	result.State = input.State
 	if input.State == "deleted" {
+		// Deletion invalidates the registered validations together with the
+		// content, so a deleted appendix carries no scope or evidence.
 		result.Text = ""
 		result.SourceRecords = []string{}
+		result.Scope, _ = appendixScope(nil)
+		result.SuccessCount, result.FailureCount, result.LastValidatedAt = 0, 0, nil
+		if err = dao.DeleteAppendixValidations(ctx, task.OwnerUserID, task.ID, result.ID); err != nil {
+			return result, err
+		}
 	} else {
 		result.Text = input.Text
+		if input.Scope != nil {
+			result.Scope = scope
+		}
 		if input.SourceRecords != nil {
 			if err = recordIDs(ctx, dao, task, input.SourceRecords); err != nil {
 				return result, err

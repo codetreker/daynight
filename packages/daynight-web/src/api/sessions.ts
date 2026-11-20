@@ -1,5 +1,5 @@
 import { awaitAbortable } from '../../../daynight/src/api/abort';
-import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
+import { TASK_BODY_HISTORY_VERSION_HEADER, parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
 import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
 import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
@@ -11,6 +11,7 @@ import { assertSessionFence, parseSessionCommand, type SessionCommand, type Sess
 
 export type LoadedSessionArchive = SessionArchive | (SessionFence & Pick<SessionArchive, 'controllerId' | 'controllerInstanceId' | 'provider' | 'nativeSessionId' | 'entries'> & {
   readonly schemaVersion: 3;
+  readonly contentPolicy?: 'task_body';
   readonly resources: readonly SessionArchiveResourceReference[];
   readonly completeness: 'complete' | 'partial';
 });
@@ -103,7 +104,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
         if (generation !== readAuthRequestGeneration()) throw new DOMException('The authenticated account changed.', 'AbortError');
       };
       try {
-        const response = await request(`${sessionRoot(id)}/archive/content`, signal, { headers: { Accept: 'application/json' } });
+        const response = await request(`${sessionRoot(id)}/archive/content`, signal, { headers: { Accept: 'application/json', [TASK_BODY_HISTORY_VERSION_HEADER]: '1' } });
         lifetime = responseSignal(response, signal);
         assertCurrent();
         assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -132,7 +133,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           assertCurrent();
           const timeline = await verifySessionArchiveMetadata(archive, bytes);
           assertCurrent();
-          return { schemaVersion: 3, ...archive.fence, controllerId: archive.controllerId, controllerInstanceId: archive.controllerInstanceId, provider: archive.provider, nativeSessionId: archive.nativeSessionId, entries: timeline.entries, resources: archive.resources, completeness: archive.completeness };
+          return { schemaVersion: 3, ...(archive.contentPolicy ? { contentPolicy: archive.contentPolicy } : {}), ...archive.fence, controllerId: archive.controllerId, controllerInstanceId: archive.controllerInstanceId, provider: archive.provider, nativeSessionId: archive.nativeSessionId, entries: timeline.entries, resources: archive.resources, completeness: archive.completeness };
         }
         if (expectedStatus && (expectedStatus.state !== 'ready' || (expectedStatus.schemaVersion ?? 1) !== archive.schemaVersion)) throw new ApiError('protocol');
         await verifySessionArchiveResources(archive);

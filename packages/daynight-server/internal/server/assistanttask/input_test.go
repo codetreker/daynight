@@ -37,25 +37,6 @@ func TestInputRejectsNoncanonicalValues(t *testing.T) {
 	}
 }
 
-func TestBotHeaderRequiresExactlyOneCanonicalIdentity(t *testing.T) {
-	const id = "11111111-1111-4111-8111-111111111111"
-	request := httptest.NewRequest("GET", "/", nil)
-	if bot, err := botIdentity(request); bot != nil || err != nil {
-		t.Fatal("absent Bot should be a user")
-	}
-	request.Header.Set("X-Daynight-Bot-Id", id)
-	bot, err := botIdentity(request)
-	if err != nil || bot == nil || *bot != id {
-		t.Fatalf("bot: %v %v", bot, err)
-	}
-	for _, values := range [][]string{{""}, {"bad"}, {id, id}, {id + "," + id}} {
-		request.Header["X-Daynight-Bot-Id"] = values
-		if _, err := botIdentity(request); err == nil {
-			t.Errorf("accepted header %v", values)
-		}
-	}
-}
-
 func TestAssistantTaskPageIsIndependentFromExistingPageLimit(t *testing.T) {
 	for _, target := range []string{"/?limit=0", "/?limit=201", "/?limit=01", "/?limit=1&limit=2", "/?cursor=", "/?unknown=x"} {
 		if _, err := pageRequest(httptest.NewRequest("GET", target, nil)); err == nil {

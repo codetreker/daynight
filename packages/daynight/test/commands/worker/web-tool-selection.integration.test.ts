@@ -100,6 +100,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   const selectToolLaunch = vi.fn(tools.selectToolLaunch);
   const service = createServer();
   const relay = new WebSocketServer({ server: service });
+  relay.on("headers", headers => headers.push("Daynight-Task-Body-History-Version: 1"));
   let mainCleanupRegistered = false;
   let serviceClose: Promise<void> | undefined;
   const closeService = (): Promise<void> => serviceClose ??= (async () => {
@@ -197,6 +198,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   });
   relay.on("connection", (socket, request) => {
     if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-web-grant") { socket.close(1008); return; }
+    if (request.headers["daynight-task-body-history-version"] !== "1") { relayErrors.push(new Error("Task body history capability was not requested.")); socket.close(1008); return; }
     socket.on("message", raw => {
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString()));

@@ -2,6 +2,7 @@ import { ApiError, assertResponsePrincipal, json, request, requestId } from '../
 import { array, boolean, id, malformed, record, string } from '../../api/parse';
 import { parseConfigurationRevision } from '../../api/worker-configuration';
 import type { PullRequestAdmission } from '../pull-request-detail/api';
+import { parseRepository } from '../pull-requests/api';
 
 export type PRStatistics = {
   readonly projectId: string; readonly endDate: string; readonly revision: string;
@@ -43,8 +44,9 @@ export const validateStatisticsWindow = (endDate: string, window: string): void 
   }
 };
 
-export const parsePRStatistics = (value: unknown, projectId: string, endDate: string, authorId: string | null): PRStatistics => {
+export const parsePRStatistics = (value: unknown, projectId: string, endDate: string, authorId: string | null, repositoryId: string | null = null): PRStatistics => {
   const data = record(value), project = id(data.projectId), daily = series(data.daily);
+  if (repositoryId !== null) parseRepository(data.repository, repositoryId);
   const availability = data.availability;
   if (project !== requestId(projectId) || data.endDate !== endDate ||
       (availability !== 'ready' && availability !== 'not_connected' && availability !== 'initializing' && availability !== 'no_saved_data')) return malformed();
@@ -62,16 +64,17 @@ export const parsePRStatistics = (value: unknown, projectId: string, endDate: st
   return { projectId: project, endDate, revision: count(data.revision), projectTotal: total, availability, hasAuthors, daily, authorId: responseAuthorId, author, authorDaily };
 };
 
-export const getPRStatistics = async (projectId: string, endDate: string, window: string, authorId: string | null, signal: AbortSignal, admission: PullRequestAdmission): Promise<PRStatistics> => {
+export const getPRStatistics = async (projectId: string, endDate: string, window: string, authorId: string | null, signal: AbortSignal, admission: PullRequestAdmission, repositoryId: string | null = null): Promise<PRStatistics> => {
   const project = requestId(projectId);
   validateStatisticsWindow(endDate, window);
   if (authorId !== null) positive(authorId);
   const query = new URLSearchParams({ endDate, window });
   if (authorId !== null) query.set('authorId', authorId);
+  if (repositoryId !== null) query.set('repositoryId', positive(repositoryId));
   const response = await request(`/api/v1/projects/${project}/pull-request-statistics?${query}`, signal, { headers: { Accept: 'application/json' } }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
-    return parsePRStatistics(value, project, endDate, authorId);
+    return parsePRStatistics(value, project, endDate, authorId, repositoryId);
   });
 };

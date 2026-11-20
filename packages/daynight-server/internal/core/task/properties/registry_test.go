@@ -71,7 +71,7 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 }
 
 func TestRegistryEnforcesPublicWritesAndSanitizesValidationErrors(t *testing.T) {
-	for _, name := range []string{"paused", "pullRequests"} {
+	for _, name := range []string{"blocked", "pullRequests"} {
 		if err := CheckWritable(name); err != nil {
 			t.Fatal(err)
 		}
@@ -125,24 +125,24 @@ func TestRawInputPreservesNativeMeaningAndRejectsDuplicateOrTrailingJSON(t *test
 func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) {
 	for _, value := range []string{"true", "false"} {
 		for _, input := range []string{value, " \n" + value + "\t "} {
-			parsed, err := ParseInput("paused", input)
+			parsed, err := ParseInput("blocked", input)
 			if err != nil || string(parsed) != value {
 				t.Fatalf("boolean input %q: %s (%v)", input, parsed, err)
 			}
-			normalized, err := Normalize(model.TaskProperties{"paused": json.RawMessage(input)})
-			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || taskproperty.Equal(normalized, model.TaskProperties{}) {
+			normalized, err := Normalize(model.TaskProperties{"blocked": json.RawMessage(input)})
+			if err != nil || len(normalized) != 1 || string(normalized["blocked"]) != value || taskproperty.Equal(normalized, model.TaskProperties{}) {
 				t.Fatalf("boolean normalization lost presence: %#v (%v)", normalized, err)
 			}
 		}
 	}
-	for _, input := range []string{"", "null", `"true"`, `"false"`, "0", "1", "[]", "{}", "[true]", `{"paused":true}`, "true false", "false null", "TRUE"} {
+	for _, input := range []string{"", "null", `"true"`, `"false"`, "0", "1", "[]", "{}", "[true]", `{"blocked":true}`, "true false", "false null", "TRUE"} {
 		for _, parse := range []func() error{
-			func() error { _, err := ParseInput("paused", input); return err },
-			func() error { _, err := normalizeValueForTest("paused", json.RawMessage(input), true); return err },
+			func() error { _, err := ParseInput("blocked", input); return err },
+			func() error { _, err := normalizeValueForTest("blocked", json.RawMessage(input), true); return err },
 		} {
 			err := parse()
 			var invalidValue *taskproperty.ValidationError
-			if !errors.As(err, &invalidValue) || invalidValue.Path != "properties.paused" || errors.Unwrap(err) == nil {
+			if !errors.As(err, &invalidValue) || invalidValue.Path != "properties.blocked" || errors.Unwrap(err) == nil {
 				t.Fatalf("invalid boolean input %q lost validation identity: %v", input, err)
 			}
 		}
@@ -158,4 +158,39 @@ func normalizeValueForTest(name string, raw json.RawMessage, public bool) (json.
 		}
 	}
 	return taskproperty.NormalizeValue(name, raw)
+}
+
+func TestBlockedAliasNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		input, want string
+		valid       bool
+	}{
+		{`{}`, ``, true},
+		{`{"paused":true}`, `true`, true},
+		{`{"blocked":false}`, `false`, true},
+		{`{"paused":true,"blocked":true}`, `true`, true},
+		{`{"paused":false,"blocked":true}`, ``, false},
+		{`{"paused":null}`, ``, false},
+		{`{"blocked":"false"}`, ``, false},
+		{`{"paused":true,"paused":false}`, ``, false},
+	} {
+		got, err := DecodePatch([]byte(tc.input))
+		if (err == nil) != tc.valid {
+			t.Fatalf("%s: %v", tc.input, err)
+		}
+		if !tc.valid {
+			continue
+		}
+		if _, ok := got["paused"]; ok {
+			t.Fatalf("legacy key persisted: %#v", got)
+		}
+		if string(got["blocked"]) != tc.want {
+			t.Fatalf("%s: %#v", tc.input, got)
+		}
+	}
+	for _, name := range []string{"blocked", "paused"} {
+		if value, err := ParseInput(name, "false"); err != nil || string(value) != "false" {
+			t.Fatalf("%s: %s %v", name, value, err)
+		}
+	}
 }

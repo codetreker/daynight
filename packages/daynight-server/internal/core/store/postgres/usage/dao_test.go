@@ -28,7 +28,7 @@ func TestUsageRegistrationFailsClosedOnMalformedTaskAuthorizationProperties(t *t
 		raw  []byte
 	}{
 		{"worker", []byte(`{}`)},
-		{"paused", []byte(`"not-a-boolean"`)},
+		{"blocked", []byte(`"not-a-boolean"`)},
 	} {
 		t.Run(property.name, func(t *testing.T) {
 			f := workflow(t)

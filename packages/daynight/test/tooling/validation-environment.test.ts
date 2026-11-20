@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createValidationProbeRecorder } from "../../scripts/validation-environment.js";
@@ -491,28 +491,24 @@ describe("native validation environment probes", () => {
 
   it("saves partial output and the original native timeout error without retrying", () => {
     const f = fixture();
-    let executions = 0;
-    let originalError: Error | undefined;
-    const recorder = createValidationProbeRecorder({ directory: f.diagnostics, environment: f.environment, log: () => {},
-      execute: (file, args, options) => {
-        executions += 1;
-        expect(options.timeout).toBe(10_000);
-        const result = crossSpawn.sync(file, args, { ...options, timeout: 2_000 });
-        originalError = result.error;
-        return result;
-      },
-    });
+    const file = process.execPath;
+    const args = ["--version"];
+    const originalError = Object.assign(new Error(`spawnSync ${file} ETIMEDOUT`), { code: "ETIMEDOUT", syscall: `spawnSync ${file}` });
+    const stdout = "before timeout", stderr = "timeout stderr";
+    const result: SpawnSyncReturns<string> = {
+      pid: 4321, output: [null, stdout, stderr], stdout, stderr, status: null, signal: "SIGTERM", error: originalError,
+    };
+    const execute = vi.fn<NonNullable<Parameters<typeof createValidationProbeRecorder>[0]["execute"]>>(() => result);
+    const recorder = createValidationProbeRecorder({ directory: f.diagnostics, environment: f.environment, log: () => {}, execute });
     let failure: unknown;
-    try { recorder.command(process.execPath, ["-e", "process.stdout.write('before timeout');process.stderr.write('timeout stderr');setInterval(()=>{},1000)"]); }
-    catch (error) { failure = error; }
-    expect(executions).toBe(1);
+    try { recorder.command(file, args); } catch (error) { failure = error; }
+    expect(execute).toHaveBeenCalledExactlyOnceWith(file, args, expect.objectContaining({ timeout: 10_000 }));
     expect(failure).toBe(originalError);
-    expect(originalError).toMatchObject({ code: "ETIMEDOUT" });
-    expect(f.read().probes[0]).toMatchObject({ state: "failed", stdout: "before timeout", stderr: "timeout stderr", resolvedExecutable: process.execPath,
-      error: { name: "Error", code: "ETIMEDOUT", syscall: `spawnSync ${process.execPath}` } });
+    expect(f.read().probes[0]).toMatchObject({ state: "failed", stdout, stderr, resolvedExecutable: file,
+      error: { name: "Error", code: "ETIMEDOUT", syscall: `spawnSync ${file}` } });
     expect(f.read().error?.code).toBe("ETIMEDOUT");
     expect(f.read().probes[0]!.preparation).toBeNull();
-  }, 10_000);
+  });
 
   it("keeps diagnostic output bounded without truncating a successful command's return value", () => {
     const f = fixture();

@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -485,18 +486,18 @@ test("preparation close failure retains an unknown cleanup marker outcome after 
   try {
     vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, source: string) {
-      const clearing = this.name === f.file && source === "COMMIT" && (prepare.call(this, "SELECT legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1") as Database.Statement<[], { pending: number }>).get()!.pending === 0;
+      const clearing = sqliteDisplayFilename(this.name) === f.file && source === "COMMIT" && (prepare.call(this, "SELECT legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1") as Database.Statement<[], { pending: number }>).get()!.pending === 0;
       const value = exec.call(this, source);
       if (clearing) { committed = true; throw new Error("actual unknown marker commit"); }
       return value;
     });
     vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, source: string) {
-      if (committed && this.name === f.file && source.startsWith("SELECT legacy_timeline_cleanup_pending")) throw new Error("actual marker readback failure");
+      if (committed && sqliteDisplayFilename(this.name) === f.file && source.startsWith("SELECT legacy_timeline_cleanup_pending")) throw new Error("actual marker readback failure");
       return prepare.call(this, source);
     });
     vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
       const value = close.call(this);
-      if (committed && this.name === f.file && !this.readonly) throw new Error("actual preparation close failure");
+      if (committed && sqliteDisplayFilename(this.name) === f.file && !this.readonly) throw new Error("actual preparation close failure");
       return value;
     });
     let failure: unknown;
@@ -605,7 +606,7 @@ test("an empty current journal still reports a committed deadline failure after 
     vi.spyOn(Date, "now").mockImplementation(() => now + (expired ? 100 : 0));
     vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, source) {
       const result = exec.call(this, source);
-      if (this.name === file) {
+      if (sqliteDisplayFilename(this.name) === file) {
         if (source.startsWith("BEGIN")) immediate = source === "BEGIN IMMEDIATE";
         if (source === "COMMIT" && immediate) expired = true;
       }
@@ -668,7 +669,7 @@ test("stopped storage reports the confirmed close after its read-phase close rep
   const close = sqliteAccess.closeSqliteDatabase;
   vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((database, options, outcome) => {
     close(database, options, outcome);
-    if (database.name === f.file) throw original;
+    if (sqliteDisplayFilename(database.name) === f.file) throw original;
   });
   const error = failureOf(() => withStoppedControllerStorage({ journalPath: f.file, ticket: f.ticket, assertOriginal: () => {} }, () => { throw new Error("must not run"); }));
   expect(error).toMatchObject({ kind: "cleanup-failed", outcome: "not-started", connectionClosed: true, cause: original });

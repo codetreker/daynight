@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { parseSessionArchiveFileReceipt, type SessionArchiveFileReceipt } from "../../../session/archive.js";
+import { TASK_BODY_HISTORY_VERSION_HEADER, parseSessionArchiveFileReceipt, type SessionArchiveFileReceipt } from "../../../session/archive.js";
 import type { ControllerFence } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
@@ -29,6 +29,7 @@ export const syncControllerImageHistory = async (options: {
   requiredSourceThrough?: string;
 }): Promise<void> => {
   const { ticket, journal, fence } = options;
+  const bodyOnly = journal.getHistoryContentPolicy() === "task_body";
   const intent = journal.prepareImageHistorySync();
   if (!intent) {
     if (options.requiredSourceThrough !== undefined && !journal.hasImageHistoryCheckpoint(options.requiredSourceThrough)) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its complete acknowledged history checkpoint.");
@@ -41,7 +42,8 @@ export const syncControllerImageHistory = async (options: {
     if (JSON.stringify(options.currentFence()) !== JSON.stringify(fence)) throw new Error("Controller history connection changed before synchronization.");
     const grant = await readControllerGrant(ticket);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
-    const response = await request(`${url}${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${grant.token}`, "Daynight-Controller-Fence": JSON.stringify(fence), ...(bytes === undefined ? {} : { "Content-Type": "application/octet-stream", "Daynight-File-Byte-Length": intent.byteLength, "Daynight-File-SHA256": intent.sha256, "Daynight-Chunk-SHA256": createHash("sha256").update(bytes).digest("hex") }) }, ...(bytes === undefined ? {} : { body: Uint8Array.from(bytes) }), signal });
+    const response = await request(`${url}${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${grant.token}`, "Daynight-Controller-Fence": JSON.stringify(fence), ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}), ...(bytes === undefined ? {} : { "Content-Type": "application/octet-stream", "Daynight-File-Byte-Length": intent.byteLength, "Daynight-File-SHA256": intent.sha256, "Daynight-Chunk-SHA256": createHash("sha256").update(bytes).digest("hex") }) }, ...(bytes === undefined ? {} : { body: Uint8Array.from(bytes) }), signal });
+    if (bodyOnly && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body history synchronization.");
     if (!response.ok) throw Object.assign(new Error(`Controller history synchronization failed (${response.status}).`), { status: response.status });
     return response.json();
   };

@@ -155,14 +155,14 @@ func TestRegisteredMemberExpiryDuringEligibilityWaitRollsBackJoin(t *testing.T) 
 	if _, err = holder.Exec(ctx, `SELECT id FROM webhook_subscriptions WHERE id=$1 FOR UPDATE`, subscription); err != nil {
 		t.Fatal(err)
 	}
-	expires := armMemberCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 2)
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 2)
 	done := make(chan error, 1)
 	go func() {
 		_, err := directMembers(db).AddExistingMember(ctx, actor, team.ID, target.ID, actor.UserID)
 		done <- err
 	}()
 	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT s.id::text,s.project_id::text", holder.Conn().PgConn().PID())
-	waitForMemberCredentialExpiry(t, ctx, db.Pool, expires)
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
 	if err = holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

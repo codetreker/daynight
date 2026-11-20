@@ -183,7 +183,7 @@ func (f *strictStepWrite) TouchTask(ctx context.Context, id string, at time.Time
 	}
 	return nil
 }
-func (f *strictStepWrite) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (f *strictStepWrite) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, _ webhook.Actor, facts []protocol.Fact) error {
 	f.scoped("capture")
 	if ctx != f.ctx || dao != f.captureDAO || len(facts) != 1 || !reflect.DeepEqual(facts[0], f.expectedFact) {
 		f.t.Fatalf("capture: %+v want %+v", facts, f.expectedFact)
@@ -601,6 +601,15 @@ func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error
 }
 
 func (f *strictStepWrite) TagDAO() store.TagWriteDAO { f.t.Fatal("unexpected TagDAO call"); return nil }
+func (f *strictStepWrite) GoalDependencyDAO() store.GoalDependencyDAO {
+	f.t.Fatal("unexpected GoalDependencyDAO call")
+	return nil
+}
+
+func (f *strictStepWrite) GoalRelationDAO() store.GoalRelationEditor {
+	f.t.Fatal("unexpected GoalRelationDAO call")
+	return nil
+}
 func (f *strictStepWrite) TaskTagDAO() store.TaskTagWriteDAO {
 	f.t.Fatal("unexpected TaskTagDAO call")
 	return nil
@@ -619,7 +628,16 @@ func (p *strictWriteProject) RepositoryOccupied(context.Context, string, string)
 	return false, nil
 }
 
+func (f *strictStepWrite) BotBarrierDAO() store.BotBarrierDAO {
+	f.t.Fatal("unexpected BotBarrierDAO call")
+	return nil
+}
+
 func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	f.t.Fatal("unexpected WorkerClaimAdmissionDAO call")
 	return nil
+}
+
+func (s *strictStepWrite) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
 }

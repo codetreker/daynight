@@ -116,10 +116,19 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker review participation resource](../../docs/design/worker-review-participation.md)
+provides an account-owned GET/PUT preference at
+`/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,
+uses an independent exact decimal version and preserves report, configuration
+and claim protocols. Editing it does not refresh Worker activity. Existing and
+new Worker rows receive the same defaults through migration and schema snapshot.
+
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
 author filter, scoped counts, project total and compatible cursor versions.
+The [PR review assignment design](../../docs/design/pr-review-assignment.md)
+defines server reconciliation and the account-scoped assignment read.
 The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
 the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
 describes management, scheduling and resource lifecycle. Independent App
@@ -557,6 +566,21 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+### Dependency type upgrade
+
+Migrations 090 and 091 add a default `task` type, nullable Goal edge identity,
+Goal relationship revisions, and Goal lookup indexes to the shared dependency
+store. Existing rows and writes from already running old
+instances retain the ordinary Task type. New ordinary reads and writes filter
+that type. Existing Goal status and direct deletion operations enforce the stored Goal
+relationships. The Goal relationship service provides authorized snapshot reads and atomic edits without changing ordinary Task DTOs. Independent GET/PATCH `/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` routes use the [REST contract](../../docs/spec/goal-dependencies.md) and shared strict codec, with no-store reads and exact decimal revision strings. The [relationship design](../../docs/design/goal-dependencies.md) describes its authorization, revisions, graph admission and transaction outcomes. Migrations alone do not expose Goal edge writes.
+
+An old binary cannot restart against the newer migration ledger. Before Goal
+edge writes are enabled, stop every old instance that accesses this table,
+including read-only and Worker API instances. The migration lock coordinates
+migrators, not other writers. Restoring an old binary requires a matching
+database restoration with writers stopped; do not remove ledger entries.
+
 ### Team repository uniqueness upgrade
 
 Stop and drain all old service instances and direct Project writers before
@@ -937,7 +961,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
-| `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
+| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
@@ -987,6 +1011,40 @@ database backup. An upgrade crossing migration 073 first resets synchronization
 intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
+
+Before migration 088, stop and drain old server replicas. The migration starts
+coverage at one UTC second for retained repositories with synchronization intent,
+preserves existing PRs and hints, and schedules available connections for a new
+full poll. Start only the matching new service after migration; restoring the old
+binary requires a matching database backup.
+
+Before migration 093, stop all old Server writers and drain GitHub workers. The
+migration requires a trustworthy repository ID and full name for every Project
+with retained PRs; a missing identity reports the Project ID and rolls back the
+migration without changing the old table. Correct the source facts before retrying.
+The migration rewrites PR rows and indexes under table locks; measure the window
+against actual data before deployment. Start only new writers after migration:
+old writers use an incompatible conflict key. Once new writes are admitted,
+recover forward to retain them. See the [storage design](../../docs/design/github-pr-storage.md#迁移).
+
+
+Project members can read retained PR sources through
+`GET /api/v1/projects/{projectId}/pull-request-repositories`. It accepts
+`limit` (default 100, maximum 100) and `cursor` and returns
+`{currentRepositoryId,items:[{repositoryId,fullName}],nextCursor}` with
+ascending repository IDs. IDs are decimal strings; the current ID and next
+cursor can be null. The cursor is bound to the Project.
+
+The `pull-requests` list, number-detail and review-assignment routes,
+`pull-request-authors` and `pull-request-statistics` accept optional
+`repositoryId` as a canonical positive int64 decimal string. Explicit reads
+require a source saved for that Project. List, author and statistics responses
+then include `repository:{repositoryId,fullName}`. Omitting the selector reads
+the fixed legacy source and preserves existing response forms. Explicit
+cursors are source-bound; legacy cursors remain valid only on omitted-source
+requests. Historical statistics do not use another repository's current sync
+progress. The [PR reading design](../../docs/design/github-pr-reading.md)
+defines complete parameters, response fields and cursor behavior.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
@@ -1196,10 +1254,10 @@ on the separate listener are excluded.
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
-Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
-PostgreSQL instance. The module check also requires `DAYNIGHT_TEST_REDIS_URL`
-for an isolated Redis instance; it owns SQL, Redis and other module mechanisms,
-while the startup/shutdown check owns command lifecycle mechanisms.
+Both checks require `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL`
+for isolated PostgreSQL and Redis instances. The module check owns SQL,
+Redis and other module mechanisms. The startup/shutdown check owns the
+command lifecycle, including Redis lease expiry after a writer process exits.
 Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
 fixtures without database, gateway, CLI or Web preparation. For disposable
@@ -2064,8 +2122,14 @@ query and driver errors. The [Project read error decision](../../.agents/notes/i
 records the split. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
-Repository registration tests check target Team and identity propagation, snapshot completion, ambiguity and creation guards. PostgreSQL tests verify persisted creation and reuse, visibility and the bounded lookup; independent resolution retains keyset traversal tests. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
-describes the Service, Core, and Store test boundaries.
+Repository registration tests execute the Service entry point with controlled
+snapshot and write scopes. They check target Team and identity propagation,
+confirmation, reuse, ambiguity, and suppression of the result when completion
+is unconfirmed. Core tests cover the URL identity rules. PostgreSQL tests check
+committed identities and ownership, the bounded Team lookup, and the visible
+Project set. Independent resolution retains keyset traversal tests. The
+[repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
+describes the Service, Core, and Store test responsibilities.
 
 Project membership tests verify actor preflight with a fail-on-access store.
 Controlled write scopes exercise authorization, direct grant mutation, actor
@@ -2081,12 +2145,14 @@ insertion and rollback, and SQL filtering before pagination. The
 [Project member fixture decision](../../.agents/notes/implemented/testing/2026-11-18-project-member-creation-tests.md)
 records the proof boundary.
 
-Project transfer tests use controlled scopes for preflight, cancellation,
-missing targets and exhausted versions. They execute the real transfer rules,
-including confirmed same-team saves at the version limit. Real PostgreSQL
-tests retain cross-team transfer, persisted access changes and rollback.
-The [Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
-records the proof boundary.
+Project transfer tests use controlled scopes to exercise the real preview and
+write paths, including authorization, version conflicts, receipt contents,
+eligibility refresh, and unconfirmed completion. PostgreSQL tests verify
+destination roles, committed ownership and access changes, grant and
+invitation continuity, and actual query and transaction failures. A real
+same-Team save checks the complete Project from independent reads. The
+[Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
+records where these guarantees are tested.
 
 Project deletion error tests use controlled read and completion outcomes to
 verify error propagation and receipt suppression. PostgreSQL tests retain
@@ -2941,10 +3007,17 @@ and Session UUID directories. Task Web and historical Herdr objects use
 independent Test/Bot objects use
 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
 PostgreSQL retains the object path, length, digest and archive status or receipt.
-Readers continue to open the persisted `object_path` and apply the existing
-length/digest/structure checks. Existing files and metadata stay in place;
-historical read behavior and public URLs remain unchanged. Web archive uploads retain
-their existing retry semantics.
+Readers open the persisted `object_path` and apply length, digest and structure
+checks while the archive remains readable. Ordinary Web Task archives expire
+under the [seven-day retention design](../../docs/design/task-session-history.md#归档与权限生命周期).
+The background cleanup worker rechecks current chain facts, commits expiration,
+then waits for original readers and writers before removing exclusive bytes.
+Failed cleanup resumes from its durable expiration record, including after
+restart. Task attachments, Bot caches and independently referenced image bytes
+remain retained. Existing content endpoints report `history_unavailable` for
+expired history; lightweight Session and retention summaries remain available.
+Backup verification excludes expired archive files and unreferenced reclamation
+objects while continuing to verify independently retained resources.
 Archive uploads and content reads acquire one nonblocking slot per application
 instance and one per original owner across instances sharing a storage root.
 The lease spans body reading, validation, storage readback, encoding and response
@@ -3263,13 +3336,23 @@ Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
 reason references before deduplication. Public summaries contain fixed reason
 codes and projection quality, never private references or hidden counts.
 
-Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring.
-The only supported URL query parameter is `db`; connection and retry limits are
-fixed.
-If it is empty, the monitoring API returns 503 while existing business APIs and
-readiness continue; a nonempty invalid URL fails configuration validation.
-The Redis connection is owned only by monitoring and is closed during shutdown.
+`DAYNIGHT_REDIS_URL` enables monitoring and Redis storage gates, each with a
+separate client closed during shutdown. Use a valid `redis` or `rediss` URL.
+The only supported query parameter is `db`. An empty value returns 503 for
+monitoring and selects process-local storage gates for one Server instance.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
+
+For shared file storage, point all Server instances at the same Redis database
+with `noeviction`. Give each independently operated storage deployment its own
+Redis database. Redis stores gate keys with short TTLs. PostgreSQL and the
+file store retain business data. Redis errors fail operations that need a
+lease, while `/readyz` continues to check PostgreSQL. Stop all previous
+Server instances that share the storage before switching lock backends.
+Once the old processes exit, operators can remove the legacy
+`storage/.daynight-gates` directory. A Redis restart or failover can discard
+lease keys before their TTL. The server verifies ownership before publishing
+or deleting a file. Use the writable Redis endpoint. A file operation that
+has already passed this check can still finish after Redis loses the key.
 
 ### Monitoring format transition
 
@@ -3547,8 +3630,17 @@ out releases occupancy. An actual transfer of a legacy NULL identity returns
 HTTP 409 `project_repository_identity_unavailable`; reads, deletion and an
 authorized/version-matched same-Team no-op remain available. Existing request and
 success shapes remain unchanged, and unknown writes must not be replayed.
-UUID IDs are canonicalized to hyphenated lowercase; repository metadata cannot
-be updated after creation.
+UUID IDs are canonicalized to hyphenated lowercase. Project administrators can
+preview `POST /api/v1/projects/{projectId}/repository/preview` with `repoUrl` and
+`expectedUserId`, then submit `PATCH /api/v1/projects/{projectId}/repository` with
+the preview's decimal-string `repositoryVersion`, `ownershipVersion`,
+`classification`, nullable `targetGitHubRepositoryId`, and an explicit
+`treatUnverifiedAsSwitch` for an unverified target. The receipt identifies the
+saved address, version, change and binding invalidation. Stale facts require a
+new preview; unknown writes require observation before another decision. A real
+switch atomically retires the Project GitHub connection and removes the Project
+from selected Worker cloud configurations, retaining historical PR sources and
+local workspaces. Worker application is asynchronous; existing execution may stop.
 
 Every Project resource, including list items and the project embedded in task
 graphs, includes `settings: {version, executionWarningMinutes}`. Migration
@@ -4304,6 +4396,21 @@ were removed. Their recorded results and the
 [historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 remain bound to their original source; they are not current module checks. CLI
 native validation and independent Web browser fixtures retain their own scopes.
+
+### Task blocked property cutover
+
+Drain old servers and background writers before migrating the shared database.
+Start the new server with its bundled compatible Web only after migration succeeds,
+verify the public property reads and writes, then distribute newer CLI and Worker
+builds. Existing supported clients can continue to use `paused`; the server stores
+only `blocked` and projects both names with the same value. Refresh Web to load the
+new interface. A refresh reads current state and does not prove or replay an
+unconfirmed earlier write.
+
+A failed migration rolls back its data and ledger entry. After a successful
+migration, prefer a fix on the new version. To return to an old server, restore a
+database backup matching its migration ledger and handle writes made after that
+backup under the existing recovery procedure.
 
 ### Worker release protocol cutover
 

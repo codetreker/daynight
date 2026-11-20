@@ -1,5 +1,8 @@
 import { summariesForIndex } from "./helpers/taskSync";
 
+// Usage polling has its own lifecycle tests; this suite owns the execution clock.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 // These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
 vi.mock('../src/app/router', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/app/router')>(),

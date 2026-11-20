@@ -44,7 +44,7 @@ import { IMAGE_LIMITS } from "../../session/image-values.js";
 import { assertImageHistoryAvailable, syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
-type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string };
+type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string; storageStateDirectory?: string };
 type ControllerRuntimeScope = { signal: AbortSignal; own(close: () => void | Promise<void>): () => Promise<void> };
 
 export const runController = async (options: ControllerRuntimeOptions): Promise<void> => {
@@ -77,7 +77,7 @@ export const runController = async (options: ControllerRuntimeOptions): Promise<
 };
 
 const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal: bootstrapSignal, own }: ControllerRuntimeScope): Promise<void> => {
-  const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
+  const ticket = await readLaunchTicket(options.homeDirectory, options.launchId, options.storageStateDirectory);
   const diagnostic = (value: unknown): void => {
     try {
       const message = formatOutboxDiagnostic(value, ticket) ?? (value instanceof Error ? value.message : String(value));
@@ -86,7 +86,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   };
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   if (bootstrapSignal.aborted) return;
-  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
+  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId, options.storageStateDirectory); await mkdir(directory, { recursive: true, mode: 0o700 });
   const journalFile = path.join(directory, "journal.sqlite");
   let storagePermit: ControllerStoragePermit | undefined;
   let observedAt: number | undefined;
@@ -125,7 +125,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const controllerProcess = await captureControllerProcessProof(ticket.launchId);
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
-  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true }); }
+  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, ...(ticket.claimId !== undefined ? { historyPolicy: "task_body" } : {}) }); }
   catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });
@@ -655,17 +655,23 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (process.platform !== "win32") await chmod(ticket.ipcEndpoint, 0o600);
     if (stopping) return;
     const paths = resolveConfigurationPaths(options.homeDirectory);
-    const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths), environment: process.env, stateDirectory: paths.stateDirectory });
+    const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths), environment: process.env, stateDirectory: paths.stateDirectory, ...(options.storageStateDirectory === undefined ? {} : { storageDirectory: directory }) });
     if (stopping) return;
     for (const binding of aliases.bindings) diagnostic(`Agent CLI alias ${binding.name} -> ${binding.target} (${binding.executable}).`);
     const env = { ...aliases.environment };
-    for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete env[key];
+    for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN", "DAYNIGHT_CONTROLLER_STORAGE_DIR"]) delete env[key];
     if (ticket.provider === "codex") env.CODEX_HOME = ticket.nativeHome;
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
-    const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket);
+    const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket, options.storageStateDirectory);
     if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(ticket.claudeBotRecovery === undefined ? {} : { claudeBotRecovery: { directory: ticket.claudeBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.claudeBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.copilotBotRecovery === undefined ? {} : { copilotBotRecovery: { directory: ticket.copilotBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.copilotBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.codexBotRecovery === undefined ? {} : { codexBotRecovery: { directory: ticket.codexBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.codexBotRecovery.botId, sessionId: ticket.sessionId } } }),
       ...(usage ? { usageRuntime: usage } : {}),
       ...(toolLaunch ? { toolLaunch, toolRuntimeRoot: path.join(paths.stateDirectory, "worker", "tool-runtimes") } : {}),
       ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
