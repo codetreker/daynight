@@ -463,6 +463,14 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     await expect(surface.locator('[data-goal-task-id], .goal-detail-overview')).toHaveCount(0);
     const aside = surface.getByRole('complementary', { name: zh ? 'Goal 信息' : 'Goal information' });
     await expect(aside).toBeVisible();
+    for (const root of [12, 16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(surface.locator('.task-detail-title')).toHaveCSS('font-size', `${root * 1.375}px`);
+      await expect(aside.locator('h3').first()).toHaveCSS('font-size', `${root * 1.125}px`);
+      await expect(aside).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(surface.locator('.goal-detail-description .markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     const count = (label: string) => aside.locator('dl > div').filter({ has: page.locator('dt', { hasText: new RegExp(`^${label}$`) }) }).locator('dd');
     await expect(count(zh ? '独立任务数' : 'Standalone tasks')).toHaveText(empty ? '0' : '1');
     await expect(count(zh ? '任务链数' : 'Task chains')).toHaveText(empty ? '0' : '1');

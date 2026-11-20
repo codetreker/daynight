@@ -107,7 +107,7 @@ export const AttachmentUpload = ({ attachments, compact, open, active, error, on
         {file !== null && <p className="attachment-upload-filename">{file.name}</p>}
         <label htmlFor={pathId}>{m.targetPath}</label>
         <div className="attachment-upload-target">
-          <input id={pathId} type="text" value={path} placeholder={m.pathPlaceholder} disabled={busy} aria-invalid={pathError} onChange={(event) => { ++draftRevision.current; setPath(event.currentTarget.value); setPathError(false); }} />
+          <input data-touch-text="coarse" id={pathId} type="text" value={path} placeholder={m.pathPlaceholder} disabled={busy} aria-invalid={pathError} onChange={(event) => { ++draftRevision.current; setPath(event.currentTarget.value); setPathError(false); }} />
           <button className="button primary" type="submit" disabled={file === null || busy || attachments.paused}>{attachments.write.status === 'saving' ? m.uploading : m.upload}</button>
         </div>
         <p className="attachment-hint">{m.uploadHint}</p>
