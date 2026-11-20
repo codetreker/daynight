@@ -23,6 +23,12 @@ type ScopedDeviceOperations interface {
 // RegisterScopedDeviceRoutes uses the same identity service as the v1 token
 // endpoint so a scoped approval cannot be redeemed by the legacy issuer.
 func (h *Authentication) RegisterScopedDeviceRoutes(mux *http.ServeMux, mcp scopepolicy.CatalogSnapshot) error {
+	return h.RegisterScopedDeviceRoutesWithScopeObserver(mux, mcp, nil)
+}
+
+// RegisterScopedDeviceRoutesWithScopeObserver reports the actual browser-only
+// registrations and their method fallbacks for scope route reconciliation.
+func (h *Authentication) RegisterScopedDeviceRoutesWithScopeObserver(mux *http.ServeMux, mcp scopepolicy.CatalogSnapshot, observe func(ScopeRoute)) error {
 	identity, ok := h.identity.(ScopedDeviceOperations)
 	if !ok {
 		return errors.New("identity service does not support scoped device authorization")
@@ -32,9 +38,10 @@ func (h *Authentication) RegisterScopedDeviceRoutes(mux *http.ServeMux, mcp scop
 		return errors.New("scoped device authorization is not enabled")
 	}
 	pat, mcp = pat.Clone(), mcp.Clone()
+	routes := accountRouteRegistry{mux: mux, observe: observe}
 	require := h.RequireCredentialSession
 	catalog := "/api/v1/me/credential-scope-catalog"
-	mux.HandleFunc("GET "+catalog, require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+	routes.handle("GET "+catalog, require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		if err := credentialhttp.NoQuery(r); err != nil {
 			httpx.WriteError(w, r, h.logger, "credential", "scope_catalog", err)
 			return
@@ -43,9 +50,9 @@ func (h *Authentication) RegisterScopedDeviceRoutes(mux *http.ServeMux, mcp scop
 			PAT scopepolicy.CatalogSnapshot `json:"pat"`
 			MCP scopepolicy.CatalogSnapshot `json:"mcp"`
 		}{pat.Clone(), mcp.Clone()})
-	}))
-	mux.HandleFunc("HEAD "+catalog, require(httpx.ResourceMethodNotAllowed(h.logger, "GET")))
-	mux.HandleFunc(catalog, require(httpx.ResourceMethodNotAllowed(h.logger, "GET")))
+	}), accountBrowser, false)
+	routes.handle("HEAD "+catalog, require(httpx.ResourceMethodNotAllowed(h.logger, "GET")), accountBrowserFallback, false)
+	routes.handle(catalog, require(httpx.ResourceMethodNotAllowed(h.logger, "GET")), accountBrowserFallback, false)
 	for _, route := range []struct {
 		path string
 		fn   httpx.AuthenticatedHandler
@@ -53,8 +60,8 @@ func (h *Authentication) RegisterScopedDeviceRoutes(mux *http.ServeMux, mcp scop
 		{"/api/v2/auth/device/inspect", h.scopedDeviceInspect(identity)},
 		{"/api/v2/auth/device/decision", h.scopedDeviceDecision(identity)},
 	} {
-		mux.HandleFunc("POST "+route.path, require(route.fn))
-		mux.HandleFunc(route.path, require(httpx.ResourceMethodNotAllowed(h.logger, "POST")))
+		routes.handle("POST "+route.path, require(route.fn), accountBrowser, false)
+		routes.handle(route.path, require(httpx.ResourceMethodNotAllowed(h.logger, "POST")), accountBrowserFallback, false)
 	}
 	return nil
 }

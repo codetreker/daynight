@@ -48,12 +48,69 @@ func TestScopedDeviceRoutesRejectLegacyIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		mux := http.NewServeMux()
-		if err := auth.RegisterScopedDeviceRoutes(mux, mcp); err == nil {
+		observed := false
+		if err := auth.RegisterScopedDeviceRoutesWithScopeObserver(mux, mcp, func(ScopeRoute) { observed = true }); err == nil {
 			t.Fatal("legacy issuer admitted scoped routes")
+		}
+		if observed {
+			t.Fatal("refused registration reported a route")
 		}
 		_, pattern := mux.Handler(httptest.NewRequest("POST", "/api/v2/auth/device/decision", nil))
 		if pattern != "" {
 			t.Fatal("refused registration exposed a route")
+		}
+	}
+}
+
+func TestScopedDeviceRegistrationReportsScopeClasses(t *testing.T) {
+	pat, err := scopepolicy.NewCatalogSnapshot(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp, err := scopepolicy.NewCatalogSnapshot(scopepolicy.MCP, []scopepolicy.ScopeID{"task:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := scopedIdentityStub{strictIdentity: &strictIdentity{t: t, callback: func() string { return authRequestOrigin + "/auth/callback" }}, catalog: pat}
+	auth, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: authRequestOrigin, AllowHTTPTestOrigin: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	auth.RegisterRoutes(mux)
+	got := map[string]ScopeRoute{}
+	err = auth.RegisterScopedDeviceRoutesWithScopeObserver(mux, mcp, func(route ScopeRoute) {
+		if _, exists := got[route.Pattern]; exists {
+			t.Fatalf("duplicate route %s", route.Pattern)
+		}
+		got[route.Pattern] = route
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]ScopeRoute{}
+	add := func(pattern string, fallback bool) {
+		want[pattern] = ScopeRoute{Pattern: pattern, BrowserOnly: true, Fallback: fallback}
+	}
+	const catalog = "/api/v1/me/credential-scope-catalog"
+	add("GET "+catalog, false)
+	add("HEAD "+catalog, true)
+	add(catalog, true)
+	for _, path := range []string{"/api/v2/auth/device/inspect", "/api/v2/auth/device/decision"} {
+		add("POST "+path, false)
+		add(path, true)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope routes = %#v; want %#v", got, want)
+	}
+	for pattern := range want {
+		method, path, typed := strings.Cut(pattern, " ")
+		if !typed {
+			method, path = "OPTIONS", pattern
+		}
+		_, matched := mux.Handler(httptest.NewRequest(method, path, nil))
+		if matched != pattern {
+			t.Errorf("route %s matched %s", pattern, matched)
 		}
 	}
 }
