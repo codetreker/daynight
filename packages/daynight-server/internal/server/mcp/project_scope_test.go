@@ -77,6 +77,15 @@ func (s *scopedProjectFixture) RegisterRepository(_ context.Context, a model.Cre
 	}
 	return model.Project{ID: testProjectID, Name: input.Name}, true, nil
 }
+func (s *scopedProjectFixture) ResolveRepository(_ context.Context, a model.CredentialAuthorization, address string) (model.Project, error) {
+	s.calls = append(s.calls, "resolve")
+	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+		return model.Project{}, err
+	}
+	project := sampleProject(testProjectID)
+	project.RepoURL = address
+	return project, nil
+}
 func (s *scopedProjectFixture) RepositoryPreview(_ context.Context, a model.CredentialAuthorization, id, _, _ string) (coreproject.RepositoryPreview, error) {
 	s.calls = append(s.calls, "repository-preview")
 	if err := a.Require(scopepolicy.ProjectRepository); err != nil {
@@ -167,6 +176,7 @@ func TestScopedProjectMCPAdmission(t *testing.T) {
 	auth := testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{
 		"read":          scopedTestAuthorization(t, "project:read"),
 		"transfer":      scopedTestAuthorization(t, "project:transfer"),
+		"transfer-read": scopedTestAuthorization(t, "project:read", "project:transfer"),
 		"invite-read":   scopedTestAuthorization(t, "project:invitation-read", "project:read"),
 		"invite-accept": scopedTestAuthorization(t, "project:invitation-accept", "project:read"),
 		"team-only":     scopedTestAuthorization(t, "team:read"),
@@ -274,19 +284,88 @@ func TestScopedProjectMCPAdmission(t *testing.T) {
 		t.Fatalf("repository set refusal: %#v", v)
 	}
 	client("repository").call("project_set_repository", set, false)
+	resolved := map[string]any{"repoUrl": "https://github.com/x/y"}
+	v = transfer.call("project_resolve", resolved, true)
+	if object(t, v["error"])["code"] != "insufficient_scope" || v["data"] != nil {
+		t.Fatalf("resolve refusal: %#v", v)
+	}
+	v = read.call("project_resolve", resolved, false)
+	if d := object(t, v["data"]); d["id"] != testProjectID || d["repoUrl"] != resolved["repoUrl"] {
+		t.Fatalf("resolved project: %#v", v)
+	}
+	v = read.call("project_show", map[string]any{"projectId": testProjectID}, false)
+	if object(t, v["data"])["id"] != testProjectID {
+		t.Fatalf("shown project: %#v", v)
+	}
+	v = transfer.call("project_list", map[string]any{}, true)
+	if object(t, v["error"])["code"] != "insufficient_scope" || v["data"] != nil {
+		t.Fatalf("list refusal: %#v", v)
+	}
+	v = client("transfer-read").call("project_transfer", map[string]any{"projectId": testProjectID, "toTeam": testTargetID, "confirm": true}, false)
+	if object(t, v["data"])["projectId"] != testProjectID {
+		t.Fatalf("transfer receipt: %#v", v)
+	}
+	v = ir.call("invitation_accept", map[string]any{"link": teamLink, "confirm": true}, true)
+	if e := object(t, v["error"]); e["code"] != "forbidden" || e["writeOutcome"] != "not_committed" {
+		t.Fatalf("unclassified Team acceptance: %#v", v)
+	}
 }
 
 func TestScopedProjectAdapterRejectsMissingOrMismatchedAuthorization(t *testing.T) {
 	fixture := &scopedProjectFixture{visible: true}
 	adapter := scopedProjectAdapter{fixture}
+	invitations := &scopedInvitationFixture{}
+	invitationAdapter := scopedInvitationProjects{invitations}
 	a := scopedTestAuthorization(t, "project:read")
-	for _, ctx := range []context.Context{context.Background(), context.WithValue(context.Background(), scopedAuthorizationKey{}, a)} {
-		p := model.Principal{Kind: model.PATCredential, UserID: "other", CredentialID: testTargetID}
-		if _, err := adapter.Get(ctx, p, testProjectID); err == nil {
-			t.Fatal("invalid identity accepted")
+	p := model.Principal{Kind: model.PATCredential, UserID: "other", CredentialID: testTargetID}
+	calls := map[string]func(context.Context) error{
+		"create": func(ctx context.Context) error {
+			_, _, err := adapter.RegisterRepository(ctx, p, coreproject.CreateProject{}, false)
+			return err
+		},
+		"resolve": func(ctx context.Context) error { _, err := adapter.ResolveRepository(ctx, p, "address"); return err },
+		"get":     func(ctx context.Context) error { _, err := adapter.Get(ctx, p, testProjectID); return err },
+		"list": func(ctx context.Context) error {
+			_, err := adapter.ListScoped(ctx, p, coreproject.ProjectListRequest{})
+			return err
+		},
+		"transfer preview": func(ctx context.Context) error {
+			_, err := adapter.TransferPreview(ctx, p, testProjectID, testTargetID)
+			return err
+		},
+		"transfer preview with name": func(ctx context.Context) error {
+			_, _, err := adapter.TransferPreviewWithName(ctx, p, testProjectID, testTargetID)
+			return err
+		},
+		"transfer": func(ctx context.Context) error {
+			_, err := adapter.Transfer(ctx, p, testProjectID, coreproject.TransferInput{})
+			return err
+		},
+		"repository preview": func(ctx context.Context) error {
+			_, err := adapter.RepositoryPreview(ctx, p, testProjectID, "address", p.UserID)
+			return err
+		},
+		"repository change": func(ctx context.Context) error {
+			_, err := adapter.SetRepository(ctx, p, testProjectID, coreproject.RepositoryChange{})
+			return err
+		},
+		"inspect invitation": func(ctx context.Context) error {
+			_, err := invitationAdapter.InspectInvitation(ctx, p, "secret")
+			return err
+		},
+		"accept invitation": func(ctx context.Context) error {
+			_, err := invitationAdapter.AcceptInvitation(ctx, p, "secret", p.UserID)
+			return err
+		},
+	}
+	for name, call := range calls {
+		for label, ctx := range map[string]context.Context{"missing": context.Background(), "mismatched": context.WithValue(context.Background(), scopedAuthorizationKey{}, a)} {
+			if err := call(ctx); err == nil {
+				t.Errorf("%s accepted %s authorization", name, label)
+			}
 		}
 	}
-	if len(fixture.calls) != 0 {
+	if len(fixture.calls) != 0 || len(invitations.calls) != 0 {
 		t.Fatal("service called without matching authorization")
 	}
 	if err := (&Entry{}).EnableScopedAuthentication(nil); err == nil {
@@ -372,6 +451,49 @@ func TestScopedMCPRejectsLegacyToolReplacement(t *testing.T) {
 	v := c.call("project_transfer_preview", map[string]any{"projectId": testProjectID, "toTeam": testTargetID}, true)
 	if object(t, v["error"])["code"] != "insufficient_scope" || legacy.previews != 0 {
 		t.Fatalf("scope bypass after duplicate registration: %#v", v)
+	}
+}
+
+func TestScopedMCPRegistrationsRejectMissingDependenciesAndCollisions(t *testing.T) {
+	auth := testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{"read": scopedTestAuthorization(t, "project:read")}}
+	projects := &scopedProjectFixture{visible: true}
+	identity := &identityservice.Identity{}
+	teams := &scopedTeamFixture{}
+	invitationTeams := &invitationTestTeams{}
+	invitations := &scopedInvitationFixture{}
+	for _, tc := range []struct {
+		name     string
+		register func(*Entry) error
+		missing  func(*Entry) error
+	}{
+		{"project", func(e *Entry) error {
+			return RegisterScopedProjectTools(e, projects, identity, "https://daynight.test")
+		}, func(e *Entry) error { return RegisterScopedProjectTools(e, nil, identity, "https://daynight.test") }},
+		{"team", func(e *Entry) error { return RegisterScopedTeamTools(e, teams, projects, identity) }, func(e *Entry) error { return RegisterScopedTeamTools(e, nil, projects, identity) }},
+		{"invitation", func(e *Entry) error {
+			return RegisterScopedInvitationTools(e, identity, invitationTeams, invitations, "https://daynight.test")
+		}, func(e *Entry) error {
+			return RegisterScopedInvitationTools(e, identity, invitationTeams, nil, "https://daynight.test")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			if tc.register(nil) == nil || tc.register(f.entry) == nil {
+				t.Fatal("registration without scoped authentication accepted")
+			}
+			if err := f.entry.EnableScopedAuthentication(auth); err != nil {
+				t.Fatal(err)
+			}
+			if tc.missing(f.entry) == nil {
+				t.Fatal("missing dependency accepted")
+			}
+			if err := tc.register(f.entry); err != nil {
+				t.Fatal(err)
+			}
+			if tc.register(f.entry) == nil {
+				t.Fatal("duplicate registration accepted")
+			}
+		})
 	}
 }
 
