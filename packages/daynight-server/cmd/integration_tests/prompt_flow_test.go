@@ -257,8 +257,15 @@ func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, de
 	other := *f
 	other.client = &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: tokens.AccessToken, next: transport}}
 	other.userID = tokens.UserID
-	grantPath := "/api/v1/projects/" + projectID + "/grants/" + other.userID
-	grant := requestJSON[api.ProjectGrantResult](t, f, http.MethodPut, grantPath, api.SetProjectGrantRequest{Role: "member", ExpectedUserID: f.userID}, http.StatusOK).Grant
+	projectPath := "/api/v1/projects/" + projectID
+	grantPath := projectPath + "/grants/" + other.userID
+	member := requestJSON[struct {
+		Added       bool                   `json:"added"`
+		Participant api.ProjectParticipant `json:"participant"`
+	}](t, f, http.MethodPost, projectPath+"/members/"+other.userID, map[string]any{"expectedUserId": f.userID}, http.StatusOK)
+	if !member.Added || member.Participant.UserID != other.userID || member.Participant.DirectGrant == nil || member.Participant.DirectGrant.Role != "member" {
+		t.Fatalf("second account Project membership: %+v", member)
+	}
 	for _, path := range paths[:2] {
 		initial := read(&other, path)
 		if initial.Revision != "0" || initial.Text != "" {
@@ -273,7 +280,7 @@ func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, de
 		}
 	}
 	requestJSON[api.ErrorResponse](t, &other, http.MethodGet, paths[2], nil, http.StatusNotFound)
-	requestJSON[api.RemoveProjectGrantResult](t, f, http.MethodDelete, grantPath, map[string]any{"version": grant.Version, "expectedUserId": f.userID}, http.StatusOK)
+	requestJSON[api.RemoveProjectGrantResult](t, f, http.MethodDelete, grantPath, map[string]any{"version": member.Participant.DirectGrant.Version, "expectedUserId": f.userID}, http.StatusOK)
 	requestJSON[api.ErrorResponse](t, &other, http.MethodGet, paths[1], nil, http.StatusNotFound)
 	reject(&other, paths[1], other.userID, "1", "after revocation", http.StatusNotFound, "not_found")
 }
