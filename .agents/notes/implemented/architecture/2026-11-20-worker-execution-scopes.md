@@ -18,23 +18,37 @@ The management root owns the instance lock, verified identity and main database.
 An independent execution scope owns cancellable producers and native resources.
 Normal startup and exit use the same create/stop path exposed to lifecycle
 integration. A replacement needs new objects and a new signal, and is forbidden
-until all original owners report confirmed closure and durable save.
+until all original owners report confirmed closure and durable save. Startup
+constructors are owned before their first asynchronous operation: cancelling a
+wait retains the original constructor and cleanup of its late result.
 
 Owners close admission synchronously and stop concurrently with bounded
 observations. A timeout preserves unknown responsibility. Explicit reconciliation
 rechecks failed owners without repeating completed cleanup or replaying business
-operations. Failed observation promises are not permanent resource facts.
+operations. A timed-out stop attempt remains owned until it settles; subsequent
+reconciliation joins that attempt instead of launching concurrent cleanup. Failed
+observation promises are not permanent resource facts.
 A Task producer that ignores cancellation cannot hold its native stop request
 behind the business mutation queue. Independent stop verifies the original
 launch identity and boundary without changing cleanup state or releasing leases;
 the producer still prevents storage closure and scope reconstruction.
 Management-controlled stopped and blocked scopes retain reporting and the
 original lock; closed scopes report cached telemetry without spawning probes.
+Assistant application ownership includes detached guarded actions after the factory
+returns. Bot preparation owns probe cleanup and aliases even before a launch is
+submitted; failed cleanup retains the host stores and locks. The Reviewer host
+also belongs to the scope; its Git, GitHub and Copilot phases share the launcher
+and join streamed output writers before recording resource closure.
 
 A controlled Node launcher establishes and reports its native boundary before
-receiving permission to execute a command. The parent persists the original
-birth proof and acquires the Windows Job lease before release. Git and short
-commands share this mechanism inside a Worker scope. Durable per-resource events
+receiving permission to execute a command. POSIX uses a private IPC gate in the
+original process group. Windows creates the primary thread suspended, assigns its
+Job and persists the original birth proof before resuming the launcher. Git and
+short commands share this mechanism inside a Worker scope. Controller bootstrap
+also waits for its original launch record and birth proof; Windows Job and process
+handles transfer explicitly to that execution owner before its thread resumes.
+Failed pre-dispatch cleanup also remains in that owner, so a failed birth-record
+write cannot discard the only handles capable of closing the original child. Durable per-resource events
 bind the original Worker identity and generation, and monotonic sequence numbers
 prevent late writes from replacing newer facts. Re-observation must finish a
 failed directory persistence barrier before acknowledging existing terminal bytes.

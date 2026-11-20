@@ -9,6 +9,8 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botStores from "../../../src/commands/worker/bots/store.js";
 import * as executionStores from "../../../src/commands/worker/bots/execution-store.js";
 import * as assistantRuntime from "../../../src/commands/worker/bots/runtime.js";
+import * as botProcess from "../../../src/commands/worker/bots/process.js";
+import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
 import { bot } from "./bot-store.fixtures.js";
 
 const mocks = vi.hoisted(() => ({ collector: vi.fn() }));
@@ -51,6 +53,30 @@ it("retains resources after failed shutdown and permits an explicit successful r
   await host.close();
   expect(shutdown).toHaveBeenCalledTimes(2);
   expect(() => host.requiresCopilot()).toThrow(/closed|closing/);
+});
+
+it("retains the real Bot storage lock when process resource cleanup fails", async () => {
+  const f = await fixture();
+  vi.mocked(botStores.openBotStore).mockRestore();
+  vi.mocked(executionStores.openBotExecutionStore).mockRestore();
+  const localOptions = { stateDirectory: f.options.paths.stateDirectory, legacyDatabaseFile: f.options.paths.databaseFile, owner: f.options.owner, onMigration: () => undefined };
+  const initial = openLocalBotStores(localOptions);
+  const record = initial.store.observe(f.options.owner, bot(), 1); initial.close();
+  const createProcess = botProcess.createBotProcess;
+  const close = vi.fn(async () => {}).mockRejectedValueOnce(new Error("Original process cleanup is unconfirmed"));
+  vi.spyOn(botProcess, "createBotProcess").mockImplementation(options => ({ ...createProcess(options), close }));
+  const host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  expect(host.requiresCopilot()).toBe(false);
+  await expect(host.close()).rejects.toThrow("storage locks are retained");
+  expect(host.requiresCopilot()).toBe(false);
+  const competing = openLocalBotStores(localOptions);
+  try { expect(() => competing.store.get(f.options.owner, record.botId)).toThrow(/instance lock/i); }
+  finally { competing.close(); }
+  await host.close();
+  const reopened = openLocalBotStores(localOptions);
+  try { expect(reopened.store.get(f.options.owner, record.botId)).toEqual(record); }
+  finally { reopened.close(); }
+  expect(close).toHaveBeenCalledTimes(2);
 });
 
 it("omits unsupported configuration and discards a capability probe spanning a cloud change", async () => {

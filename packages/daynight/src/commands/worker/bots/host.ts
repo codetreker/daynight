@@ -177,7 +177,7 @@ export const createWorkerBotHost = (options: {
           await shutdown();
         }
         catch (error) { throw new AggregateError([...failures, error], "Bot shutdown is unconfirmed; process leases and storage locks are retained."); }
-        try { await botProcess.close(); } catch (error) { failures.push(error); }
+        try { await botProcess.close(); } catch (error) { throw new AggregateError([error], "Bot process resources remain owned; storage locks are retained."); }
         try { executions!.close(); } catch (error) { failures.push(error); }
         try { store.close(); } catch (error) { failures.push(error); }
         if (failures.length) throw new AggregateError(failures, "Bot stores could not close.");

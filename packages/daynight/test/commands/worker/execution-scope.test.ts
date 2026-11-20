@@ -66,6 +66,28 @@ describe("Worker execution scopes", () => {
     expect(() => manager.create()).toThrow("unconfirmed resources");
   });
 
+  it("joins the original timed-out attempt before permitting a replacement scope", async () => {
+    const manager = createExecutionScopeManager(new AbortController().signal);
+    const scope = manager.create();
+    let finish!: () => void;
+    const work = new Promise<void>(resolve => { finish = resolve; });
+    let attempts = 0;
+    scope.register({ resourceId: "writer", ownerKind: "configuration", stop: () => {
+      attempts++;
+      return attempts === 1 ? work : Promise.resolve();
+    } });
+    try {
+      expect((await scope.stop({ deadline: Date.now() }))[0]?.stop).toBe("unknown");
+      expect((await scope.reconcile({ deadline: Date.now() }))[0]?.stop).toBe("unknown");
+      expect(attempts).toBe(1);
+      expect(() => manager.create()).toThrow("unconfirmed resources");
+      finish();
+      expect((await scope.reconcile())[0]?.stop).toBe("confirmed");
+      expect(attempts).toBe(1);
+      expect(manager.create().signal.aborted).toBe(false);
+    } finally { finish(); await work; }
+  });
+
   it("re-observes only retained owners without repeating completed cleanup", async () => {
     const manager = createExecutionScopeManager(new AbortController().signal);
     const scope = manager.create();

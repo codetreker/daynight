@@ -177,6 +177,41 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("retains a pending startup constructor and cleans its late result before rebuilding", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const createManager = cloudConfiguration.createWorkerConfigurationManager;
+    let stopManager: ReturnType<typeof vi.fn<() => Promise<void>>> | undefined;
+    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async options => {
+      const manager = await createManager(options), stop = manager.stop;
+      stopManager = vi.fn(stop); manager.stop = stopManager;
+      entered.resolve(); await release.promise;
+      return manager;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await entered.promise;
+      expect(controls).toHaveLength(1);
+      const originalLock = await readFile(f.paths.lockFile, "utf8");
+      const results = await controls[0]!.stop({ deadline: Date.now() + 50 });
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "startup", stop: "unknown", save: "failed" }));
+      expect(stopManager).not.toHaveBeenCalled();
+      expect(mocks.bots).not.toHaveBeenCalled();
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      release.resolve();
+      await vi.waitFor(() => expect(stopManager).toHaveBeenCalledOnce());
+      expect((await controls[0]!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(mocks.bots).not.toHaveBeenCalled();
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalled(); });
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
+      expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+    } finally { release.resolve(); cancellation.abort(); await running; constructing.mockRestore(); }
+  });
+
   it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {
     const f = await fixture();
     const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
@@ -229,7 +264,7 @@ describe("worker cloud-first startup", () => {
     let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
     const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
     try {
-      await vi.waitFor(() => expect(control).toBeDefined());
+      await vi.waitFor(() => { expect(control).toBeDefined(); expect(mocks.reporter).toHaveBeenCalled(); });
       expect((await control!.stop()).some(result => result.stop === "unknown")).toBe(true);
       expect(lifecycle).not.toHaveBeenCalledWith("stopped");
       const reportOptions = mocks.reporter.mock.calls[0]![0] as ReporterOptions;
@@ -245,7 +280,7 @@ describe("worker cloud-first startup", () => {
     } finally { known = true; cancellation.abort(); try { await running; } finally { observation.mockRestore(); } }
   });
 
-  it("rebuilds two execution scopes under the original management lock and database", async () => {
+  it("rebuilds execution scopes twice under the original management lock and database", async () => {
     const f = await fixture();
     const cancellation = new AbortController(); cancellations.add(cancellation);
     const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
@@ -254,6 +289,7 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => expect(controls).toHaveLength(1));
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
       const firstOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      const originalTask = firstOptions.store.registerPending({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), agent: "codex", agentControlMode: "web" });
       expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
       expect(cancellation.signal.aborted).toBe(false);
       expect(firstOptions.signal!.aborted).toBe(true);
@@ -271,8 +307,20 @@ describe("worker cloud-first startup", () => {
       expect(mocks.reviewer.mock.calls[1]![0].signal).toBe(secondOptions.signal);
       expect(mocks.reviewerStopped).toHaveBeenCalledOnce();
       expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockBefore);
+      expect(secondOptions.store.getTask(originalTask)).toEqual(originalTask);
       expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
       expect(cancellation.signal.aborted).toBe(false);
+      controls[1]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(3); expect(mocks.coordinator).toHaveBeenCalledTimes(3); });
+      const thirdOptions = mocks.coordinator.mock.calls[2]![0] as WorkerCoordinatorOptions;
+      expect(thirdOptions.signal).not.toBe(secondOptions.signal);
+      expect(thirdOptions.signal!.aborted).toBe(false);
+      expect(thirdOptions.store).toBe(firstOptions.store);
+      expect(thirdOptions.store.getTask(originalTask)).toEqual(originalTask);
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockBefore);
+      expect(mocks.reviewer).toHaveBeenCalledTimes(3);
+      expect(mocks.reviewer.mock.calls[2]![0].signal).toBe(thirdOptions.signal);
+      expect((await controls[2]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
     } finally { cancellation.abort(); await running; }
   });
 

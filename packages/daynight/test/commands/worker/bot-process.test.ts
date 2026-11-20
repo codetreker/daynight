@@ -25,6 +25,39 @@ import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 
 afterEach(cleanupBotProcesses);
 
+test("ordinary shutdown retains failed preflight cleanup until the original probe and aliases close", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  const alias = path.join(f.home, "state", "agent-cli-aliases", "scope-probe");
+  mkdirSync(alias, { recursive: true }); writeFileSync(path.join(alias, "daynight"), "private shim");
+  const retryCleanup = vi.fn(async () => {}).mockRejectedValueOnce(new Error("original probe still running"));
+  const failure = new BotEnvironmentCleanupError(alias, new BotCliProbeCleanupError({ launchId: id(95), pid: null, process: null, jobObjectName: null, targetStarted: false }, retryCleanup));
+  const manager = f.createProcess({ prepareEnvironment: async () => { throw failure; } });
+  await expect(manager.advance(f.current(), signal)).rejects.toBe(failure);
+  expect(f.current().intent).toBeNull();
+  await expect(manager.shutdown(f.current(), signal)).rejects.toThrow("original probe still running");
+  await expect(manager.close()).rejects.toThrow("preparation cleanup remains unconfirmed");
+  expect(existsSync(alias)).toBe(true);
+  await manager.shutdown(f.current(), signal); await manager.close();
+  expect(existsSync(alias)).toBe(false);
+  expect(retryCleanup).toHaveBeenCalledTimes(2);
+  expect(f.register).not.toHaveBeenCalled(); expect(f.launch).not.toHaveBeenCalled();
+});
+
+test("ordinary shutdown retries retained aliases for a never-submitted execution without changing its identity", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.grant.mockRejectedValueOnce(new Error("grant denied"));
+  f.release.mockRejectedValueOnce(new Error("alias removal denied"));
+  await expect(f.process.advance(f.current(), signal)).rejects.toThrow("alias removal denied");
+  const original = f.current().intent, execution = f.executions.get(f.current());
+  expect(execution?.launchSubmission).toBe("not-submitted");
+  await expect(f.process.close()).rejects.toThrow("preparation cleanup remains unconfirmed");
+  await f.process.shutdown(f.current(), signal); await f.process.close();
+  expect(f.current().intent).toEqual(original);
+  expect(f.executions.get(f.current())).toEqual(execution);
+  expect(f.release).toHaveBeenCalledTimes(2);
+  expect(f.launch).not.toHaveBeenCalled();
+});
+
 test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd with a persisted role and no user turn",async provider=>{
   const f=fixture(provider); const snapshot=await f.process.advance(f.current(),new AbortController().signal);
   expect(f.prepareEnvironment).toHaveBeenCalledWith(expect.objectContaining({ botId: f.current().botId, workerPaths: resolveConfigurationPaths(f.home) }));
@@ -530,6 +563,7 @@ test("deletion can attest a definite rejected first spawn without inventing a na
   await expect(f.process.advance(f.current(), signal)).rejects.toThrow("OS rejected spawn");
   const record = markDeleting(f);
   expect(await f.process.withDeletion(record, signal, stop => stop())).toMatchObject({ executionGeneration: "1", stopProof: { kind: "never_started" } });
+  expect(f.release).toHaveBeenCalledOnce(); await f.process.close();
   expect(f.observe).not.toHaveBeenCalled();
 });
 
@@ -911,7 +945,7 @@ test("Bot blocks tree cleanup if an exited journal loses retained native proof",
 
 test("Bot keeps the same Job lease after a failed stop response and releases it after a confirmed retry", async () => {
   const f = await recoveryFixture(), lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
-  const leases = { enabled: true, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const manager = f.createProcess(f.deps, 3, leases), failure = new Error("stop response failed");
   f.deps.request.mockRejectedValueOnce(failure);
   await expect(manager.shutdown(f.current(), f.signal)).rejects.toBe(failure);
@@ -927,7 +961,7 @@ test("Bot keeps the same Job lease after a failed stop response and releases it 
 
 test("Bot still stops its bootstrap if original Job acquisition fails", async () => {
   const f = await recoveryFixture(), failure = new Error("Job identity unavailable"), incomplete = new Error("Job lease required");
-  const leases = { enabled: true, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   f.deps.stopProcesses.mockRejectedValue(incomplete);
   const error = await f.createProcess(f.deps, 3, leases).shutdown(f.current(), f.signal).catch(error => error);
   expect(error.errors).toEqual([failure, incomplete]); expect(f.deps.stopBootstrap).toHaveBeenCalledOnce();
@@ -962,7 +996,7 @@ test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery 
       if (kind === "process") value.controllerProcess.commandHash = "b".repeat(64);
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); db.close();
     }
-    const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
     const reconcile = vi.fn<typeof reconcileSubmittedControllerLaunch>(async ({ spawnProof }) => ({ kind: "controller-exited", process: spawnProof, snapshot: lifecycle.readControllerSnapshot(file)! }));
     const manager = f.createProcess({ reconcileLaunch: reconcile, recordStopped: lifecycle.recordStoppedControllerGeneration }, 3, leases);
     f.launch.mockClear(); confirm.mockClear();

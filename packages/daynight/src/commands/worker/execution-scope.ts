@@ -41,7 +41,7 @@ export const withinExecutionDeadline = async <T>(work: Promise<T>, deadline: num
 export const createExecutionScope = (generation: string, parentSignal: AbortSignal): ExecutionScope => {
   if (!/^[1-9][0-9]*$/.test(generation) || BigInt(generation) > 9223372036854775807n) throw new TypeError("Execution scope generation must be a positive int64 string.");
   const cancellation = new AbortController();
-  const owners = new Map<string, { owner: ExecutionOwner; result?: OwnerStopResult; detail?: unknown }>();
+  const owners = new Map<string, { owner: ExecutionOwner; result?: OwnerStopResult; detail?: unknown; work?: Promise<void> }>();
   const observe = (owner: ExecutionOwner): unknown => {
     try { return owner.snapshot?.(); }
     catch (error) { return { observation: "unknown", error }; }
@@ -84,7 +84,14 @@ export const createExecutionScope = (generation: string, parentSignal: AbortSign
           const base = { resourceId: entry.owner.resourceId, ownerKind: entry.owner.ownerKind, generation, identity: entry.detail };
           try {
             const deadline = Math.min(options.deadline, Date.now() + 20_000);
-            await withinExecutionDeadline(Promise.resolve().then(() => entry.owner.stop({ deadline })), deadline);
+            // Observation can time out while the original owner still writes. A
+            // reconciliation must join that attempt before starting another one.
+            if (entry.work === undefined) {
+              const work = Promise.resolve().then(() => entry.owner.stop({ deadline }));
+              entry.work = work;
+              void work.catch(() => { if (entry.work === work) delete entry.work; });
+            }
+            await withinExecutionDeadline(entry.work, deadline);
             entry.result = { ...base, stop: "confirmed", save: "durable" };
           } catch (error) { entry.result = { ...base, stop: "unknown", save: "failed", error }; }
           return entry.result;

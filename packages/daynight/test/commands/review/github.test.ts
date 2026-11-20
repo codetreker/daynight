@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { pollRepositories, pollRepository } from "../../../src/commands/review/polling.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -659,6 +660,27 @@ describe("native child process capture", () => {
   const nativeClient = (mode: string, bounds: { timeoutMs?: number; maxBufferBytes?: number } = {}) => createGitHubClient({
     ...bounds, execute: (_file, _args, options) => executeCommand(process.execPath, [script, mode], options),
   });
+
+  it("retains complete HTTP error bodies inside the Worker command lifecycle", async () => {
+    const events: OwnedCommandLifecycleEvent[] = [];
+    await withOwnedCommandLifecycle(async event => { events.push(event); }, async () => {
+      await expect(nativeClient("not-found").resolveRepository(configuration)).rejects.toMatchObject({ status: 404, cause: { code: 1 } });
+    });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+    expect(events[1]!.proof).not.toBeNull();
+  }, 35_000);
+
+  it("preserves review output budgets and native Git status in the Worker lifecycle", async () => {
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const run = (file: string, args: string[], maxBufferBytes: number) => withOwnedCommandLifecycle(async event => { events.push(event); },
+      () => executeCommand(file, args, { timeoutMs: 30_000, maxBufferBytes }));
+    const output = await run(process.execPath, ["-e", "process.stdout.write('x'.repeat(128 * 1024))"], 256 * 1024);
+    expect(output.error).toBeNull();
+    expect(output.stdout).toHaveLength(128 * 1024);
+    const invalid = await run("git", ["rev-parse", "--verify", "refs/heads/daynight-missing-review-fixture"], 16 * 1024 * 1024);
+    expect(invalid.error).toMatchObject({ code: 128, signal: null });
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+  }, 35_000);
 
   it("accepts actual mixed-newline HTTP output without a trailing newline", async () => {
     expect(await nativeClient("success").resolveRepository(configuration)).toEqual(repository);

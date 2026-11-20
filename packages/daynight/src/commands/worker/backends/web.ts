@@ -654,6 +654,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       try {
         const startedAt = options.now();
         let task = current(input);
+        if (task.webExecution !== null) await jobLeases.cleanupBirth(task.webExecution.launchId, Date.now() + 5000);
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.retryAuthorized && task.recovery.pauseReason === null) task = options.store.pauseRecovery(task, "The explicit recovery attempt stopped before a successful observation.", options.now());
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.pauseReason === null && task.configuration !== null && task.recovery.count >= task.configuration.recoveryLimit && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted") {
           // Shutdown provenance must not turn an already exhausted writer into a healthy orderly restart.

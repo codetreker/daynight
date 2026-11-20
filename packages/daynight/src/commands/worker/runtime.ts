@@ -368,6 +368,12 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let requestRebuild: (() => void) | undefined;
   let rebuildRequested = false;
   let ownerResults: OwnerStopResult[] = [];
+  let startupWork: Promise<() => Promise<void>> | undefined;
+  let startupSettled = false;
+  const joinStartup = async (): Promise<void> => { await Promise.allSettled([startupWork]); };
+  const registerOwner = (owner: Parameters<ExecutionScope["register"]>[0]): void => scope.register({ ...owner,
+    stop: async options => { await joinStartup(); await owner.stop(options); },
+  });
   let controlPublished = false;
   const publishControl = (): void => {
     if (controlPublished) return;
@@ -423,29 +429,28 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
     promptSource?.close();
   })();
-  scope.register({ resourceId: "configuration", ownerKind: "configuration",
+  registerOwner({ resourceId: "configuration", ownerKind: "configuration",
     closeAdmission: () => { configuration?.beginDrain(); readOnly?.close(); modelDiscovery?.close(); directoryBrowser.close(); },
     snapshot: () => ({ directory: directoryBrowser.snapshot(), mappings: localMappingJobs.size }), stop: stopConfiguration });
-  scope.register({ resourceId: "tasks", ownerKind: "task",
+  registerOwner({ resourceId: "tasks", ownerKind: "task",
     closeAdmission: reason => coordinator?.closeAdmission?.(reason), snapshot: () => coordinator?.executionSnapshot?.(),
     stop: ({ deadline }) => stopTasks(deadline) });
-  scope.register({ resourceId: "bots", ownerKind: "bot",
+  registerOwner({ resourceId: "bots", ownerKind: "bot",
     closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
     stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
-  scope.register({ resourceId: "reviewer", ownerKind: "assistant",
+  registerOwner({ resourceId: "reviewer", ownerKind: "assistant",
     snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
     stop: async () => { await reviewerRun; } });
-  scope.register({ resourceId: "probes", ownerKind: "probe",
+  registerOwner({ resourceId: "probes", ownerKind: "probe",
     stop: stopProbes });
-  scope.register({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
-  scope.register({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
+  registerOwner({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
+  registerOwner({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async () => {
     // Producer owners cancel concurrently; drain their final resource events before observing closure.
     await drainReport();
     await join([stopRepository(), stopProbes(), reviewerRun]);
     await root.journal?.drain();
     await root.journal?.assertClosed();
     if (retainedOwnedCommandBoundaries().length) throw new Error("Original native command boundaries remain unconfirmed.");
-    if (Date.now() > deadline) throw new Error("Native inventory closure exceeded the execution stop deadline.");
   } });
   let archiveStop: Promise<void> | undefined;
   const stopArchive = (): Promise<void> => archiveStop ??= (async () => {
@@ -453,8 +458,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     // close joins all writers before reporting historical upload failures.
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
   })();
-  scope.register({ resourceId: "archive", ownerKind: "controller", stop: stopArchive });
-  scope.register({ resourceId: "controllers", ownerKind: "controller", stop: async ({ deadline }) => {
+  registerOwner({ resourceId: "archive", ownerKind: "controller", stop: stopArchive });
+  registerOwner({ resourceId: "controllers", ownerKind: "controller", stop: async ({ deadline }) => {
     // Controller storage remains owned until original task writers have joined.
     await stopTasks(deadline);
     await stopConfiguration();
@@ -463,19 +468,25 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     web?.webBackend.closeInput();
     web?.webStore.close();
   } });
-  try {
+  scope.register({ resourceId: "startup", ownerKind: "configuration",
+    snapshot: () => ({ settled: startupSettled }), stop: joinStartup });
+  const initialize = async (): Promise<() => Promise<void>> => {
     signal.throwIfAborted();
     const local = await readWorkerLocalConfiguration(paths, signal);
+    signal.throwIfAborted();
     if (local.agentControlMode === "herdr") throw new Error("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     root.lock ??= await acquireWorkerInstanceLock(paths);
+    signal.throwIfAborted();
     monitoring = createMonitoringObserver();
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
+    signal.throwIfAborted();
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken], onSinkState: observeDiagnosticSink });
-    const emit = diagnostics.emit;
+    signal.throwIfAborted();
+    const currentDiagnostics = diagnostics, emit = currentDiagnostics.emit;
     configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit });
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const invalidateUnavailable = (projectId?: string): void => {
@@ -490,11 +501,14 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       }
     };
     const userId = await verifyWorkerPrincipal(() => remote.currentUserId(signal), signal, configurationDiagnostics.exchange);
+    signal.throwIfAborted();
     const identity = { serverOrigin: serverUrl, userId, workerId };
     if (root.identity !== undefined && !isDeepStrictEqual(root.identity, identity)) throw new Error("Worker management identity changed across execution scopes.");
     root.identity ??= identity;
     root.journal ??= await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity });
+    signal.throwIfAborted();
     await withinExecutionDeadline(root.journal.assertClosed(), Date.now() + 10_000);
+    signal.throwIfAborted();
     const observer = monitoring;
     monitoringSender = createMonitoringSender({ capture: observer.capture,
       write: (observation, operation, requestId) => remote.writeMonitoring(workerId, observation, operation, requestId),
@@ -525,6 +539,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       });
       if (signal.aborted || !transientAuthorityFailure(error)) throw error;
     }
+    signal.throwIfAborted();
     const machine = machineDescription(platform);
     const prepared = new Map<string, WorkerProject>();
     const locallyKnownIds = new Set(workerLocalExplicitProjectIds(local, paths));
@@ -748,6 +763,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       onInvalidDesired: (revision, reason) => emit({ kind: "warning", message: reason === "unsupported_configuration" ? `Worker configuration revision ${revision} is missing required settings or contains unsupported current values; correct the target before applying it.`
           : `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
+    signal.throwIfAborted();
     if (resource !== undefined) {
       const previous = configuration.current();
       await configuration.receive(resource.desired, resource.observationRevision, signal, initialSyncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
@@ -757,6 +773,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
         previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desiredRevision, observationRevision: previous.observationRevision },
         received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
     }
+    signal.throwIfAborted();
     const manager = configuration;
     const proofSignature = () => JSON.stringify(([ ["codex", "web"], ["copilot", "web"] ] as const).map(([tool, context]) => toolRuntime.manager.currentSelection(tool, context)?.selectionKey));
     let observedToolProof = proofSignature();
@@ -1043,42 +1060,52 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       archiveDeferred = yielding;
       return yielding;
     };
+    signal.throwIfAborted();
     observeMonitoring(m => m.setLifecycle("running"));
-    publishControl();
-    while (!signal.aborted) {
-      const revision = reconcileWake.snapshot();
-      void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
-      try {
-        const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
-        observeMonitoring(m => m.setPhase("configuration"));
-        scheduleLocalMappingChecks();
-        await ensureInitialRemovals();
-        const current = view(manager.current());
-        if (current !== null) {
-          {
-            await ensureCoordinator();
-            if (coordinator !== undefined) {
-              const latest = view(manager.current());
-              if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
-              if (!archiveShouldYield()) web!.archiveMaintenance.request(archiveShouldYield);
+    return async () => {
+      while (!signal.aborted) {
+        const revision = reconcileWake.snapshot();
+        void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
+        try {
+          const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
+          observeMonitoring(m => m.setPhase("configuration"));
+          scheduleLocalMappingChecks();
+          await ensureInitialRemovals();
+          const current = view(manager.current());
+          if (current !== null) {
+            {
+              await ensureCoordinator();
+              if (coordinator !== undefined) {
+                const latest = view(manager.current());
+                if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
+                if (!archiveShouldYield()) web!.archiveMaintenance.request(archiveShouldYield);
+              }
             }
-          }
-        } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
-        if (!started) { emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; cloud-managed configuration; logs=${diagnostics.filename}.` }); started = true; }
-      } catch (error) {
-        if (isWorkerCancellation(error, signal)) break;
-        if (signal.aborted) throw error;
-        observeMonitoring(m => { m.setAdmission("unknown", []); m.staleCapacity(); });
-        emit({ kind: "reconciliation-error", message: "The reconciliation round failed; configuration reporting remains active and resources remain for the next successful observation.", error });
+          } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
+          if (!started) { emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; cloud-managed configuration; logs=${currentDiagnostics.filename}.` }); started = true; }
+        } catch (error) {
+          if (isWorkerCancellation(error, signal)) break;
+          if (signal.aborted) throw error;
+          observeMonitoring(m => { m.setAdmission("unknown", []); m.staleCapacity(); });
+          emit({ kind: "reconciliation-error", message: "The reconciliation round failed; configuration reporting remains active and resources remain for the next successful observation.", error });
+        }
+        await currentDiagnostics.flush();
+        if (signal.aborted) break;
+        const interval = manager.current().effective.pollIntervalMs;
+        observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
+        try { await reconcileWake.waitAfter(revision, interval ?? 1_000, signal); }
+        catch (error) { if (!isWorkerCancellation(error, signal)) throw error; }
+        observeMonitoring(m => m.setNextPoll(null));
       }
-      await diagnostics.flush();
-      if (signal.aborted) break;
-      const interval = manager.current().effective.pollIntervalMs;
-      observeMonitoring(m => { m.setPhase("waiting-poll"); m.setNextPoll(new Date(Date.now() + (interval ?? 1_000)).toISOString()); });
-      try { await reconcileWake.waitAfter(revision, interval ?? 1_000, signal); }
-      catch (error) { if (!isWorkerCancellation(error, signal)) throw error; }
-      observeMonitoring(m => m.setNextPoll(null));
-    }
+    };
+  };
+  try {
+    // Publish control before the first I/O. Aborting its waiter does not erase
+    // the constructor Promise or permit owners to close before late resources join.
+    startupWork = Promise.resolve().then(initialize).finally(() => { startupSettled = true; });
+    publishControl();
+    const run = await waitForConfigurationOperation(startupWork, signal);
+    await run();
   } catch (error) {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
@@ -1096,12 +1123,15 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       try { if (!rebuildRequested && !managementSignal.aborted) await Promise.race([rebuilding, aborted]); }
       finally { managementSignal.removeEventListener("abort", abortWait!); }
     }
-    try { await withinExecutionDeadline(reportDrain ?? reporter?.stop() ?? Promise.resolve(), Date.now() + 10_000); } catch (error) { failures.push(error); }
-    observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
-
-    try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
-    try { await diagnostics?.close(); } catch (error) { failures.push(error); }
-    failures.push(...configurationDiagnostics?.errors() ?? []);
+    const finishManagement = async (): Promise<void> => {
+      await joinStartup();
+      try { await withinExecutionDeadline(reportDrain ?? reporter?.stop() ?? Promise.resolve(), Date.now() + 10_000); } catch (error) { failures.push(error); }
+      observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
+      try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
+      try { await diagnostics?.close(); } catch (error) { failures.push(error); }
+      failures.push(...configurationDiagnostics?.errors() ?? []);
+    };
+    try { await withinExecutionDeadline(finishManagement(), Date.now() + 10_000); } catch (error) { failures.push(error); }
   }
   throwFailures([...failures, ...ownerResults.flatMap(result => result.error === undefined ? [] : [result.error])]);
 };

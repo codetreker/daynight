@@ -1,4 +1,4 @@
-import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
+import { adoptOwnedControllerJob, createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -32,7 +32,7 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
 };
 export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {
   const proof = await captureProcessProof(process.pid);
-  return process.platform === "win32" ? { ...proof, jobObjectName: await createOwnedControllerJob(launchId, process.pid) } : proof;
+  return process.platform === "win32" ? { ...proof, jobObjectName: await (process.env.DAYNIGHT_CONTROLLER_ASSIGNED_JOB === launchId ? adoptOwnedControllerJob(launchId) : createOwnedControllerJob(launchId, process.pid)) } : proof;
 };
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
 export class ControllerProcessIdentityConflictError extends Error {

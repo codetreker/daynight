@@ -5,6 +5,8 @@ import { createOperation } from "../../../src/api/operation.js";
 import { runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import * as windowsJob from "../../../src/commands/controller/windows-job.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 const roots: string[] = [];
@@ -14,9 +16,59 @@ const root = async () => {
   const value = await mkdtemp(path.join(parent, "command-")); roots.push(value); return value;
 };
 const command = (source: string) => ({ file: process.execPath, args: ["--input-type=module", "--eval", source], environment: process.env });
-afterEach(async () => { await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
+  it("closes a reservation when the operating system rejects process creation", async () => {
+    const directory = await root();
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+    try {
+      await expect(runLifecycleOwnedCommand({ ...command("process.exit(0)"), cwd: path.join(directory, "missing") }, operation,
+        async event => { events.push(event); })).rejects.toThrow();
+      expect(events.map(event => event.stage)).toEqual(["prepared", "stopped"]);
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    } finally { operation.dispose(); }
+  }, 35_000);
+
+  it.skipIf(process.platform !== "win32")("rounds the absolute Job lease deadline when the operation has fractional milliseconds", async () => {
+    const operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const original = operation.remainingMs;
+    vi.spyOn(operation, "remainingMs").mockImplementation(() => Math.min(original(), 14_999.25));
+    const acquire = vi.spyOn(windowsJob, "createControllerJobLease");
+    try {
+      const output = await runLifecycleOwnedCommand(command("process.stdout.write('fractional budget');"), operation, async () => {});
+      expect(output.stdout).toBe("fractional budget");
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(Number.isSafeInteger(acquire.mock.calls[0]![2])).toBe(true);
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    } finally { operation.dispose(); }
+  }, 35_000);
+
+  it("refuses dispatch when cancellation arrives during the final birth observation", async () => {
+    const directory = await root(), checkpoint = path.join(directory, "cancelled-dispatch");
+    const cancellation = new AbortController();
+    const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const original = processProof.inspectProcessProof;
+    vi.spyOn(processProof, "inspectProcessProof").mockImplementationOnce(async (proof, budget) => {
+      const state = await original(proof, budget);
+      entered.resolve(); await release.promise; return state;
+    });
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const pending = runLifecycleOwnedCommand(command(`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(checkpoint)},'executed');`), operation,
+      async event => { events.push(event); }).then(value => ({ value }), error => ({ error }));
+    try {
+      await Promise.race([entered.promise, pending.then(result => { throw new Error("Owned command ended before the final observation barrier.", { cause: result }); })]);
+      cancellation.abort(new Error("cancel before native dispatch"));
+      release.resolve();
+      expect(await pending).toEqual({ error: operation.signal.reason });
+      await expect(readFile(checkpoint)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    } finally { release.resolve(); cancellation.abort(); await pending; operation.dispose(); }
+  }, 35_000);
+
   it("honors an explicit local command timeout independently of the HTTP request timeout", async () => {
     const operation = createOperation({ limits: { totalMs: 30_000, requestMs: 1 } });
     try {

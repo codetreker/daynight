@@ -99,6 +99,42 @@ describe("assistant-task managed loops", () => {
     expect(runtime.snapshot().applications).toEqual([]);
   });
 
+  it("joins detached guarded writes and rejects new actions after admission closes", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred<AssistantApplicationContext>();
+    f.task.application = "watchdog";
+    runtime.registerApplication("watchdog", async context => { started.resolve(context); });
+    await runtime.tick("renew", signal());
+    const context = await started.promise, entered = deferred(), release = deferred();
+    const guarded = context.withClaim(async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    let stopped = false;
+    const stopping = runtime.shutdown().then(() => { stopped = true; });
+    try {
+      await nextTurn();
+      expect(context.signal.aborted).toBe(true); expect(stopped).toBe(false);
+      expect(runtime.snapshot().applications).toEqual([{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }]);
+      const action = vi.fn(async () => undefined), previousReads = f.getTask.mock.calls.length;
+      await expect(context.withClaim(action)).rejects.toBeDefined();
+      expect(action).not.toHaveBeenCalled(); expect(f.getTask).toHaveBeenCalledTimes(previousReads);
+    } finally { release.resolve(); await guarded; await stopping; }
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
+  it("retains a timed-out detached guard until the original action settles", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred<AssistantApplicationContext>();
+    f.task.application = "watchdog";
+    runtime.registerApplication("watchdog", async context => { started.resolve(context); });
+    await runtime.tick("renew", signal());
+    const context = await started.promise, entered = deferred(), release = deferred();
+    const guarded = context.withClaim(async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    try {
+      await expect(runtime.shutdown({ deadline: Date.now() })).rejects.toThrow("resource responsibility is retained");
+      expect(runtime.snapshot().applications).toEqual([{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }]);
+    } finally { release.resolve(); await guarded; await runtime.shutdown(); }
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
   it("renews at 60-second boundaries and stops renewing when the Controller becomes unhealthy", async () => {
     const f = await fixture(), runtime = f.create(), abort = new AbortController();
     const running = runtime.run(abort.signal);
@@ -358,10 +394,11 @@ describe("assistant-task managed loops", () => {
     const guarded = original.withClaim(action).then(() => null, error => error);
     await entered.promise;
     try {
-      a.options.bots = () => [b.bot]; await runtime.tick("renew", signal());
-      const current = contexts[1]!;
-      expect(original.signal.aborted).toBe(true); expect(current.signal.aborted).toBe(false);
+      a.options.bots = () => [b.bot]; const renewal = runtime.tick("renew", signal());
+      await vi.waitFor(() => expect(original.signal.aborted).toBe(true));
+      expect(contexts).toHaveLength(1);
       release.resolve(); expect(await guarded).toBeInstanceOf(Error);
+      await renewal; const current = contexts[1]!;
       expect(action).not.toHaveBeenCalled(); expect(current.signal.aborted).toBe(false);
       await current.withClaim(action); expect(action).toHaveBeenCalledOnce();
     } finally { release.resolve(); await guarded; }

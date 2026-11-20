@@ -29,7 +29,7 @@ const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = create
 it("stops the proven native boundary without mutating its Task writer or releasing its Windows lease", async () => {
   const f = await orchestrationFixture();
   const lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
-  const leases = { enabled: true, retain: vi.fn(), get: vi.fn(async () => lease), release: vi.fn(), close: vi.fn() };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(), get: vi.fn(async () => lease), release: vi.fn(), close: vi.fn() };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, jobLeases: leases,
     platform: "windows", buildPrompt: () => "managed", emit: vi.fn(), now: Date.now, request: f.source.request });
   const stop = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
@@ -453,7 +453,7 @@ it("restores a Windows checkout using a verified durable stop proof after the Jo
   f.source.saved.mockReturnValue(saved); vi.mocked(processProof.inspectProcessProof).mockResolvedValue("stopped");
   vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(saved);
   const proven = vi.spyOn(lifecycle, "readProvenWindowsStoppedControllerGeneration").mockReturnValue(saved);
-  const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   await rm(binding.worktreePath, { recursive: true });
   vi.mocked(f.git.prepareWorktree).mockImplementation(async () => { await mkdir(binding.worktreePath, { recursive: true }); return binding; });
   f.launcher.prepare.mockRejectedValue(new Error("ticket preparation reached"));
@@ -1426,7 +1426,7 @@ it("finishes an admitted controller stop after caller cancellation without archi
   source.stopped.mockImplementation(async () => stopCompleted);
   const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => { entered.resolve(); await release.promise; stopCompleted = true; });
   const archive = vi.fn(async () => {});
-  const jobLeases = { enabled: false, retain: vi.fn(), get: vi.fn(), release: vi.fn(async () => {}), close: vi.fn() };
+  const jobLeases = { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(), get: vi.fn(), release: vi.fn(async () => {}), close: vi.fn() };
   const backendOptions = { homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request: source.request, jobLeases };
   const backend = createWebExecutionBackend(backendOptions);
   let settled = false;
@@ -1883,7 +1883,7 @@ it.each(["stopped", "unknown"] as const)("Task retains a cleanup IPC identity co
 it("Task holds one Job lease through IPC stop, complete confirmation and journal recording", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const lease = {} as import("../../../src/commands/controller/windows-job.js").ControllerJobLease;
-  const leases = { enabled: true, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => lease), get: vi.fn(async () => lease), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   source.stopped.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   const tree = vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue();
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
@@ -1899,7 +1899,7 @@ it("Task holds one Job lease through IPC stop, complete confirmation and journal
 it("Task still stops its bootstrap if original Job acquisition fails", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
   const failure = new Error("Job identity unavailable"), incomplete = new Error("Job lease required");
-  const leases = { enabled: true, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => { throw failure; }), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const bootstrap = vi.spyOn(launchObservation, "stopControllerBootstrap").mockResolvedValue();
   vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValue(incomplete);
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 10, request: source.request });
@@ -1915,7 +1915,7 @@ it("joins a preceding Job ticket read and retains its failure when it crosses th
   const allocated = f.store.beginWebGeneration(f.task, previous, 30);
   const clock = vi.spyOn(Date, "now").mockReturnValue(now);
   vi.mocked(launchTickets.readLaunchTicket).mockImplementation(async () => { clock.mockReturnValue(now + CLEANUP_OPERATION_MS); throw failure; });
-  const leases = { enabled: true, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  const leases = { enabled: true, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: vi.fn(async () => undefined), get: vi.fn(async () => undefined), release: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, jobLeases: leases, launcher: f.launcher, platform: "windows", buildPrompt: () => "managed", emit: () => {}, now: () => 40 });
   const error = await backend.cleanup(allocated, { kind: "shutdown", deadline: 40, immediateStop: true }).catch(error => error);
   expect(error.cause.errors[0]).toBe(failure); expect(error.cause.errors[1].message).toMatch(/deadline/);

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
@@ -8,18 +9,13 @@ import WebSocket, { WebSocketServer } from "ws";
 import { expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
-import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
-import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
-import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
-import { createBotReconciliation } from "../../../src/commands/worker/bots/reconciliation.js";
-import { createBotRecoveryApi } from "../../../src/commands/worker/bots/recovery-api.js";
-import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as environment from "../../../src/commands/worker/bots/environment.js";
 import { readControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
-import { requestController } from "../../../src/commands/controller/local-client.js";
+import { requestController, ControllerIpcOutcomeUnknownError } from "../../../src/commands/controller/local-client.js";
+import * as controllerRequests from "../../../src/commands/controller/local-client.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { acquireControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
@@ -29,7 +25,7 @@ import type { BotRecoveryResult } from "../../../src/commands/worker/bots/recove
 
 // Real Host, Controller, IPC, SQLite, locks and native subprocesses; only the
 // service and Codex protocol endpoint are controlled dependencies.
-test("a rebuilt Host discovers and reconnects the live original Controller with an empty inventory", async () => {
+test.each([false, true])("a rebuilt Host reconnects the live original Controller with an empty inventory (lost stop receipt: %s)", async loseStopReceipt => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-reconciliation-controller");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "cwd");
@@ -53,6 +49,20 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   const address = http.address(); if (address === null || typeof address === "string") throw new Error("Missing fixture port");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
   const newWorker = randomUUID(), errors: string[] = [], calls: string[] = [];
+  const stopRequests: string[] = [], request = controllerRequests.requestController;
+  let stopReceiptLost = false;
+  vi.spyOn(controllerRequests, "requestController").mockImplementation(async (...args) => {
+    if (args[1].kind === "stop") stopRequests.push("started");
+    try {
+      const result = await request(...args);
+      if (args[1].kind === "stop") {
+        stopRequests.push("confirmed");
+        if (loseStopReceipt && !stopReceiptLost) { stopReceiptLost = true; throw new ControllerIpcOutcomeUnknownError("Fixture lost the original stop receipt."); }
+      }
+      return result;
+    }
+    catch (error) { if (args[1].kind === "stop") stopRequests.push(String(error)); throw error; }
+  });
   const receipts = new Map<string, BotRecoveryResult>();
   let hostingGeneration = "1", selectedToken = "", selectedOperation = "", synchronized = false, epoch = 0;
   let intent: BotLaunchIntent | null = null, observedNative: string | null = null;
@@ -153,29 +163,38 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     try { return await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: native }, environment: process.env, cwd }, operation); }
     finally { operation.dispose(); }
   };
-  const local = openLocalBotStores({ stateDirectory: state, legacyDatabaseFile: paths.databaseFile, owner, onMigration: () => {} });
-  local.store.observe(owner, bot, Date.now());
-  const recovery = createBotReconciliation({ owner, store: openBotRecoveryStore({ stateDirectory: state, owner, assertLocked: local.assertLocked }), api: createBotRecoveryApi({ owner, serverToken: "fixture-parent-token" }), canSubmit: () => true });
-  const sessionApi = createBotSessionApi({ owner, serverToken: "fixture-parent-token", recovery });
-  const original = createBotProcess({ homeDirectory: home, packageDirectory, store: local.store, executions: local.executions, sessionApi,
-    recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, dependencies: { prepareEnvironment } });
-  // Capture only the prepared identity; registration and grant still pass through HTTP.
-  const register = sessionApi.register;
-  sessionApi.register = (record, signal) => { intent = record.intent; return register(record, signal); };
+  const hostInput = path.join(home, "original-host.json");
+  await writeFile(hostInput, JSON.stringify({ dist, home, state, owner, bot, native, cwd, packageDirectory, requests }));
+  const originalHost = spawn(process.execPath, [path.join(import.meta.dirname, "fixtures/bot-recovery-host.mjs"), hostInput], {
+    env: { ...process.env, DN_CONFIG_DIR: state }, stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
+  });
+  let originalOutput = "";
+  originalHost.stdout!.on("data", chunk => { originalOutput += String(chunk); });
+  originalHost.stderr!.on("data", chunk => { originalOutput += String(chunk); });
+  const hostExited = new Promise<void>((resolve, reject) => { originalHost.once("error", reject); originalHost.once("close", () => resolve()); });
+  const hostReady = new Promise<ControllerLaunchTicket>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Original host readiness exceeded its deadline: ${originalOutput}`)), 60_000);
+    originalHost.once("error", error => { clearTimeout(timer); reject(error); });
+    originalHost.once("close", () => { clearTimeout(timer); reject(new Error(`Original host exited before readiness: ${originalOutput}`)); });
+    originalHost.on("message", (message: { kind?: string; intent?: BotLaunchIntent; ticket?: ControllerLaunchTicket }) => {
+      if (message.kind === "intent" && message.intent !== undefined) { intent = message.intent; originalHost.send({ kind: "intent-received" }); }
+      else if (message.kind === "ready" && message.ticket !== undefined) { clearTimeout(timer); resolve(message.ticket); }
+    });
+  });
+  void hostReady.catch(() => {});
   let observerLease: ControllerJobLease | undefined, host: ReturnType<typeof createWorkerBotHost> | undefined;
   let running: Promise<void> | undefined;
   let ticket: ControllerLaunchTicket | undefined;
   const cancellation = new AbortController();
-  let originalClosed = false, stopped = false, hostClosed = false, testFailed = false;
+  let stopped = false, hostClosed = false, testFailed = false;
   try {
-    await original.advance(local.store.get(owner, botId)!, AbortSignal.timeout(45_000));
+    ticket = await hostReady;
     await vi.waitFor(() => expect(readControllerSnapshot(intent!.journalPath)).toMatchObject({ lifecycle: "ready", nativeSessionId: nativeId }), { timeout: 30_000, interval: 100 });
     const first = readControllerSnapshot(intent!.journalPath)!;
-    ticket = await original.readTicket(local.store.get(owner, botId)!);
     if (process.platform === "win32") observerLease = await acquireControllerJobLease(intent!.launchId, first.controllerProcess!, Date.now() + 10_000);
-    await original.close(); local.close(); originalClosed = true;
-    // Release Worker-owned stores/handles while retaining the actual live writer,
-    // as after loss of its host; no Controller shutdown or replacement is requested.
+    // Crash the real owner instead of using graceful close to abandon live resources.
+    originalHost.kill("SIGKILL"); await hostExited;
+    expect(await inspectProcessProof(first.controllerProcess!)).toBe("running");
     host = createWorkerBotHost({ homeDirectory: home, packageDirectory, workingDirectory: cwd, paths, owner: { ...owner, workerId: newWorker },
       serverToken: "fixture-parent-token", canAdmitNewExecution: () => true, selectToolLaunch,
       configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), recoveryLimit: () => 3,
@@ -209,14 +228,20 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     console.error(JSON.stringify({ errors, calls: [...new Set(calls)], synchronized, observedNative, hostingGeneration }));
     throw error;
   } finally {
-    const cleanupErrors: unknown[] = [];
-    const cleanup = async (action: () => unknown | Promise<unknown>) => {
-      try { await action(); } catch (error) { cleanupErrors.push(error); }
+    const cleanupErrors: unknown[] = [], unknownStops: unknown[] = [];
+    const onlyUnknownIpc = (error: unknown): boolean => error instanceof ControllerIpcOutcomeUnknownError
+      || error instanceof AggregateError && error.errors.length > 0 && error.errors.every(onlyUnknownIpc);
+    const cleanup = async (action: () => unknown | Promise<unknown>, reconcileStop = false) => {
+      try { await action(); } catch (error) { (reconcileStop && onlyUnknownIpc(error) ? unknownStops : cleanupErrors).push(error); }
     };
     cancellation.abort();
-    if (host) await cleanup(() => host!.shutdown());
-    else if (!originalClosed) await cleanup(() => original.shutdown(local.store.get(owner, botId)!, AbortSignal.timeout(30_000)));
-    if (running) await cleanup(() => running);
+    if (host) await cleanup(() => host!.shutdown(), true);
+    if (originalHost.exitCode === null && originalHost.signalCode === null) originalHost.kill("SIGKILL");
+    await cleanup(() => hostExited);
+    if (ticket === undefined && intent !== null) await cleanup(async () => {
+      if (existsSync(retainedIntent().ticketPath)) ticket = JSON.parse(await readFile(retainedIntent().ticketPath, "utf8")) as ControllerLaunchTicket;
+    });
+    if (running) await cleanup(() => running, true);
     await cleanup(() => {
       const retained = intent as BotLaunchIntent | null;
       stopped = retained === null || readControllerSnapshot(retained.journalPath)?.nativeStopped === true;
@@ -224,7 +249,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     if (!stopped && ticket) {
       // Each fallback and cleanup runs independently: an unknown IPC result
       // cannot prevent releasing the fixture's listeners and process handles.
-      await cleanup(() => requestController(ticket!, { kind: "stop", deadline: Date.now() + 20_000 }, { timeoutMs: 25_000 }));
+      if (unknownStops.length === 0) await cleanup(() => requestController(ticket!, { kind: "stop", deadline: Date.now() + 20_000 }, { timeoutMs: 25_000 }), true);
       await cleanup(async () => {
         const saved = readControllerSnapshot(retainedIntent().journalPath)!;
         if (!saved.controllerProcess) throw new Error("Fixture has no Controller process proof for cleanup");
@@ -237,9 +262,18 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       });
     }
     if (host && stopped) await cleanup(() => host!.shutdown());
+    if (unknownStops.length) await cleanup(async () => {
+      // Reconcile the original generation once; a lost receipt never authorizes
+      // replaying the stop request or replacing its Controller and native Session.
+      const original = retainedIntent(), saved = readControllerSnapshot(original.journalPath);
+      expect(saved).toMatchObject({ executionId: original.executionId, executionGeneration: original.executionGeneration,
+        controllerInstanceId: original.controllerInstanceId, sessionId: original.sessionId, nativeSessionId: nativeId, nativeStopped: true });
+      expect(saved?.controllerProcess).not.toBeNull();
+      expect(await confirmControllerProcessesStopped(saved!.controllerProcess!, saved!.nativeProcesses, Date.now() + 20_000, observerLease)).toBe(true);
+      expect(stopped).toBe(true);
+    });
+    if (loseStopReceipt && !testFailed) await cleanup(() => { expect(stopReceiptLost).toBe(true); expect(unknownStops.length).toBeGreaterThan(0); });
     if (host) await cleanup(async () => { await host!.close(); hostClosed = true; });
-    await cleanup(() => original.close());
-    await cleanup(() => local.close());
     if (observerLease) await cleanup(() => releaseControllerJobLease(observerLease!));
     for (const socket of sockets) await cleanup(() => socket.terminate());
     await cleanup(() => new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve())));
@@ -248,6 +282,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     if (stopped && (!host || hostClosed)) await cleanup(() => rm(home, { recursive: true, force: true }));
     else if (intent && existsSync((intent as BotLaunchIntent).journalPath)) console.error(`Retained unconfirmed fixture evidence: ${home}`);
     if (cleanupErrors.length) {
+      console.error(JSON.stringify({ stopRequests }));
       const error = new AggregateError(cleanupErrors, "Controller reconciliation fixture cleanup failed");
       if (testFailed) console.error(error);
       else throw error;

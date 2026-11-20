@@ -25,11 +25,12 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
     try {
       operation.check();
       const deadline = Date.now() + Math.ceil(operation.remainingMs());
-      const inspectOriginal = async (proof: ProcessProof): Promise<"running" | "stopped"> => {
+      const inspectOriginal = async (proof: ProcessProof): Promise<"running" | "stopped" | "replaced"> => {
         operation.check();
         const state = await inspectProcessProof(proof, Math.max(1, Math.min(5000, Math.ceil(operation.remainingMs()))));
         operation.check();
-        if (state === "replaced") throw new Error("An original Web process identity was replaced; complete native stop is unconfirmed.");
+        // Replacement alone cannot distinguish PID reuse from an original identity conflict.
+        // The complete boundary confirmation below owns that distinction.
         return state;
       };
       const confirmStopped: ConfirmStoppedBoundary = options.confirmStopped ?? (async (launchId, controller, native, until, snapshot, ticketHint) => {

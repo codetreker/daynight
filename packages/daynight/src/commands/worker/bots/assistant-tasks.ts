@@ -26,7 +26,7 @@ export type AssistantApplicationFactory = (context: AssistantApplicationContext)
 type Delivery = { command: SessionCommand; events: { taskId: string; id: string }[]; confirmed: boolean };
 type EventTypeFilter = { type?: string; excludeType?: string };
 type TriggerState = { id: string; occurrence: string; confirmed: boolean };
-type Application = { botId: string; generation: string; cancellation: AbortController; expiry: AbortController; work: Promise<void> };
+type Application = { botId: string; generation: string; cancellation: AbortController; expiry: AbortController; work: Promise<void>; guards: Set<Promise<unknown>> };
 export type AssistantTaskRuntimeOptions = {
   owner: BotOwner; bots(): readonly BotRecord[];
   stateDirectory(botId: string): Promise<string>;
@@ -60,6 +60,8 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     if (!current) return;
     current.cancellation.abort(); current.expiry.abort();
     await current.work;
+    // The factory can return while its guarded external actions still own work.
+    await Promise.allSettled([...current.guards]);
     if (applications.get(taskId) === current) applications.delete(taskId);
   };
   const localBots = () => options.bots().filter(bot => !stoppedBots.has(bot.botId) && bot.observed.deletion === null && bot.intent?.sessionId !== null && bot.intent !== null);
@@ -111,11 +113,17 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     if (!app) {
       const cancel = new AbortController();
       const appSignal = AbortSignal.any([cancel.signal, cancellation.signal, signal]);
-      app = { botId: bot.botId, generation: task.claimGeneration, cancellation: cancel, expiry: new AbortController(), work: Promise.resolve() };
+      app = { botId: bot.botId, generation: task.claimGeneration, cancellation: cancel, expiry: new AbortController(), work: Promise.resolve(), guards: new Set() };
       applications.set(task.id, app);
       const current = app;
       app.work = Promise.resolve().then(() => factory({ task, botId: bot.botId, signal: appSignal,
-        withClaim: action => guard(bot, task.id, current, appSignal, action),
+        withClaim: action => {
+          if (closed || appSignal.aborted) return Promise.reject(appSignal.reason ?? new Error("Assistant application is stopped."));
+          const work = guard(bot, task.id, current, appSignal, action);
+          current.guards.add(work);
+          void work.then(() => current.guards.delete(work), () => current.guards.delete(work));
+          return work;
+        },
       })).catch(error => { if (!appSignal.aborted) { cancel.abort(); report(error, bot.botId); } });
     }
     app.expiry.abort(); app.expiry = new AbortController();

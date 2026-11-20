@@ -46,13 +46,29 @@ it("keeps execution running while unrecorded descendants remain in the original 
   expect(await workerOperation(operation => backend.observeExecutionStop(source.task, operation))).toMatchObject({ kind: "stopped" });
 });
 
-it("keeps stop unknown after PID reuse instead of treating replacement as process closure", async () => {
+it.each(["empty", "occupied", "conflict"] as const)("confirms the original complete boundary after replaced process evidence: %s", async boundary => {
   const f = await fixture();
   const source = await cleanupSource(f, f.store.getTask(f.identity)!);
-  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("replaced");
+  const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native", commandHash: "b".repeat(64) };
+  source.saved.mockReturnValue({ ...source.snapshot, nativeProcesses: [native] });
+  const inspect = vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("replaced");
+  const conflict = new Error("An original process has conflicting identity evidence");
+  if (boundary === "conflict") source.stopped.mockRejectedValue(conflict);
+  else source.stopped.mockResolvedValue(boundary === "empty");
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
-  expect(await workerOperation(operation => backend.observeExecutionStop(source.task, operation))).toMatchObject({ kind: "unknown", error: expect.objectContaining({ message: expect.stringContaining("identity was replaced") }) });
-  expect(source.stopped).not.toHaveBeenCalled();
+  const observed = await workerOperation(operation => backend.observeExecutionStop(source.task, operation));
+  expect(observed).toMatchObject(boundary === "conflict" ? { kind: "unknown", error: conflict } : { kind: boundary === "empty" ? "stopped" : "running" });
+  expect(inspect.mock.calls.map(([proof]) => proof)).toEqual([source.snapshot.controllerProcess, native]);
+  expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, [native], expect.any(Number));
+});
+
+it("confirms the preceding boundary after PID reuse before releasing unsubmitted recovery", async () => {
+  const f = await recoveryFixture();
+  const allocated = f.store.beginWebGeneration(f.task, f.snapshot, 30);
+  vi.spyOn(processProof, "inspectProcessProof").mockResolvedValue("replaced");
+  f.stopped.mockResolvedValue(true);
+  expect(await workerOperation(operation => f.backend.observeExecutionStop(allocated, operation))).toMatchObject({ kind: "not-started" });
+  expect(f.stopped).toHaveBeenCalledWith(f.snapshot.controllerProcess, f.snapshot.nativeProcesses, expect.any(Number));
 });
 
 it("retains occupied capacity when recorded PIDs stopped but the native boundary is unknown", async () => {
