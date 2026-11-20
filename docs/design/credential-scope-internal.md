@@ -163,6 +163,21 @@ Task 写入服务按解析后的字段合并所需操作，项目访问、原有
 直接写入使用本次认证的策略快照；既有生产装配保持原行为，scoped 写入
 入口由启用阶段接入。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
 
+## Worker 任务执行准入
+
+领取、执行状态上报、释放及撤回分别使用 `worker:claim`、`worker:report`
+和 `worker:release`。带 claim 的完成继续使用 `worker:complete`。这些检查
+与原项目访问、执行归属、版本及 claim 校验共同生效；原完整 Task 响应仍需
+`task:read`，显式最小回执只包含身份和版本。`agent:authorize` 只控制
+`allowAgents`，不授予实际执行能力。
+
+Task Session 恢复 grant 在原有服务端请求入口复核 `worker:retry` 与
+`session:produce`，并保留原 claim、owner、代次和停止证明检查。旧生产
+装配保持原行为；scoped 路由与授权事实由启用阶段接入。CLI 的本机操作
+继续遵守其现有语义。
+
+决策见[Worker 执行准入记录](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scope-admission.md)。
+
 ## 附件准入
 
 `service/attachment.NewScopedAttachments` 显式接收授权事实，复用普通附件服务的
