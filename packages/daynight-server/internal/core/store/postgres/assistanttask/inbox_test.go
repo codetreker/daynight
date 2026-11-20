@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,13 +321,14 @@ func TestPendingInboundEventsCountsTargetUpToLimit(t *testing.T) {
 	})
 }
 
-func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
+func TestReceivedInboundFindsUnsuppressedReceiptWithinInterval(t *testing.T) {
 	f := setup(t)
 	f.create(t)
 	ctx := t.Context()
 	inbox := f.inbox(t)
 	bot, subject := uuid.NewString(), uuid.NewString()
 	since := f.task.CreatedAt
+	until := since.Add(time.Minute)
 	at := func(key string, received time.Time, suppressed bool, subject string) model.AssistantTaskInboxReceipt {
 		v := f.receipt(inbox.InboxID, key, received, received.Add(time.Hour))
 		v.TargetBotID, v.SubjectTaskID, v.Suppressed = bot, &subject, suppressed
@@ -334,6 +337,7 @@ func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, v := range []model.AssistantTaskInboxReceipt{
 			at("old", since.Add(-time.Microsecond), false, subject),
+			at("later", until.Add(time.Microsecond), false, subject),
 			at("suppressed", since, true, subject),
 			at("other", since, false, uuid.NewString()),
 		} {
@@ -341,17 +345,26 @@ func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
 				return err
 			}
 		}
-		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since); err != nil || found {
-			t.Fatalf("old, suppressed or unrelated receipt woke: %v %v", found, err)
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since, until); err != nil || found {
+			t.Fatalf("earlier, later, suppressed or unrelated receipt woke: %v %v", found, err)
 		}
-		if _, err := d.InsertInboxReceipt(ctx, at("boundary", since, false, subject)); err != nil {
+		if _, err := d.InsertInboxReceipt(ctx, at("end", until, false, subject)); err != nil {
 			return err
 		}
-		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since); err != nil || !found {
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since, until); err != nil || !found {
+			t.Fatalf("receipt at until not found: %v %v", found, err)
+		}
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since, until.Add(-time.Microsecond)); err != nil || found {
+			t.Fatalf("receipt after until found: %v %v", found, err)
+		}
+		if _, err := d.InsertInboxReceipt(ctx, at("start", since, false, subject)); err != nil {
+			return err
+		}
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since, since); err != nil || !found {
 			t.Fatalf("receipt at since not found: %v %v", found, err)
 		}
 		for _, c := range []struct{ owner, bot string }{{uuid.NewString(), bot}, {f.owner, uuid.NewString()}} {
-			if found, err := d.ReceivedInbound(ctx, c.owner, c.bot, subject, since); err != nil || found {
+			if found, err := d.ReceivedInbound(ctx, c.owner, c.bot, subject, since, until); err != nil || found {
 				t.Fatalf("receipt found for %+v: %v %v", c, found, err)
 			}
 		}
@@ -404,6 +417,19 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 				t.Fatalf("receipt insert: %v %v", ok, err)
 			}
 		}
+		reclaimTasks := func(owner string, want ...string) {
+			t.Helper()
+			ids, err := d.InboundReclaimTasks(ctx, owner, cutoff, 10)
+			if err != nil || len(ids) != len(want) || len(want) == 1 && ids[0] != want[0] {
+				t.Fatalf("reclamation tasks of %s: got %v want %v %v", owner, ids, want, err)
+			}
+		}
+		reclaimTasks(f.owner, f.task.ID)
+		reclaimTasks(other.owner, other.task.ID)
+		reclaimTasks(uuid.NewString())
+		if ids, err := d.InboundReclaimTasks(ctx, f.owner, cutoff, 0); err != nil || len(ids) != 0 {
+			t.Fatalf("reclamation task limit ignored: %v %v", ids, err)
+		}
 		if n, err := d.ReclaimInboxReceipts(ctx, uuid.NewString(), f.task.ID, 10); err != nil || n != 0 {
 			t.Fatalf("foreign owner reclaimed receipts: %d %v", n, err)
 		}
@@ -418,6 +444,7 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 				t.Fatalf("event reclamation: got %d want %d %v", n, want, err)
 			}
 		}
+		reclaimTasks(f.owner)
 		if _, err := d.InboxReceipt(ctx, f.owner, inbox.InboxID, "live"); err != nil {
 			t.Fatalf("unexpired receipt reclaimed: %v", err)
 		}
@@ -505,4 +532,42 @@ func TestInboundRetentionStartsWhenEventLeavesPending(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// TestInboxReceiptExpiryBoundsTheIndexScan proves that both receipt-expiry
+// probes bound assistant_task_inbox_receipts_expiry by expires_at, so a task
+// with many live receipts and none expired is not scanned receipt by receipt.
+func TestInboxReceiptExpiryBoundsTheIndexScan(t *testing.T) {
+	expiryIndexCond := regexp.MustCompile(`"Index Cond": "[^"]*expires_at <= statement_timestamp\(\)`)
+	f := setup(t)
+	ctx := t.Context()
+	conn, err := f.db.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `RESET ALL; DEALLOCATE ALL`); err != nil {
+			t.Error(err)
+		}
+		conn.Release()
+	}()
+	if _, err := conn.Exec(ctx, `SET enable_seqscan=off; SET enable_bitmapscan=off; SET plan_cache_mode=force_generic_plan`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, prepare, execute string }{
+		{"receipts", `PREPARE receipt_plan(uuid,uuid,int) AS ` + assistanttask.ReclaimInboxReceiptsSQL, `EXECUTE receipt_plan(gen_random_uuid(),gen_random_uuid(),10)`},
+		{"tasks", `PREPARE task_plan(uuid,timestamptz,int) AS ` + assistanttask.InboundReclaimTasksSQL, `EXECUTE task_plan(gen_random_uuid(),statement_timestamp(),10)`},
+	} {
+		if _, err := conn.Exec(ctx, c.prepare); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var plan []byte
+		if err := conn.QueryRow(ctx, `EXPLAIN (FORMAT JSON) `+c.execute).Scan(&plan); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		text := string(plan)
+		if !strings.Contains(text, `"Index Name": "assistant_task_inbox_receipts_expiry"`) || !expiryIndexCond.MatchString(text) {
+			t.Fatalf("%s plan does not bound the receipt expiry index by expires_at: %s", c.name, plan)
+		}
+	}
 }

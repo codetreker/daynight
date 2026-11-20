@@ -17,8 +17,9 @@ introduces its six numeric definitions and equal transitional role mappings.
 
 The Web entry stylesheet loads six shared size values and transitional roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
-The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell, selection controls, task filters and rows, personal
+The browser sets the root size. The body and migrated shell and selection
+controls use the `sm` size directly; remaining consumers use transitional roles.
+Task filters and rows, personal
 task groups, Goal summaries, task search, dependency
 graphs, project overview, statistics, Worker pages and configuration, Worker
 Prompt editors, usage panels, project settings, teams, GitHub integration, pull
@@ -26,7 +27,7 @@ requests, Webhooks, and Session controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
-count badges use the metadata role. Shared Markdown selects magnitude-based sizes
+count badges select `xs` directly. Shared Markdown selects magnitude-based sizes
 under the [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md);
 Bot first-paragraph emphasis retains its weight without a separate size.
 Touch fields, including Step title and Markdown editors

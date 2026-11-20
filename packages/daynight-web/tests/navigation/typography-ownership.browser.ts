@@ -62,6 +62,24 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
   test.describe(`${locale} ${width}px remaining typography`, () => {
     test.use({ viewport: { width, height: 900 }, locale: locale === 'en' ? 'en-US' : 'zh-CN', hasTouch: width === 320 });
 
+    test('workspace shell and project cards follow the shared scale', async ({ page }) => {
+      await install(page, locale);
+      await page.goto('/projects');
+      await expect(page.locator('.project-name')).toBeVisible();
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await font(page.locator('body'), root * 0.875);
+        await font(page.locator('.page-heading h1'), root * 1.75);
+        await font(page.locator('.heading-actions .button'), root * 0.875);
+        await font(page.locator('.crumb'), root * 0.875);
+        await font(page.locator('.project-name'), root * 0.875);
+        await font(page.locator('.repo'), root * 0.75);
+        await font(page.locator('.project-footer'), root * 0.75);
+        await font(page.locator('.nav-label'), root * 0.75);
+        await noOverflow(page);
+      }
+    });
+
     test('task controls and attachment metadata retain roles, drafts and local scrolling', async ({ page }, info) => {
       const state = await install(page, locale);
       await page.goto(`${taskPath}/attachments/${encodeURIComponent(file)}`);
@@ -91,6 +109,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await reachable(input); await noOverflow(page);
       await info.attach('attachments-font-preference', { body: await page.screenshot(), contentType: 'image/png' });
       await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      if (width === 320) await attachments.locator('.attachment-upload-heading button').click();
       const action = page.locator('.attachment-actions-trigger').first();
       await action.click();
       const remove = page.locator('.attachment-menu-delete');
@@ -100,6 +119,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await font(dialog.locator('.attachment-delete-path'), 14);
       await noOverflow(page);
       await dialog.getByRole('button', { name: /^(Cancel|取消)$/ }).click();
+      if (width === 320) await attachments.locator('.attachment-upload-disclosure > summary').click();
       await expect(input).toHaveValue(draft);
       expect(state.writes).toEqual([]);
       await original?.dispose();
