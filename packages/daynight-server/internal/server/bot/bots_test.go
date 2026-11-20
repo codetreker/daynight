@@ -44,6 +44,27 @@ func TestBotsHTTPEmptyList(t *testing.T) {
 	}
 }
 
+func TestBotScopeRefusalPreservesHTTPContract(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		err          error
+		status       int
+		code, header string
+	}{
+		{"refusal", &model.Fault{Code: "insufficient_scope", Message: "Credential scope does not permit this Bot operation."}, 403, "forbidden", "insufficient_scope"},
+		{"uncertain", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "insufficient_scope", Message: "scope"}}, 500, "internal_error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBotDefinitionsFixture(t, io.Discard)
+			response := f.request("GET", botDefinitionsPath, "", &botDefinitionCall{method: "Get", id: botDefinitionsID, err: tc.err})
+			assertProjectError(t, response, tc.status, tc.code)
+			if got := response.Header().Get("Daynight-Scope-Status"); got != tc.header {
+				t.Fatalf("scope status = %q, want %q", got, tc.header)
+			}
+		})
+	}
+}
+
 func TestBotsHTTPReadDeleteIntentAndWorkerInventory(t *testing.T) {
 	var logs bytes.Buffer
 	f := newBotDefinitionsFixture(t, &logs)

@@ -12,12 +12,11 @@ although operators can open the Worker for its complete observation.
 
 List cards show the scheduler phase and capacity, retaining the capacity stale
 indicator and existing missing or expired states. They omit admission reasons,
-reason entry times and monitoring receipt time and age. The detail page remains
-the diagnostic surface. The batch summary and its permission projection remain
+reason entry times and monitoring receipt time and age. The detail page retains admission reasons and their associated task links. The batch summary and its permission projection remain
 unchanged. The [Web monitoring decision](../architecture/2026-11-09-web-worker-monitoring.md)
 retains the independent observation and freshness model; the
 [summary permission decision](../architecture/2026-11-09-monitoring-summary-permissions.md)
-retains the protocol and its original rationale.
+retains the protocol and its original rationale. The [diagnostic panel decision](2026-11-20-worker-monitoring-diagnostic-panels.md) narrows the details shown on that page.
 
 ## Alternatives
 
@@ -30,6 +29,6 @@ change. Removing the nodes makes the information boundary explicit.
 
 ## Consequences
 
-Cards naturally contract without a replacement placeholder. Operators must open
-detail for diagnostics; monitoring expiry and independent read failures remain
+Cards naturally contract without a replacement placeholder. Operators can open
+detail for admission reasons; monitoring expiry and independent read failures remain
 visible in the overview. No additional per-card detail request is needed.
