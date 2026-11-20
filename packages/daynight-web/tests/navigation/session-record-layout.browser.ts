@@ -225,13 +225,30 @@ test('terminal recording native zoom Escape cancels before leaving fullscreen', 
   await toggle.click();
   const zoom = page.locator('.terminal-recording-summary select');
   const terminal = page.locator('.terminal-text');
-  await expect(terminal).toHaveCSS('font-size', '12px');
-  await zoom.selectOption('125');
-  await expect(terminal).toHaveCSS('font-size', '15px');
-  await page.evaluate(() => document.documentElement.style.setProperty('--text-reading', '2rem'));
-  await expect(terminal).toHaveCSS('font-size', '15px');
+  await expect(terminal).toHaveCSS('font-size', '14px');
+  for (const [percent, font] of [['75', '10.5px'], ['125', '17.5px'], ['150', '21px']] as const) {
+    await zoom.selectOption(percent);
+    await expect(terminal).toHaveCSS('font-size', font);
+    await expect(page.locator('.terminal-recording-time')).toHaveCSS('font-size', '12px');
+    await expect(page.locator('.terminal-recording-summary')).toHaveCSS('font-size', '14px');
+  }
+  await page.evaluate(() => document.documentElement.style.setProperty('--text-base', '2rem'));
+  await expect(terminal).toHaveCSS('font-size', '21px');
+  await page.evaluate(() => document.documentElement.style.setProperty('--text-sm', '1rem'));
+  await expect(terminal).toHaveCSS('font-size', '24px');
+  await page.evaluate(() => {
+    document.documentElement.style.removeProperty('--text-base');
+    document.documentElement.style.removeProperty('--text-sm');
+    document.documentElement.style.fontSize = '24px';
+  });
+  await expect(terminal).toHaveCSS('font-size', '31.5px');
+  await returnToPage(page);
+  await expect(zoom).toHaveValue('150');
+  await expect(terminal).toHaveCSS('font-size', '31.5px');
   await zoom.selectOption('100');
-  await expect(terminal).toHaveCSS('font-size', '12px');
+  await expect(terminal).toHaveCSS('font-size', '21px');
+  await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+  await expect(terminal).toHaveCSS('font-size', '14px');
   await zoom.selectOption('125');
   await expect(zoom.locator('..')).toHaveAttribute('data-density', 'filter');
   expect(await zoom.evaluate(node => node.getBoundingClientRect().height)).toBe(32);

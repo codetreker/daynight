@@ -7,6 +7,7 @@ import (
 
 	identity "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
@@ -14,6 +15,7 @@ import (
 
 // DirectMembers coordinates independently committed identity initialization and Team membership.
 type DirectMembers struct {
+	admission  *scopeAdmission
 	writer     store.TeamWriter
 	ensureUser func(context.Context, model.User) (model.User, error)
 	resource   string
@@ -66,10 +68,14 @@ func (s *DirectMembers) AddMember(ctx context.Context, p model.Principal, id str
 		return core.DirectMemberResult{}, err
 	}
 	if err := s.strict(ctx, id, func(scope store.TeamWriteScope) error {
+		ctx := s.admission.writeContext(ctx, scope)
 		if err := s.lockCredential(ctx, scope, p); err != nil {
 			return err
 		}
-		return s.ops.authorize(ctx, scope.TeamDAO(), p)
+		if err := s.ops.authorize(ctx, scope.TeamDAO(), p); err != nil {
+			return err
+		}
+		return s.admission.requireWrite(ctx, scope, p, scopepolicy.TeamRead)
 	}); err != nil {
 		return core.DirectMemberResult{}, err
 	}
@@ -79,6 +85,7 @@ func (s *DirectMembers) AddMember(ctx context.Context, p model.Principal, id str
 	}
 	var result core.DirectMemberResult
 	err = s.strict(ctx, id, func(scope store.TeamWriteScope) error {
+		ctx := s.admission.writeContext(ctx, scope)
 		if err := s.lockCredential(ctx, scope, p); err != nil {
 			return err
 		}
@@ -91,7 +98,10 @@ func (s *DirectMembers) AddMember(ctx context.Context, p model.Principal, id str
 			return err
 		}
 		// Membership and eligibility contention can outlast the initial credential check.
-		return s.lockCredential(ctx, scope, p)
+		if err := s.lockCredential(ctx, scope, p); err != nil {
+			return err
+		}
+		return s.admission.requireWrite(ctx, scope, p, scopepolicy.TeamMembers, scopepolicy.TeamRead)
 	})
 	if err != nil {
 		return core.DirectMemberResult{}, err

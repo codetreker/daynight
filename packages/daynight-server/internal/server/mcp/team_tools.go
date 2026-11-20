@@ -117,6 +117,22 @@ func checkTeamBody(value any) error {
 
 // RegisterTeamTools exposes the Team use cases through the common MCP wrapper.
 func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) error {
+	return registerTeamTools(e, teams, projects, identities, nil)
+}
+
+// RegisterScopedTeamTools registers the same tools with request credential admission.
+// The provider must return the policy snapshot obtained by request authentication.
+func RegisterScopedTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) error {
+	if authorization == nil {
+		return fmt.Errorf("Team credential authorization is required")
+	}
+	if !scopeProtected(teams) {
+		return fmt.Errorf("scoped Team service is required")
+	}
+	return registerTeamTools(e, teams, projects, identities, authorization)
+}
+
+func registerTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) error {
 	if e == nil || teams == nil || projects == nil || identities == nil {
 		return fmt.Errorf("Team tool dependencies are required")
 	}
@@ -140,7 +156,24 @@ func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 			}
-			return teamTool(ctx, actor, name, a, teams, projects, identities)
+			_, write, err := teamToolOperations(name, actor.Principal, a)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if authorization != nil {
+				if err := verifyTeamRequestPolicy(ctx, authorization, actor); err != nil {
+					result := ToolResult{}
+					if write {
+						result.WriteOutcome = "not_committed"
+					}
+					return result, err
+				}
+			}
+			result, err := teamTool(ctx, actor, name, a, teams, projects, identities, authorization)
+			if authorization != nil {
+				result = scopeRefusalResult(result, err, write)
+			}
+			return result, err
 		}
 		var err error
 		switch name {
@@ -152,11 +185,17 @@ func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 		if err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
 		}
+		if authorization != nil {
+			if e.scopedTools == nil {
+				e.scopedTools = make(map[string]bool)
+			}
+			e.scopedTools[name] = true
+		}
 	}
 	return nil
 }
 
-func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) (ToolResult, error) {
+func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) (ToolResult, error) {
 	p := actor.Principal
 	if name == "team_create" {
 		if err := checkTeamBody(api.CreateTeamRequest{Name: a.Name, ExpectedUserID: p.UserID}); err != nil {
@@ -244,11 +283,21 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: map[string]any{"teamId": id, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": id}}, nil
 	case "team_projects":
-		if actor.Authorization != nil {
+		if actor.Authorization != nil && authorization == nil {
 			if _, err := teams.Get(ctx, p, id); err != nil {
 				return ToolResult{}, err
 			}
 			if err := actor.Authorization.Require(scopepolicy.TeamRead); err != nil {
+				return ToolResult{}, err
+			}
+		}
+		if authorization != nil {
+			// Check visibility through the protected Team service before exposing
+			// a scope refusal for a specific Team.
+			if _, err := teams.Get(ctx, p, id); err != nil {
+				return ToolResult{}, err
+			}
+			if err := requireTeamToolScopes(ctx, authorization, p, scopepolicy.ProjectRead); err != nil {
 				return ToolResult{}, err
 			}
 		}

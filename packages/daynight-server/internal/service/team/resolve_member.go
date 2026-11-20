@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 )
@@ -15,6 +16,7 @@ func (s *DirectMembers) ResolveMember(ctx context.Context, p model.Principal, id
 	}
 	var member *model.TeamMember
 	err = s.strict(ctx, id, func(scope store.TeamWriteScope) error {
+		ctx := s.admission.writeContext(ctx, scope)
 		if err := s.lockCredential(ctx, scope, p); err != nil {
 			return err
 		}
@@ -23,7 +25,10 @@ func (s *DirectMembers) ResolveMember(ctx context.Context, p model.Principal, id
 		if err != nil {
 			return err
 		}
-		return s.lockCredential(ctx, scope, p)
+		if err := s.lockCredential(ctx, scope, p); err != nil {
+			return err
+		}
+		return s.admission.requireWrite(ctx, scope, p, scopepolicy.TeamMembers, scopepolicy.TeamRead)
 	})
 	if err != nil {
 		return nil, err

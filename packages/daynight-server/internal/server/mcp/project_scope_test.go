@@ -194,10 +194,10 @@ func TestScopedProjectMCPAdmission(t *testing.T) {
 	if err := RegisterScopedProjectTools(f.entry, projects, identity, "https://daynight.test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RegisterScopedInvitationTools(f.entry, identity, &invitationTestTeams{}, invites, "https://daynight.test"); err != nil {
+	if err := RegisterProjectScopedInvitationTools(f.entry, identity, &invitationTestTeams{}, invites, "https://daynight.test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RegisterScopedTeamTools(f.entry, teams, projects, identity); err != nil {
+	if err := RegisterProjectScopedTeamTools(f.entry, teams, projects, identity); err != nil {
 		t.Fatal(err)
 	}
 	client := func(token string) *structClient { return &structClient{t: t, client: f.client(t, "2026-07-28", token)} }
@@ -469,11 +469,11 @@ func TestScopedMCPRegistrationsRejectMissingDependenciesAndCollisions(t *testing
 		{"project", func(e *Entry) error {
 			return RegisterScopedProjectTools(e, projects, identity, "https://daynight.test")
 		}, func(e *Entry) error { return RegisterScopedProjectTools(e, nil, identity, "https://daynight.test") }},
-		{"team", func(e *Entry) error { return RegisterScopedTeamTools(e, teams, projects, identity) }, func(e *Entry) error { return RegisterScopedTeamTools(e, nil, projects, identity) }},
+		{"team", func(e *Entry) error { return RegisterProjectScopedTeamTools(e, teams, projects, identity) }, func(e *Entry) error { return RegisterProjectScopedTeamTools(e, nil, projects, identity) }},
 		{"invitation", func(e *Entry) error {
-			return RegisterScopedInvitationTools(e, identity, invitationTeams, invitations, "https://daynight.test")
+			return RegisterProjectScopedInvitationTools(e, identity, invitationTeams, invitations, "https://daynight.test")
 		}, func(e *Entry) error {
-			return RegisterScopedInvitationTools(e, identity, invitationTeams, nil, "https://daynight.test")
+			return RegisterProjectScopedInvitationTools(e, identity, invitationTeams, nil, "https://daynight.test")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

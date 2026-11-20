@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
 // ScopedProjectOperations must enforce resource visibility and the operation's
@@ -113,9 +114,9 @@ func RegisterScopedProjectTools(e *Entry, projects ScopedProjectOperations, iden
 	return nil
 }
 
-// RegisterScopedTeamTools exposes the Team projects listing while the Team
+// RegisterProjectScopedTeamTools exposes the Team projects listing while the Team
 // domain's other scoped operations are not yet registered.
-func RegisterScopedTeamTools(e *Entry, teams teamOperations, projects ScopedProjectOperations, identity personalTeamResolver) error {
+func RegisterProjectScopedTeamTools(e *Entry, teams teamOperations, projects ScopedProjectOperations, identity personalTeamResolver) error {
 	if e == nil || e.scopedAuth == nil || teams == nil || projects == nil || identity == nil {
 		return errors.New("scoped Team tool dependencies are required")
 	}
@@ -126,12 +127,23 @@ func RegisterScopedTeamTools(e *Entry, teams teamOperations, projects ScopedProj
 	return nil
 }
 
+// RegisterCombinedScopedTeamTools requires the Team's protected service and
+// uses the Project domain's independently protected list operation.
+func RegisterCombinedScopedTeamTools(e *Entry, teams teamOperations, projects ScopedProjectOperations, identity personalTeamResolver, authorization teamservice.AuthorizationProvider) error {
+	if e == nil || e.scopedAuth == nil || projects == nil {
+		return errors.New("scoped Project tool dependencies are required")
+	}
+	return RegisterScopedTeamTools(e, teams, scopedProjectAdapter{projects}, identity, authorization)
+}
+
 // ScopedInvitationProjects classifies the two received Project invitation operations.
 type ScopedInvitationProjects interface {
 	InspectInvitation(context.Context, model.CredentialAuthorization, string) (coreproject.InvitationInspection, error)
 	AcceptInvitation(context.Context, model.CredentialAuthorization, string, string) (coreproject.InvitationAcceptance, error)
 }
 type scopedInvitationProjects struct{ projects ScopedInvitationProjects }
+
+func (s scopedInvitationProjects) ScopeProtected() bool { return s.projects != nil }
 
 func (s scopedInvitationProjects) InspectInvitation(ctx context.Context, p model.Principal, secret string) (coreproject.InvitationInspection, error) {
 	a, err := scopedAuthorization(ctx, p)
@@ -148,9 +160,9 @@ func (s scopedInvitationProjects) AcceptInvitation(ctx context.Context, p model.
 	return s.projects.AcceptInvitation(ctx, a, secret, expected)
 }
 
-// RegisterScopedInvitationTools enables only the Project branch until Team
+// RegisterProjectScopedInvitationTools enables only the Project branch until Team
 // invitation admission is registered by the Team domain.
-func RegisterScopedInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects ScopedInvitationProjects, origin string) error {
+func RegisterProjectScopedInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects ScopedInvitationProjects, origin string) error {
 	if e == nil || e.scopedAuth == nil || identity == nil || teams == nil || projects == nil {
 		return errors.New("scoped invitation tool dependencies are required")
 	}
@@ -160,4 +172,13 @@ func RegisterScopedInvitationTools(e *Entry, identity personalTeamResolver, team
 	e.scopedTools["invitation_inspect"] = true
 	e.scopedTools["invitation_accept"] = true
 	return nil
+}
+
+// RegisterCombinedScopedInvitationTools retains both domains' service admission
+// and only classifies their tools when both services are protected.
+func RegisterCombinedScopedInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects ScopedInvitationProjects, origin string, authorization teamservice.AuthorizationProvider) error {
+	if e == nil || e.scopedAuth == nil || projects == nil {
+		return errors.New("scoped Project invitation dependencies are required")
+	}
+	return RegisterScopedInvitationTools(e, identity, teams, scopedInvitationProjects{projects}, origin, authorization)
 }

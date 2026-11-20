@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -59,10 +60,16 @@ func AuthorizeAddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Pri
 	if err != nil {
 		return err
 	}
-	return authorizeOrdinaryAdmin(t)
+	if err := authorizeOrdinaryAdmin(ctx, p, t, scopepolicy.TeamMembers, scopepolicy.TeamRead); err != nil {
+		return err
+	}
+	return nil
 }
 
-func authorizeOrdinaryAdmin(t model.Team) error {
+func authorizeOrdinaryAdmin(ctx context.Context, p model.Principal, t model.Team, operations ...scopepolicy.Operation) error {
+	if err := checkScope(ctx, p, operations...); err != nil {
+		return err
+	}
 	if t.Membership.Role != model.ProjectAdmin {
 		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
