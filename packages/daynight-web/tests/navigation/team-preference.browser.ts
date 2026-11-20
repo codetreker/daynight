@@ -451,6 +451,41 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, t
   });
 }
 
+for (const locale of ['en', 'zh-CN'] as const) for (const narrow of [false, true]) {
+  test(`opens account GitHub Apps from ${narrow ? 'mobile' : 'desktop'} navigation in ${locale}`, async ({ page }) => {
+    await page.setViewportSize(narrow ? { width: 320, height: 800 } : { width: 1280, height: 900 });
+    await install(page);
+    await page.goto('/projects');
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const chinese = locale === 'zh-CN';
+    const name = chinese ? 'GitHub Apps' : 'My GitHub Apps';
+    const sidebar = page.locator('.sidebar');
+    const open = async () => { if (narrow) await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation', exact: true }).click(); };
+    await open();
+    const group = sidebar.locator('.sidebar-group').nth(1);
+    const account = group.locator('a[href="/github-apps"]');
+    const team = sidebar.locator(`a[href="/teams/${personalA}/github-apps"]`);
+    await expect(group.locator('.nav-label')).toHaveText(chinese ? '我的' : 'My');
+    await expect(account).toHaveText(name);
+    await expect(account).toHaveAttribute('aria-label', name);
+    await expect(account).toHaveAttribute('title', name);
+    await expect(team).toHaveAttribute('aria-label', 'GitHub Apps');
+    if (!narrow) {
+      await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar', exact: true }).click();
+      await expect(account).toHaveAttribute('title', name);
+      await expect(account).toHaveAttribute('aria-label', name);
+    }
+    await account.click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/github-apps');
+    if (narrow) {
+      await expect(page.getByRole('dialog', { name: chinese ? '工作空间导航' : 'Workspace navigation' })).toHaveCount(0);
+      await open();
+    }
+    await expect(account).toHaveAttribute('aria-current', 'page');
+    await expect(team).not.toHaveAttribute('aria-current');
+  });
+}
+
 for (const path of [`/projects/${project}`, '/shared-projects', '/workers', '/account']) {
   test(`hides Personal management links on ${path}`, async ({ page }) => {
     await install(page);
