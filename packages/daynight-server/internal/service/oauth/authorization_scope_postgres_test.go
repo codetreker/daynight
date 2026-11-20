@@ -149,8 +149,15 @@ func TestScopedAuthorizationPersistsApprovalAtomicallyAndRefreshUsesCurrentPolic
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("edit policy: %+v %v", completion, err)
 	}
-	rotated, err := core.NewGrantLifecycle(database).Rotate(ctx, tokens.RefreshToken, record.ClientID, record.Resource, nil)
-	if err != nil || rotated.Grant == nil || rotated.Grant.ID != consumed.GrantID || rotated.Grant.Scope != core.Scope {
+	admissions := 0
+	rotated, err := core.NewGrantLifecycle(database).Rotate(ctx, tokens.RefreshToken, record.ClientID, record.Resource, func(actual context.Context, clientID string) error {
+		admissions++
+		if actual != ctx || clientID != record.ClientID {
+			t.Fatal("refresh admission lost verified client or context")
+		}
+		return nil
+	})
+	if err != nil || admissions != 1 || rotated.Grant == nil || rotated.Grant.ID != consumed.GrantID || rotated.Grant.Scope != core.Scope {
 		t.Fatalf("refresh protocol changed: %+v %v", rotated, err)
 	}
 	authenticate(tokens.AccessToken, 2, reduced)
