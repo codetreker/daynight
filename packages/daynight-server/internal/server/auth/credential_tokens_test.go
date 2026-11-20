@@ -174,6 +174,37 @@ func TestCredentialTokenHTTP(t *testing.T) {
 	if !strings.Contains(logs.String(), `"error_code":"timeout"`) {
 		t.Fatalf("timeout classification missing: %s", logs.String())
 	}
+	// A session can expire after admission while the transaction waits for a row.
+	// The classified authentication refusal wraps a missing Session row.
+	sessionExpired := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.Unauthenticated(model.ErrNotFound)}
+	createCalls, patchCalls := 0, 0
+	identity.createPATV2 = func(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error) {
+		createCalls++
+		return identitycore.MintedPAT{Credential: token, Secret: secret}, sessionExpired
+	}
+	identity.updateDescription = func(context.Context, model.Principal, string, string, *string, *string) (string, *string, error) {
+		patchCalls++
+		return tokenID, &value, sessionExpired
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/api/v2/me/tokens", body},
+		{"PATCH", "/api/v2/me/tokens/" + tokenID + "/description", patchBody},
+	} {
+		denied := request(tc.method, tc.path, tc.body, true, true, nil)
+		if denied.Code != 401 || !strings.Contains(denied.Body.String(), `"unauthenticated"`) || denied.Header().Get("Daynight-User-ID") != principal.UserID || denied.Header().Get("Location") != "" || strings.Contains(denied.Body.String(), secret) || strings.Contains(denied.Body.String(), value) {
+			t.Fatalf("%s expired session: %d %v %s", tc.method, denied.Code, denied.Header(), denied.Body)
+		}
+	}
+	if createCalls != 1 || patchCalls != 1 {
+		t.Fatalf("expired session operation calls: create=%d patch=%d", createCalls, patchCalls)
+	}
+	identity.updateDescription = func(context.Context, model.Principal, string, string, *string, *string) (string, *string, error) {
+		return "", nil, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}
+	}
+	missing := request("PATCH", "/api/v2/me/tokens/"+tokenID+"/description", patchBody, true, true, nil)
+	if missing.Code != 404 || !strings.Contains(missing.Body.String(), `"not_found"`) {
+		t.Fatalf("missing target: %d %s", missing.Code, missing.Body)
+	}
 	if !strings.Contains(logs.String(), `"cleanup_failed":true`) || !strings.Contains(logs.String(), `"transaction_phase":"commit"`) || !strings.Contains(logs.String(), `"error_code":"write_outcome_unknown"`) {
 		t.Fatalf("missing completion facts: %s", logs.String())
 	}

@@ -42,7 +42,7 @@ func WriteOperationError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 	if r.Context().Err() == nil && (!databaseFailure || state == "") && !known && (facts.Outcome == "" || facts.Outcome == store.TransactionNotCommitted) && errors.Is(err, context.DeadlineExceeded) {
 		err = &model.Fault{Code: "timeout", Message: "The credential operation timed out."}
 	}
-	if !databaseFailure && errors.Is(err, model.ErrNotFound) {
+	if !databaseFailure && !known && errors.Is(err, model.ErrNotFound) {
 		err = &model.Fault{Code: "not_found", Message: "Credential not found."}
 	}
 	httpx.WriteError(w, r, logger, component, phase, err)
