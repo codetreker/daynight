@@ -13,10 +13,7 @@ func TestReviewPollCursorScopeAndValidation(t *testing.T) {
 	const user = "a1111111-1111-4111-8111-111111111111"
 	const worker = "b2222222-2222-4222-8222-222222222222"
 	key := store.ReviewPollKey{ProjectID: "c3333333-3333-4333-8333-333333333333", RepositoryID: 9223372036854775807, GitHubPRID: 42}
-	cursor, err := ReviewPollCursor(user, worker, 20, key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cursor := ReviewPollCursor(user, worker, 20, key)
 	got, err := ReviewPollPage(model.PageRequest{Limit: 20, Cursor: &cursor}, user, worker)
 	if err != nil || got == nil || *got != key {
 		t.Fatalf("round trip: %+v %v", got, err)

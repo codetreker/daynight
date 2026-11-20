@@ -126,7 +126,17 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), 
 			case "/repos/example/integration/pulls/2":
 				_ = json.NewEncoder(w).Encode(other)
 			default:
-				_ = json.NewEncoder(w).Encode([]any{first, other})
+				page := []any{first}
+				if state == "open" || r.URL.Query().Get("state") == "all" {
+					page = append(page, other)
+				}
+				if r.URL.Query().Get("direction") == "desc" && len(page) == 2 {
+					page[0], page[1] = page[1], page[0]
+				}
+				if r.URL.Query().Get("per_page") == "1" && len(page) > 1 {
+					page = page[:1]
+				}
+				_ = json.NewEncoder(w).Encode(page)
 			}
 		default:
 			http.Error(w, "unexpected GitHub request", http.StatusNotFound)

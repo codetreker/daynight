@@ -73,10 +73,7 @@ func (s *Workers) ReviewPullRequests(ctx context.Context, principal model.Princi
 			result.PullRequests = append(result.PullRequests, ReviewPullRequest{ProjectID: row.ProjectID, RepositoryID: strconv.FormatInt(row.RepositoryID, 10), RepositoryURL: "https://github.com/" + url.PathEscape(owner) + "/" + url.PathEscape(name), Number: strconv.FormatInt(row.Number, 10)})
 		}
 		if more {
-			cursor, err := workercore.ReviewPollCursor(principal.UserID, id, request.Limit, rows[len(rows)-1].ReviewPollKey)
-			if err != nil {
-				return err
-			}
+			cursor := workercore.ReviewPollCursor(principal.UserID, id, request.Limit, rows[len(rows)-1].ReviewPollKey)
 			result.NextCursor = &cursor
 		}
 		return nil

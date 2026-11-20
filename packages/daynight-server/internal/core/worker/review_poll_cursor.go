@@ -84,10 +84,8 @@ func ReviewPollPage(request model.PageRequest, userID, workerID string) (*store.
 	return &store.ReviewPollKey{ProjectID: project, RepositoryID: repo, GitHubPRID: pr}, nil
 }
 
-func ReviewPollCursor(userID, workerID string, limit int, key store.ReviewPollKey) (string, error) {
-	data, err := json.Marshal(reviewPollCursor{1, userID, workerID, limit, key.ProjectID, strconv.FormatInt(key.RepositoryID, 10), strconv.FormatInt(key.GitHubPRID, 10)})
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
+func ReviewPollCursor(userID, workerID string, limit int, key store.ReviewPollKey) string {
+	// This fixed structure contains only strings and integers, so marshaling cannot fail.
+	data, _ := json.Marshal(reviewPollCursor{1, userID, workerID, limit, key.ProjectID, strconv.FormatInt(key.RepositoryID, 10), strconv.FormatInt(key.GitHubPRID, 10)})
+	return base64.RawURLEncoding.EncodeToString(data)
 }
