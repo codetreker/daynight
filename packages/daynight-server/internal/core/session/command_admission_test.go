@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -16,6 +17,40 @@ import (
 
 type missingOperationProbe struct{ store.SessionDAO }
 
+func TestCommandAdmissionIsInstalledOnce(t *testing.T) {
+	var zero Execution
+	if zero.commandAdmissionCheck() != nil || zero.SetCommandAdmission(nil) == nil {
+		t.Fatal("unconstructed execution accepted admission")
+	}
+	s := NewExecution(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	if s.commandAdmissionCheck() != nil {
+		t.Fatal("legacy execution acquired admission")
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- s.SetCommandAdmission(func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error { return nil })
+		}()
+	}
+	wg.Wait()
+	close(results)
+	succeeded := 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 || s.commandAdmissionCheck() == nil {
+		t.Fatalf("successful installs: %d", succeeded)
+	}
+	if err := s.SetCommandAdmission(nil); err == nil || s.commandAdmissionCheck() == nil {
+		t.Fatal("installed admission was removed")
+	}
+}
+
 func TestCommandScopeRejectsUnsupportedKind(t *testing.T) {
 	if _, err := commandScope("unknown"); err == nil {
 		t.Fatal("unsupported command accepted")
@@ -23,10 +58,10 @@ func TestCommandScopeRejectsUnsupportedKind(t *testing.T) {
 }
 
 func TestScopedReplayFailsWithoutExistenceProbe(t *testing.T) {
-	s := &Execution{commandAdmission: func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
+	s := &Execution{commandAdmission: &commandAdmissionState{check: func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
 		t.Fatal("admission ran without a reliable existence probe")
 		return nil
-	}}
+	}}}
 	err := s.admitReplay(t.Context(), &operationTx{dao: missingOperationProbe{}}, model.Principal{}, "session", "operation")
 	if err == nil {
 		t.Fatal("missing operation existence capability accepted")

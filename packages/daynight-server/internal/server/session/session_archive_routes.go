@@ -26,7 +26,7 @@ func (h *Routes) registerArchiveRoutes(mux *http.ServeMux, observe func(Producer
 	for _, base := range []string{sessionBase + "/{sessionId}/archive", "/api/v1/test-sessions/{sessionId}/archive"} {
 		h.registerUnifiedArchiveRoutes(mux, base, observe)
 		for method, handler := range map[string]httpx.AuthenticatedHandler{"GET": h.archiveStatus, "POST": h.updateArchive, "PUT": h.putArchive} {
-			route := h.auth.Require(h.Parameters(handler))
+			route := h.auth.Require(h.Parameters(handler, method == http.MethodGet))
 			if method == http.MethodPut {
 				route = h.archivePreflight(route)
 			}
@@ -36,7 +36,7 @@ func (h *Routes) registerArchiveRoutes(mux *http.ServeMux, observe func(Producer
 				mux.HandleFunc(method+" "+base, route)
 			}
 		}
-		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent))))
+		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent, true))))
 		for path, methods := range map[string]string{base: "GET, POST, PUT", base + "/content": "GET"} {
 			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				httpx.MethodNotAllowed(h.logger, methods)(w, r)

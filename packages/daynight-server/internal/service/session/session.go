@@ -14,11 +14,21 @@ import (
 type Service struct {
 	*sessioncore.Execution
 	*botruntime.Recovery
-	engine                *sessioncore.Engine
-	writer                store.SessionWriter
-	historyOps            historyScopeOperations
-	beginBrowser          func() (browserOperation, error)
-	producerAuthorization ProducerAuthorization
+	engine                 *sessioncore.Engine
+	writer                 store.SessionWriter
+	historyOps             historyScopeOperations
+	beginBrowser           func() (browserOperation, error)
+	scopedCommandExecution *sessioncore.Execution
+	producerAuthorization  ProducerAuthorization
+}
+
+// ScopedCommandExecution returns the execution whose command admission was
+// installed at construction. Its admission cannot be replaced or removed.
+func (s *Service) ScopedCommandExecution() *sessioncore.Execution {
+	if s == nil {
+		return nil
+	}
+	return s.scopedCommandExecution
 }
 
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
@@ -53,21 +63,44 @@ func NewScoped(writer store.SessionWriter, engine *sessioncore.Engine, source Pr
 		return nil, errors.New("session producer authorization is required")
 	}
 	s := New(writer, engine)
+	if err := s.installProducer(source); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// NewScopedCommandsAndProducer installs both independent transaction-bound
+// policies on the same execution before it is exposed to callers.
+func NewScopedCommandsAndProducer(writer store.SessionWriter, engine *sessioncore.Engine, command CommandAuthorizationSource, producer ProducerAuthorization) (*Service, error) {
+	if producer == nil {
+		return nil, errors.New("session producer authorization is required")
+	}
+	s, err := NewScopedCommands(writer, engine, command)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.installProducer(producer); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Service) installProducer(source ProducerAuthorization) error {
 	s.producerAuthorization = source
 	s.Execution.SetProducerAdmission(s.requireProducer)
 	write := func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
 		return s.write(ctx, op.Finish, fn)
 	}
-	runtime, err := botruntime.NewScopedRuntime(engine, write, botruntime.ProducerAuthorization(source))
+	runtime, err := botruntime.NewScopedRuntime(s.engine, write, botruntime.ProducerAuthorization(source))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	s.Recovery, err = botruntime.NewScopedRecovery(engine, write, botruntime.ProducerAuthorization(source))
+	s.Recovery, err = botruntime.NewScopedRecovery(s.engine, write, botruntime.ProducerAuthorization(source))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	s.Execution.SetBotRunner(runtime.Run)
-	return s, nil
+	return nil
 }
 
 func (s *Service) SetOrigin(origin string) { s.engine.Origin = origin }
@@ -110,9 +143,15 @@ func (s *Service) archivePreflight(ctx context.Context, principal model.Principa
 		defer op.Close()
 		var owner string
 		err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-			var e error
+			check, e := readCheck(ctx, scope, principal)
+			if e != nil {
+				return e
+			}
 			owner, e = op.ArchivePreflight(ctx, scope, principal, project, taskID, id, mode)
-			return e
+			if e != nil {
+				return e
+			}
+			return check()
 		})
 		return owner, err
 	}
@@ -131,9 +170,15 @@ func (s *Service) archivePreflightWithRecovery(ctx context.Context, principal mo
 		return "", err
 	}
 	err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		var e error
+		check, e := readCheck(ctx, scope, principal)
+		if e != nil {
+			return e
+		}
 		owner, e = preflight(op, ctx, scope, principal, project, taskID, id, mode)
-		return e
+		if e != nil {
+			return e
+		}
+		return check()
 	})
 	return owner, err
 }

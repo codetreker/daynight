@@ -11,24 +11,27 @@ import (
 )
 
 func (h *Routes) registerTestRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
-	routes := map[string]httpx.AuthenticatedHandler{
-		"GET /api/v1/test-sessions":                                            h.listTest,
-		"GET /api/v1/test-session-capabilities":                                h.testCapabilities,
-		"POST /api/v1/test-sessions":                                           h.registerTest,
-		"GET /api/v1/test-sessions/{sessionId}":                                h.testSnapshot,
-		"POST /api/v1/test-sessions/{sessionId}/controller-grant":              h.grant,
-		"POST /api/v1/test-sessions/{sessionId}/stop":                          h.stopTest,
-		"GET /api/v1/test-sessions/{sessionId}/timeline":                       h.timeline,
-		"POST /api/v1/test-sessions/{sessionId}/commands":                      h.submit,
-		"GET /api/v1/test-sessions/{sessionId}/operations/{operationId}":       h.operation,
-		"GET /api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": h.resource,
-		"GET /api/v1/test-sessions/{sessionId}/channel":                        h.browserChannel,
+	routes := map[string]struct {
+		handler httpx.AuthenticatedHandler
+		read    bool
+	}{
+		"GET /api/v1/test-sessions":                                            {h.listTest, true},
+		"GET /api/v1/test-session-capabilities":                                {h.testCapabilities, false},
+		"POST /api/v1/test-sessions":                                           {h.registerTest, false},
+		"GET /api/v1/test-sessions/{sessionId}":                                {h.testSnapshot, true},
+		"POST /api/v1/test-sessions/{sessionId}/controller-grant":              {h.grant, false},
+		"POST /api/v1/test-sessions/{sessionId}/stop":                          {h.stopTest, false},
+		"GET /api/v1/test-sessions/{sessionId}/timeline":                       {h.timeline, true},
+		"POST /api/v1/test-sessions/{sessionId}/commands":                      {h.submit, false},
+		"GET /api/v1/test-sessions/{sessionId}/operations/{operationId}":       {h.operation, true},
+		"GET /api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": {h.resource, true},
+		"GET /api/v1/test-sessions/{sessionId}/channel":                        {h.browserChannel, true},
 	}
-	for route, handler := range routes {
+	for route, item := range routes {
 		if route == "GET /api/v1/test-sessions/{sessionId}/channel" {
-			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(handler), true))
+			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(item.handler, item.read), true))
 		} else {
-			next := h.auth.Require(h.Parameters(handler))
+			next := h.auth.Require(h.Parameters(item.handler, item.read))
 			if route == "POST /api/v1/test-sessions" || route == "POST /api/v1/test-sessions/{sessionId}/controller-grant" {
 				registerProducerRoute(mux, route, next, producerCredential, observe)
 			} else {

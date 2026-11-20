@@ -42,10 +42,17 @@ func (s *Service) taskReadQuery(ctx context.Context, p model.Principal, project,
 		if e != nil {
 			return e
 		}
+		check, e := readCheck(ctx, scope, p)
+		if e != nil {
+			return e
+		}
 		if e = s.historyOps.credential(op, ctx, scope, p); e != nil {
 			return e
 		}
 		if e = s.historyOps.project(op, ctx, scope, p, project); e != nil {
+			return e
+		}
+		if e = check(); e != nil {
 			return e
 		}
 		return work(op, scope, task, func(id string) (*core.Access, error) { return s.historyOps.load(ctx, op, scope, id) })

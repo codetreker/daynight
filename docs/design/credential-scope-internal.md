@@ -241,6 +241,28 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 `Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
 拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
 
+## Session 读取与订阅准入
+
+Session 的 scoped 读取沿用原 Task、Test Session、归档及 Terminal 的资源和
+角色检查，并在对应事务或只读快照中复核原凭据的当前 `session:read`。PAT
+复用凭据行锁；OAuth 按 grant、access 顺序锁定并保留原资源与客户端绑定。
+历史目录和 inspection 使用同一只读快照，inspection 在采样前后分别复核。
+缺失授权来源、身份或 profile 不匹配均拒绝，不能把缺失策略解释为固定授权。
+启用装配需要接入绑定对应事务或快照的当前凭据读取。
+
+Task 与 Test Session 的状态、历史、操作回执、内容、Terminal 及归档读取，
+以及 Task 历史目录和 inspection 使用独立的 scoped 接线。MCP 的
+`task_session_current`、`task_session_list`、`task_session_show`、
+`task_session_read`、`task_session_entry` 和 `task_session_operation` 共享这些业务准入，保持原工具
+schema 与资源绑定。用户通道在握手及每次投递前复核当前权限，撤权后停止
+后续投递并关闭连接、释放资源；网络 I/O 不持有凭据事务。能力查询、生产者
+与命令入口保留各自的协议和准入责任。
+
+图片 occurrence 状态读取可能结算重试或调度复制，而 `retry_source` 另需
+`session:control`，主动重试还返回完整状态。在完整图片准入接入前，scoped
+装配对 PAT 的状态读取和重试在业务操作前失败关闭；Cookie 和固定 OAuth API
+profile 保持原有规则。图片状态及重试的完整权限与结算由图片准入实现负责。
+
 ## Worker 报告与检查准入
 
 `service/worker.NewScopedWorkers` 及 `NewScopedWorkersWithPrompts` 显式启用业务
@@ -300,8 +322,10 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
-启用时，同一 Session 服务必须同时装配命令和生产者准入；各自的 scoped
-构造入口只安装其对应的规则。
+同时启用 MCP 命令与回执时，组合注册持有构造时安装了不可替换命令准入的
+Execution；替换服务的公开执行字段不会改变该入口实际调用的实例。
+启用时，`NewScopedCommandsAndProducer` 在同一 Session 服务装配命令和
+生产者准入；各自的 scoped 构造入口只安装其对应的规则。
 
 ## Session 生产者准入
 

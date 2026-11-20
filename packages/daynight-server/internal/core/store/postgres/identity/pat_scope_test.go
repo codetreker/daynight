@@ -52,6 +52,14 @@ func TestPATScopeStorage(t *testing.T) {
 	got, err = scoped.ReadLockedPATScope(ctx, user.ID, pat.ID)
 	requireNoError(t, err)
 	assertPolicy(got, 1, original)
+	reader := dao.(interface {
+		ReadPATScope(context.Context, string, string, time.Time) (model.PersonalAccessToken, error)
+	})
+	got, err = reader.ReadPATScope(ctx, user.ID, pat.ID, now)
+	requireNoError(t, err)
+	assertPolicy(got, 1, original)
+	_, err = reader.ReadPATScope(ctx, uuid.NewString(), pat.ID, now)
+	requireMissing(t, err)
 	_, err = scoped.ReadLockedPATScope(ctx, uuid.NewString(), pat.ID)
 	requireMissing(t, err)
 	expiredAt := now.Add(-time.Hour)
@@ -71,6 +79,8 @@ func TestPATScopeStorage(t *testing.T) {
 	}
 	_, err = scoped.PATByHash(ctx, expired.TokenHash, now)
 	requireMissing(t, err)
+	_, err = reader.ReadPATScope(ctx, user.ID, expired.ID, now)
+	requireMissing(t, err)
 	_, err = scoped.ComparePATScope(ctx, uuid.NewString(), pat.ID, 1, []scopepolicy.ScopeID{"task:read"}, now)
 	requireMissing(t, err)
 	_, err = scoped.ComparePATScope(ctx, user.ID, pat.ID, 2, []scopepolicy.ScopeID{"task:read"}, now)
@@ -83,6 +93,9 @@ func TestPATScopeStorage(t *testing.T) {
 	assertPolicy(got, 1, original)
 	changed := []scopepolicy.ScopeID{"task:read"}
 	got, err = scoped.ComparePATScope(ctx, user.ID, pat.ID, 1, changed, now)
+	requireNoError(t, err)
+	assertPolicy(got, 2, changed)
+	got, err = reader.ReadPATScope(ctx, user.ID, pat.ID, now)
 	requireNoError(t, err)
 	assertPolicy(got, 2, changed)
 	_, err = scoped.ComparePATScope(ctx, user.ID, pat.ID, 1, original, now)
@@ -103,6 +116,8 @@ func TestPATScopeStorage(t *testing.T) {
 		t.Fatalf("scope update changed last-used: %+v", got.LastUsedAt)
 	}
 	requireNoError(t, dao.DeletePAT(ctx, user.ID, pat.ID))
+	_, err = reader.ReadPATScope(ctx, user.ID, pat.ID, now)
+	requireMissing(t, err)
 	_, err = scoped.PATByHash(ctx, pat.TokenHash, now)
 	requireMissing(t, err)
 	_, err = scoped.LockPATScope(ctx, user.ID, pat.ID)
