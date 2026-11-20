@@ -576,3 +576,32 @@ func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
 		t.Fatalf("usage assembly: service=%v error=%v", app.Usage, app.UsageError)
 	}
 }
+
+func TestOpenAppCleansResourcesOnScopedUsageConfigurationFailure(t *testing.T) {
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "invalid")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	openers.monitoring = func(string) (monitoringBackend, error) {
+		t.Fatal("monitoring opened after invalid usage configuration")
+		return nil, nil
+	}
+	app, err := openApp(t.Context(), c, nil, openers)
+	var invalid *configvalue.ConfigurationError
+	if app != nil || !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_USAGE_WRITE_ENABLED" || backend.closes != 1 {
+		t.Fatalf("usage startup failure lost its field or cleanup: app=%v error=%v closes=%d", app, err, backend.closes)
+	}
+}
+
+func TestOpenAppRejectsMissingRequiredMonitoringOpener(t *testing.T) {
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	app, err := openApp(t.Context(), c, nil, openers)
+	if app != nil || err == nil || !strings.Contains(err.Error(), "monitoring store opener is unavailable") || backend.closes != 1 {
+		t.Fatalf("missing monitoring dependency did not fail and clean resources: app=%v error=%v closes=%d", app, err, backend.closes)
+	}
+}
