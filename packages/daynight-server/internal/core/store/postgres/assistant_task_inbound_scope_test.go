@@ -132,9 +132,19 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every exit releases the rotation's transaction and joins both
+	// goroutines, so a failed assertion cannot leave a transaction open
+	// during cleanup.
 	locked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRotation := func() { releaseOnce.Do(func() { close(release) }) }
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	defer releaseRotation()
 	rotated := make(chan error, 1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		_, err := f.database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
 			d := scope.AssistantTaskDAO()
 			if _, err := d.Task(ctx, f.task.OwnerUserID, f.task.ID, true); err != nil {
@@ -150,14 +160,26 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 				return errors.Join(err, errors.New("rotation was not saved"))
 			}
 			close(locked)
-			<-release
-			return nil
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
 		rotated <- err
 	}()
-	<-locked
+	select {
+	case <-locked:
+	case err := <-rotated:
+		t.Fatalf("rotation failed before holding the task lock: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("rotation did not take the task lock: %v", ctx.Err())
+	}
 	received := make(chan error, 1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		_, err := f.inbox.Receive(ctx, f.input(f.token, "", `{"n":1}`))
 		received <- err
 	}()
@@ -166,7 +188,7 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 		t.Fatalf("receive did not wait for the rotation's task lock: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
-	close(release)
+	releaseRotation()
 	if err := <-rotated; err != nil {
 		t.Fatal(err)
 	}

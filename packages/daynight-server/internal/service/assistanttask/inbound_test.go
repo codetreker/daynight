@@ -599,6 +599,44 @@ func TestReceiveIdempotentReplayAndConflict(t *testing.T) {
 	}
 }
 
+// The header equality rule applies only to external requests: a verified
+// Daynight event is keyed by its event ID, while the same header pair on an
+// external request is rejected.
+func TestReceiveHeaderEqualityOnlyForExternal(t *testing.T) {
+	s, _, d, _ := newInbound(t)
+	in := daynightInput(t)
+	in.IdempotencyKey = "other"
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || result.Classification != core.InboundDaynight || len(d.receipts) != 1 || d.receipts[0].IdempotencyKey != inEvent {
+		t.Fatal(err, result)
+	}
+	s, _, d, token := newInbound(t)
+	in = daynightInput(t)
+	in.IdempotencyKey, in.Token = "other", &token
+	d.sources.missing = true
+	_, err = s.Receive(context.Background(), in)
+	requireInboundCode(t, err, "invalid_input")
+	if len(d.events) != 0 || len(d.receipts) != 0 {
+		t.Fatal("rejected request wrote")
+	}
+}
+
+// A replay reports the original reception's classification even when this
+// attempt no longer verifies as a Daynight event.
+func TestReceiveReplayKeepsOriginalClassification(t *testing.T) {
+	s, _, d, token := newInbound(t)
+	sum := sha256.Sum256(inboundEventBody(t))
+	original, subject := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", inTask
+	d.receipt = &model.AssistantTaskInboxReceipt{InboxID: inInbox, IdempotencyKey: inEvent, BodySHA256: hex.EncodeToString(sum[:]), EventID: &original, SubjectTaskID: &subject}
+	d.projectErr = model.ErrNotFound
+	in := daynightInput(t)
+	in.Token = &token
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || !result.Duplicate || result.Classification != core.InboundDaynight || result.EventID == nil || *result.EventID != original || len(d.events) != 0 {
+		t.Fatal(err, result)
+	}
+}
+
 func TestReceiveStorageFailuresStopBeforeLaterSteps(t *testing.T) {
 	for _, step := range []string{"identity", "peek", "bot", "task", "lock", "now", "receipt", "pending", "event", "insert-receipt", "reclaim-receipts", "reclaim-events", "recheck"} {
 		t.Run(step, func(t *testing.T) {
