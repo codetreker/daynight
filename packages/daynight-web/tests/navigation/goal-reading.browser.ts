@@ -1765,6 +1765,7 @@ async function expectFormSkin(page: Page, dialog: Locator) {
 const projectFormOpener = async (page: Page, entry: FormEntry, locale: 'en' | 'zh-CN') => {
   const zh = locale === 'zh-CN';
   const trigger = page.locator('.project-actions-trigger');
+  await trigger.waitFor({ state: 'attached' });
   return await trigger.isVisible()
     ? trigger
     : page.locator('.project-title-actions').getByRole('button', { name: entry === 'project-task' ? (zh ? '新建 Task' : 'New Task') : (zh ? '新建 Goal' : 'New Goal'), exact: true });
@@ -1790,6 +1791,28 @@ async function openForm(page: Page, entry: FormEntry, locale: 'en' | 'zh-CN') {
   }
   return page.locator('.task-organization-dialog');
 }
+
+for (const width of [320, 390]) test(`project Task opens from the mobile menu after delayed identity at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  await install(page);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  await page.route('**/api/v1/me', async route => { started.resolve(); await release.promise; await route.fallback(); });
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await started.promise;
+    let selected = false;
+    const selecting = projectFormOpener(page, 'project-task', 'en').then(opener => { selected = true; return opener; });
+    await expect(page.locator('.project-actions-trigger')).toHaveCount(0);
+    expect(selected).toBe(false);
+    release.resolve();
+    await expect(await selecting).toHaveClass(/project-actions-trigger/);
+    await openProjectFormEntry(page, 'project-task', 'en');
+    const dialog = page.locator('.task-organization-dialog');
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Project actions', exact: true })).toBeFocused();
+  } finally { release.resolve(); }
+});
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
   for (const entry of ['project-task', 'project-goal'] as const) test(`shared form skin: ${entry} at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {
