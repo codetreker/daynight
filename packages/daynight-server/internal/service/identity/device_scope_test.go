@@ -46,7 +46,7 @@ func (d *deviceScopeFixture) InsertPAT(context.Context, model.PersonalAccessToke
 func (d *deviceScopeFixture) ConsumeDevice(context.Context, string) error { d.writes++; return nil }
 
 type deviceScopeWriter struct {
-	dao       *deviceScopeFixture
+	dao       store.IdentityDAO
 	result    store.Completion
 	callbacks int
 }
@@ -121,5 +121,52 @@ func TestScopedDeviceServiceCatalogAndUnknownCompletion(t *testing.T) {
 	var unknown *store.TransactionError
 	if !errors.As(err, &unknown) || unknown.Outcome != store.TransactionUnknown || got.Secret != "" || writer.callbacks != before+1 {
 		t.Fatalf("unknown completion exposed token or replayed: %q %v", got.Secret, err)
+	}
+}
+
+func TestScopedDeviceServiceRefusalsAndCapabilities(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	user := "123e4567-e89b-12d3-a456-426614174000"
+	p := model.Principal{Kind: model.SessionCredential, UserID: user}
+	dao := &deviceScopeFixture{fresh: now, device: model.DeviceAuthorization{ID: "device", UserCode: "BCDFGHJKLM", Status: "pending", ExpiresAt: now.Add(time.Hour), NextPollAt: now}}
+	writer := &deviceScopeWriter{dao: dao, result: store.Completion{Outcome: store.TransactionCommitted}}
+	catalog, err := scopepolicy.NewCatalogSnapshot(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := New(writer, nil, "")
+	if err := legacy.DecideDeviceV2(t.Context(), p, dao.device.UserCode, "deny", user, "", nil); err == nil {
+		t.Fatal("legacy service accepted scoped decision")
+	}
+	if _, err := legacy.InspectDeviceV2(t.Context(), p, dao.device.UserCode); err == nil {
+		t.Fatal("legacy service exposed scoped inspection")
+	}
+	s := NewWithDeviceScopes(writer, nil, "", catalog)
+	s.now = func() time.Time { return now }
+	s.ops.deviceRate = func(context.Context, store.IdentityDAO, string, string, int, int, time.Time) error { return nil }
+	bad := p
+	bad.Kind = model.PATCredential
+	requireFault(t, s.DecideDeviceV2(t.Context(), bad, dao.device.UserCode, "deny", user, "", nil), "forbidden")
+	requireFault(t, s.DecideDeviceV2(t.Context(), p, "bad", "deny", user, "", nil), "invalid_input")
+	requireFault(t, s.DecideDeviceV2(t.Context(), p, dao.device.UserCode, "deny", user, catalog.CatalogRevision, nil), "invalid_input")
+	requireFault(t, s.DecideDeviceV2(t.Context(), p, dao.device.UserCode, "deny", user, "", []scopepolicy.ScopeID{"task:read"}), "invalid_input")
+	if dao.writes != 0 {
+		t.Fatal("refusal wrote device")
+	}
+	if err := s.DecideDeviceV2(t.Context(), p, dao.device.UserCode, "deny", user, "", nil); err != nil || dao.writes != 1 || dao.selected != nil {
+		t.Fatalf("denial: writes=%d scopes=%v err=%v", dao.writes, dao.selected, err)
+	}
+	if err := s.DecideDevice(t.Context(), p, dao.device.UserCode, "deny", user); err != nil || dao.writes != 2 || dao.selected != nil {
+		t.Fatalf("legacy denial: writes=%d err=%v", dao.writes, err)
+	}
+	writer.dao = &identityCapability{}
+	if err := s.DecideDeviceV2(t.Context(), p, dao.device.UserCode, "deny", user, "", nil); err == nil {
+		t.Fatal("missing decision capability accepted")
+	}
+	if err := s.DecideDevice(t.Context(), p, dao.device.UserCode, "deny", user); err == nil {
+		t.Fatal("missing legacy decision capability accepted")
+	}
+	if _, err := s.RedeemDevice(t.Context(), core.DeviceClientID, core.DeviceGrantType, secret.Random(""), "machine"); err == nil {
+		t.Fatal("missing redemption capability accepted")
 	}
 }

@@ -331,3 +331,37 @@ func TestScopedDeviceUnknownDecisionReadback(t *testing.T) {
 		return nil
 	})
 }
+
+func TestScopedDeviceDecisionStorageRejectsInvalidAndStoresDenial(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	user, _, _ := testutil.AuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	device := model.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: secret.Hash(secret.Random("")), UserCode: "BCDFGHJKLM", CreatedAt: now, ExpiresAt: now.Add(time.Minute), NextPollAt: now, PollIntervalSeconds: 5}
+	identityScopeTest(t, db, func(s store.IdentityScope) error { return s.IdentityDAO().InsertDevice(ctx, device) })
+	identityScopeTest(t, db, func(s store.IdentityScope) error {
+		dao := s.IdentityDAO().(store.DeviceScopeDAO)
+		for _, tc := range []struct {
+			status string
+			scopes []scopepolicy.ScopeID
+		}{
+			{"approved", nil}, {"approved", []scopepolicy.ScopeID{"task:read", "task:read"}}, {"denied", []scopepolicy.ScopeID{"task:read"}}, {"pending", nil},
+		} {
+			if err := dao.SetScopedDeviceDecision(ctx, device.ID, tc.status, user.ID, tc.scopes); err == nil {
+				t.Fatalf("accepted %s %v", tc.status, tc.scopes)
+			}
+		}
+		return dao.SetScopedDeviceDecision(ctx, device.ID, "denied", user.ID, nil)
+	})
+	identityScopeTest(t, db, func(s store.IdentityScope) error {
+		d, err := s.IdentityDAO().DeviceByUserCode(ctx, user.ID, device.UserCode, false)
+		if err != nil {
+			return err
+		}
+		if d.Status != "denied" || d.UserID == nil || *d.UserID != user.ID || d.ApprovedScopes != nil {
+			t.Fatalf("denied device: %+v", d)
+		}
+		return nil
+	})
+}
