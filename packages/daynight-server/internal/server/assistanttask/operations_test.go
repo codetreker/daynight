@@ -218,3 +218,29 @@ func (m *operationMock) EnableWatchdog(ctx context.Context, actor core.Actor, id
 	}
 	return value.(core.TaskResult), err
 }
+func (m *operationMock) GetInbox(ctx context.Context, actor core.Actor, taskID string) (core.InboxView, error) {
+	value, err := m.call(ctx, actor, "GetInbox", taskID)
+	if value == nil {
+		return core.InboxView{}, err
+	}
+	return value.(core.InboxView), err
+}
+func (m *operationMock) EnableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "EnableInbox", input)
+}
+func (m *operationMock) RotateInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "RotateInbox", input)
+}
+func (m *operationMock) DisableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "DisableInbox", input)
+}
+func (m *operationMock) InboxOperation(ctx context.Context, actor core.Actor, taskID, operationID string) (core.InboxResult, error) {
+	return m.inboxResult(ctx, actor, "InboxOperation", taskID, operationID)
+}
+func (m *operationMock) inboxResult(ctx context.Context, actor core.Actor, name string, args ...any) (core.InboxResult, error) {
+	value, err := m.call(ctx, actor, name, args...)
+	if value == nil {
+		return core.InboxResult{}, err
+	}
+	return value.(core.InboxResult), err
+}

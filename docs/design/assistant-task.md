@@ -92,12 +92,15 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `metrics` | GET 读取最近 30 天的能力指标，口径见[经验沉淀设计](assistant-task-learning.md#能力指标) |
 | `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
+| `inbox` | GET 收件箱状态：`inboxId,enabled,createdAt,rotatedAt,overlapUntil,suppressedCount`，未开启时 `inboxId` 与时间为 `null`；不返回令牌或摘要，用户与已核验 Bot 均可读取 |
+| `inbox/enable, inbox/rotate, inbox/disable` | POST 用户管理，请求为 `operationId,ifVersion`，轮换另需 `mode`（`overlap` 或 `immediate`）；返回 `operation` 回执与 `inbox`，开启与轮换另返回 `token`，只有实际生成令牌的请求为字符串，重放为 `null` |
+| `inbox-operations/{id}` | GET 用户核对收件箱管理操作的原回执及当前 `inbox`，不返回令牌 |
 
 跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。
 
 两种事件拉取都接受一个类型筛选：`type` 只保留该类型，`excludeType` 排除该类型，二者不能同时出现，取值须为已知事件类型，其他资源拒绝这两个参数。`type=inbound` 时，服务端在同一条数据库查询中排除暂停任务的事件；这些事件保持 pending，任务恢复后重新可选，Worker 不需要逐个读取再跳过。分页游标绑定所选筛选，换用不同筛选续读会被拒绝。
 
-所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
+所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。收件箱管理与回执读取在解析请求体之前拒绝 `X-Daynight-Bot-Id`，返回 403 `forbidden`，请求不进入 service。
 
 ## 验证责任
 
