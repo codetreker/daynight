@@ -262,6 +262,31 @@ it('publishes a confirmed receipt when the following task refresh fails and repo
   expect(screen.getByRole('button', { name: 'I reviewed the current result' })).toBeEnabled();
 });
 
+it('publishes a confirmed receipt while the following task refresh stalls and keeps new writes blocked until it settles', async () => {
+  let settle: (() => void) | null = null, stall = false;
+  const s = server(off); mount(vi.fn(async () => { if (stall) await new Promise<void>(resolve => { settle = resolve; }); }));
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (String(url).startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_rotate_immediate', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  const check = await screen.findByRole('button', { name: 'Check current result' });
+  stall = true;
+  fireEvent.click(check);
+  expect(await screen.findByText('The receipt confirms this request was applied.')).toBeVisible();
+  expect(screen.getByText(/its receipt cannot return it/)).toBeVisible();
+  expect(settle).not.toBeNull();
+  expect(check).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current result' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check current result' })).toBeNull());
+  expect(screen.getByRole('button', { name: 'Rotate token' })).toBeDisabled();
+  settle!();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeEnabled());
+});
+
 it('offers the acknowledgement of a missing receipt only after a fresh inbox snapshot is shown', async () => {
   const s = server(off); mount();
   const enable = await screen.findByRole('button', { name: 'Enable inbox' });
