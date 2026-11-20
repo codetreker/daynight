@@ -72,7 +72,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-mobile", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -514,6 +514,37 @@ for (const quality of ["success", "skipped", "failure", "cancelled"]) {
 }
 
 const productE2E = jobs.get("verify-e2e")!;
+const selectedMobileStep = gate.match(/      - name: Require selected mobile validation to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedMobileCommand = selectedMobileStep.match(/^        run: (.+)$/m)![1]!;
+
+test("mobile validation installs only its workspace and exports both platforms independently", () => {
+  const mobile = jobs.get("verify-mobile")!;
+  assert.match(workflow, /^      mobile: \$\{\{ steps.modules.outputs.mobile \}\}$/m);
+  assert.match(mobile, /^    needs: detect-changes$/m);
+  assert.match(mobile, /^    if: \$\{\{ needs.detect-changes.outputs.mobile == 'true' \}\}$/m);
+  assert.doesNotMatch(mobile, /continue-on-error|download-artifact/);
+  const command = "pnpm --filter @codetreker/daynight-mobile --fail-if-no-match";
+  for (const args of ["install --frozen-lockfile", "typecheck", "exec expo install --check", "bundle"]) {
+    assert.ok(mobile.includes(`${command} ${args}\n`));
+  }
+  const manifest = JSON.parse(readFileSync(new URL("../../packages/mobile/package.json", import.meta.url), "utf8"));
+  assert.match(manifest.scripts.bundle, /^expo export --platform ios --platform android /);
+  assert.match(selectedMobileStep, /^        if: \$\{\{ needs.detect-changes.outputs.mobile == 'true' \}\}$/m);
+  assert.match(selectedMobileStep, /MOBILE_RESULT: \$\{\{ needs.verify-mobile.result \}\}/);
+});
+
+for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
+  test(`selected mobile validation ${outcome} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedMobileCommand], {
+      env: { ...process.env, MOBILE_RESULT: outcome },
+      encoding: "utf8", timeout: 5_000,
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, outcome === "success");
+  });
+}
+
 const selectedE2EStep = gate.match(/      - name: Require selected product E2E to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedE2ECommand = selectedE2EStep.match(/^        run: (.+)$/m)![1]!;
 

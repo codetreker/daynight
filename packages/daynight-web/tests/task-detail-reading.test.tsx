@@ -376,4 +376,21 @@ describe('task description reading', () => {
     showOverview();
     expect(screen.getByRole('heading', { name: '用户 Markdown' })).toBeVisible();
   });
+  it('keeps an attachment draft hidden and inactive while its task is revalidated', async () => {
+    const api = fixture();
+    const content = (available: boolean) => <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="" selection={{ tab: 'attachments', path: null }} overview={value => value} available={available} retainDraftsWhileUnavailable />;
+    const { rerender } = render(content(true));
+    await waitFor(() => expect(api.list).toHaveBeenCalledOnce());
+    const disclosure = screen.getByText('上传文件', { selector: 'summary' }).parentElement!;
+    disclosure.setAttribute('open', '');
+    const input = screen.getByRole('textbox', { name: '目标相对路径' });
+    fireEvent.change(input, { target: { value: 'draft/unsent.md' } });
+    rerender(content(false));
+    expect(input).not.toBeVisible();
+    expect(input).toHaveValue('draft/unsent.md');
+    rerender(content(true));
+    expect(screen.getByRole('textbox', { name: '目标相对路径' })).toBe(input);
+    expect(input).toHaveValue('draft/unsent.md');
+  });
+
 });

@@ -192,7 +192,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en', taskCache: true, container: root, baseElement: document.body });
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });

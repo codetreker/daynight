@@ -26,9 +26,17 @@ when redemption creates the PAT. Device decisions and redemptions check expiry
 using database time after locking the device record. OAuth stores an MCP policy
 and its independent version on the grant; access and refresh credentials retain
 their original family identity. Scoped reads reject missing or malformed MCP
-policy while fixed API grants have no policy. OAuth authorization records can
-retain an explicit approved selection without changing the existing approval or
-code-exchange entry points.
+policy while fixed API grants have no policy. The opt-in OAuth browser flow binds
+explicit selections to the same immutable MCP catalog snapshot exposed to the
+browser. Only a live pending inspection
+advertises its catalog revision. Decisions retain the original session, account,
+Cookie and callback bindings and atomically save the approved selection with the
+code hash. Code redemption creates the grant policy from that selection in the
+original issuance transaction. Refresh retains the grant's current policy,
+including owner edits, while public OAuth scope remains `daynight:mcp`. The
+legacy approval method rejects approval in scoped assembly so an old page cannot
+bypass explicit selection; its existing request can be read after refresh.
+Production constructors and routes retain the original behavior until cutover.
 
 Opt-in account management exposes complete PAT and OAuth grant rows with their
 scope policies, and creates manual PATs with the CLI catalog. Scope edits bind
