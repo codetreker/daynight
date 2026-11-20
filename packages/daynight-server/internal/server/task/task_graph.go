@@ -71,5 +71,14 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 	}
 	logger.InfoContext(request.Context(), "task graph read", "type", "resource", "component", "task_graph", "phase", "get",
 		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "node_count", len(graph.Tasks), "edge_count", edgeCount)
-	httpx.WriteJSON(w, request, logger, http.StatusOK, TaskGraphResponse(graph))
+	response := TaskGraphResponse(graph)
+	if h.taskOnly {
+		w.Header().Set("Daynight-Projection", "task-only-v1")
+		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
+			api.TaskGraph
+			Project taskOnlyProject `json:"project"`
+		}{response, taskOnlyProject{ID: graph.Project.ID}})
+		return
+	}
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }

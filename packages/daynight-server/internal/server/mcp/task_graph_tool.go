@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -49,7 +51,7 @@ type graphData struct {
 	SessionSummary *taskwork.Aggregation `json:"sessionSummary,omitempty"`
 	Partial        *bool                 `json:"partial,omitempty"`
 	Projection     string                `json:"projection"`
-	Project        Project               `json:"project"`
+	Project        any                   `json:"project"`
 	ObservedAt     time.Time             `json:"observedAt"`
 	Summary        graphSummary          `json:"summary"`
 	Tasks          []any                 `json:"tasks"`
@@ -95,6 +97,11 @@ func graphTool(ctx context.Context, actor RequestActor, in graphInput, reader gr
 	result := graphData{Projection: view, Project: MapProject(graph.Project), ObservedAt: graph.ObservedAt.UTC(),
 		Summary: graphSummary{Total: s.Total, Proposed: s.Proposed, Todo: s.Todo, InProgress: s.InProgress, Done: s.Done, Cancelled: s.Cancelled, Ready: s.Ready, Blocked: s.Blocked},
 		Tasks:   make([]any, 0, len(graph.Tasks)), ReturnedNodes: len(graph.Tasks), TotalNodes: len(graph.Tasks)}
+	if actor.Authorization != nil && scopeadmission.Require(*actor.Authorization, scopepolicy.ProjectRead) != nil {
+		result.Project = struct {
+			ID string `json:"id"`
+		}{ID: graph.Project.ID}
+	}
 	for _, task := range graph.Tasks {
 		deps := append([]string{}, task.DependsOn...)
 		ext := append([]string{}, task.ExternalDependsOn...)

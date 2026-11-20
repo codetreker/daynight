@@ -14,6 +14,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
@@ -133,6 +135,16 @@ func encodeCursor(value cursor) (string, error) {
 }
 
 func Search(ctx context.Context, reader store.TaskSearchReader, principal model.Principal, projectID string, request Request) (Page, error) {
+	return search(ctx, reader, principal, projectID, request, nil)
+}
+
+// SearchScoped checks task-read permission inside the same authorized snapshot
+// that supplies search membership, content and continuation fences.
+func SearchScoped(ctx context.Context, reader store.TaskSearchReader, authorization model.CredentialAuthorization, projectID string, request Request) (Page, error) {
+	return search(ctx, reader, authorization.Principal, projectID, request, &authorization)
+}
+
+func search(ctx context.Context, reader store.TaskSearchReader, principal model.Principal, projectID string, request Request, authorization *model.CredentialAuthorization) (Page, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return Page{}, err
 	}
@@ -185,6 +197,11 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 	err = reader.ReadTaskSearch(ctx, func(snapshot store.TaskSearchSnapshot) error {
 		if _, err := project.RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
 			return err
+		}
+		if authorization != nil {
+			if err := scopeadmission.Require(*authorization, scopepolicy.TaskRead); err != nil {
+				return err
+			}
 		}
 		fence, err := snapshot.Fence(ctx, projectID)
 		if err != nil {

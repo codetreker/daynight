@@ -50,6 +50,9 @@ func (s *Tasks) ShowGoalDependencies(ctx context.Context, principal model.Princi
 		if err := taskcore.RequireGoalRelationSource(source, false); err != nil {
 			return err
 		}
+		if err := requireTaskScope(s.authorization, principal); err != nil {
+			return err
+		}
 		result.CanEdit = source.CanEdit
 		if source.CanEdit {
 			result.Revision = &source.Revision

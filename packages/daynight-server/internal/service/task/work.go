@@ -22,7 +22,7 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 	if request.ResponseOverhead < 0 || request.ResponseOverhead >= taskwork.MaxResponseBytes {
 		return taskwork.Page{}, &model.Fault{Code: "resource_limit_exceeded", Message: "The work overview response envelope exceeds its limit."}
 	}
-	result := taskwork.Page{Groups: []taskwork.Group{}}
+	result := taskwork.Page{Groups: []taskwork.Group{}, Partial: !sessionProjectionAllowed(s.authorization)}
 	var fence store.TaskSearchFence
 	var groups store.TaskWorkGroups
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
@@ -80,7 +80,7 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 			for i, item := range targets.Items {
 				selected[i] = item.Task
 			}
-			sources, err = loadSelectedSources(ctx, snapshot, projectID, selected)
+			sources, err = s.loadSources(ctx, snapshot, projectID, selected)
 			return err
 		})
 		if err != nil {
@@ -129,6 +129,11 @@ func (s *Observations) WorkList(ctx context.Context, principal model.Principal, 
 	// batch also prevents publishing a partial traversal of a changed component.
 	if err := s.readWorkSnapshot(ctx, principal, projectID, fence, nil); err != nil {
 		return taskwork.Page{}, err
+	}
+	if !sessionProjectionAllowed(s.authorization) {
+		for i := range result.Groups {
+			result.Groups[i].Summary.Complete = false
+		}
 	}
 	return taskcore.FitWorkPage(result, selection, fence, positions, taskwork.MaxResponseBytes-request.ResponseOverhead)
 }

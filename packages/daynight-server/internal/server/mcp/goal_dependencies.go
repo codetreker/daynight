@@ -25,6 +25,10 @@ type goalDependencyOperations interface {
 
 // RegisterGoalDependencyTools publishes bounded Goal relationship reads and edits.
 func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations) error {
+	return registerGoalDependencyTools(entry, service, taskToolsAll)
+}
+
+func registerGoalDependencyTools(entry *Entry, service goalDependencyOperations, selection taskToolSelection) error {
 	if entry == nil || service == nil || service == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP Goal dependency tools require an entry and Tasks service")
 	}
@@ -34,6 +38,10 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		read := name == "goal_dependencies_show"
+		if selection == taskToolsRead && !read || selection == taskToolsWrite && read {
+			continue
+		}
 		handler := func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 			return goalDependencyTool(ctx, actor, name, raw, service)
 		}
@@ -52,13 +60,13 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 	return nil
 }
 
-// RegisterScopedGoalDependencyWriteTools classifies edits while retaining the
-// separate read tool's existing registration until its read admission is wired.
+// RegisterScopedGoalDependencyWriteTools publishes only Goal relationship edits.
+// Read tools have their own scoped registration.
 func RegisterScopedGoalDependencyWriteTools(entry *Entry, service *taskservice.Tasks) error {
 	if entry == nil || entry.scopedAuth == nil || service == nil {
 		return fmt.Errorf("scoped Goal dependency write dependencies are required")
 	}
-	if err := RegisterGoalDependencyTools(entry, service); err != nil {
+	if err := registerGoalDependencyTools(entry, service, taskToolsWrite); err != nil {
 		return err
 	}
 	entry.scopedTools["goal_dependencies_edit"] = true

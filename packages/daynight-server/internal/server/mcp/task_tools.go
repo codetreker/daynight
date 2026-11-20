@@ -66,6 +66,18 @@ type taskArguments struct {
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
 func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
+	return registerTaskResourceTools(e, tasks, observations, taskToolsAll)
+}
+
+type taskToolSelection uint8
+
+const (
+	taskToolsAll taskToolSelection = iota
+	taskToolsRead
+	taskToolsWrite
+)
+
+func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter, selection taskToolSelection) error {
 	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
@@ -75,6 +87,10 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		read := name == "task_show" || name == "task_properties"
+		if selection == taskToolsRead && !read || selection == taskToolsWrite && read {
+			continue
+		}
 		budget := func(raw json.RawMessage) BudgetClass {
 			if name == "task_properties" {
 				var input struct {
@@ -121,7 +137,7 @@ func RegisterScopedTaskWriteTools(e *Entry, tasks *taskservice.Tasks, observatio
 }
 
 func registerScopedTaskWriteTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
-	if err := RegisterTaskTools(e, tasks, observations); err != nil {
+	if err := registerTaskResourceTools(e, tasks, observations, taskToolsWrite); err != nil {
 		return err
 	}
 	for _, name := range []string{"task_create", "task_update", "task_set_status", "task_delete", "task_set_property", "task_remove_property"} {
@@ -277,6 +293,11 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: stamp, Partial: observed.Session.Observation != "observed"}, Refs: map[string]any{"projectId": in.ProjectID, "taskId": in.TaskID}}, nil
 	case "task_properties":
 		if in.Mode == "schema" {
+			if actor.Authorization != nil {
+				if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TaskRead); err != nil {
+					return ToolResult{}, err
+				}
+			}
 			return ToolResult{Data: map[string]any{"properties": taskprotocol.PropertyDefinitions()}}, nil
 		}
 		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
