@@ -25,6 +25,7 @@ const resourceID = "abcdefab-cdef-4abc-8def-abcdefabcdef"
 
 type fakePrompts struct {
 	gets, puts                   int
+	reviewer                     bool
 	scope                        model.PromptScope
 	id, expected, revision, text string
 	err                          error
@@ -47,6 +48,15 @@ func (f *fakePrompts) Put(_ context.Context, _ model.Principal, scope model.Prom
 	return model.PromptResource{Scope: scope, ScopeID: id, Revision: revision, Text: text}, nil
 }
 
+func (f *fakePrompts) GetReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id string) (model.PromptResource, error) {
+	f.reviewer = true
+	return f.Get(ctx, principal, scope, id)
+}
+func (f *fakePrompts) PutReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expected, revision, text string) (model.PromptResource, error) {
+	f.reviewer = true
+	return f.Put(ctx, principal, scope, id, expected, revision, text)
+}
+
 func requestResource(f *fakePrompts, method, path, body string, scope model.PromptScope, pathKey, id string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
@@ -55,7 +65,7 @@ func requestResource(f *fakePrompts, method, path, body string, scope model.Prom
 	}
 	w := httptest.NewRecorder()
 	h := newHandler(f, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.resource(w, r, model.Principal{UserID: userID}, scope)
+	h.resource(w, r, model.Principal{UserID: userID}, scope, false)
 	return w
 }
 
@@ -201,6 +211,40 @@ func TestPromptRouteRegistration(t *testing.T) {
 	}
 }
 
+func TestReviewerRouteDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		path  string
+		scope model.PromptScope
+		id    string
+	}{
+		{"/api/v1/me/reviewer-prompt", model.PromptScopeUser, userID},
+		{"/api/v1/me/projects/" + resourceID + "/reviewer-prompt", model.PromptScopeProject, resourceID},
+		{"/api/v1/me/workers/" + resourceID + "/reviewer-prompt", model.PromptScopeWorker, resourceID},
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete} {
+			f := &fakePrompts{}
+			mux := http.NewServeMux()
+			RegisterRoutes(mux, f, fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			r := httptest.NewRequest(method, tc.path, strings.NewReader(fmt.Sprintf(`{"expectedUserId":%q,"revision":"0","text":"test"}`, userID)))
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if method == http.MethodDelete {
+				if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, HEAD, PUT" {
+					t.Fatalf("DELETE %s: %d", tc.path, w.Code)
+				}
+				continue
+			}
+			if w.Code != http.StatusOK || !f.reviewer || f.scope != tc.scope || f.id != tc.id {
+				t.Fatalf("%s %s: %d %s %+v", method, tc.path, w.Code, w.Body, f)
+			}
+			if method == http.MethodHead && w.Body.Len() != 0 {
+				t.Fatalf("HEAD body: %s", w.Body)
+			}
+		}
+	}
+}
+
 type identityMismatchPrompts struct {
 	currentRevision              string
 	gets, puts                   int
@@ -218,6 +262,13 @@ func (f *identityMismatchPrompts) Put(_ context.Context, principal model.Princip
 	f.puts++
 	f.principal, f.scope, f.id, f.expected, f.revision, f.text = principal, scope, id, expected, revision, text
 	return model.PromptResource{}, &model.Fault{Code: "identity_mismatch", Message: "The prompt belongs to another user."}
+}
+
+func (f *identityMismatchPrompts) GetReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return f.Get(ctx, principal, scope, id)
+}
+func (f *identityMismatchPrompts) PutReviewer(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expected, revision, text string) (model.PromptResource, error) {
+	return f.Put(ctx, principal, scope, id, expected, revision, text)
 }
 
 func TestPromptPutPreservesDraftIdentityAcrossCookieSwitch(t *testing.T) {

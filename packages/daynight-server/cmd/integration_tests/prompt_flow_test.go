@@ -8,10 +8,14 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
@@ -75,6 +79,21 @@ func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 			t.Fatalf("prompt save/read: %+v %+v", saved, read)
 		}
 	}
+	// Age the registered Worker past the active window without waiting on a clock.
+	db, err := pgxpool.New(f.context, f.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	updated, err := db.Exec(f.context, `UPDATE workers SET last_seen_at=statement_timestamp()-interval '1 hour' WHERE user_id=$1 AND worker_id=$2`, f.userID, workerID)
+	if err != nil || updated.RowsAffected() != 1 {
+		t.Fatalf("age registered Worker: updated=%v error=%v", updated, err)
+	}
+	detail := requestJSON[api.WorkerDetailResponse](t, f, http.MethodGet, "/api/v1/me/workers/"+workerID, nil, http.StatusOK)
+	if detail.ObservedAt.Sub(detail.Worker.LastReportedAt) < 120*time.Second {
+		t.Fatalf("Worker report remains active: %+v", detail)
+	}
+	reviewerPromptFlow(t, f, project.ID, workerID, paths, scopes, ids, texts)
 	selectors := `[{"key":{"scope":"user"},"knownRevision":null},{"key":{"scope":"project","projectId":"` + project.ID + `"},"knownRevision":null},{"key":{"scope":"worker"},"knownRevision":null}]`
 	results := report(selectors)
 	if len(results) != 3 {
@@ -100,4 +119,161 @@ func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 	if cleared.Revision != "2" || cleared.Text != "" || len(results) != 3 || results[1].Status != "value" || results[1].Value == nil || results[1].Value.Revision != "2" || results[1].Value.Text != "" {
 		t.Fatalf("clear/sync: %+v %+v", cleared, results)
 	}
+}
+
+// reviewerPromptFlow uses the same Project and offline Worker as the development
+// resources, so each read demonstrates the persisted purpose and account key.
+func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, developmentPaths []string, scopes []model.PromptScope, ids, developmentTexts []string) {
+	t.Helper()
+	paths := []string{"/api/v1/me/reviewer-prompt", "/api/v1/me/projects/" + projectID + "/reviewer-prompt", "/api/v1/me/workers/" + workerID + "/reviewer-prompt"}
+	put := func(client *fixture, path, userID, revision, text string, status int) model.PromptResource {
+		t.Helper()
+		return requestJSON[model.PromptResource](t, client, http.MethodPut, path, map[string]any{"expectedUserId": userID, "revision": revision, "text": text}, status)
+	}
+	read := func(client *fixture, path string) model.PromptResource {
+		t.Helper()
+		return requestJSON[model.PromptResource](t, client, http.MethodGet, path, nil, http.StatusOK)
+	}
+	reject := func(client *fixture, path, userID, revision, text string, status int, code string) {
+		t.Helper()
+		result := requestJSON[api.ErrorResponse](t, client, http.MethodPut, path, map[string]any{"expectedUserId": userID, "revision": revision, "text": text}, status)
+		if result.Error.Code != code {
+			t.Fatalf("%s: expected %s, got %+v", path, code, result.Error)
+		}
+	}
+	for i, path := range paths {
+		empty := read(f, path)
+		if empty.Scope != scopes[i] || empty.ScopeID != ids[i] || empty.Revision != "0" || empty.Text != "" || empty.UpdatedAt != nil {
+			t.Fatalf("%s virtual resource: %+v", path, empty)
+		}
+		response, head := f.request(t, http.MethodHead, path, "", nil, http.StatusOK)
+		if len(head) != 0 || response.Header.Get("Daynight-User-ID") != f.userID || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s HEAD: headers=%v body=%q", path, response.Header, head)
+		}
+		current := put(f, path, f.userID, "0", "reviewer "+string(scopes[i]), http.StatusOK)
+		if current.Revision != "1" || current.Scope != scopes[i] || current.ScopeID != ids[i] || !reflect.DeepEqual(current, read(f, path)) {
+			t.Fatalf("%s initial Reviewer save/read differs", path)
+		}
+		for _, body := range []string{strings.Repeat("a", 32768), strings.Repeat("界", 10922) + "ab"} {
+			current = put(f, path, f.userID, current.Revision, body, http.StatusOK)
+			if current.Text != body || !reflect.DeepEqual(current, read(f, path)) {
+				t.Fatalf("%s did not retain %d UTF-8 bytes", path, len(body))
+			}
+			reject(f, path, f.userID, current.Revision, body+"x", http.StatusBadRequest, "invalid_input")
+			if !reflect.DeepEqual(current, read(f, path)) {
+				t.Fatalf("%s changed after rejecting 32769 bytes", path)
+			}
+		}
+		reject(f, path, f.userID, "0", "stale", http.StatusConflict, "version_conflict")
+		reject(f, path, uuid.NewString(), current.Revision, "wrong account", http.StatusConflict, "identity_mismatch")
+		if !reflect.DeepEqual(current, read(f, path)) {
+			t.Fatalf("%s changed after rejected writes", path)
+		}
+		// Both writes use the same observed revision; exactly one may commit.
+		type outcome struct {
+			status int
+			body   []byte
+			err    error
+		}
+		outcomes := make(chan outcome, 2)
+		for _, text := range []string{"concurrent one", "concurrent two"} {
+			encoded, err := json.Marshal(map[string]any{"expectedUserId": f.userID, "revision": current.Revision, "text": text})
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				req, err := http.NewRequestWithContext(f.context, http.MethodPut, f.origin+path, bytes.NewReader(encoded))
+				if err != nil {
+					outcomes <- outcome{err: err}
+					return
+				}
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := f.client.Do(req)
+				if err != nil {
+					outcomes <- outcome{err: err}
+					return
+				}
+				data, err := io.ReadAll(resp.Body)
+				if closeErr := resp.Body.Close(); err == nil {
+					err = closeErr
+				}
+				outcomes <- outcome{status: resp.StatusCode, body: data, err: err}
+			}()
+		}
+		var success model.PromptResource
+		wins, conflicts := 0, 0
+		for range 2 {
+			result := <-outcomes
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			switch result.status {
+			case http.StatusOK:
+				wins++
+				if err := json.Unmarshal(result.body, &success); err != nil {
+					t.Fatal(err)
+				}
+			case http.StatusConflict:
+				var failure api.ErrorResponse
+				if err := json.Unmarshal(result.body, &failure); err != nil || failure.Error.Code != "version_conflict" {
+					t.Fatalf("concurrent conflict: %s (%v)", result.body, err)
+				}
+				conflicts++
+			default:
+				t.Fatalf("concurrent write: status=%d body=%s", result.status, result.body)
+			}
+		}
+		if wins != 1 || conflicts != 1 || success.Revision != "4" || (success.Text != "concurrent one" && success.Text != "concurrent two") || !reflect.DeepEqual(success, read(f, path)) {
+			t.Fatalf("%s concurrent writes: wins=%d conflicts=%d saved=%+v", path, wins, conflicts, success)
+		}
+		cleared := put(f, path, f.userID, success.Revision, "", http.StatusOK)
+		if cleared.Text != "" || cleared.Revision != "5" || !reflect.DeepEqual(cleared, read(f, path)) {
+			t.Fatalf("%s clear did not persist: %+v", path, cleared)
+		}
+		development := read(f, developmentPaths[i])
+		if development.Scope != scopes[i] || development.ScopeID != ids[i] || development.Revision != "1" || development.Text != developmentTexts[i] {
+			t.Fatalf("%s development resource changed: %+v", path, development)
+		}
+	}
+
+	// A second UniAuth account receives a separate value for the same Project;
+	// removing its grant immediately makes that value inaccessible.
+	team := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Prompt account", ExpectedUserID: f.userID}, http.StatusCreated)
+	externalID := "prompt:" + uuid.NewString()
+	added := requestJSON[api.AddTeamMemberReceipt](t, f, http.MethodPost, "/api/v1/teams/"+team.ID+"/members", map[string]any{"expectedUserId": f.userID, "user": map[string]any{"externalUserId": externalID, "profile": map[string]any{"name": "Prompt account"}}, "role": "member"}, http.StatusOK)
+	plain := &http.Client{Timeout: 5 * time.Second}
+	defer plain.CloseIdleConnections()
+	body, err := json.Marshal(map[string]any{"externalUserId": externalID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tokenData := applicationRequest(t, f, plain, "/api/v1/oauth/s2s/token", string(body), "application/json", "S2S "+f.s2sSharedKey)
+	var tokens applicationTokens
+	if err := json.Unmarshal(tokenData, &tokens); err != nil || tokens.UserID != added.Membership.UserID {
+		t.Fatal("second account token differs")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defer transport.CloseIdleConnections()
+	other := *f
+	other.client = &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: tokens.AccessToken, next: transport}}
+	other.userID = tokens.UserID
+	grantPath := "/api/v1/projects/" + projectID + "/grants/" + other.userID
+	grant := requestJSON[api.ProjectGrantResult](t, f, http.MethodPut, grantPath, api.SetProjectGrantRequest{Role: "member", ExpectedUserID: f.userID}, http.StatusOK).Grant
+	for _, path := range paths[:2] {
+		initial := read(&other, path)
+		if initial.Revision != "0" || initial.Text != "" {
+			t.Fatalf("second account initial %s: %+v", path, initial)
+		}
+		saved := put(&other, path, other.userID, "0", "second account", http.StatusOK)
+		if saved.Revision != "1" || saved.Text != "second account" || !reflect.DeepEqual(saved, read(&other, path)) {
+			t.Fatalf("second account %s: %+v", path, saved)
+		}
+		if owner := read(f, path); owner.Revision != "5" || owner.Text != "" {
+			t.Fatalf("owner value changed: %+v", owner)
+		}
+	}
+	requestJSON[api.ErrorResponse](t, &other, http.MethodGet, paths[2], nil, http.StatusNotFound)
+	requestJSON[api.RemoveProjectGrantResult](t, f, http.MethodDelete, grantPath, map[string]any{"version": grant.Version, "expectedUserId": f.userID}, http.StatusOK)
+	requestJSON[api.ErrorResponse](t, &other, http.MethodGet, paths[1], nil, http.StatusNotFound)
+	reject(&other, paths[1], other.userID, "1", "after revocation", http.StatusNotFound, "not_found")
 }
