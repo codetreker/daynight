@@ -48,9 +48,11 @@ func TestScopedWorkerOperations(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx := taskservice.WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, tc.full)
+				type contextKey struct{}
+				parent := context.WithValue(t.Context(), contextKey{}, "worker-scope")
+				ctx := taskservice.WithTaskWriteAuthorization(parent, model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, tc.full)
 				base := newTaskMockBase(t, "worker-scope")
-				reads, writes := 0, 0
+				reads, writes, admissionReads, admissionChecks := 0, 0, 0, 0
 				project := &projectWriterMock{taskMockBase: base, ProjectAccessFn: func(_ context.Context, p model.Principal) (model.ProjectAccess, error) {
 					if p != principal {
 						t.Fatal("principal changed")
@@ -84,12 +86,22 @@ func TestScopedWorkerOperations(t *testing.T) {
 					},
 				}
 				session := &projectSessionMock{taskMockBase: base, DrainTaskSessionsFn: func(context.Context, string, store.TaskSessionDrain) error { return nil }, TransitionTaskSessionReceiptsFn: func(context.Context, string, store.TaskSessionReceiptTransition) error { return nil }}
-				admission := &workerClaimAdmissionMock{read: func(_ context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
-					if user != principal.UserID || worker != descriptor.WorkerID {
-						t.Fatal("claim identity changed")
-					}
-					return nil, nil
-				}}
+				admission := &workerClaimAdmissionMock{
+					read: func(actual context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+						admissionReads++
+						if actual.Value(contextKey{}) != "worker-scope" || user != principal.UserID || worker != descriptor.WorkerID {
+							t.Fatal("claim configuration identity or context changed")
+						}
+						return nil, nil
+					},
+					check: func(actual context.Context, user, worker string) error {
+						admissionChecks++
+						if actual.Value(contextKey{}) != "worker-scope" || user != principal.UserID || worker != descriptor.WorkerID {
+							t.Fatal("claim execution identity or context changed")
+						}
+						return nil
+					},
+				}
 				scope := &taskProjectScopeMock{taskMockBase: base, ProjectDAOFn: func() store.ProjectWriteDAO { return project }, TaskDAOFn: func() store.TaskWriteDAO { return tasks }, SessionDAOFn: func() store.ProjectSessionDAO { return session }, CaptureDAOFn: func() store.WebhookCaptureDAO { return scopeCaptureDAO{} }, WorkerClaimAdmissionDAOFn: func() store.WorkerClaimAdmissionDAO { return admission }}
 				db := &taskStoreMock{taskMockBase: base, WriteProjectFn: func(_ context.Context, id string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 					if id != current.ProjectID {
@@ -113,6 +125,13 @@ func TestScopedWorkerOperations(t *testing.T) {
 					result, err = service.ReleaseWorker(ctx, principal, current.ProjectID, current.ID, taskcore.ReleaseWorker{Version: current.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
 				case "withdraw":
 					result, err = service.WithdrawWorker(ctx, principal, current.ProjectID, current.ID, taskcore.WithdrawWorker{Version: current.Version, ClaimID: descriptor.ClaimID})
+				}
+				wantAdmission := 0
+				if op.name == "claim" && tc.allowed {
+					wantAdmission = 1
+				}
+				if admissionReads != wantAdmission || admissionChecks != wantAdmission {
+					t.Fatalf("claim admission reads=%d checks=%d, want %d each", admissionReads, admissionChecks, wantAdmission)
 				}
 				if !tc.allowed {
 					var fault *model.Fault
