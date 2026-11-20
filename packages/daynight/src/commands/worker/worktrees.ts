@@ -616,12 +616,23 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
               }
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
                 const emptyPath = result.binding.worktreePath, emptyLeaf = result.leaf;
+                const emptyRegistration = result.registration.directory;
                 const reproveEmpty = async (): Promise<void> => {
                   operation.check();
                   if (await directory(emptyPath) !== emptyLeaf) throw new Error("The empty worktree directory changed during cleanup.");
                   if (await ordinaryFile(path.join(emptyPath, ".git")) !== null) throw new Error("The empty worktree reacquired its Git pointer during cleanup.");
+                  // An external holder can lock this registration while cleanup
+                  // runs. Git reports the lock through the registration rather
+                  // than the pointerless directory, so the inspection after
+                  // removal would observe it only once the directory is gone.
+                  if (await ordinaryFile(path.join(emptyRegistration, "locked")) !== null) throw new Error("The empty worktree acquired a Git lock during cleanup.");
+                  // Those reads are asynchronous, so the directory can be
+                  // replaced while they run.
+                  if (await directory(emptyPath) !== emptyLeaf) throw new Error("The empty worktree directory changed during cleanup.");
                   operation.check();
                 };
+                // The first attempt and every retry share this verifier.
+                await reproveEmpty();
                 try { await removeEmptyDirectory(emptyPath, operation, reproveEmpty); }
                 catch (ordinaryError) {
                   if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;

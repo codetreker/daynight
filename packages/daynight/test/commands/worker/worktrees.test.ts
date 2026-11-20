@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync, realpathSync, renameSync, rmdirSync } from "node:fs";
+import { cpSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -1869,6 +1869,28 @@ exec "$@"
         catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
       }
     }
+  });
+
+  it("retains a pointerless empty worktree that is locked during the busy backoff", async () => {
+    const f = await repositoryFixture("files"); const adapter = manager(f.root); const binding = await prepareCleanupFixture(f, adapter);
+    // Captured while the pointer still resolves, then emptied to reach the
+    // recovery branch for a registered worktree whose pointer is already gone.
+    const admin = administrativeDirectory(binding.worktreePath);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Only the first attempt is busy, and the lock appears during its
+      // backoff: a retry that did not revalidate would remove the directory.
+      if (attempts > 1) return actualFs.rmdir(entry, options);
+      writeFileSync(path.join(admin, "locked"), "human");
+      throw busyError();
+    });
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect((await lstat(root)).isDirectory()).toBe(true);
   });
 
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {

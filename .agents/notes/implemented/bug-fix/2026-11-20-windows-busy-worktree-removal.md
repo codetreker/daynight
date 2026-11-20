@@ -49,7 +49,12 @@ directory the agent's own working directory holds. It passes `verifyOwnedRoot`,
 which runs `verifyOwnership` and then rechecks the captured directory
 identities: `verifyOwnership` establishes those identities before it reads the
 pointer, metadata and lock, and those reads are asynchronous, so the root can be
-replaced while they run. `removeEmptyReservation` verifies its reservation through a
+replaced while they run. The recovery branch for a registered worktree whose pointer an interrupted
+cleanup already removed verifies the leaf identity, the still absent pointer and
+the registration's `locked` marker: Git records an external lock on the
+registration rather than on the pointerless directory, so the inspection that
+follows removal would observe it only once the directory was gone.
+`removeEmptyReservation` verifies its reservation through a
 single function that the first attempt and every retry both call, so the two
 cannot diverge. That function checks its captured directory identities,
 including the reservation leaf, confirms no Git registration appeared, and
