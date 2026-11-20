@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -94,6 +96,68 @@ func TestScopedTeamToolsPreserveVisibilityAndGuardWrites(t *testing.T) {
 	scopedToolCall(t, client, "team_rename", args, "insufficient_scope", "not_committed")
 	readTeam(model.ErrNotFound)
 	scopedToolCall(t, client, "team_show", map[string]any{"team": team.ID}, "not_found", "")
+	mocks.verify()
+}
+
+func TestScopedTeamProjectsRejectsBadAuthorizationWithoutListing(t *testing.T) {
+	tx := newHTTPTestStore(t)
+	teamProvider := func(_ context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+		return scopedPAT(t, p, "team:read"), nil
+	}
+	snapshot := func(ctx context.Context, _ store.SnapshotScope, p model.Principal) (model.CredentialAuthorization, error) {
+		return teamProvider(ctx, p)
+	}
+	teams, err := teamservice.NewScopedTeams(tx, teamProvider, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	providerCalls := 0
+	projectProvider := func(_ context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+		providerCalls++
+		switch mode {
+		case "failure":
+			return model.CredentialAuthorization{}, errors.New("authorization unavailable")
+		case "other identity":
+			p.UserID = unknownTarget
+			return scopedPAT(t, p, "project:read"), nil
+		case "missing policy":
+			return model.CredentialAuthorization{Principal: p, Profile: model.ScopedPATProfile}, nil
+		default:
+			return scopedPAT(t, p, "project:read"), nil
+		}
+	}
+	mocks := newTeamToolMocks(t)
+	f := newEntryFixture(t)
+	f.entry.auth = validTeamAuth{}
+	if err := RegisterScopedTeamTools(f.entry, teams, mocks.projects, mocks.identities, projectProvider); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2025-11-25", "alice")
+	actor, _ := (validTeamAuth{}).Authenticate(t.Context(), model.PATCredential, "alice")
+	team := mcpOrgTeam(t, unknownTeam, "Team", actor.UserID)
+	args := map[string]any{"team": team.ID}
+	for _, mode = range []string{"failure", "other identity", "missing policy", "allowed"} {
+		mcpOrgRead(t, tx, 1, nil, mcpOrgTeamReader{TeamCall: func(_ context.Context, user, id string) (model.Team, error) {
+			projectHTTPCheck(t, []string{user, id}, []string{actor.UserID, team.ID})
+			return team, nil
+		}})
+		if mode == "allowed" {
+			mocks.expect("Projects.ListScoped")
+			mocks.projects.ListScopedFunc = func(_ context.Context, _ model.Principal, request coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
+				if request.TeamID == nil || *request.TeamID != team.ID {
+					t.Errorf("unexpected Team selection: %+v", request)
+				}
+				return coreproject.ProjectPage{}, nil
+			}
+			scopedToolCall(t, client, "team_projects", args, "", "")
+		} else {
+			scopedToolCall(t, client, "team_projects", args, "internal_error", "")
+		}
+	}
+	if providerCalls != 4 {
+		t.Fatalf("authorization provider called %d times", providerCalls)
+	}
 	mocks.verify()
 }
 

@@ -60,13 +60,16 @@ func AuthorizeAddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Pri
 	if err != nil {
 		return err
 	}
-	if err := authorizeOrdinaryAdmin(t); err != nil {
+	if err := authorizeOrdinaryAdmin(ctx, p, t, scopepolicy.TeamMembers, scopepolicy.TeamRead); err != nil {
 		return err
 	}
-	return checkScope(ctx, p, scopepolicy.TeamMembers)
+	return nil
 }
 
-func authorizeOrdinaryAdmin(t model.Team) error {
+func authorizeOrdinaryAdmin(ctx context.Context, p model.Principal, t model.Team, operations ...scopepolicy.Operation) error {
+	if err := checkScope(ctx, p, operations...); err != nil {
+		return err
+	}
 	if t.Membership.Role != model.ProjectAdmin {
 		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
@@ -78,9 +81,6 @@ func authorizeOrdinaryAdmin(t model.Team) error {
 
 func AddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, target string, role model.ProjectRole) (DirectMemberResult, error) {
 	if err := AuthorizeAddMember(ctx, dao, p); err != nil {
-		return DirectMemberResult{}, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return DirectMemberResult{}, err
 	}
 	member, err := dao.Member(ctx, target)

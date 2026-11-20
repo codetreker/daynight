@@ -148,9 +148,19 @@ func ValidateChange(p model.Principal, id string, input ChangeTeam) (string, err
 	}
 	return id, nil
 }
-func writableTeam(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, input ChangeTeam) (model.Team, error) {
+func writableTeam(ctx context.Context, dao store.TeamWriteDAO, p model.Principal) (model.Team, error) {
 	t, err := dao.Team(ctx, p.UserID)
 	if err != nil {
+		return model.Team{}, err
+	}
+	return t, nil
+}
+func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, input ChangeTeam) (model.Team, error) {
+	t, err := writableTeam(ctx, dao, p)
+	if err != nil {
+		return model.Team{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamWrite, scopepolicy.TeamRead); err != nil {
 		return model.Team{}, err
 	}
 	if t.Membership.Role != model.ProjectAdmin {
@@ -161,16 +171,6 @@ func writableTeam(ctx context.Context, dao store.TeamWriteDAO, p model.Principal
 	}
 	if t.Version != input.Version {
 		return model.Team{}, &model.Fault{Code: "version_conflict", Message: "Team version does not match."}
-	}
-	return t, nil
-}
-func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, input ChangeTeam) (model.Team, error) {
-	t, err := writableTeam(ctx, dao, p, input)
-	if err != nil {
-		return model.Team{}, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamWrite, scopepolicy.TeamRead); err != nil {
-		return model.Team{}, err
 	}
 	if *t.Name == input.Name {
 		return t, nil
@@ -184,12 +184,21 @@ func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 	return dao.Rename(ctx, p.UserID, input.Name)
 }
 func Delete(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, input ChangeTeam) error {
-	t, err := writableTeam(ctx, dao, p, input)
+	t, err := writableTeam(ctx, dao, p)
 	if err != nil {
 		return err
 	}
 	if err := checkScope(ctx, p, scopepolicy.TeamDelete); err != nil {
 		return err
+	}
+	if t.Membership.Role != model.ProjectAdmin {
+		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
+	}
+	if t.Kind == "personal" {
+		return &model.Fault{Code: "personal_team_immutable", Message: "Personal Team cannot be changed or deleted."}
+	}
+	if t.Version != input.Version {
+		return &model.Fault{Code: "version_conflict", Message: "Team version does not match."}
 	}
 	if *t.Name != input.Name {
 		return &model.Fault{Code: "version_conflict", Message: "Team name does not match the confirmed version."}

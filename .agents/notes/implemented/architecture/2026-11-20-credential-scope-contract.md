@@ -20,7 +20,9 @@ fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly.
 
 Team operations apply that contract at their business admission points, after
-the existing visibility and role checks and before protected output or mutation.
+visibility checks and before protected output or mutation. Existing role checks
+remain mandatory without exposing role-dependent results to a credential that
+lacks the required scope.
 The scoped service constructors require explicit credential authorization
 providers; operations with an existing transaction-bound credential recheck use
 the current authorization from that same transaction or snapshot. The existing

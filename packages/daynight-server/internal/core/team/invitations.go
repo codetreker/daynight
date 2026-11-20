@@ -34,7 +34,10 @@ type TeamInvitationAcceptance struct {
 func invitationAvailable(i model.TeamInvitation, now time.Time) bool {
 	return i.ConsumedAt == nil && i.RevokedAt == nil && i.ExpiresAt.After(now)
 }
-func requireOrdinaryTeamAdmin(t model.Team) error {
+func requireOrdinaryTeamAdmin(ctx context.Context, p model.Principal, t model.Team) error {
+	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+		return err
+	}
 	if t.Membership.Role != model.ProjectAdmin {
 		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
@@ -65,10 +68,7 @@ func CreateInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	if err != nil {
 		return MintedTeamInvitation{}, err
 	}
-	if err = requireOrdinaryTeamAdmin(t); err != nil {
-		return MintedTeamInvitation{}, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+	if err = requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return MintedTeamInvitation{}, err
 	}
 	now := clock().UTC()
@@ -85,10 +85,7 @@ func ListInvitations(ctx context.Context, dao store.TeamReader, p model.Principa
 	if err != nil {
 		return nil, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
-		return nil, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return nil, err
 	}
 	return dao.TeamInvitations(ctx, id, clock().UTC())
@@ -112,10 +109,7 @@ func ListInvitationPage(ctx context.Context, dao store.TeamReader, p model.Princ
 	if err != nil {
 		return InvitationPage{}, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
-		return InvitationPage{}, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return InvitationPage{}, err
 	}
 	result, err := dao.TeamInvitationPage(ctx, id, clock().UTC(), page)
@@ -139,10 +133,7 @@ func RevokeInvitation(ctx context.Context, dao store.TeamWriteDAO, p model.Princ
 	if err != nil {
 		return false, err
 	}
-	if err := requireOrdinaryTeamAdmin(t); err != nil {
-		return false, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamInvitations); err != nil {
+	if err := requireOrdinaryTeamAdmin(ctx, p, t); err != nil {
 		return false, err
 	}
 	return dao.RevokeInvitation(ctx, inviteID, clock().UTC())

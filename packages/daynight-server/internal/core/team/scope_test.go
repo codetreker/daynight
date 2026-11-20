@@ -3,6 +3,7 @@ package team
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -78,6 +79,10 @@ func TestScopeRetainsTeamVisibilityAndRole(t *testing.T) {
 	}
 	w.team.Membership.Role = model.ProjectMemberRole
 	_, err = Rename(ctx, w, p, input)
+	faultCode(t, err, "insufficient_scope")
+	allowed := scopeAuth(t, "team:read", "team:write")
+	allowed.Principal = p
+	_, err = Rename(scopeContext(allowed), w, p, input)
 	faultCode(t, err, "forbidden")
 	w.errs["team"] = model.ErrNotFound
 	_, err = Rename(ctx, w, p, input)
@@ -124,6 +129,10 @@ func TestTeamMemberLeaveAndAdminScopes(t *testing.T) {
 	}
 	w.removed = false
 	_, err = ChangeMember(scopeContext(auth), w, p, "other", ChangeTeamMember{Version: 1}, true)
+	faultCode(t, err, "insufficient_scope")
+	allowed := scopeAuth(t, "team:members")
+	allowed.Principal = p
+	_, err = ChangeMember(scopeContext(allowed), w, p, "other", ChangeTeamMember{Version: 1}, true)
 	faultCode(t, err, "forbidden")
 	if w.removed {
 		t.Fatal("member removed another user")
@@ -156,5 +165,136 @@ func TestMemberScopeDenialDoesNotRevealTargetExistence(t *testing.T) {
 		if reader.memberCalls != 0 {
 			t.Fatal("target membership queried without read permission")
 		}
+	}
+}
+
+func TestInvitationReceiptRejectsMissingAcceptanceScope(t *testing.T) {
+	now := time.Now()
+	auth := scopeAuth(t, "team:read")
+	team := namedTeam(auth.Principal)
+	dao := &writerFake{ref: team.TeamRef, invitation: model.TeamInvitation{ExpiresAt: now.Add(time.Hour)}, errs: map[string]error{}}
+	_, err := AcceptInvitationReceipt(scopeContext(auth), dao, auth.Principal, "secret", func() time.Time { return now })
+	faultCode(t, err, "insufficient_scope")
+	if dao.added || dao.consumed {
+		t.Fatal("denied receipt performed writes")
+	}
+}
+
+func TestTeamVersionDoesNotLeakWithoutMutationScope(t *testing.T) {
+	for _, scope := range []scopepolicy.ScopeID{"team:read", "task:read"} {
+		auth := scopeAuth(t, scope)
+		team := namedTeam(auth.Principal)
+		for _, version := range []int64{team.Version, team.Version + 1} {
+			t.Run(fmt.Sprintf("%s_version_%d", scope, version), func(t *testing.T) {
+				w := &writerFake{team: team, errs: map[string]error{}}
+				_, err := Rename(scopeContext(auth), w, auth.Principal, ChangeTeam{Name: "updated", Version: version})
+				faultCode(t, err, "insufficient_scope")
+				err = Delete(scopeContext(auth), w, auth.Principal, ChangeTeam{Name: *team.Name, Version: version})
+				faultCode(t, err, "insufficient_scope")
+				if w.renameCalls != 0 || w.deleted {
+					t.Fatal("denied mutation reached DAO")
+				}
+			})
+		}
+	}
+	authorized := scopeAuth(t, "team:delete", "team:read", "team:write")
+	team := namedTeam(authorized.Principal)
+	w := &writerFake{team: team, errs: map[string]error{}}
+	_, err := Rename(scopeContext(authorized), w, authorized.Principal, ChangeTeam{Name: "updated", Version: team.Version + 1})
+	faultCode(t, err, "version_conflict")
+	err = Delete(scopeContext(authorized), w, authorized.Principal, ChangeTeam{Name: *team.Name, Version: team.Version + 1})
+	faultCode(t, err, "version_conflict")
+	if w.renameCalls != 0 || w.deleted {
+		t.Fatal("version-conflicted mutation reached DAO")
+	}
+}
+
+func TestPersonalTeamKindIsNotDisclosedWithoutMutationScope(t *testing.T) {
+	auth := scopeAuth(t, "team:read")
+	p := auth.Principal
+	team := namedTeam(p)
+	team.Kind = "personal"
+	w := &writerFake{team: team, errs: map[string]error{}}
+	ctx := scopeContext(auth)
+	_, err := Rename(ctx, w, p, ChangeTeam{Name: "updated", Version: team.Version})
+	faultCode(t, err, "insufficient_scope")
+	err = Delete(ctx, w, p, ChangeTeam{Name: *team.Name, Version: team.Version})
+	faultCode(t, err, "insufficient_scope")
+	_, err = ChangeMember(ctx, w, p, p.UserID, ChangeTeamMember{Version: 1}, true)
+	faultCode(t, err, "insufficient_scope")
+	err = AuthorizeAddMember(ctx, w, p)
+	faultCode(t, err, "insufficient_scope")
+	_, err = CreateInvitation(ctx, w, p, team.ID, time.Now)
+	faultCode(t, err, "insufficient_scope")
+	if w.renameCalls != 0 || w.deleted || w.removed || w.invitation.ID != "" {
+		t.Fatal("denied mutation reached DAO")
+	}
+
+	allowed := scopeAuth(t, "team:read", "team:write", "team:delete", "team:leave", "team:members", "team:invitations")
+	team = namedTeam(allowed.Principal)
+	team.Kind = "personal"
+	w = &writerFake{team: team, errs: map[string]error{}}
+	ctx = scopeContext(allowed)
+	_, err = Rename(ctx, w, allowed.Principal, ChangeTeam{Name: "updated", Version: team.Version})
+	faultCode(t, err, "personal_team_immutable")
+	err = Delete(ctx, w, allowed.Principal, ChangeTeam{Name: *team.Name, Version: team.Version})
+	faultCode(t, err, "personal_team_immutable")
+	_, err = ChangeMember(ctx, w, allowed.Principal, allowed.Principal.UserID, ChangeTeamMember{Version: 1}, true)
+	faultCode(t, err, "personal_team_immutable")
+	err = AuthorizeAddMember(ctx, w, allowed.Principal)
+	faultCode(t, err, "personal_team_immutable")
+	_, err = CreateInvitation(ctx, w, allowed.Principal, team.ID, time.Now)
+	faultCode(t, err, "personal_team_immutable")
+}
+
+func TestMissingScopeDoesNotDiscloseTeamRole(t *testing.T) {
+	auth := scopeAuth(t, "task:read")
+	p := auth.Principal
+	ctx := scopeContext(auth)
+	for _, role := range []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole} {
+		t.Run(string(role), func(t *testing.T) {
+			team := namedTeam(p)
+			team.Membership.Role = role
+			w := &writerFake{team: team, errs: map[string]error{}}
+			_, err := Rename(ctx, w, p, ChangeTeam{Name: "updated", Version: team.Version})
+			faultCode(t, err, "insufficient_scope")
+			err = Delete(ctx, w, p, ChangeTeam{Name: *team.Name, Version: team.Version})
+			faultCode(t, err, "insufficient_scope")
+			_, err = ChangeMember(ctx, w, p, "other", ChangeTeamMember{Version: 1}, true)
+			faultCode(t, err, "insufficient_scope")
+			err = AuthorizeAddMember(ctx, w, p)
+			faultCode(t, err, "insufficient_scope")
+			_, err = CreateInvitation(ctx, w, p, team.ID, time.Now)
+			faultCode(t, err, "insufficient_scope")
+			_, err = SearchMemberCandidates(ctx, &readerFake{team: team}, nil, p, team.ID, CandidateSearch{})
+			faultCode(t, err, "insufficient_scope")
+			if w.renameCalls != 0 || w.deleted || w.removed || w.invitation.ID != "" {
+				t.Fatal("scope denial performed mutation")
+			}
+		})
+	}
+}
+
+func TestDirectMemberPartialScopeDoesNotDiscloseRole(t *testing.T) {
+	auth := scopeAuth(t, "team:members")
+	p := auth.Principal
+	ctx := scopeContext(auth)
+	for _, role := range []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole} {
+		t.Run(string(role), func(t *testing.T) {
+			team := namedTeam(p)
+			team.Membership.Role = role
+			w := &writerFake{team: team, errs: map[string]error{}}
+			err := AuthorizeAddMember(ctx, w, p)
+			faultCode(t, err, "insufficient_scope")
+			_, err = AddMember(ctx, w, p, "target", model.ProjectMemberRole)
+			faultCode(t, err, "insufficient_scope")
+			_, err = AddExistingMember(ctx, w, p, "target")
+			faultCode(t, err, "insufficient_scope")
+			_, err = ResolveMember(ctx, w, p, "external")
+			faultCode(t, err, "insufficient_scope")
+			if w.added {
+				t.Fatal("scope denial added a member")
+			}
+		})
 	}
 }

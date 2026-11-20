@@ -132,10 +132,7 @@ func SearchMemberCandidates(ctx context.Context, dao store.TeamReader, candidate
 	if err != nil {
 		return CandidatePage{}, err
 	}
-	if err := authorizeOrdinaryAdmin(t); err != nil {
-		return CandidatePage{}, err
-	}
-	if err := checkScope(ctx, p, scopepolicy.TeamMembers); err != nil {
+	if err := authorizeOrdinaryAdmin(ctx, p, t, scopepolicy.TeamMembers); err != nil {
 		return CandidatePage{}, err
 	}
 	result := CandidatePage{Items: []model.UserCandidate{}}

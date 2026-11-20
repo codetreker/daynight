@@ -117,12 +117,6 @@ func ChangeMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal
 	if err != nil {
 		return TeamMemberResult{}, err
 	}
-	if t.Kind == "personal" {
-		return TeamMemberResult{}, &model.Fault{Code: "personal_team_immutable", Message: "Personal Team membership cannot be changed."}
-	}
-	if t.Membership.Role != model.ProjectAdmin && (!remove || target != p.UserID) {
-		return TeamMemberResult{}, &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
-	}
 	operation := scopepolicy.TeamMembers
 	if remove && target == p.UserID {
 		operation = scopepolicy.TeamLeave
@@ -133,6 +127,12 @@ func ChangeMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal
 	}
 	if err := checkScope(ctx, p, operations...); err != nil {
 		return TeamMemberResult{}, err
+	}
+	if t.Kind == "personal" {
+		return TeamMemberResult{}, &model.Fault{Code: "personal_team_immutable", Message: "Personal Team membership cannot be changed."}
+	}
+	if t.Membership.Role != model.ProjectAdmin && (!remove || target != p.UserID) {
+		return TeamMemberResult{}, &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}
 	member, err := dao.Member(ctx, target)
 	if errors.Is(err, model.ErrNotFound) {
