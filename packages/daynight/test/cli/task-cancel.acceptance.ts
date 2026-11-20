@@ -157,7 +157,6 @@ it("cancels through both installed native launchers and reconciles an unknown re
       { method: "GET", path: `/api/v1/projects/${projectId}` },
       { method: "GET", path: resourcePath },
       { method: "PUT", path: `${resourcePath}/status` },
-      { method: "GET", path: `/api/v1/projects/${projectId}` },
       { method: "GET", path: `${resourcePath}?include=session` },
     ]);
   } catch (cause) { failure = cause; }
