@@ -1,6 +1,6 @@
 export const repositoryMessages = {
   'zh-CN': {
-    title: '仓库地址', project: '项目', current: '当前仓库', target: '新仓库地址', hint: '支持 HTTPS、SSH 和 SCP 格式。', preview: '预览更改',
+    title: '仓库地址', edit: '修改', titleEdit: '修改仓库地址', back: '返回', project: '项目', current: '当前仓库', target: '新仓库地址', hint: '支持 HTTPS、SSH 和 SCP 格式。', preview: '预览更改',
     restricted: '只有项目管理员可以修改仓库地址。', invalid: '请输入有效的 HTTPS、SSH 或 SCP 仓库地址。', tooLong: '仓库地址不能超过 4096 字节。',
     confirm: '确认修改仓库地址', checking: '正在读取预览…', saving: '正在保存…', reading: '正在核对当前地址…', cancel: '取消', close: '关闭', save: '保存地址', switch: '确认更换仓库',
     retryPreview: '重新预览', check: '核对当前地址', unchanged: '地址与当前值相同，可以直接关闭。', same: '这是同一个仓库。保留 GitHub App 连接和 Worker 项目选择。', different: '新地址指向另一个仓库。', unverified: '无法确认新旧地址是否属于同一个仓库。',
@@ -8,7 +8,7 @@ export const repositoryMessages = {
     failed: '无法读取仓库改址预览。请重试。', rejected: '保存遭到拒绝。请检查原因并修正后重试。', occupied: '此 Team 已有其他活动项目使用该仓库。', conflict: '项目仓库地址或确认事实已变化。请重新预览并确认。', unknown: '无法确认这次保存的结果。请核对当前地址；读回只反映当前状态，不能确认原操作成功，也不会再次提交。', observed: '读到的当前地址', readFailed: '无法核对当前地址。请重试。', saved: '仓库地址已保存。', switched: '仓库地址已保存。项目的 GitHub App 连接已断开，已有 Worker 项目选择已移除。', request: '请求 ID：',
   },
   en: {
-    title: 'Repository address', project: 'Project', current: 'Current repository', target: 'New repository address', hint: 'Supports HTTPS, SSH, and SCP addresses.', preview: 'Preview change',
+    title: 'Repository address', edit: 'Edit', titleEdit: 'Edit repository address', back: 'Back', project: 'Project', current: 'Current repository', target: 'New repository address', hint: 'Supports HTTPS, SSH, and SCP addresses.', preview: 'Preview change',
     restricted: 'Only project administrators can change the repository address.', invalid: 'Enter a valid HTTPS, SSH, or SCP repository address.', tooLong: 'The address must be at most 4096 bytes.',
     confirm: 'Confirm repository address change', checking: 'Loading preview…', saving: 'Saving…', reading: 'Checking the current address…', cancel: 'Cancel', close: 'Close', save: 'Save address', switch: 'Confirm repository switch',
     retryPreview: 'Preview again', check: 'Check current address', unchanged: 'The address matches the current value.', same: 'This is the same repository. The GitHub App connection and Worker selections are retained.', different: 'The new address points to a different repository.', unverified: 'Daynight could not verify whether both addresses point to the same repository.',

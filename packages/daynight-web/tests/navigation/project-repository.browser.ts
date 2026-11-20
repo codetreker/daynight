@@ -68,13 +68,16 @@ const install = async (page: Page): Promise<State> => {
 
 const labels = (zh: boolean) => ({
   title: zh ? '仓库地址' : 'Repository address', target: zh ? '新仓库地址' : 'New repository address', preview: zh ? '预览更改' : 'Preview change',
+  edit: zh ? '修改' : 'Edit', editor: zh ? '修改仓库地址' : 'Edit repository address', back: zh ? '返回' : 'Back',
   confirm: zh ? '确认修改仓库地址' : 'Confirm repository address change', cancel: zh ? '取消' : 'Cancel', save: zh ? '保存地址' : 'Save address',
   switch: zh ? '确认更换仓库' : 'Confirm repository switch', ack: zh ? '按更换仓库处理' : 'Proceed as a repository switch',
 });
 const open = async (page: Page, address = sameAddress, zh = false) => {
   const m = labels(zh);
-  await page.getByLabel(m.target, { exact: true }).fill(address);
-  await page.getByRole('button', { name: m.preview, exact: true }).click();
+  await page.getByRole('region', { name: m.title, exact: true }).getByRole('button', { name: m.edit, exact: true }).click();
+  const editor = page.getByRole('dialog', { name: m.editor });
+  await editor.getByLabel(m.target, { exact: true }).fill(address);
+  await editor.getByRole('button', { name: m.preview, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: m.confirm });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText(address, { exact: true }).last()).toBeVisible();
@@ -83,12 +86,28 @@ const open = async (page: Page, address = sameAddress, zh = false) => {
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
   test(`repository confirmation wraps long addresses and preserves keyboard drafts at ${width}px (${locale})`, async ({ page }, testInfo) => {
-    const state = await install(page); state.classification = 'unverified';
+    const state = await install(page); state.classification = 'unverified'; state.repoUrl = `${unknownAddress}-old`;
     const zh = locale === 'zh-CN', m = labels(zh);
     await page.setViewportSize({ width, height: 900 }); await page.goto(base);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
-    const dialog = await open(page, unknownAddress, zh);
-    await expect(dialog.getByRole('button', { name: m.cancel, exact: true })).toBeFocused();
+    const panel = page.getByRole('region', { name: m.title, exact: true });
+    const edit = panel.getByRole('button', { name: m.edit, exact: true });
+    await expect(panel.getByText(`${unknownAddress}-old`, { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(panel.getByLabel(m.target, { exact: true })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: m.preview, exact: true })).toHaveCount(0);
+    await edit.focus(); await page.keyboard.press('Enter');
+    const editor = page.getByRole('dialog', { name: m.editor });
+    await expect(editor.getByLabel(m.target, { exact: true })).toBeFocused();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(page.locator('#root')).toHaveAttribute('inert', '');
+    await page.keyboard.press('Shift+Tab'); await expect(editor.locator(':focus')).toHaveCount(1);
+    await page.keyboard.press('Tab'); await expect(editor.locator(':focus')).toHaveCount(1);
+    await editor.getByLabel(m.target, { exact: true }).fill(unknownAddress);
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: m.confirm });
+    await expect(dialog).toBeVisible(); await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(dialog.getByRole('button', { name: m.back, exact: true })).toBeFocused();
     await expect(dialog.getByRole('button', { name: m.switch, exact: true })).toBeDisabled();
     await expect(dialog).toContainText(zh ? '现有执行也可能在配置应用时中断' : 'applying removal can interrupt running work');
     await dialog.getByLabel(m.ack, { exact: true }).check();
@@ -97,13 +116,36 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('confirmation.png') });
+    await dialog.getByRole('button', { name: m.back, exact: true }).click();
+    await expect(editor.getByLabel(m.target, { exact: true })).toHaveValue(unknownAddress);
+    await expect(editor.getByRole('button', { name: m.switch, exact: true })).toHaveCount(0);
     await page.keyboard.press('Escape');
-    await expect(dialog).toBeHidden();
-    await expect(page.getByRole('button', { name: m.preview, exact: true })).toBeFocused();
-    await expect(page.getByLabel(m.target, { exact: true })).toHaveValue(unknownAddress);
-    expect(state.writes).toEqual([]);
+    await expect(editor).toBeHidden(); await expect(edit).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(editor.getByLabel(m.target, { exact: true })).toHaveValue(unknownAddress);
+    await editor.getByRole('button', { name: m.cancel, exact: true }).click();
+    await expect(editor).toBeHidden(); await expect(edit).toBeFocused();
+    expect(state.previews).toHaveLength(1); expect(state.writes).toEqual([]);
   });
 }
+
+test('history suspends and restores the editor and retains a closed draft', async ({ page }) => {
+  const state = await install(page); await page.goto('/projects');
+  await page.evaluate(path => { history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); }, base);
+  const edit = page.getByRole('region', { name: 'Repository address', exact: true }).getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit repository address' });
+  const input = dialog.getByLabel('New repository address', { exact: true });
+  await input.fill(nextAddress); await input.focus();
+  await input.evaluate((element: HTMLInputElement) => element.setSelectionRange(3, 10));
+  await page.goBack(); await expect(page).toHaveURL(/\/projects$/); await expect(dialog).toBeHidden();
+  await page.goForward(); await expect(dialog).toBeVisible(); await expect(input).toHaveValue(nextAddress); await expect(input).toBeFocused();
+  expect(await input.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([3, 10]);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.goBack(); await expect(page).toHaveURL(/\/projects$/); await page.goForward();
+  await edit.click(); await expect(input).toHaveValue(nextAddress);
+  expect(state.previews).toEqual([]); expect(state.writes).toEqual([]);
+});
 
 test('a direct project administrator saves the precise preview once and refreshes the project', async ({ page }) => {
   const state = await install(page); await page.goto(base);
@@ -183,7 +225,8 @@ test('members see the current address and cannot preview or save', async ({ page
   const panel = page.getByRole('region', { name: 'Repository address', exact: true });
   await expect(panel.getByText(oldAddress, { exact: true })).toBeVisible();
   await expect(panel).toContainText('Only project administrators can change the repository address.');
-  await expect(panel.getByRole('button', { name: 'Preview change', exact: true })).toBeDisabled();
+  await expect(panel.getByRole('button', { name: 'Edit', exact: true })).toBeDisabled();
+  await expect(panel.getByLabel('New repository address', { exact: true })).toHaveCount(0);
   expect(state.previews).toEqual([]); expect(state.writes).toEqual([]);
 });
 
@@ -215,7 +258,7 @@ test('occupied repository refusal preserves an editable draft', async ({ page })
   const dialog = await open(page);
   await dialog.getByRole('button', { name: 'Save address', exact: true }).click();
   await expect(dialog).toContainText('Another active project in this Team already uses this repository.');
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(page.getByLabel('New repository address', { exact: true })).toHaveValue(sameAddress);
   await page.getByLabel('New repository address', { exact: true }).fill(nextAddress);
   await expect(page.getByRole('button', { name: 'Preview change', exact: true })).toBeEnabled();
