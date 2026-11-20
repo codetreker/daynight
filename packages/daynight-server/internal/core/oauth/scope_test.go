@@ -16,18 +16,18 @@ import (
 
 type scopeFake struct {
 	store.OAuthScopeDAO
-	steps                         []string
-	grant                         store.OAuthGrant
-	identity                      store.OAuthAccessIdentity
-	readErr, sessionErr, clockErr error
-	now, fresh                    time.Time
-	sessionCalls                  int
-	hash                          []byte
-	bindings                      []store.OAuthBinding
-	selected                      []scopepolicy.ScopeID
-	lockedOwner, lockedGrant      string
-	writeOwner, writeGrant        string
-	writeVersion                  int64
+	steps                                          []string
+	grant                                          store.OAuthGrant
+	identity                                       store.OAuthAccessIdentity
+	readErr, sessionErr, firstSessionErr, clockErr error
+	now, fresh                                     time.Time
+	sessionCalls                                   int
+	hash                                           []byte
+	bindings                                       []store.OAuthBinding
+	selected                                       []scopepolicy.ScopeID
+	lockedOwner, lockedGrant                       string
+	writeOwner, writeGrant                         string
+	writeVersion                                   int64
 }
 
 func (f *scopeFake) ScopedAccess(_ context.Context, hash []byte, bindings []store.OAuthBinding, _ time.Time) (store.OAuthAccessIdentity, error) {
@@ -54,7 +54,7 @@ func (f *scopeFake) LockOwnerSession(_ context.Context, _ model.Principal, now t
 	if f.sessionCalls == 2 {
 		return f.sessionErr
 	}
-	return nil
+	return f.firstSessionErr
 }
 func (f *scopeFake) FreshTime(_ context.Context, now time.Time) (time.Time, error) {
 	f.steps = append(f.steps, "time")
@@ -134,6 +134,76 @@ func TestAccessPolicyRejectsInvalidOrStale(t *testing.T) {
 	original.UserID = uuid.NewString()
 	if _, err = LockAccessPolicy(t.Context(), f, original, f.grant.Resource, f.now); err == nil {
 		t.Fatal("different actor accepted")
+	}
+}
+
+func TestLockAccessPolicyRejectsInvalidIdentityAndStoreFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		alter func(*scopeFake, *model.Principal, *string, *time.Time)
+	}{
+		{"session principal", func(_ *scopeFake, p *model.Principal, _ *string, _ *time.Time) { p.Kind = model.SessionCredential }},
+		{"missing user", func(_ *scopeFake, p *model.Principal, _ *string, _ *time.Time) { p.UserID = "" }},
+		{"invalid access id", func(_ *scopeFake, p *model.Principal, _ *string, _ *time.Time) { p.CredentialID = "bad" }},
+		{"invalid resource", func(_ *scopeFake, _ *model.Principal, resource *string, _ *time.Time) {
+			*resource = "https://server.example/unknown"
+		}},
+		{"missing time", func(_ *scopeFake, _ *model.Principal, _ *string, now *time.Time) { *now = time.Time{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := scopeTestFake(t)
+			p, resource, now := f.identity.Principal, f.grant.Resource, f.now
+			tc.alter(f, &p, &resource, &now)
+			_, err := LockAccessPolicy(t.Context(), f, p, resource, now)
+			scopeFault(t, err, "unauthenticated")
+			if len(f.steps) != 0 {
+				t.Fatalf("invalid identity reached storage: %v", f.steps)
+			}
+		})
+	}
+	failure := errors.New("database failure")
+	for _, tc := range []struct {
+		name    string
+		cause   error
+		missing bool
+	}{
+		{"revoked access", model.ErrNotFound, true},
+		{"database error", failure, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := scopeTestFake(t)
+			f.readErr = tc.cause
+			_, err := LockAccessPolicy(t.Context(), f, f.identity.Principal, f.grant.Resource, f.now)
+			if tc.missing {
+				scopeFault(t, err, "unauthenticated")
+			} else if !errors.Is(err, failure) {
+				t.Fatalf("lost database error: %v", err)
+			}
+			if !reflect.DeepEqual(f.steps, []string{"access"}) {
+				t.Fatalf("calls %v", f.steps)
+			}
+		})
+	}
+}
+
+func TestUpdateScopeRejectsInvalidSessionAndPropagatesSessionFailure(t *testing.T) {
+	f, owner := scopeTestFake(t)
+	owner.Kind = model.PATCredential
+	_, err := UpdateSessionGrantScope(t.Context(), f, f, owner, owner.UserID, f.grant.ID, 3, []scopepolicy.ScopeID{"task:read"}, f.now)
+	scopeFault(t, err, "unauthenticated")
+	if len(f.steps) != 0 {
+		t.Fatalf("invalid session reached storage: %v", f.steps)
+	}
+
+	f, owner = scopeTestFake(t)
+	failure := errors.New("session store failure")
+	f.firstSessionErr = failure
+	_, err = UpdateSessionGrantScope(t.Context(), f, f, owner, owner.UserID, f.grant.ID, 3, []scopepolicy.ScopeID{"task:read"}, f.now)
+	if !errors.Is(err, failure) {
+		t.Fatalf("lost session error: %v", err)
+	}
+	if !reflect.DeepEqual(f.steps, []string{"grant", "session"}) {
+		t.Fatalf("calls %v", f.steps)
 	}
 }
 func TestUpdateSessionGrantScope(t *testing.T) {
