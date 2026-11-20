@@ -151,7 +151,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   }, headers: { 'Daynight-User-ID': userId } }));
   await page.goto('/tests/navigation/my-tasks-browser.html');
   await expect(page.getByText(`Claim machine: ${longWorker}`)).toBeVisible();
-  await expect(page.getByText('Unavailable')).toBeVisible();
+  await expect(page.locator('.task-row-primary-status[data-session-state="unavailable"]')).toContainText('Unavailable');
   const replacement = '机器  名称\nA\tB' + ' \t'.repeat(60);
   current = { workerId: taskId(72), state: 'active', machine: { id: taskId(73), name: replacement } };
   await page.getByRole('button', { name: 'Refresh' }).click();
@@ -509,10 +509,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     let state: 'working' | 'notice' | 'warning' = 'working';
     let needsAttention = false, canOpen = true;
     const example = row(1);
+    await page.route('**/api/v1/projects/**/tags/colors/resolve', route => route.fulfill({ json: { catalogEpoch: taskId(92), items: [{ id: taskId(90), state: 'found', color: '#123456', version: 1 }] }, headers: { 'Daynight-User-ID': userId } }));
     await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
       ...payload, totalTaskCount: 1, totalProjectCount: 1, sessionPartial: false,
       items: [{ ...example, project: { ...project, matchedTaskCount: 1 },
-        task: { ...example.task, paused: true, startedAt: '2026-11-13T07:00:00Z' },
+        task: { ...example.task, allowAgents: true, paused: true, startedAt: '2026-11-13T07:00:00Z' },
         session: { ...registered, needsAttention, indicator: state }, sessionRow: { ...sessionRow, state, needsAttention, canOpen } }],
     }, headers: { 'Daynight-User-ID': userId } }));
     await page.goto('/tests/navigation/my-tasks-browser.html');
