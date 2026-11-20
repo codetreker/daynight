@@ -19,6 +19,9 @@ type identityOperations interface {
 	Logout(context.Context, model.Principal) error
 	CreatePAT(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
 	ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	ListPATsV2(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	CreatePATV2(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error)
+	UpdatePATDescription(context.Context, model.Principal, string, string, *string, *string) (string, *string, error)
 	RevokePAT(context.Context, model.Principal, string) error
 	UpdatePATExpiry(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
 	Providers(context.Context) ([]string, error)

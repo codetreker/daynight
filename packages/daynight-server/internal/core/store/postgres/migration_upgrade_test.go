@@ -179,19 +179,23 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	finite := deviceStoreCredential(now)
 	finite.ExpiresAt = storeTokenExpiry(now.Add(30 * 24 * time.Hour))
 	finite.UserID = p.UserID
-	if err := testIdentityWrite(s, ctx, func(scope IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, finite) }); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, finite.ID, finite.UserID, finite.TokenHash, finite.Name, finite.CreatedAt, finite.ExpiresAt); err != nil {
 		t.Fatal(err)
 	}
 	var before string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	var after string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
 		t.Fatalf("optional expiry changed historical credential: %v", err)
+	}
+	var descriptionNull bool
+	if err := pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=$1`, finite.ID).Scan(&descriptionNull); err != nil || !descriptionNull {
+		t.Fatalf("historical token description is not null: %v", err)
 	}
 	var patRequired, sessionRequired bool
 	if err := pool.QueryRow(ctx, `SELECT (SELECT attnotnull FROM pg_attribute WHERE attrelid='personal_access_tokens'::regclass AND attname='expires_at'),(SELECT attnotnull FROM pg_attribute WHERE attrelid='sessions'::regclass AND attname='expires_at')`).Scan(&patRequired, &sessionRequired); err != nil || patRequired || !sessionRequired {

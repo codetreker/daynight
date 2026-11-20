@@ -187,7 +187,7 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 
 `RequestAuthentication` 拥有请求凭据的 HTTP 适配：Bearer 解析、会话 Cookie 选择、Cookie 写入的精确 Origin 校验、`AuthenticateRequest` 和 `Require`。它接收 `AuthenticateCredential` 操作，调用时传递原 request context、凭据种类和 secret，并保留 principal 或原错误。`ValidatePublicOrigin` 校验该 middleware 的公开 Origin 与 HTTP 测试配置。
 
-完整 `Authentication` 组合这个 middleware，通过私有 consumer 接口使用 Identity 的 18 个直接操作，并保留登录、账户、PAT 和 device 路由；其构造使用同一 Identity 对象校验完整认证配置和 callback，并绑定请求认证操作。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
+完整 `Authentication` 组合这个 middleware，通过私有 consumer 接口使用所需的 Identity 操作，并保留登录、账户、PAT 和 device 路由；其构造使用同一 Identity 对象校验完整认证配置和 callback，并绑定请求认证操作。Task 路由只依赖 `Require` 合同，因此 HTTP 测试可以实例化真实 credential middleware 并控制身份结果，无需构造无关的账户服务。业务权限判断仍由 service/core 执行。
 
 `RequestAuthentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
 从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
@@ -222,6 +222,8 @@ Access-Control-Request-Headers`。GET、HEAD、POST、PUT、PATCH、DELETE 保�
 这些生产者方法的 OPTIONS 无凭据返回 403，不发送 CORS 头，不认证或建立上传预留。
 归档根的用户状态读取、content 与文件字节读取，以及用户图片上传继续使用用户 CORS；
 原读取、写入和生产者凭据规则保持。Controller 和 Worker 生产通道不转换为用户能力。
+公开助手任务收件箱接收路由 `/api/v1/assistant-task-inbox/{inboxId}` 同样不属于用户 CORS，
+其 OPTIONS 落入该路由的 405；接收契约由[助手任务收件箱规格](../spec/assistant-task-inbox.md)维护。
 
 请求头名称按 HTTP 大小写规则匹配，业务头的值、多值拒绝、协商和容量规则仍由原 parser
 拥有。完整允许请求头为：
@@ -424,6 +426,10 @@ OAuth v1 的 `GET /api/v1/oauth/grants` 返回当前会话账户的无秘密授�
 两版复用 `ListSessionGrants`、客户端快照解析和状态判断，再分别显式投影；v1 保持精确原表示。
 两版均只接受主站 Session，响应带 `Cache-Control: no-store` 和 `Daynight-User-ID`，拒绝 query、
 HEAD 和其他方法。认证 callback 配置保留 `/api/v2/oauth` 及其后代路径。
+
+凭据描述存于 PAT 和 OAuth grant 行的可空 `description`，与记录共用生命周期；设备和 OAuth 签发及旧版 PAT 创建默认写入 null。共享领域规则拒绝无效 Unicode、NUL 和行分隔符，再裁剪 Unicode White_Space，以 null 表示空结果，非空最多 100 个码点。观察值必须已是规范值，不在比较前重写。新 PAT v2 列表包含仍存的过期行，OAuth v3 列表保留 v2 字段并投影描述；旧版本的过滤和精确响应不变。新 PAT 创建在严格事务中同时保存描述和令牌，只有提交确认才返回明文。
+
+描述 PATCH 以记录 ID、owner 和可空观察值做原子条件更新，仅写描述；未命中按同一 owner 的存在性区分 404 和 409。PAT 按 Session → PAT 顺序持锁，OAuth 按 grant → Session 顺序持锁；相关行锁等待结束后以数据库新鲜时间复核持锁 Session。会话失效时事务回滚，未知提交不返回成功回执。新入口先拒绝显式 Authorization，再以独立 15 秒预算认证 Cookie；取得主体后设置身份头，写请求校验精确 Origin。正文读完后业务另有 15 秒预算，继承取消。错误和日志不包含描述或秘密。
 `POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
 重复撤销不改变 family。列表和撤销端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
 不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
@@ -605,6 +611,8 @@ bundle 请求不支持 v2 的实例。旧页面仍可通过 v1 读取新 backend
 数据库新增列不足以使旧 binary 安全。若退出新协议，须先真实退役采用它的客户端；当前没有自动
 退役保证。数据库回滚保留新增可空列及已记录值，不做破坏性降级。
 [协议决策](../../.agents/notes/implemented/architecture/2026-11-12-credential-usage-http.md)记录版本取舍。
+
+描述管理采用 PAT v2 和 OAuth v3 独立协议。升级前检查 UniAuth callback 是否恰好占用 `/api/v2/me/tokens`、`/api/v3/oauth/grants` 或各自单段 ID 下的 `/description`；若占用，先在旧服务和 UniAuth 切换 callback 并验证登录，再升级。迁移对两表添加可空列，不回填或增加索引；DDL 需要排他锁，应按既有迁移预算和停机流程安排并预先备份。旧二进制拒绝未知迁移账本，迁移成功后使用支持新账本的版本前滚。采用新协议的客户端上线后，恢复版本须保留这些接口及读回能力。
 
 ### 真实凭据使用事件
 

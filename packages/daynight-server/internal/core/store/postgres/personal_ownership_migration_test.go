@@ -54,7 +54,7 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 			projection = preCancellationTaskJSON
 		}
 		if table == "personal_access_tokens" {
-			projection = `(to_jsonb(t)-'last_used_at')`
+			projection = `(to_jsonb(t)-'last_used_at'-'description')`
 		}
 		if table == "projects" {
 			// Later migrations add lifecycle, catalog and repository fields.
@@ -102,6 +102,10 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 			}
 			if !reflect.DeepEqual(before, ownershipMigrationFacts(t, s, "project_grants")) {
 				t.Fatal("later migrations changed retained grants, invitations, identity or project content")
+			}
+			var descriptionNull bool
+			if err := s.Pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=md5('pat')::uuid`).Scan(&descriptionNull); err != nil || !descriptionNull {
+				t.Fatalf("historical token description is not null: %v", err)
 			}
 			assertHistoricalTasksHaveNoCancellationTime(t, s)
 			var allLive bool

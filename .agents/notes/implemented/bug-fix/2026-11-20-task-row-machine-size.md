@@ -10,7 +10,7 @@ Task title in both project and personal lists.
 
 ## Decision
 
-The shared row's machine element inherits the metadata role from its parent for
+The shared row's machine element inherits `--text-xs` from its parent for
 current and historical records, absent or unknown records, and read failures.
 The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
 owns the visible contract. This extends the [ordinary row metadata decision](2026-11-20-task-row-metadata-size.md)

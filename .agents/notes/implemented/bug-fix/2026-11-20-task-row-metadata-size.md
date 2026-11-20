@@ -11,7 +11,7 @@ independent presentation needs.
 
 ## Decision
 
-The shared ordinary row assigns these labels and stuck warnings to the metadata role while keeping
+The shared ordinary row assigns these labels and stuck warnings to `--text-xs` while keeping
 ready and dependency-blocked indicators at their existing size. Row-scoped
 selectors override project list rules without changing shared badge defaults or
 Session button geometry. The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
