@@ -1,4 +1,4 @@
--- Schema snapshot version: 106
+-- Schema snapshot version: 107
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -2211,7 +2211,11 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
+CREATE INDEX "project_pr_review_assignments_worker_cursor" ON "project_pr_review_assignments" USING "btree" ("user_id", "worker_id", "project_id", "repository_id", "github_pr_id");
+
 CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+
+CREATE INDEX "project_pull_requests_open_github_id" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "github_id") INCLUDE ("number") WHERE ("state" = 'open'::"text");
 
 CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 
