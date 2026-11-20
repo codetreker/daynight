@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "./helpers/credentialScopes";
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
@@ -63,6 +64,7 @@ const withDetailResources = (project: string, task: string, fallback: (url: stri
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(serverUserId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
@@ -665,12 +667,14 @@ describe("authenticated application shell", () => {
 
   it("keeps a one-time PAT reveal mounted after account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v2/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", description: null, lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v2/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("link", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(tokenPanel().getByRole("button", { name: "创建令牌" }));
-    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } }); fireEvent.submit(document.getElementById("create-token-form")!);
+    fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } });
+    await waitFor(() => expect(screen.getByRole("dialog").querySelector("button[type=submit]")).not.toBeDisabled());
+    fireEvent.submit(document.getElementById("create-token-form")!);
     const reveal = await screen.findByRole("dialog", { name: "访问令牌已创建" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);

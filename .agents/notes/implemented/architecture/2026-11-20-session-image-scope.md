@@ -18,8 +18,7 @@ with control authority. A missing control scope hides that action; other
 authorization failures remain errors. The existing capture, retry identity,
 copy continuation and Controller producer checks retain their responsibilities.
 Task and Test Session registrations classify occurrence routes and implicit
-HEAD alongside the dynamic action projection. Production assembly remains on
-the existing profile until scoped activation. Scoped routes bind the execution
+HEAD alongside the dynamic action projection. Production assembly enables the combined scoped services. Scoped routes bind the execution
 whose command admission was installed at construction; a read-only scoped
 assembly continues to fail closed for restricted credentials.
 
@@ -36,5 +35,4 @@ capture receipt, so this would disclose data without read authority.
 
 Read-only callers retain status and same-attempt settlement without receiving a
 retry action. The scope check does not replace Session ownership, existing
-resource access or producer fencing. Current production behavior remains
-unchanged until the scoped services are assembled.
+resource access or producer fencing. Production binds image reads and retries to those scoped services.

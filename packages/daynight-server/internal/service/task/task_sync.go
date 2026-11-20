@@ -16,10 +16,11 @@ import (
 )
 
 type TaskSync struct {
-	authorization *model.CredentialAuthorization
-	store         store.SnapshotReader
-	engine        SessionStateReader
-	overlap       time.Duration
+	currentAuthorization CurrentReadAuthorization
+	authorization        *model.CredentialAuthorization
+	store                store.SnapshotReader
+	engine               SessionStateReader
+	overlap              time.Duration
 }
 
 type SessionStateReader interface {
@@ -206,6 +207,9 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 			return err
 		}
 		if _, err := ops.access(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+			return err
+		}
+		if err := requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization, scopepolicy.ProjectRead); err != nil {
 			return err
 		}
 		for start := 0; start < len(tasks); start += 200 {

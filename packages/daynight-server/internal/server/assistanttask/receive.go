@@ -47,16 +47,16 @@ type inboxReceiver interface {
 // RegisterInboxRoute registers the public inbox receive route. It sits outside
 // authentication: the inbox token or a verified Daynight delivery is the only
 // credential, and the route never reads cookies.
-func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver) {
+func RegisterInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver) {
 	registerInboxRoute(mux, inbox, nil)
 }
 
 // RegisterClassifiedInboxRoute records the public route's independent profile.
-func RegisterClassifiedInboxRoute(mux *http.ServeMux, inbox inboxReceiver, record func(RouteClassification)) {
+func RegisterClassifiedInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver, record func(RouteClassification)) {
 	registerInboxRoute(mux, inbox, record)
 }
 
-func registerInboxRoute(mux *http.ServeMux, inbox inboxReceiver, record func(RouteClassification)) {
+func registerInboxRoute(mux httpx.RouteRegistrar, inbox inboxReceiver, record func(RouteClassification)) {
 	if record != nil {
 		pattern := core.InboxPathPrefix + "{inboxId}"
 		record(RouteClassification{Pattern: pattern, Method: http.MethodPost, Owner: "inbox-token-or-daynight-delivery", Profile: "inbox-token-or-daynight-delivery"})

@@ -138,6 +138,19 @@ func (e *Entry) EnableScopedAuthentication(auth ScopedAuthenticator) error {
 	return nil
 }
 
+// ValidateScopeCoverage prevents a partial public tool assembly from serving.
+func (e *Entry) ValidateScopeCoverage() error {
+	if e.scopedAuth == nil {
+		return errors.New("scoped MCP authentication is unavailable")
+	}
+	for name := range e.toolNames {
+		if !e.scopedTools[name] {
+			return errors.New("MCP tool has no credential scope admission: " + name)
+		}
+	}
+	return nil
+}
+
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
 func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator, observers ...ObserveUsage) (*Entry, error) {
 	return newWithManualSource(auth, publicOrigin, allowedOrigins, logger, oauth, productManualFS, observers...)

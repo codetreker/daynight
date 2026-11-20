@@ -132,6 +132,20 @@ func checkTaskWriteScope(ctx context.Context, principal model.Principal) error {
 	ops = append([]scopepolicy.Operation(nil), ops...)
 	if auth.fullResponse {
 		ops = append(ops, scopepolicy.TaskRead)
+		for _, op := range ops {
+			if op == scopepolicy.WorkerClaim || op == scopepolicy.WorkerReport || op == scopepolicy.WorkerComplete {
+				ops = append(ops, scopepolicy.SessionRead)
+				break
+			}
+		}
 	}
 	return scopeadmission.Require(auth.authorization, ops...)
+}
+
+func projectTaskWriteResponse(ctx context.Context, task model.Task) model.Task {
+	auth, _, scoped := TaskWriteAuthorizationFromContext(ctx)
+	if scoped && !sessionProjectionAllowed(&auth) {
+		return taskcore.WithoutSessionProperties(task)
+	}
+	return task
 }

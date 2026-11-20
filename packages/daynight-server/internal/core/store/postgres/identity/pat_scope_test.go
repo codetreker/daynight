@@ -129,11 +129,14 @@ func TestPATScopeStorage(t *testing.T) {
 func TestPATScopeRejectsMissingAndCorruptStorage(t *testing.T) {
 	tx, scope := identityTransaction(t)
 	ctx, dao := t.Context(), scope.IdentityDAO()
+	// Corruption checks exercise defensive readers against a damaged schema as well as invalid values.
+	_, err := tx.Exec(ctx, `ALTER TABLE personal_access_tokens ALTER COLUMN business_scopes DROP NOT NULL, ALTER COLUMN scope_version DROP NOT NULL`)
+	requireNoError(t, err)
 	scoped := dao.(store.PATScopeDAO)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "scope-corrupt"}, now)
 	requireNoError(t, err)
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("legacy-pat"), Name: "legacy", CreatedAt: now}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("legacy-pat"), Name: "legacy", CreatedAt: now}
 	requireNoError(t, dao.InsertPAT(ctx, pat))
 	for _, tc := range []struct {
 		name    string

@@ -157,8 +157,23 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	testauth.Login(t, browser, f.origin, "alice")
 	plain := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(plain.CloseIdleConnections)
+	_, catalogData := usageRequest(t, f, browser, http.MethodGet, "/api/v1/me/credential-scope-catalog", "", "", "", http.StatusOK)
+	type catalogView struct {
+		Revision string `json:"catalogRevision"`
+		Groups   []struct {
+			ScopeIDs []string `json:"scopeIds"`
+		} `json:"groups"`
+	}
+	catalog := usageDecode[struct {
+		PAT catalogView `json:"pat"`
+		MCP catalogView `json:"mcp"`
+	}](t, catalogData)
+	patScopes := []string{}
+	for _, group := range catalog.PAT.Groups {
+		patScopes = append(patScopes, group.ScopeIDs...)
+	}
 
-	body, err := json.Marshal(map[string]any{"expectedUserId": f.userID, "name": "Description integration", "expiresAt": nil, "description": "  backup  "})
+	body, err := json.Marshal(map[string]any{"expectedUserId": f.userID, "name": "Description integration", "expiresAt": nil, "description": "  backup  ", "catalogRevision": catalog.PAT.Revision, "scopes": patScopes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +182,7 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	newPATID, newPATSecret := usageString(t, newPAT, "id"), usageString(t, newPAT, "token")
 	backup := "backup"
 	descriptionValue(t, newPAT, &backup)
-	if len(newPAT) != 7 || resp.Header.Get("Daynight-User-ID") != f.userID || !strings.Contains(resp.Header.Get("Cache-Control"), "no-store") {
+	if len(newPAT) != 8 || resp.Header.Get("Daynight-User-ID") != f.userID || !strings.Contains(resp.Header.Get("Cache-Control"), "no-store") {
 		t.Fatal("new PAT receipt differs")
 	}
 	updatedPAT := "workstation"
@@ -181,7 +196,11 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	}](t, data)
 	descriptionValue(t, usageFind(t, newList.Items, newPATID), &updatedPAT)
 
-	_, data = usageRequest(t, f, browser, http.MethodPost, "/api/v1/me/tokens", `{"name":"Usage integration","expiresAt":null}`, "application/json", "", http.StatusCreated)
+	body, err = json.Marshal(map[string]any{"expectedUserId": f.userID, "name": "Usage integration", "expiresAt": nil, "catalogRevision": catalog.PAT.Revision, "scopes": patScopes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, data = usageRequest(t, f, browser, http.MethodPost, "/api/v2/me/tokens", string(body), "application/json", "", http.StatusCreated)
 	created := usageDecode[map[string]json.RawMessage](t, data)
 	patID, pat := usageString(t, created, "id"), usageString(t, created, "token")
 	if usageTimestamp(t, created) != nil {
@@ -229,7 +248,7 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 		t.Fatal("OAuth authorization did not return a consent request")
 	}
 	requestID := location.Query().Get("request")
-	_, data = usageRequest(t, f, browser, http.MethodGet, "/api/v1/oauth/requests/"+requestID, "", "", "", http.StatusOK)
+	_, data = usageRequest(t, f, browser, http.MethodGet, "/api/v2/oauth/requests/"+requestID, "", "", "", http.StatusOK)
 	inspection := usageDecode[struct {
 		UserID string `json:"userId"`
 		Status string `json:"status"`
@@ -237,11 +256,11 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	if inspection.UserID != f.userID || inspection.Status != "pending" {
 		t.Fatal("consent request belongs to a different user or is not pending")
 	}
-	decision, err := json.Marshal(map[string]string{"expectedUserId": f.userID, "decision": "approve"})
+	decision, err := json.Marshal(map[string]any{"expectedUserId": f.userID, "decision": "approve", "catalogRevision": catalog.MCP.Revision, "scopes": []string{"team:read"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, data = usageRequest(t, f, browser, http.MethodPost, "/api/v1/oauth/requests/"+requestID+"/decision", string(decision), "application/json", "", http.StatusOK)
+	_, data = usageRequest(t, f, browser, http.MethodPost, "/api/v2/oauth/requests/"+requestID+"/decision", string(decision), "application/json", "", http.StatusOK)
 	approved := usageDecode[struct {
 		RedirectURI string `json:"redirectUri"`
 	}](t, data)

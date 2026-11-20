@@ -152,7 +152,7 @@ func (s *httpTestStore) WriteUsage(context.Context, func(store.UsageScope) error
 
 func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
 	if s.ReadSnapshotCall == nil {
-		unexpectedHTTPCall(s.t, "ReadSnapshot")
+		return fn(newHTTPTestSnapshot(s.t))
 	}
 	return s.ReadSnapshotCall(ctx, fn)
 }

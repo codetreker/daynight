@@ -38,7 +38,7 @@ INSERT INTO oauth_authorizations(id,binding_hash,client_snapshot,client_id,redir
 	if err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND ((table_name='oauth_grants' AND column_name IN ('business_scopes','scope_version')) OR (table_name='oauth_authorizations' AND column_name='approved_business_scopes'))) AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=109)`).Scan(&ok); err != nil || !ok {
 		t.Fatalf("failed migration left schema or ledger changes: %v %v", ok, err)
 	}
-	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id WHERE g.id='00000000-0000-0000-0000-000000000001' AND a.token_hash=decode(repeat('01',32),'hex') AND g.business_scopes IS NULL AND g.scope_version IS NULL) AND EXISTS(SELECT FROM oauth_authorizations WHERE status='pending' AND approved_business_scopes IS NULL) AND EXISTS(SELECT FROM schema_migrations WHERE version=109)`).Scan(&ok); err != nil || !ok {
@@ -48,7 +48,7 @@ INSERT INTO oauth_authorizations(id,binding_hash,client_snapshot,client_id,redir
 		t.Fatalf("OAuth indexes changed: %v", err)
 	}
 	empty := emptyPool(t)
-	if err := initializeSchema(ctx, empty, schemaMigrations, currentSchemaSnapshot); err != nil {
+	if err := migrate(ctx, empty, schemaMigrations[:index+1]); err != nil {
 		t.Fatal(err)
 	}
 	if err := empty.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=109) AND (SELECT count(*)=3 FROM information_schema.columns WHERE table_schema=current_schema() AND ((table_name='oauth_grants' AND column_name IN ('business_scopes','scope_version')) OR (table_name='oauth_authorizations' AND column_name='approved_business_scopes')))`).Scan(&ok); err != nil || !ok {

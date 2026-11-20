@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
@@ -23,7 +24,7 @@ const (
 )
 
 type routeRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(ScopeRoute)
 }
 

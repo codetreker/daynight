@@ -30,7 +30,7 @@ type projectAppHandler struct {
 }
 
 // RegisterProjectAppRoutes installs the App-aware project connection adapter.
-func RegisterProjectAppRoutes(mux *http.ServeMux, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterProjectAppRoutes(mux httpx.RouteRegistrar, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
 	registerProjectAppRoutes(NewRouteRegistry(mux, nil), ops, auth, logger)
 }
 

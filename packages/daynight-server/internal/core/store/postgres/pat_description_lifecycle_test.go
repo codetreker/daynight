@@ -8,6 +8,7 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/jackc/pgx/v5"
@@ -44,9 +45,14 @@ func TestPATCreationRollsBackAfterInsertWaitAndSessionExpiry(t *testing.T) {
 		err    error
 	}
 	resultCh := make(chan result, 1)
+	catalog, err := scopepolicy.NewCatalogSnapshot(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := identityservice.NewWithDeviceScopes(s, nil, "", catalog)
 	go func() {
 		value := "sensitive"
-		minted, err := identityservice.New(s, nil, "").CreatePATV2(ctx, p, p.UserID, core.CreatePAT{Name: "blocked create"}, &value)
+		minted, err := identity.CreateScopedPAT(ctx, p, p.UserID, core.CreatePAT{Name: "blocked create"}, &value, catalog.CatalogRevision, []scopepolicy.ScopeID{"task:read"})
 		resultCh <- result{minted, err}
 	}()
 	waitIdentityLock(t, ctx, s, "%INSERT INTO personal_access_tokens%")

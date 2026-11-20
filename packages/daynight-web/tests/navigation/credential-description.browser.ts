@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -18,17 +19,18 @@ const install = async (page: Page, locale: 'en' | 'zh-CN', options: { unknownDes
   let unknownDescription = options.unknownDescription === true;
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   const tokens = [
-    { id: tokenId, name: 'NAS Backup', description: 'Home backup script', createdAt, expiresAt: future, lastUsedAt: null },
-    { id: emptyId, name: 'NAS Backup', description: null as string | null, createdAt, expiresAt: expiredAt, lastUsedAt: null },
+    { id: tokenId, name: 'NAS Backup', description: 'Home backup script', createdAt, expiresAt: future, scopePolicy: credentialScopePolicy, lastUsedAt: null },
+    { id: emptyId, name: 'NAS Backup', description: null as string | null, createdAt, expiresAt: expiredAt, scopePolicy: credentialScopePolicy, lastUsedAt: null },
   ];
   const grants = [
-    { id: grantId, clientName: 'Cursor', clientId: 'https://cursor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', description: longDescription, createdAt, expiresAt: future, lastUsedAt: null, revokedAt: null as string | null, status: 'active' },
-    { id: revokedId, clientName: 'Cursor', clientId: 'https://cursor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', description: null as string | null, createdAt, expiresAt: future, lastUsedAt: null, revokedAt: expiredAt, status: 'revoked' },
+    { id: grantId, clientName: 'Cursor', clientId: 'https://cursor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', description: longDescription, createdAt, expiresAt: future, scopePolicy: credentialScopePolicy, lastUsedAt: null, revokedAt: null as string | null, status: 'active' },
+    { id: revokedId, clientName: 'Cursor', clientId: 'https://cursor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', description: null as string | null, createdAt, expiresAt: future, scopePolicy: credentialScopePolicy, lastUsedAt: null, revokedAt: expiredAt, status: 'revoked' },
   ];
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send(user);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);

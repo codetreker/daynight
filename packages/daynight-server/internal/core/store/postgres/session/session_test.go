@@ -146,7 +146,7 @@ func testSessionDAORegistrationGrantAndList(t *testing.T, db *postgres.Store) {
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	patID := uuid.NewString()
-	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'test',$4,$5)`, patID, principal.UserID, make([]byte, 32), now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'test',$4,$5)`, patID, principal.UserID, make([]byte, 32), now.Add(-time.Hour), now.Add(time.Hour))
 	pat := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: patID}
 	claim, id, registration := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	execution, testID, testRegistration := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -477,7 +477,7 @@ func testTestSessionListFiltersCredentialAndPaginates(t *testing.T, db *postgres
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, pat, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, pat, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
 	fresh, older, revoked := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		for _, id := range []string{fresh, older, revoked} {
@@ -548,7 +548,7 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		expiry    time.Time
 	}{{parent, actor.UserID, now.Add(time.Hour)}, {connection, actor.UserID, now.Add(time.Hour)}, {expired, actor.UserID, now}, {other, foreign.UserID, now.Add(time.Hour)}} {
 		hash := sha256.Sum256([]byte(credential.id))
-		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], now.Add(-time.Hour), credential.expiry)
+		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], now.Add(-time.Hour), credential.expiry)
 	}
 	row := func(id string) sessionListFilterRow {
 		return sessionListFilterRow{id: id, owner: actor.UserID, lifecycle: "active", connection: "connected", created: now.Add(-time.Minute), parent: &parent, connectionParent: &connection, seen: &now, expiry: ptrTime(now.Add(time.Hour))}
@@ -627,7 +627,7 @@ func testSessionListParentOwnershipAndTiedCursor(t *testing.T, db *postgres.Stor
 		expiry    time.Time
 	}{{parent, actor.UserID, now.Add(time.Hour)}, {expired, actor.UserID, now}, {other, foreign.UserID, now.Add(time.Hour)}} {
 		hash := sha256.Sum256([]byte(credential.id))
-		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], created.Add(-time.Hour), credential.expiry)
+		mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, credential.id, credential.owner, hash[:], created.Add(-time.Hour), credential.expiry)
 	}
 	for index, credential := range []*string{&parent, &parent, &expired, &other} {
 		insertSessionListFilterRow(t, database, sessionListFilterRow{id: queryID(401 + index), owner: actor.UserID, lifecycle: "archived", created: created, parent: credential})
@@ -659,7 +659,7 @@ func testSessionListExcludesBotSessionsBeforePagination(t *testing.T, db *postgr
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	parent := uuid.NewString()
 	hash := sha256.Sum256([]byte(parent))
-	mustQueryExec(t, database, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'list',$4,$5)`, parent, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
+	mustQueryExec(t, database, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'list',$4,$5)`, parent, actor.UserID, hash[:], now.Add(-time.Hour), now.Add(time.Hour))
 	sessionBotDAOTransaction(t, database, func(_ store.SessionDAO, bots store.BotWriteDAO) error {
 		return bots.InsertBot(t.Context(), bot)
 	})

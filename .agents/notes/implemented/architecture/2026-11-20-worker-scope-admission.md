@@ -31,9 +31,8 @@ Requester denial affects its query, while producer denial closes the channel.
 Session and fixed API OAuth restrictions remain in force.
 
 The [internal design](../../../../docs/design/credential-scope-internal.md#worker-报告与检查准入)
-owns the operation mapping and assembly requirements. The production constructors
-retain their existing behavior. Scoped constructors and HTTP registrations are
-explicit; activation requires real transaction-bound authorization readers.
+owns the operation mapping and assembly requirements. Production uses scoped constructors and HTTP registrations with
+transaction-bound authorization readers.
 The [read-only channel decision](2026-11-06-worker-readonly-channel.md) retains the
 connection, resource and timing rationale.
 
@@ -61,4 +60,4 @@ Committed report results survive later Prompt refusal. Broker results cannot pas
 a requester or producer scope removal at the existing delivery checks. Scope
 checks do not create resource membership or alter the original profile limits.
 Scoped service sources must preserve principal identity and transaction ownership;
-production activation must provide the bound readers for each supplied scope.
+production provides the bound readers for each supplied scope.

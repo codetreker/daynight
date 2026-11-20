@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +18,7 @@ func TestPATDescriptionStorageAndOwnerCAS(t *testing.T) {
 	user := uuid.NewString()
 	expired := now.Add(-time.Hour)
 	original := "original"
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user, TokenHash: hash("description-pat"), Name: "test", CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: &expired, Description: &original}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user, TokenHash: hash("description-pat"), Name: "test", CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: &expired, Description: &original}
 	requireNoError(t, dao.InsertPAT(ctx, pat))
 	legacy, err := dao.ListPATs(ctx, user, now)
 	requireNoError(t, err)

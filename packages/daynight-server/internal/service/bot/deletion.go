@@ -41,6 +41,8 @@ type Deletions struct {
 	authorization DefinitionAuthorizationSource
 }
 
+func (s *Deletions) ScopeProtected() bool { return s != nil && s.authorization != nil }
+
 func NewDeletions(writer store.SessionWriter, files filestorage.Storage, live liveSessions) *Deletions {
 	return &Deletions{writer: writer, files: files, live: live, now: time.Now, operations: defaultDeletionOperations()}
 }

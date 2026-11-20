@@ -16,6 +16,8 @@ func (s *Store) WriteBot(ctx context.Context, operation func(store.BotScope) err
 	if err != nil {
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin bot", err)
 	}
-	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(bot.NewWriter(tx)) })
+	err = transact(ctx, tx, func(tx pgx.Tx) error {
+		return operation(authorizedBotScope{bot.NewWriter(tx), credentialAuthorization{tx}})
+	})
 	return teamCompletion("write bot", err)
 }

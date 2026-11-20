@@ -58,7 +58,7 @@ type scopedService interface {
 }
 
 // RegisterScopedRoutes is an explicit assembly entry; legacy registration is unchanged.
-func RegisterScopedRoutes(mux *http.ServeMux, service scopedService, auth ScopedAuthentication, logger *slog.Logger, observers ...func(ScopeRoute)) error {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, service scopedService, auth ScopedAuthentication, logger *slog.Logger, observers ...func(ScopeRoute)) error {
 	if mux == nil || service == nil || auth == nil || logger == nil {
 		return errors.New("scoped webhook routes require all dependencies")
 	}

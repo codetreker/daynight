@@ -72,7 +72,7 @@ func replacementUsageParent(t *testing.T, f *workflowFixture) model.Principal {
 	reader := f.actor
 	reader.CredentialID = uuid.NewString()
 	hash := sha256.Sum256([]byte(uuid.NewString()))
-	testutil.MustExec(t, f.db.Pool, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'reconnect parent',clock_timestamp())`, reader.CredentialID, reader.UserID, hash[:])
+	testutil.MustExec(t, f.db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'reconnect parent',clock_timestamp())`, reader.CredentialID, reader.UserID, hash[:])
 	reconnect, err := f.db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

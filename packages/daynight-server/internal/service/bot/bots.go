@@ -25,6 +25,8 @@ type Bots struct {
 
 func New(database botStore) *Bots { return &Bots{store: database, operations: defaultBotOperations()} }
 
+func (s *Bots) ScopeProtected() bool { return s != nil && s.authorization != nil }
+
 // NewScoped installs current-policy admission without changing legacy assembly.
 func NewScoped(database botStore, authorization DefinitionAuthorizationSource) (*Bots, error) {
 	if authorization == nil {

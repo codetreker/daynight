@@ -1,3 +1,6 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "./helpers/credentialScopes";
+import * as scopedCredentials from "../src/api/scoped-credential-management";
+import * as credentialScopes from "../src/api/credential-scope";
 import { getProject } from '../src/api/project-settings';
 import type { Project } from '../src/api/types';
 import { directAccessFixture } from "./helpers/taskSync";
@@ -14,14 +17,17 @@ import { browserNavigation } from '../src/app/navigation';
 import { workerHistory } from '../src/app/page-history';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
-import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
+import type { CurrentUser, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
 
-vi.mock('../src/api/oauth-grants', () => ({ listOwnerGrants: vi.fn(), revokeOwnerGrant: vi.fn(), updateOwnerGrantDescription: vi.fn() }));
+vi.mock('../src/api/oauth-grants', () => ({ revokeOwnerGrant: vi.fn(), updateOwnerGrantDescription: vi.fn() }));
+
+vi.mock('../src/api/scoped-credential-management', () => ({ listScopedTokens: vi.fn(), createScopedToken: vi.fn(), updateTokenScopes: vi.fn(), listScopedOwnerGrants: vi.fn(), updateOwnerGrantScopes: vi.fn() }));
+vi.mock('../src/api/credential-scope', () => ({ readCredentialScopeCatalog: vi.fn() }));
 
 vi.mock('../src/api/project-settings', () => ({ getProject: vi.fn() }));
 
 vi.mock('../src/api/auth', () => ({
-  listTokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), updateTokenExpiry: vi.fn(), updateTokenDescription: vi.fn(),
+  revokeToken: vi.fn(), updateTokenExpiry: vi.fn(), updateTokenDescription: vi.fn(),
   getProjectAccess: vi.fn(), listMembers: vi.fn(), listInvitations: vi.fn(), createInvitation: vi.fn(), revokeInvitation: vi.fn(), setProjectGrant: vi.fn(), removeProjectGrant: vi.fn(),
 }));
 
@@ -30,7 +36,7 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { taskCach
 let actorRole: 'admin' | 'member' = 'admin';
 
 const user: CurrentUser = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: '00000000-0000-4000-8000-000000000201', name: 'Jianjun', email: 'a@example.com', emailVerified: true, avatarUrl: null };
-const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', description: null, lastUsedAt: null, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
+const token: scopedCredentials.ScopedToken = { id: 'token-a', name: 'MacBook', description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
 const member = (id: string, role: 'admin' | 'member' = 'member'): ProjectParticipant => ({ inheritedFrom: null,
   userId: id, profile: { name: id === user.id ? user.name : id, email: `${id}@example.com`, avatarUrl: null }, effectiveRole: role,
   directGrant: { projectId: '00000000-0000-4000-8000-000000000101', userId: id, role, version: 9223372036854775806n, createdAt: '2026-10-22T12:00:00Z', updatedAt: '2026-10-22T12:00:00Z' },
@@ -72,6 +78,7 @@ const createForm = async (name = 'new device', expiry: string | null = null) => 
     fireEvent.change(form.getByLabelText('有效期'), { target: { value: 'custom' } });
     fireEvent.change(form.getByLabelText('到期日期和时间'), { target: { value: expiry } });
   }
+  await waitFor(() => expect(screen.getByRole('dialog').querySelector('button[type=submit]')).not.toBeDisabled());
   fireEvent.submit(document.getElementById('create-token-form')!);
 };
 
@@ -79,11 +86,12 @@ beforeEach(() => {
   browserNavigation().dispose();
   history.replaceState(null, '', '/account');
   vi.resetAllMocks();
+  vi.mocked(credentialScopes.readCredentialScopeCatalog).mockResolvedValue(credentialScopeCatalogs);
   vi.mocked(getProject).mockImplementation(async (id) => ({ id, name: "Very long project name" } as Project));
   actorRole = 'admin';
   vi.mocked(auth.getProjectAccess).mockImplementation(async (projectId) => directAccessFixture(projectId, user.id, actorRole));
-  vi.mocked(auth.listTokens).mockResolvedValue([]);
-  vi.mocked(grants.listOwnerGrants).mockResolvedValue([]);
+  vi.mocked(scopedCredentials.listScopedTokens).mockResolvedValue([]);
+  vi.mocked(scopedCredentials.listScopedOwnerGrants).mockResolvedValue([]);
   vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
   vi.mocked(auth.listInvitations).mockResolvedValue([]);
   vi.mocked(auth.revokeToken).mockResolvedValue();
@@ -94,7 +102,7 @@ beforeEach(() => {
 
 describe('account credentials', () => {
   it.each(['zh-CN', 'en'] as const)('focuses cancel when reopening token revocation in %s', async (locale) => {
-    vi.mocked(auth.listTokens).mockResolvedValue([token]);
+    vi.mocked(scopedCredentials.listScopedTokens).mockResolvedValue([token]);
     const view = account(); await tokensTab(); view.setLocale(locale);
     const { account: labels, common } = messagesByLocale[locale].auth.management;
     const opener = screen.getByRole('button', { name: labels.revokeLabel({ name: token.name }) });
@@ -121,9 +129,9 @@ describe('account credentials', () => {
 
   it('shows normalized profile, invokes sign out, loads safe errors and retries without representing failure as empty', async () => {
     const signOut = vi.fn();
-    vi.mocked(auth.listTokens).mockRejectedValueOnce(new ApiError('server', 500, 'internal_error', 'safe-id'));
+    vi.mocked(scopedCredentials.listScopedTokens).mockRejectedValueOnce(new ApiError('server', 500, 'internal_error', 'safe-id'));
     render(<AccountPage user={user} onSignOut={signOut} onIdentityMismatch={vi.fn()} />);
-    expect(auth.listTokens).not.toHaveBeenCalled();
+    expect(scopedCredentials.listScopedTokens).not.toHaveBeenCalled();
     expect(screen.getByText(user.email!)).toBeInTheDocument();
     click('退出登录'); expect(signOut).toHaveBeenCalledOnce();
     await tokensTab();
@@ -133,8 +141,8 @@ describe('account credentials', () => {
   });
 
   it('keeps a loading state, marks expired tokens unusable, and cancels the creation dialog with focus recovery', async () => {
-    const result = deferred<readonly PersonalAccessToken[]>();
-    vi.mocked(auth.listTokens).mockReturnValue(result.promise);
+    const result = deferred<readonly scopedCredentials.ScopedToken[]>();
+    vi.mocked(scopedCredentials.listScopedTokens).mockReturnValue(result.promise);
     account(); fireEvent.click(screen.getByRole('link', { name: '访问凭据' }));
     expect(screen.getByText('正在加载访问令牌…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建令牌' })).toBeDisabled();
@@ -148,20 +156,20 @@ describe('account credentials', () => {
   });
 
   it('validates code points and optional expiration, shows the PAT once, copies it, and warns on implicit close', async () => {
-    vi.mocked(auth.createToken).mockResolvedValue({ ...token, token: 'pat-secret-once' });
-    vi.mocked(auth.listTokens).mockResolvedValueOnce([]).mockResolvedValue([token]);
+    vi.mocked(scopedCredentials.createScopedToken).mockResolvedValue({ ...token, token: 'pat-secret-once' });
+    vi.mocked(scopedCredentials.listScopedTokens).mockResolvedValueOnce([]).mockResolvedValue([token]);
     const copy = vi.fn().mockResolvedValue(undefined); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
     account(); await tokensTab();
     await createForm('😀'.repeat(101));
-    expect(screen.getByRole('alert')).toHaveTextContent('1–100'); expect(auth.createToken).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('1–100'); expect(scopedCredentials.createScopedToken).not.toHaveBeenCalled();
     fireEvent.change(tokenForm().getByLabelText(/令牌名称/), { target: { value: '😀'.repeat(100) } });
     fireEvent.change(tokenForm().getByLabelText('有效期'), { target: { value: 'custom' } });
     fireEvent.change(tokenForm().getByLabelText('到期日期和时间'), { target: { value: '2000-01-01T00:00' } });
-    fireEvent.submit(document.getElementById('create-token-form')!); expect(auth.createToken).not.toHaveBeenCalled();
+    fireEvent.submit(document.getElementById('create-token-form')!); expect(scopedCredentials.createScopedToken).not.toHaveBeenCalled();
     fireEvent.change(tokenForm().getByLabelText('到期日期和时间'), { target: { value: '2099-10-22T12:00' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     await screen.findByRole('dialog', { name: '访问令牌已创建' });
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '😀'.repeat(100), expiresAt: new Date('2099-10-22T12:00').toISOString(), description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
+    expect(scopedCredentials.createScopedToken).toHaveBeenCalledWith({ name: '😀'.repeat(100), expiresAt: new Date('2099-10-22T12:00').toISOString(), description: null, expectedUserId: user.id, catalogRevision: credentialScopeCatalogs.pat.catalogRevision, scopes: credentialScopeCatalogs.pat.defaultScopes }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     expect(screen.getByLabelText('一次性访问令牌')).toHaveValue('pat-secret-once');
     const copyButton = within(screen.getByRole('dialog')).getByRole('button', { name: '复制' });
     expect(copyButton).toHaveClass('copy-button--labelled'); expect(copyButton).toHaveTextContent('复制');
@@ -175,7 +183,7 @@ describe('account credentials', () => {
   });
 
   it('retains selectable secret on clipboard rejection, then explicitly closes it', async () => {
-    vi.mocked(auth.createToken).mockResolvedValue({ ...token, token: 'private-clipboard-secret' });
+    vi.mocked(scopedCredentials.createScopedToken).mockResolvedValue({ ...token, token: 'private-clipboard-secret' });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('clipboard secret details')) } });
     account(); await tokensTab(); await createForm();
     await screen.findByLabelText('一次性访问令牌'); await dialogClick('复制');
@@ -187,8 +195,8 @@ describe('account credentials', () => {
   });
 
   it('keeps failed creation and revocation recoverable, disables duplicate submissions and reloads revoked metadata', async () => {
-    vi.mocked(auth.listTokens).mockResolvedValueOnce([token]).mockResolvedValue([]);
-    vi.mocked(auth.createToken).mockRejectedValue(Object.assign(new ApiError('server', 400, 'invalid_input'), { message: 'sensitive PAT raw error' }));
+    vi.mocked(scopedCredentials.listScopedTokens).mockResolvedValueOnce([token]).mockResolvedValue([]);
+    vi.mocked(scopedCredentials.createScopedToken).mockRejectedValue(Object.assign(new ApiError('server', 400, 'invalid_input'), { message: 'sensitive PAT raw error' }));
     account(); await tokensTab(); await createForm('device');
     await screen.findByRole('alert'); expect(screen.queryByText(/sensitive PAT/)).toBeNull();
     await dialogClick('取消'); click('撤销令牌 MacBook');
@@ -204,31 +212,31 @@ describe('account credentials', () => {
   });
 
   it('rejects blank, NUL and malformed Unicode names while preserving an accepted name verbatim', async () => {
-    vi.mocked(auth.createToken).mockResolvedValue({ ...token, token: 'new-secret' });
+    vi.mocked(scopedCredentials.createScopedToken).mockResolvedValue({ ...token, token: 'new-secret' });
     account(); await tokensTab(); await createForm('   ');
-    expect(auth.createToken).not.toHaveBeenCalled();
+    expect(scopedCredentials.createScopedToken).not.toHaveBeenCalled();
     for (const value of ['bad\0name', '\ud800']) {
       fireEvent.change(tokenForm().getByLabelText(/令牌名称/), { target: { value } });
       fireEvent.submit(document.getElementById('create-token-form')!);
-      expect(auth.createToken).not.toHaveBeenCalled();
+      expect(scopedCredentials.createScopedToken).not.toHaveBeenCalled();
     }
     fireEvent.change(tokenForm().getByLabelText(/令牌名称/), { target: { value: '  device name  ' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     await screen.findByLabelText('一次性访问令牌');
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '  device name  ', expiresAt: null, description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
+    expect(scopedCredentials.createScopedToken).toHaveBeenCalledWith({ name: '  device name  ', expiresAt: null, description: null, expectedUserId: user.id, catalogRevision: credentialScopeCatalogs.pat.catalogRevision, scopes: credentialScopeCatalogs.pat.defaultScopes }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
   });
 
   it('aborts in-flight credential mutations when account state unmounts', async () => {
-    const creation = deferred<auth.CreatedPersonalAccessToken>(); vi.mocked(auth.createToken).mockReturnValue(creation.promise);
+    const creation = deferred<Awaited<ReturnType<typeof scopedCredentials.createScopedToken>>>(); vi.mocked(scopedCredentials.createScopedToken).mockReturnValue(creation.promise);
     const view = account(); await tokensTab(); await createForm();
     expect(screen.getByRole('button', { name: '正在创建…' })).toBeDisabled();
-    const signal = vi.mocked(auth.createToken).mock.calls[0]![1]; view.unmount(); expect(signal.aborted).toBe(true);
+    const signal = vi.mocked(scopedCredentials.createScopedToken).mock.calls[0]![1]; view.unmount(); expect(signal.aborted).toBe(true);
     await act(async () => creation.resolve({ ...token, token: 'must-not-reappear' }));
     expect(screen.queryByDisplayValue('must-not-reappear')).toBeNull();
   });
 
   it('switches an active form, pending request and secret dialog without losing user state or repeating requests', async () => {
-    const pending = deferred<auth.CreatedPersonalAccessToken>(); vi.mocked(auth.createToken).mockReturnValue(pending.promise);
+    const pending = deferred<Awaited<ReturnType<typeof scopedCredentials.createScopedToken>>>(); vi.mocked(scopedCredentials.createScopedToken).mockReturnValue(pending.promise);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('clipboard denied')) } });
     const view = account(); await tokensTab(); await createForm('  unchanged name 😀  ', '2000-01-01T00:00');
     const en = messagesByLocale.en.auth.management;
@@ -236,12 +244,12 @@ describe('account credentials', () => {
     expect(screen.getByRole('dialog', { name: en.account.createTitle })).toBeInTheDocument();
     expect(document.getElementById('token-name')).toHaveValue('  unchanged name 😀  ');
     expect(screen.getByLabelText(en.account.expiryDateLabel)).toHaveValue('2000-01-01T00:00'); expect(screen.getByRole('alert')).toHaveTextContent(en.account.validation);
-    expect(auth.listTokens).toHaveBeenCalledOnce();
+    expect(scopedCredentials.listScopedTokens).toHaveBeenCalledOnce();
     fireEvent.change(screen.getByLabelText(en.account.expiryDateLabel), { target: { value: '2099-10-22T12:31' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     view.setLocale('zh-CN');
     expect(screen.getByRole('button', { name: '正在创建…' })).toBeDisabled();
-    expect(auth.createToken).toHaveBeenCalledOnce();
+    expect(scopedCredentials.createScopedToken).toHaveBeenCalledOnce();
     await act(async () => pending.resolve({ ...token, token: 'unaltered-secret-value' }));
     await dialogClick('复制'); await screen.findByText(/浏览器未允许自动复制/);
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -250,8 +258,8 @@ describe('account credentials', () => {
     expect(screen.getByLabelText(en.secret.tokenLabel)).toHaveValue('unaltered-secret-value');
     expect(screen.getByRole('alert')).toHaveTextContent(en.secret.tokenCloseWarning);
     expect(screen.getByRole('status')).toHaveTextContent(en.secret.copyFailed);
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '  unchanged name 😀  ', expiresAt: new Date('2099-10-22T12:31').toISOString(), description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
-    expect(auth.createToken).toHaveBeenCalledOnce();
+    expect(scopedCredentials.createScopedToken).toHaveBeenCalledWith({ name: '  unchanged name 😀  ', expiresAt: new Date('2099-10-22T12:31').toISOString(), description: null, expectedUserId: user.id, catalogRevision: credentialScopeCatalogs.pat.catalogRevision, scopes: credentialScopeCatalogs.pat.defaultScopes }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
+    expect(scopedCredentials.createScopedToken).toHaveBeenCalledOnce();
     await dialogClick(en.secret.confirmClose); expect(screen.queryByRole('dialog')).toBeNull();
   });
 
@@ -273,9 +281,9 @@ describe('account credentials', () => {
   });
 
   it('aborts stale loads and never renders old account metadata after account replacement', async () => {
-    const late = deferred<readonly PersonalAccessToken[]>(); vi.mocked(auth.listTokens).mockReturnValueOnce(late.promise).mockResolvedValue([]);
+    const late = deferred<readonly scopedCredentials.ScopedToken[]>(); vi.mocked(scopedCredentials.listScopedTokens).mockReturnValueOnce(late.promise).mockResolvedValue([]);
     const view = account(); fireEvent.click(screen.getByRole('link', { name: '访问凭据' }));
-    const signal = vi.mocked(auth.listTokens).mock.calls[0]![0];
+    const signal = vi.mocked(scopedCredentials.listScopedTokens).mock.calls[0]![0];
     view.rerender(<AccountPage user={{ ...user, id: '00000000-0000-4000-8000-000000000202', name: 'New account' }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
     expect(signal.aborted).toBe(true); expect(screen.getByText('New account')).toBeInTheDocument();
     await act(async () => late.resolve([token])); expect(screen.queryByText('MacBook')).toBeNull();
@@ -1267,6 +1275,7 @@ describe('management feedback', () => {
   it('traps focus in both directions and restores root inert state when a dialog closes', async () => {
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
     const view = render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />, { container: root }); await tokensTab(); click('创建令牌');
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('button[type=submit]')).not.toBeDisabled());
     expect(root).toHaveAttribute('inert'); const dialog = screen.getByRole('dialog'); const buttons = within(dialog).getAllByRole('button');
     buttons.at(-1)!.focus(); fireEvent.keyDown(document, { key: 'Tab' }); expect(within(dialog).getByRole('button', { name: '关闭对话框' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true }); expect(buttons.at(-1)).toHaveFocus();

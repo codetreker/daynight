@@ -47,7 +47,7 @@ func writeBotError(w http.ResponseWriter, request *http.Request, logger *slog.Lo
 	httpx.WriteError(w, request, logger, "bot", phase, err)
 }
 
-func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &botsHandler{bots: bots, relay: relay, logger: logger}
 	h.observations, _ = bots.(observations)
 	admit := func(handler httpx.AuthenticatedHandler) http.HandlerFunc {

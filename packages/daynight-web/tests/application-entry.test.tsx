@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopeCatalog } from "./helpers/credentialScopes";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Application } from "../src/app/Application";
@@ -14,6 +15,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const anonymous = () => json({ error: { code: "unauthenticated", message: "Sign in", requestId: "entry-login" } }, 401);
 const mount = (navigateToLogin = vi.fn()) => renderWithLocale(<Application navigateToLogin={navigateToLogin} />, { locale: "en" });
 const defaultResponse = (url: string) => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user);
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(user.id));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
@@ -375,7 +377,7 @@ describe("public and authenticated entry ownership", () => {
     const fetcher = vi.fn((url: string) => Promise.resolve(
       url === "/api/v1/auth/logout" ? new Response(null, { status: 204 })
         : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null })
-          : url === "/api/v1/auth/device/inspect" ? json({ userCode: "BCDFG-HJKLM", expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" })
+          : url === "/api/v2/auth/device/inspect" ? json({ userCode: "BCDFG-HJKLM", expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending", catalogRevision: credentialScopeCatalog.catalogRevision })
             : defaultResponse(url)
     ));
     vi.stubGlobal("fetch", fetcher);

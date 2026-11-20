@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ func TestScopedTaskUpdateAdmissionPrecedesMutation(t *testing.T) {
 		{"combined", []scopepolicy.ScopeID{"agent:authorize", "task:write"}, taskcore.UpdateTask{Title: &title, AllowAgents: &allow}, false, true},
 		{"full lacks read", []scopepolicy.ScopeID{"task:write"}, taskcore.UpdateTask{Title: &title}, true, false},
 		{"full with read", []scopepolicy.ScopeID{"task:read", "task:write"}, taskcore.UpdateTask{Title: &title}, true, true},
+		{"full with session read", []scopepolicy.ScopeID{"session:read", "task:read", "task:write"}, taskcore.UpdateTask{Title: &title}, true, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,6 +54,7 @@ func TestScopedTaskUpdateAdmissionPrecedesMutation(t *testing.T) {
 				return taskMockAccess(project, got), nil
 			}}
 			target.Type = model.TaskTypeTask
+			target.Properties = model.TaskProperties{"worker": json.RawMessage(`{"claimId":"private"}`), "sessionStartup": json.RawMessage(`{"state":"private"}`), "custom": json.RawMessage(`true`)}
 			writes := 0
 			taskDAO := &taskWriterMock{taskMockBase: base, TaskHeaderFn: func(_ context.Context, id string) (model.TaskHeader, error) {
 				return model.TaskHeader{ID: id, ProjectID: project.ID, Type: model.TaskTypeTask}, nil
@@ -95,6 +98,21 @@ func TestScopedTaskUpdateAdmissionPrecedesMutation(t *testing.T) {
 				if writes != 1 || err != nil || result.Version != target.Version+1 {
 					t.Fatalf("admitted: writes=%d result=%+v err=%v", writes, result, err)
 				}
+				hasSession := false
+				for _, id := range tc.ids {
+					if id == "session:read" {
+						hasSession = true
+					}
+				}
+				if _, present := result.Properties["worker"]; present != hasSession {
+					t.Fatalf("worker projection: %s", result.Properties["worker"])
+				}
+				if _, present := result.Properties["sessionStartup"]; present != hasSession {
+					t.Fatal("startup projection changed")
+				}
+				if string(result.Properties["custom"]) != "true" || target.Properties["worker"] == nil {
+					t.Fatal("ordinary or persisted properties changed")
+				}
 				if tc.input.Title != nil && result.Title != *tc.input.Title || tc.input.AllowAgents != nil && result.AllowAgents != *tc.input.AllowAgents {
 					t.Fatalf("incorrect committed result: %+v", result)
 				}
@@ -112,6 +130,7 @@ func TestScopedTaskTagAssociationDoesNotRequireCatalogWrite(t *testing.T) {
 	project, target, principal := taskMockModels()
 	principal.Kind = model.PATCredential
 	target.Type = model.TaskTypeTask
+	target.Properties = model.TaskProperties{"worker": json.RawMessage(`{"claimId":"private"}`), "sessionStartup": json.RawMessage(`{"state":"private"}`), "custom": json.RawMessage(`true`)}
 	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:write"}, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +182,9 @@ func TestScopedTaskTagAssociationDoesNotRequireCatalogWrite(t *testing.T) {
 	result, err := taskservice.NewTasks(database).ReplaceTags(ctx, principal, project.ID, target.ID, target.Version, &[]string{tagID})
 	if err != nil || writes != 1 || touches != 1 || reads != 2 || result.Version != target.Version+1 || len(result.Tags) != 1 || result.Tags[0].ID != tagID {
 		t.Fatalf("result=%+v writes=%d touches=%d reads=%d err=%v", result, writes, touches, reads, err)
+	}
+	if result.Properties["worker"] != nil || result.Properties["sessionStartup"] != nil || string(result.Properties["custom"]) != "true" || target.Properties["worker"] == nil {
+		t.Fatal("tag-only response exposed session properties or changed stored values")
 	}
 }
 

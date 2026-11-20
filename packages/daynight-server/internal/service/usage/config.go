@@ -21,6 +21,14 @@ func FromEnvironment(database store.UsageStore) (*Service, error) {
 	}
 	return New(database, options)
 }
+
+func ScopedFromEnvironment(database store.UsageStore, current ProducerAuthorization) (*Service, error) {
+	options, enabled, err := environmentOptions(os.LookupEnv)
+	if err != nil || !enabled {
+		return nil, err
+	}
+	return NewScoped(database, options, current)
+}
 func environmentOptions(lookup func(string) (string, bool)) (Options, bool, error) {
 	var options Options
 	if raw, present := lookup("DAYNIGHT_USAGE_WRITE_ENABLED"); present {

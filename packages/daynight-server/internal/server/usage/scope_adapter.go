@@ -77,14 +77,14 @@ func (s scopedOperations) Aggregate(ctx context.Context, p model.Principal, proj
 
 // RegisterScopedRoutesWithScopeObserver installs scoped user reads while leaving
 // usage production, capabilities and dedicated grant authentication unchanged.
-func RegisterScopedRoutesWithScopeObserver(mux *http.ServeMux, service *app.Service, auth Authentication, scopedAuth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterScopedRoutesWithScopeObserver(mux httpx.RouteRegistrar, service *app.Service, auth Authentication, scopedAuth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if service == nil {
 		return
 	}
 	registerScopedRoutes(mux, service, service, auth, scopedAuth, logger, observe)
 }
 
-func registerScopedRoutes(mux *http.ServeMux, service operations, reads scopedReadOperations, auth Authentication, scopedAuth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func registerScopedRoutes(mux httpx.RouteRegistrar, service operations, reads scopedReadOperations, auth Authentication, scopedAuth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if scopedAuth == nil || reads == nil {
 		panic("scoped usage authentication and operations are required")
 	}

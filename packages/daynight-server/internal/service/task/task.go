@@ -309,7 +309,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 	if refusal != nil {
 		return model.Task{}, redactTaskWriteError(ctx, refusal)
 	}
-	return result, nil
+	return projectTaskWriteResponse(ctx, result), nil
 }
 
 func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {

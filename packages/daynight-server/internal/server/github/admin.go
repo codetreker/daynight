@@ -35,7 +35,7 @@ type adminHandler struct {
 
 // RegisterAdminRoutes installs the adapter only when its invitation reception
 // page is available. origin must be the configured trusted public origin.
-func RegisterAdminRoutes(mux *http.ServeMux, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+func RegisterAdminRoutes(mux httpx.RouteRegistrar, ops AdminOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
 	registerAdminRoutes(NewRouteRegistry(mux, nil), ops, auth, origin, logger)
 }
 

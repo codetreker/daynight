@@ -78,6 +78,19 @@ func RegisterBotTools(e *Entry, bots botOperations, relay botDeletion) error {
 	return RegisterTypedTool(e, byName["bot_delete"], BudgetLarge, h.delete, "botId", "ifVersion", "requestId")
 }
 
+func RegisterScopedBotTools(e *Entry, bots *botservice.Bots, relay *botservice.Deletions) error {
+	if e == nil || e.scopedAuth == nil || !bots.ScopeProtected() || !relay.ScopeProtected() {
+		return errors.New("scoped Bot services are required")
+	}
+	if err := RegisterBotTools(e, bots, relay); err != nil {
+		return err
+	}
+	for _, name := range []string{"bot_list", "bot_show", "bot_create", "bot_delete"} {
+		e.scopedTools[name] = true
+	}
+	return nil
+}
+
 type botPage struct {
 	Items      []api.Bot `json:"items"`
 	NextCursor *string   `json:"nextCursor"`

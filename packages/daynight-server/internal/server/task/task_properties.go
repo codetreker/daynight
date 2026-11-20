@@ -11,7 +11,7 @@ import (
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
-func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
+func propertyRoutes(mux httpx.RouteRegistrar, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	const schemaPath = "/api/v1/task-properties/schema"
 	mux.HandleFunc("GET "+schemaPath, auth.Require(handler.propertySchema))
 	mux.HandleFunc(schemaPath, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))

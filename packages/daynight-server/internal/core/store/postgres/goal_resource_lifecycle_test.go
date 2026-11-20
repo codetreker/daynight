@@ -28,7 +28,7 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 	}
 	testutil.MustExec(t, db.Pool, `INSERT INTO tasks(id,project_id,type,title,parent_id) VALUES($1,$3,'goal','Goal',NULL),($2,$3,'task','Child',$1)`, goal, task, project)
 	pat := uuid.NewString()
-	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'resource test',now())`, pat, user, make([]byte, 32))
+	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'resource test',now())`, pat, user, make([]byte, 32))
 	principal := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: pat}
 
 	for _, kind := range []string{"thread", "attachment", "transfer", "transfer_lifecycle"} {

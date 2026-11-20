@@ -44,11 +44,11 @@ type operations[A any] struct {
 	Open        func(context.Context, A, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
+func RegisterRoutes(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
 	RegisterRoutesWithScopeObserver(mux, attachments, auth, logger, previewOrigin, nil)
 }
 
-func RegisterRoutesWithScopeObserver(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
 	handler := newAttachmentHandler(attachments, logger)
 	handler.registerRoutesWithScopeObserver(mux, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
 		return auth.Require(httpx.AuthenticatedHandler(next))
@@ -56,11 +56,11 @@ func RegisterRoutesWithScopeObserver(mux *http.ServeMux, attachments *attachment
 }
 
 // RegisterPreviewRoutes exposes only attachment reads on a Task preview host.
-func RegisterPreviewRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
+func RegisterPreviewRoutes(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
 	RegisterPreviewRoutesWithScopeObserver(mux, attachments, require, logger, nil)
 }
 
-func RegisterPreviewRoutesWithScopeObserver(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterPreviewRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
 	handler := newAttachmentHandler(attachments, logger)
 	routes := routeRegistry{mux: mux, observe: observe}
 	const route = "/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}"
@@ -81,11 +81,11 @@ func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *sl
 
 func principalIdentity(p model.Principal) model.Principal { return p }
 
-func (handler *handler[A]) registerRoutes(mux *http.ServeMux, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string) {
+func (handler *handler[A]) registerRoutes(mux httpx.RouteRegistrar, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string) {
 	handler.registerRoutesWithScopeObserver(mux, require, previewOrigin, nil)
 }
 
-func (handler *handler[A]) registerRoutesWithScopeObserver(mux *http.ServeMux, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string, observe func(ScopeRoute)) {
+func (handler *handler[A]) registerRoutesWithScopeObserver(mux httpx.RouteRegistrar, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string, observe func(ScopeRoute)) {
 	routes := routeRegistry{mux: mux, observe: observe}
 	methodNotAllowed := func(allowed string) func(http.ResponseWriter, *http.Request, A) {
 		return func(w http.ResponseWriter, r *http.Request, a A) {

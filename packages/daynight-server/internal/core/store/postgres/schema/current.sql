@@ -1,4 +1,4 @@
--- Schema snapshot version: 110
+-- Schema snapshot version: 111
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -515,8 +515,8 @@ CREATE TABLE "personal_access_tokens" (
     "expires_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
-    "business_scopes" "text"[],
-    "scope_version" bigint,
+    "business_scopes" "text"[] NOT NULL,
+    "scope_version" bigint NOT NULL,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))

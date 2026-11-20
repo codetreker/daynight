@@ -18,7 +18,7 @@ func TestScopedTestSessionReconnectRechecksBothOriginalParents(t *testing.T) {
 	second := f.owner
 	second.CredentialID = uuid.NewString()
 	h := sha256.Sum256([]byte(second.CredentialID))
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'reconnect',now(),now()+interval '1 day')`, second.CredentialID, second.UserID, h[:]); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'reconnect',now(),now()+interval '1 day')`, second.CredentialID, second.UserID, h[:]); err != nil {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{f.owner.CredentialID: true, second.CredentialID: true}

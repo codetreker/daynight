@@ -37,12 +37,12 @@ func NewRoutes(service *webhookservice.Service, auth *authhttp.Authentication, l
 
 // RegisterRoutes attaches the personal and team management resources to mux.
 // Calling it is separate from application route registration.
-func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
+func (h *Routes) RegisterRoutes(mux httpx.RouteRegistrar) {
 	h.RegisterRoutesWithScopeObserver(mux, nil)
 }
 
 // RegisterRoutesWithScopeObserver records classifications at actual registration sites.
-func (h *Routes) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
+func (h *Routes) RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) {
 	auth, logger := h.auth, h.logger
 	routes := routeRegistry{mux: mux, observe: observe}
 	routes.handle("GET /api/v1/webhook-event-types", auth.Require(h.catalog), readBranch("catalog"))

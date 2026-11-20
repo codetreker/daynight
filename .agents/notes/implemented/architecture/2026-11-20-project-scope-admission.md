@@ -22,7 +22,7 @@ operation mapping and assembly requirements.
 
 Member candidate search and direct-member changes obtain current authorization
 at their existing snapshot or transaction credential recheck boundaries. Missing
-current readers fail closed. Existing production assembly remains unchanged.
+current readers fail closed. Production uses these scoped services and current readers.
 
 ## Alternatives
 
@@ -40,5 +40,4 @@ Denied operations do not expose restricted previews or perform protected writes;
 existing resource, role, version and transaction completion rules remain in force.
 Scoped assembly needs an authenticated request policy and authoritative current
 readers bound to the original principal. Read-only snapshots need a compatible
-policy reader rather than a write-transaction row lock. Persistence, authenticated
-provider wiring and production activation remain separate work.
+policy reader rather than a write-transaction row lock. Production provider wiring supplies both capabilities at their original boundaries.

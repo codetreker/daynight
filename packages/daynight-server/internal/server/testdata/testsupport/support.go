@@ -30,7 +30,7 @@ type Auth interface {
 	SessionCookieName() string
 	AuthenticateRequest(*http.Request) (model.Principal, error)
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
-	RegisterRoutes(*http.ServeMux)
+	RegisterRoutes(httpx.RouteRegistrar)
 }
 type AuthHarness[A Auth] struct {
 	Database *postgres.Store

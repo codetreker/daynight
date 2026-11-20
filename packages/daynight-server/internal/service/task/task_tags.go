@@ -74,7 +74,7 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 	if completion.Outcome != store.TransactionCommitted {
 		return model.Task{}, errors.New("replace task tags: transaction did not confirm commit")
 	}
-	return result, nil
+	return projectTaskWriteResponse(ctx, result), nil
 }
 
 func prepareTagReplacement(ctx context.Context, tx store.ProjectWriteScope, current model.Task, version int64, requested *[]string) ([]string, bool, error) {

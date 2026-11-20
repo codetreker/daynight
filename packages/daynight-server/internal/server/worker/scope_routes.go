@@ -36,7 +36,7 @@ const (
 )
 
 type routeRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(ScopeRoute)
 }
 
@@ -92,7 +92,7 @@ func (a scopedAuthentication) Require(next httpx.AuthenticatedHandler) http.Hand
 
 // RegisterScopedRoutes uses the existing HTTP protocol with scoped business
 // services. Production activation must supply transaction-bound authority readers.
-func RegisterScopedRoutes(mux *http.ServeMux, workers *service.Workers, auth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, workers *service.Workers, auth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if workers == nil || !workers.ScopesEnabled() || auth == nil {
 		panic("scoped Worker service and authentication are required")
 	}
@@ -100,6 +100,6 @@ func RegisterScopedRoutes(mux *http.ServeMux, workers *service.Workers, auth Sco
 }
 
 // RegisterRoutesWithScopeObserver records classifications without enabling scopes.
-func RegisterRoutesWithScopeObserver(mux *http.ServeMux, workers workerService, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, workers workerService, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
 	registerRoutesObserved(mux, &workersHandler{workers: workers, logger: logger}, require, observe)
 }

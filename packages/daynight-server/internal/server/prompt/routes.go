@@ -50,7 +50,7 @@ type ScopedPrompts interface {
 
 // RegisterScopedRoutes installs policy-aware prompt routes. Authentication must
 // retain the original credential, resource-profile and Origin checks.
-func RegisterScopedRoutes(mux *http.ServeMux, prompts ScopedPrompts, auth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, prompts ScopedPrompts, auth ScopedAuthentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if prompts == nil || auth == nil {
 		panic("scoped prompt dependencies are required")
 	}
@@ -58,20 +58,20 @@ func RegisterScopedRoutes(mux *http.ServeMux, prompts ScopedPrompts, auth Scoped
 }
 
 // RegisterRoutes exposes Worker and Reviewer prompt resources.
-func RegisterRoutes(mux *http.ServeMux, prompts prompts, auth authenticator, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, prompts prompts, auth authenticator, logger *slog.Logger) {
 	RegisterRoutesWithScopeObserver(mux, prompts, auth, logger, nil)
 }
 
 // RegisterRoutesWithScopeObserver reports classifications from actual registrations.
-func RegisterRoutesWithScopeObserver(mux *http.ServeMux, prompts prompts, auth authenticator, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, prompts prompts, auth authenticator, logger *slog.Logger, observe func(ScopeRoute)) {
 	newHandler(prompts, logger).registerRoutesObserved(mux, auth, observe)
 }
 
-func (h *handler) registerRoutes(mux *http.ServeMux, auth authenticator) {
+func (h *handler) registerRoutes(mux httpx.RouteRegistrar, auth authenticator) {
 	h.registerRoutesObserved(mux, auth, nil)
 }
 
-func (h *handler) registerRoutesObserved(mux *http.ServeMux, auth authenticator, observe func(ScopeRoute)) {
+func (h *handler) registerRoutesObserved(mux httpx.RouteRegistrar, auth authenticator, observe func(ScopeRoute)) {
 	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope, reviewer bool) http.HandlerFunc {
 		return auth.Require(func(w http.ResponseWriter, r *http.Request, principal model.Principal) {
 			h.resource(w, r, principal, scope, reviewer)
@@ -79,7 +79,7 @@ func (h *handler) registerRoutesObserved(mux *http.ServeMux, auth authenticator,
 	}, auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PUT")))
 }
 
-func (h *handler) registerScopedRoutes(mux *http.ServeMux, auth ScopedAuthentication, prompts ScopedPrompts, observe func(ScopeRoute)) {
+func (h *handler) registerScopedRoutes(mux httpx.RouteRegistrar, auth ScopedAuthentication, prompts ScopedPrompts, observe func(ScopeRoute)) {
 	fallback := httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PUT")
 	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope, reviewer bool) http.HandlerFunc {
 		return auth.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
@@ -102,7 +102,7 @@ func (h *handler) registerScopedRoutes(mux *http.ServeMux, auth ScopedAuthentica
 	}))
 }
 
-func (h *handler) registerCommonRoutes(mux *http.ServeMux, observe func(ScopeRoute), resource func(model.PromptScope, bool) http.HandlerFunc, fallback http.HandlerFunc) {
+func (h *handler) registerCommonRoutes(mux httpx.RouteRegistrar, observe func(ScopeRoute), resource func(model.PromptScope, bool) http.HandlerFunc, fallback http.HandlerFunc) {
 	routes := routeRegistry{mux: mux, observe: observe}
 	for _, route := range []struct {
 		path     string

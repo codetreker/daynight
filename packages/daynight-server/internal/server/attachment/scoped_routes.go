@@ -20,7 +20,7 @@ type ScopedOperations interface {
 	Open(context.Context, model.CredentialAuthorization, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-type AuthorizedHandler func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
+type AuthorizedHandler = func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
 
 type ScopedAuthentication interface {
 	RequireAuthorization(AuthorizedHandler) http.HandlerFunc
@@ -28,11 +28,11 @@ type ScopedAuthentication interface {
 
 // RegisterScopedRoutes preserves main-site preview navigation while requiring
 // explicit credential authorization for attachment data, including preview HEAD.
-func RegisterScopedRoutes(mux *http.ServeMux, attachments ScopedOperations, auth ScopedAuthentication, logger *slog.Logger, previewOrigin string) {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, attachments ScopedOperations, auth ScopedAuthentication, logger *slog.Logger, previewOrigin string) {
 	RegisterScopedRoutesWithScopeObserver(mux, attachments, auth, logger, previewOrigin, nil)
 }
 
-func RegisterScopedRoutesWithScopeObserver(mux *http.ServeMux, attachments ScopedOperations, auth ScopedAuthentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
+func RegisterScopedRoutesWithScopeObserver(mux httpx.RouteRegistrar, attachments ScopedOperations, auth ScopedAuthentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
 	h := &handler[model.CredentialAuthorization]{
 		attachments: operations[model.CredentialAuthorization]{
 			List: attachments.List, PutRetained: attachments.PutRetained,

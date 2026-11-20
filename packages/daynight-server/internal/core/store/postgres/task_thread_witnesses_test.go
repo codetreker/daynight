@@ -129,7 +129,7 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			caller, table := principal, "sessions"
 			want := 1
 			if kind == model.PATCredential {
-				credential := model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: []byte(strings.Repeat("x", 32)), Name: "Never expires", CreatedAt: time.Now().UTC()}
+				credential := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: principal.UserID, TokenHash: []byte(strings.Repeat("x", 32)), Name: "Never expires", CreatedAt: time.Now().UTC()}
 				if _, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, credential) }); err != nil {
 					t.Fatal(err)
 				}

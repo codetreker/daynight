@@ -652,6 +652,7 @@ func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, v
 }
 
 type settingsHTTPIdentityDAO struct {
+	store.PATScopeDAO
 	store.IdentityDAO
 	authenticate func(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
 }

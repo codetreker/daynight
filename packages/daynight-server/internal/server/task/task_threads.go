@@ -21,7 +21,7 @@ type taskThreadHandler struct {
 	scoped  bool
 }
 
-func TaskThreadRoutes(mux *http.ServeMux, threads ThreadService, auth RouteAuthentication, logger *slog.Logger) {
+func TaskThreadRoutes(mux httpx.RouteRegistrar, threads ThreadService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskThreadHandler{threads: threads, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/thread/messages"
 	mux.HandleFunc("GET "+path, auth.Require(handler.list))

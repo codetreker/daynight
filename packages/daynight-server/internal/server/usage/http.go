@@ -42,21 +42,21 @@ type handler struct {
 	logger  *slog.Logger
 }
 
-func RegisterRoutes(mux *http.ServeMux, service *app.Service, auth Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, service *app.Service, auth Authentication, logger *slog.Logger) {
 	RegisterRoutesWithScopeObserver(mux, service, auth, logger, nil)
 }
 
 // RegisterRoutesWithScopeObserver exposes classifications of the routes actually installed.
-func RegisterRoutesWithScopeObserver(mux *http.ServeMux, service *app.Service, auth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, service *app.Service, auth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if service == nil {
 		return
 	}
 	registerRoutesObserved(mux, service, auth, auth, logger, observe)
 }
-func registerRoutes(mux *http.ServeMux, service operations, auth Authentication, logger *slog.Logger) {
+func registerRoutes(mux httpx.RouteRegistrar, service operations, auth Authentication, logger *slog.Logger) {
 	registerRoutesObserved(mux, service, auth, auth, logger, nil)
 }
-func registerRoutesObserved(mux *http.ServeMux, service operations, auth, readAuth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func registerRoutesObserved(mux httpx.RouteRegistrar, service operations, auth, readAuth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	h := &handler{service, auth, logger}
 	routes := routeRegistry{mux, observe}
 	routes.handle("GET /api/usage/v1/capabilities", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {

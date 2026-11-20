@@ -118,7 +118,7 @@ func TestRuntimeGraceAcceptsLateUsageBeforeApplicationSeal(t *testing.T) {
 	}
 	// Production backend identity is verified by service's OpenApp tests; this
 	// transport proof uses the real App lifecycle with only its writer controlled.
-	app := service.NewModules(config.Config{}, nil, nil, nil, nil)
+	app := service.NewModules(config.Config{}, &httpTestStore{t: t}, nil, nil, nil)
 	app.CredentialUsage = recorder
 	if err := app.Start(root); err != nil {
 		t.Fatal(err)

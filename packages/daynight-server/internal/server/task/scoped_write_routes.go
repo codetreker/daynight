@@ -26,7 +26,7 @@ func taskReceiptRequested(ctx context.Context) bool {
 
 // RegisterScopedWriteRoutes mounts only Task mutation routes. Read and Worker
 // routes have separate scoped owners and must be registered by their assembly.
-func RegisterScopedWriteRoutes(mux *http.ServeMux, tasks TaskService, goals GoalDependencyService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
+func RegisterScopedWriteRoutes(mux httpx.RouteRegistrar, tasks TaskService, goals GoalDependencyService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
 	if mux == nil || tasks == nil || goals == nil || auth == nil || logger == nil {
 		return errors.New("scoped Task write routes require all dependencies")
 	}

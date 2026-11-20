@@ -685,9 +685,9 @@ apply to both documentation and protocol requests. An Origin must match
 `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin. The
 [OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
 [architecture](../../docs/design/daynight-mcp-oauth.md) describe discovery,
-the browser journey and protocol composition. Explicit scoped authorization construction
-and v2 browser route registration are available for coordinated activation;
-production keeps the original assembly. The [internal scope contract](../../docs/design/credential-scope-internal.md#mcp-应用授权准备入口)
+the browser journey and protocol composition. Production uses scoped authorization
+construction and v2 browser route registration, activated with the matching Web
+build after draining old writers and applying the frozen credential backfill. The [internal scope contract](../../docs/design/credential-scope-internal.md#mcp-应用授权准备入口)
 owns catalog revisions, explicit selections and approval-to-grant policy transfer.
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,

@@ -7,7 +7,7 @@
 [原始鉴权决策](../../.agents/notes/archived/architecture/2026-10-22-auth-architecture.md)
 保留架构取舍，[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)记录了当前配置、组合与验收隐私规则的历史取舍。
 
-业务 Scope 的[内部合同](credential-scope-internal.md)定义目录、策略快照、既有 profile 的区分及显式授权的业务准入入口；生产认证和业务装配仍使用既有入口，尚未启用受限凭据权限。
+业务 Scope 的[内部合同](credential-scope-internal.md)定义目录、策略快照、既有 profile 的区分及显式授权的业务准入入口；生产认证和业务装配使用 scoped 入口，按当前凭据权限与原资源权限的交集准入。
 
 ## 已采纳的架构边界
 
@@ -868,10 +868,10 @@ HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 
 形成准入结果，不锁定授权来源行。Task 锁继续覆盖删除状态检查、文件 IO、事务绑定元数据写入及事务完成，
 与 Task 删除排序。准入后的 grant 或 Team 成员撤权无需等待文件 IO；已准入操作允许完成，
 不能在文件写入后仅因成员刚移除而拒绝元数据写入。撤权后没有其他有效来源的新准入请求拒绝；
-原生产装配的附件 HTTP 凭据仍只在入口验证；显式 scoped 附件入口在资源可见性检查后
+生产装配的 scoped 附件入口在资源可见性检查后
 执行业务 scope 准入，Open 在等待目标 gate 后、读取元数据及打开文件前权威复核原凭据。
 完整上传响应包含原创建时间，因此在开始上传前同时要求上传和读取权限。对应操作、
-固定 profile 及尚未启用的装配边界由[内部合同](credential-scope-internal.md#附件准入)拥有。
+固定 profile 及生产装配边界由[内部合同](credential-scope-internal.md#附件准入)拥有。
 Thread 的强准入与凭据重验规则由其专用事务拥有。
 真实存储/数据库错误按原链传播，保留 K1，已发字节不承诺撤回。
 [附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)记录锁范围与撤权完成的取舍。

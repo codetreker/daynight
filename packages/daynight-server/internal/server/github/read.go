@@ -37,7 +37,7 @@ type handler struct {
 }
 
 // RegisterPullRequestRoutes mounts the shared PR reads independently of the connection protocol.
-func RegisterPullRequestRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterPullRequestRoutes(mux httpx.RouteRegistrar, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
 	registerPullRequestRoutes(NewRouteRegistry(mux, nil), reader, auth, logger)
 }
 

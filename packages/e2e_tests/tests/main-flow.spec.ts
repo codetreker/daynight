@@ -39,6 +39,9 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   try {
     const device = await Promise.race([authorization, login.finished.then(() => { throw new Error("CLI login exited before publishing authorization instructions."); })]);
     await page.goto(`${device.uri}?user_code=${encodeURIComponent(device.code)}`);
+    const teamPermissions = page.locator('.credential-scope-group').filter({ has: page.locator('summary code', { hasText: /^team$/ }) });
+    await teamPermissions.locator('summary').click();
+    await teamPermissions.getByRole('checkbox', { name: /^Select this group/ }).check();
     await page.getByRole("checkbox", { name: "This code matches the one in my terminal", exact: true }).check();
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);

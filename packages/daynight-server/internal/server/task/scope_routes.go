@@ -37,7 +37,7 @@ func (s taskOnlyObservations) ObserveGraph(ctx context.Context, p model.Principa
 
 // ScopedReadRoutes registers Task query handlers with request-local policy
 // snapshots. Mutation and execution routes retain their independent admission.
-func ScopedReadRoutes(mux *http.ServeMux, tasks *service.Tasks, observations *service.Observations, sync *service.TaskSync, auth ScopedAuthentication, logger *slog.Logger, window time.Duration) error {
+func ScopedReadRoutes(mux httpx.RouteRegistrar, tasks *service.Tasks, observations *service.Observations, sync *service.TaskSync, auth ScopedAuthentication, logger *slog.Logger, window time.Duration) error {
 	if mux == nil || tasks == nil || observations == nil || sync == nil || auth == nil || logger == nil {
 		return errors.New("scoped Task read routes require all dependencies")
 	}
@@ -97,7 +97,7 @@ func ScopedReadRoutes(mux *http.ServeMux, tasks *service.Tasks, observations *se
 
 type ScopedSearchOperation func(context.Context, model.CredentialAuthorization, string, tasksearch.Request) (tasksearch.Page, error)
 
-func ScopedTaskSearchRoutes(mux *http.ServeMux, search ScopedSearchOperation, auth ScopedAuthentication, logger *slog.Logger) error {
+func ScopedTaskSearchRoutes(mux httpx.RouteRegistrar, search ScopedSearchOperation, auth ScopedAuthentication, logger *slog.Logger) error {
 	if mux == nil || search == nil || auth == nil || logger == nil {
 		return errors.New("scoped Task search routes require all dependencies")
 	}

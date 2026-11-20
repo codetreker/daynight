@@ -64,7 +64,7 @@ func New(ops Operations, authenticate func(*http.Request) (model.Principal, erro
 	return &Routes{ops: ops, authenticate: authenticate, main: main, preview: preview, logger: logger}, nil
 }
 
-func (h *Routes) RegisterMain(mux *http.ServeMux) {
+func (h *Routes) RegisterMain(mux httpx.RouteRegistrar) {
 	mux.HandleFunc(AuthorizePath, h.navigation("authorize", h.authorize))
 	mux.HandleFunc(RetryPath, h.navigation("retry", h.retry))
 }

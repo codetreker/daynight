@@ -36,7 +36,7 @@ func workflowInStore(t *testing.T, db *postgres.Store, number int) *workflowFixt
 	task := testutil.QueryTask(t, db, project.ID, number, model.TaskInProgress)
 	patID := uuid.NewString()
 	hash := sha256.Sum256([]byte(patID))
-	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'usage fixture',clock_timestamp())`, patID, owner.UserID, hash[:])
+	testutil.MustExec(t, db.Pool, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'usage fixture',clock_timestamp())`, patID, owner.UserID, hash[:])
 	owner.Kind = model.PATCredential
 	owner.CredentialID = patID
 	claim := testutil.WorkerClaim(number, owner.UserID, uuid.NewString(), model.WorkerActive)

@@ -31,7 +31,7 @@ type appWebhookHandler struct {
 
 // RegisterAppWebhookRoute installs the App-aware boundary without user authentication.
 // Its adoption in the public server is controlled by the App integration.
-func RegisterAppWebhookRoute(mux *http.ServeMux, operations AppWebhookOperations, logger *slog.Logger) {
+func RegisterAppWebhookRoute(mux httpx.RouteRegistrar, operations AppWebhookOperations, logger *slog.Logger) {
 	registerAppWebhookRoute(NewRouteRegistry(mux, nil), operations, logger)
 }
 

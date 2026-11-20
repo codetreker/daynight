@@ -1,6 +1,7 @@
 package github
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
@@ -28,11 +29,11 @@ const (
 )
 
 type RouteRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(ScopeRoute)
 }
 
-func NewRouteRegistry(mux *http.ServeMux, observe func(ScopeRoute)) *RouteRegistry {
+func NewRouteRegistry(mux httpx.RouteRegistrar, observe func(ScopeRoute)) *RouteRegistry {
 	return &RouteRegistry{mux: mux, observe: observe}
 }
 func (r *RouteRegistry) handle(pattern string, handler http.HandlerFunc, class routeClass) {

@@ -24,7 +24,7 @@ Project 投影需要两者。缺少 session:read 时跳过两次 TaskSessionSour
 采样，按同一快照中的全部可见进行中普通 Task 构造 taskObservations，逐项保留
 真实 taskVersion 与 unavailable。该键集合不受 since 筛选影响；sessions 为空、
 sessionPartial=true，执行相关 worker/sessionStartup 属性被排除。观察完成时间
-和 Task 水位取自任务快照，不能从会话补齐。原生产装配保持既有行为，限定入口
+和 Task 水位取自任务快照，不能从会话补齐。生产装配使用 scoped 入口，并
 遵循[凭据准入合同](credential-scope-internal.md#任务读取准入与投影)。
 
 客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。

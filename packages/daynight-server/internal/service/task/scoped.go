@@ -74,3 +74,39 @@ func (s *Observations) projectTask(task model.Task) model.Task {
 	}
 	return task
 }
+
+// CurrentReadAuthorization binds delayed response rechecks to their fresh snapshot.
+type CurrentReadAuthorization func(context.Context, store.SnapshotScope, model.Principal) (model.CredentialAuthorization, error)
+
+func WithCurrentObservationAuthorization(app *Observations, current CurrentReadAuthorization) *Observations {
+	if current == nil {
+		panic("current observation authorization is required")
+	}
+	copy := *app
+	copy.currentAuthorization = current
+	return &copy
+}
+func WithCurrentSyncAuthorization(app *TaskSync, current CurrentReadAuthorization) *TaskSync {
+	if current == nil {
+		panic("current sync authorization is required")
+	}
+	copy := *app
+	copy.currentAuthorization = current
+	return &copy
+}
+func requireCurrentReadScope(ctx context.Context, snapshot store.SnapshotScope, p model.Principal, original *model.CredentialAuthorization, current CurrentReadAuthorization, operations ...scopepolicy.Operation) error {
+	if original == nil || current == nil {
+		return requireTaskScope(original, p, operations...)
+	}
+	a, err := current(ctx, snapshot, p)
+	if err != nil {
+		return err
+	}
+	if a.Principal != p || a.Profile != original.Profile {
+		return model.Unauthenticated(nil)
+	}
+	if sessionProjectionAllowed(original) {
+		operations = append(operations, scopepolicy.SessionRead)
+	}
+	return requireTaskScope(&a, p, operations...)
+}

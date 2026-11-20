@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -40,6 +41,7 @@ import (
 
 // App owns the shared modules and their underlying resources.
 type App struct {
+	ScopeError error
 	*application.Application
 	GitHubRead           *coregithub.Reader
 	GitHubApps           *githubservice.AppManager
@@ -107,8 +109,22 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	preview, previewErr := identityservice.NewPreviewSSO(database, c.Server.PublicOrigin, c.Server.PreviewOrigin, c.UniAuth.CallbackURL)
+	unavailable := []scopepolicy.ScopeID{}
+	if !c.Webhook.Enabled {
+		unavailable = append(unavailable, "webhook:deliver")
+	}
+	if _, ok := database.(githubAppStore); !ok {
+		unavailable = append(unavailable, "github:manage")
+	}
+	if _, ok := database.(store.AssistantTaskInboundWriter); !ok {
+		unavailable = append(unavailable, "assistant-task:inbox")
+	}
+	modules, scopeErr := application.NewScoped(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, c.Server.PublicOrigin, unavailable, capture...)
+	if scopeErr != nil {
+		return &App{ScopeError: scopeErr}
+	}
 	app := &App{
-		Application:     application.New(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, capture...),
+		Application:     modules,
 		PreviewSSOError: previewErr,
 		GitHubRead:      coregithub.NewReader(database, true),
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
@@ -117,9 +133,9 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	if inbound, ok := database.(store.AssistantTaskInboundWriter); ok {
 		app.AssistantTaskInbox = assistanttask.NewInbox(inbound, c.Server.PublicOrigin)
 	}
-	app.Usage, app.UsageError = usageapp.FromEnvironment(database)
+	app.Usage, app.UsageError = usageapp.ScopedFromEnvironment(database, app.Scoped.Credentials.Usage)
 	app.closeLock <- struct{}{}
-	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
+	app.DirectMembers, app.ScopeError = team.NewScopedDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1", app.Scoped.Credentials.Current, app.Scoped.Credentials.TeamWrite)
 	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")
 	app.drainLock <- struct{}{}
 	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
@@ -133,7 +149,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		if err != nil {
 			app.OAuthError = err
 		} else {
-			authorizations, authErr := oauthservice.NewAuthorizations(database, clients, admission, c.Server.PublicOrigin)
+			authorizations, authErr := oauthservice.NewAuthorizationsWithScopes(database, clients, admission, c.Server.PublicOrigin, app.Scoped.MCPCatalog)
 			if authErr != nil {
 				app.OAuthError = authErr
 			} else {
@@ -152,14 +168,14 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	private, ok := files.(filestorage.TransferStorage)
 	if ok {
 		budget, reserve := c.MCP.Transfer.TempBudgetBytes, c.MCP.Transfer.ReservedFreeBytes
-		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
+		app.PrivateContent, _ = mcptransfer.NewScoped(database, files, private, budget, reserve)
 		if app.PrivateContent != nil {
 			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
 		}
 	}
 	// Unavailable test dependencies fail explicitly on upload calls. OpenApp
 	// refuses startup unless the complete private storage lifecycle is present.
-	app.Uploads = mcptransfer.NewUploads(app.PrivateContent, private, app.Attachments)
+	app.Uploads, _ = mcptransfer.NewScopedUploads(app.PrivateContent, private, app.Attachments)
 	return app
 }
 
@@ -250,6 +266,10 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
+	if app.ScopeError != nil {
+		database.Close()
+		return nil, errors.Join(app.ScopeError, files.Close())
+	}
 	app.Projects.SetRepositoryLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
@@ -262,6 +282,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 			return nil, errors.Join(cause, err)
 		}
 		return nil, cause
+	}
+	if app.ScopeError != nil {
+		return failOpen(app.ScopeError)
 	}
 	if app.PreviewSSOError != nil {
 		return failOpen(app.PreviewSSOError)

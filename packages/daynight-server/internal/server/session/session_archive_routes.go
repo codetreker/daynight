@@ -21,7 +21,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
-func (h *Routes) registerArchiveRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
+func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
 	h.registerHistoryLedgerRoutes(mux, observe)
 	for _, base := range []string{sessionBase + "/{sessionId}/archive", "/api/v1/test-sessions/{sessionId}/archive"} {
 		h.registerUnifiedArchiveRoutes(mux, base, observe)

@@ -18,8 +18,7 @@ requires both read and write. Thread reads require `thread:read`; posting requir
 includes author information. A requested minimal REST receipt and the MCP receipt
 for a post-only credential contain only the committed message identity. Thread
 writes check the current credential policy in the original transaction, retaining
-the grant-before-access locking order and claim attribution checks. The existing
-production assembly remains unchanged until scoped authentication is enabled.
+the grant-before-access locking order and claim attribution checks. Production uses scoped authentication and these registrations.
 
 ## Alternatives
 

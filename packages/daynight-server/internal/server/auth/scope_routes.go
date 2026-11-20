@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
@@ -27,7 +28,7 @@ const (
 )
 
 type accountRouteRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(ScopeRoute)
 }
 

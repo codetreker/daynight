@@ -22,10 +22,11 @@ type personalSessionRowObserver interface {
 	ObserveTaskSessionRows(context.Context, model.Principal, []store.TaskSessionSource) (map[string]sessioncore.TaskSessionRow, error)
 }
 type Observations struct {
-	authorization *model.CredentialAuthorization
-	database      store.SnapshotReader
-	observer      SessionObserver
-	operations    observationOperations
+	currentAuthorization CurrentReadAuthorization
+	authorization        *model.CredentialAuthorization
+	database             store.SnapshotReader
+	observer             SessionObserver
+	operations           observationOperations
 }
 
 func NewObservations(database store.SnapshotReader, observer SessionObserver) *Observations {
@@ -76,7 +77,7 @@ func (s *Observations) authorizeObservation(ctx context.Context, snapshot store.
 	if err != nil {
 		return err
 	}
-	return requireTaskScope(s.authorization, principal)
+	return requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization)
 }
 func observationAuthorityFailure(err error) bool {
 	var fault *model.Fault

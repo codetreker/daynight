@@ -15,12 +15,14 @@ The scoped Task service classifies claim, execution report, release and withdraw
 separately, retaining the existing role, version and claim checks. Claim-bound
 completion uses the existing separate classification. Scoped REST claim routes
 carry the authenticated policy and full-response or minimal-receipt selection.
+Full claim, report and claim-bound completion responses additionally require
+Session read permission before mutation to retain their mandatory Worker facts.
+Minimal receipts retain their independent execution permissions.
 
 Task Session recovery grants check the current retry permission alongside
 producer authority while retaining the original claim and generation checks. The
 [internal design](../../../../docs/design/credential-scope-internal.md#worker-任务执行准入)
-owns the mapping and activation boundary. Existing production assembly remains
-unchanged until scoped activation.
+owns the mapping and activation boundary. Production binds the scoped Task and Session services to those routes.
 
 ## Alternatives
 
@@ -32,5 +34,5 @@ permissions with visibility or permission to enable automatic execution.
 
 Removing claim permission prevents new claims without implicitly denying release
 or recovery. Server requests use the appropriate current authorization; CLI
-local operations retain their existing semantics. Scoped activation must wire
+local operations retain their existing semantics. Production wires
 the corresponding service routes and authorization sources together.

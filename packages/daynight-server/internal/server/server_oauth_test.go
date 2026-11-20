@@ -197,6 +197,7 @@ func (d *oauthHTTPAuthorizationDAO) FreshTime(_ context.Context, now time.Time) 
 }
 
 type oauthHTTPFamilyDAO struct {
+	store.OAuthScopeDAO
 	store.CredentialFamilyDAO
 	t            *testing.T
 	plan         *httpCallPlan
