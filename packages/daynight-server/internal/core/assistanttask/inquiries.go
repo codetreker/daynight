@@ -30,6 +30,7 @@ func inquiryBotBarriers(ctx context.Context, dao store.AssistantTaskDAO, task mo
 }
 
 func (m *Module) Ask(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input InquiryInput) (model.AssistantTaskInquiry, error) {
+	actor = actor.requiringBranches("Ask", "default")
 	var result model.AssistantTaskInquiry
 	if actor.BotID == nil {
 		return result, forbidden()
@@ -110,6 +111,7 @@ func (m *Module) Ask(ctx context.Context, dao store.AssistantTaskDAO, actor Acto
 	return result, err
 }
 func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AnswerInput) (model.AssistantTaskInquiry, error) {
+	actor = actor.requiringBranches("Answer", "default")
 	var result model.AssistantTaskInquiry
 	if !strictID(input.ID) || !textValid(input.Answer, true) {
 		return result, invalid("Inquiry identity and answer are required.")

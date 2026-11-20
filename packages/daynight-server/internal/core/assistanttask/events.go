@@ -59,6 +59,7 @@ func insertSystemEvent(ctx context.Context, dao store.AssistantTaskDAO, task mod
 	return event, nil
 }
 func (m *Module) AddEvent(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input EventInput) (model.AssistantTaskEvent, error) {
+	actor = actor.requiringBranches("AddEvent", "default")
 	var result model.AssistantTaskEvent
 	if !strictID(input.ID) || !strictID(input.TargetBotID) {
 		return result, invalid("Event and target Bot identities are required.")
@@ -111,6 +112,7 @@ func (m *Module) AddEvent(ctx context.Context, dao store.AssistantTaskDAO, actor
 	return result, finishWork(ctx, dao, actor, task, now)
 }
 func (m *Module) AckEvent(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AckEventInput) (model.AssistantTaskEvent, error) {
+	actor = actor.requiringBranches("AckEvent", "default")
 	var result model.AssistantTaskEvent
 	if actor.BotID == nil {
 		return result, forbidden()
@@ -170,13 +172,17 @@ func (m *Module) AckEvent(ctx context.Context, dao store.AssistantTaskDAO, actor
 	return result, finishUser(ctx, dao, actor, task, now)
 }
 func (m *Module) ClearAttention(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, targetBotID string) error {
+	actor = actor.requiringBranches("ClearAttention", "default")
 	if actor.BotID != nil {
 		return forbidden()
 	}
-	if err := authorize(ctx, dao, actor); err != nil {
+	if err := authorizeIdentity(ctx, dao, actor); err != nil {
 		return err
 	}
 	if err := botOwner(ctx, dao, actor.Principal.UserID, targetBotID); err != nil {
+		return err
+	}
+	if err := scopeAdmission(ctx, dao, actor); err != nil {
 		return err
 	}
 	now, err := dao.Now(ctx)
