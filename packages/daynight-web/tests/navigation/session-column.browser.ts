@@ -149,7 +149,7 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
     const context = await browser.newContext({ viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true });
     try {
       const page = await context.newPage();
-      const { observations } = await open(page, locale, 'idle', entry);
+      const { observations, publishConfirmedModel } = await open(page, locale, 'idle', entry);
       const image = page.locator('.session-add-images'), input = page.locator('.session-composer textarea');
       const send = page.locator('.session-primary-actions button[type=submit]');
       await expect(image).toBeEnabled(); await expect(send).toBeDisabled();
@@ -243,6 +243,13 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
       await page.keyboard.press('Tab'); await expect(page.locator('.session-command-trigger')).toBeFocused();
       await page.keyboard.press('Tab'); await expect(image).toBeFocused();
       await page.keyboard.press('Tab'); await expect(send).toBeFocused();
+      publishConfirmedModel();
+      await expect(model).toContainText('Native B');
+      const shortModel = await imageFooterGeometry(page);
+      const shortCenters = shortModel.controls.map(rect => rect.top + rect.height / 2);
+      expect(shortModel.overflow).toBe(false);
+      expect(Math.max(...shortCenters) - Math.min(...shortCenters)).toBeLessThanOrEqual(1);
+      evidence.push({ viewport: 320, model: 'Native B', ...shortModel });
       const chooser = page.waitForEvent('filechooser'); await image.tap();
       expect((await chooser).isMultiple()).toBe(true);
       await expect(input).toHaveValue('Draft for the image toolbar');
