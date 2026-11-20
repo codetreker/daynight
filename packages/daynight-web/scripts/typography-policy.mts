@@ -6,7 +6,7 @@ import { withPolicyCleanup } from './native-select-policy.mts';
 import { collectTypographyCss, readTypographyRoles, typographyOwner } from './typography-policy-css.mts';
 import { collectTypographyTypeScript } from './typography-policy-typescript.mts';
 import { compareTypographyBaseline, readTypographyBaseline, typographyBaselinePath, type TypographyBaselineEntry } from './typography-policy-baseline.mts';
-import { type TypographyOccurrence } from './typography-policy-contract.mts';
+import { typographyDependencyDiagnostics, type TypographyOccurrence } from './typography-policy-contract.mts';
 
 const sourceFiles = async (directory: string): Promise<string[]> => {
   const paths: string[] = [];
@@ -57,7 +57,7 @@ export const collectTypographyPolicy = async (packageDirectory: string): Promise
       if (errors.length === 0) occurrences.push(...collectTypographyTypeScript(source, label(path), roles, project.checker));
     }
   });
-  return { files: paths.length, roles: [...roles].sort(), occurrences, diagnostics };
+  return { files: paths.length, roles: [...roles].sort(), occurrences, diagnostics: [...diagnostics, ...typographyDependencyDiagnostics(occurrences)] };
 };
 
 export const checkTypographyPolicy = async (packageDirectory: string, options: { baseline?: readonly TypographyBaselineEntry[]; zeroLegacy?: boolean } = {}): Promise<{ files: number; roles: string[]; legacy: number; diagnostics: string[] }> => {

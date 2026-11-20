@@ -26,6 +26,8 @@ count and module owner. Only those occurrences receive temporary permission.
 New occurrences, increased counts and stale entries fail the check. Module
 migrations may only remove or reduce their own entries; review verifies that
 baseline diffs only shrink. The production check never expands the baseline.
+Collected references also require their retired definitions to remain present;
+deleting a definition and its baseline entry cannot strand unmigrated consumers.
 
 Retired identifiers are tracked independently of font declarations, including
 CSS geometry and statically readable TypeScript strings and style operations.

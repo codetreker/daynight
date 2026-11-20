@@ -18,6 +18,14 @@ export type TypographyOccurrence = {
   line: number;
   column: number;
   message: string;
+  identifiers: string[];
 };
 export const occurrenceDiagnostic = (item: TypographyOccurrence): string => `${item.path}:${item.line}:${item.column}: typography ownership: ${item.message} [${item.context}: ${item.value}]`;
 export const retiredIn = (text: string): string[] => [...new Set(text.match(/--[\w-]+/g) ?? [])].filter(name => retired.has(name)).sort();
+
+export const typographyDependencyDiagnostics = (occurrences: readonly TypographyOccurrence[]): string[] => {
+  const definitions = new Set(occurrences.filter(item => item.category === 'legacy-definition').flatMap(item => item.identifiers));
+  return occurrences.filter(item => item.category === 'legacy-reference').flatMap(item => item.identifiers
+    .filter(name => !definitions.has(name))
+    .map(name => occurrenceDiagnostic({ ...item, message: `retired typography reference ${name} has no definition; migrate its remaining consumers before removing the definition.` })));
+};

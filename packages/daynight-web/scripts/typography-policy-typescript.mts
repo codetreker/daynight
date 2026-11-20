@@ -54,9 +54,9 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     return;
   };
-  const report = (node: Node, message: string, category: TypographyOccurrence['category'] = 'invalid', value = node.getText(source).replace(/\s+/g, ' ')): void => {
+  const report = (node: Node, message: string, category: TypographyOccurrence['category'] = 'invalid', value = node.getText(source).replace(/\s+/g, ' '), identifiers = retiredIn(value), inlineContext?: string): void => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    diagnostics.push({ path, category, context, value, line: line + 1, column: character + 1, message });
+    diagnostics.push({ path, category, context: inlineContext === undefined ? context : `${context} > inline ${inlineContext}`, value, line: line + 1, column: character + 1, message, identifiers });
   };
   const name = (node: Node): string[] | undefined => isComputedPropertyName(node) ? strings(node.expression)
     : isIdentifier(node) ? [node.text] : strings(node);
@@ -67,7 +67,10 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     const values = value === undefined ? undefined : strings(value);
     if (values === undefined) { report(node, `${normalized} must be a statically readable shared role or inheritance value.`); return; }
     for (const text of values) {
-      if (retiredIn(text).length > 0) continue;
+      if (retiredIn(text).length > 0) {
+        report(node, 'retired typography identifier in an inline style write.', 'legacy-reference', text);
+        continue;
+      }
       const problem = typographyValueProblem(normalized, text, roles, '');
       if (problem !== undefined) report(node, problem);
     }
@@ -77,27 +80,28 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     if (values === undefined) return;
     for (const text of values) {
       for (const item of collectTypographyCss(text, path, roles, true)) {
-        if (item.category === 'invalid') report(node, item.message, item.category, item.value);
+        report(node, item.message, item.category, item.value, item.identifiers, item.context);
       }
     }
   };
   const member = (node: Node): string[] | undefined => isPropertyAccessExpression(node) ? [node.name.text]
     : isElementAccessExpression(node) ? strings(node.argumentExpression) : undefined;
   const isStyleMember = (node: Node): boolean => (isPropertyAccessExpression(node) || isElementAccessExpression(node)) && member(node.expression)?.includes('style') === true;
+  const isTrackedExpression = (node: Node): boolean => isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) || isTemplateExpression(node)
+    || isParenthesizedExpression(node) || isAsExpression(node) || isSatisfiesExpression(node) || isConditionalExpression(node) || isJsxExpression(node)
+    || (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken);
   const visit = (node: Node, ancestors: readonly Node[]): void => {
     context = ancestors.flatMap(parent => {
       if (isVariableDeclaration(parent) && isIdentifier(parent.name)) return [`const ${parent.name.text}`];
       if (isPropertyAssignment(parent)) return [`property ${(name(parent.name) ?? ['computed']).join('|')}`];
       return [];
     }).concat(SyntaxKind[node.kind]).join(' > ');
-    const stringExpression = isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) || isTemplateExpression(node)
-      || (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken);
-    const values = stringExpression ? strings(node) : undefined;
+    const values = isTrackedExpression(node) ? strings(node) : undefined;
     if (values !== undefined && values.some(value => retiredIn(value).length > 0)) {
       // Record resolved values once at their outer expression; whitespace and
       // quotation changes do not create a new legacy allowance.
       const parent = ancestors.at(-1);
-      const parentValues = parent === undefined ? undefined : strings(parent);
+      const parentValues = parent === undefined || !isTrackedExpression(parent) ? undefined : strings(parent);
       if (parentValues === undefined) {
         for (const value of [...new Set(values)].sort()) if (retiredIn(value).length > 0) report(node, 'retired typography identifier in TypeScript.', 'legacy-reference', value);
       }
@@ -115,7 +119,7 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     if (isJsxAttribute(node)) {
       const property = node.name.getText(source);
-      if (property === 'style' && node.initializer !== undefined && isStringLiteral(node.initializer)) declarations(node, node.initializer);
+      if (property === 'style' && node.initializer !== undefined) declarations(node, node.initializer);
       else inspect(node, property, node.initializer);
     }
     if (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.EqualsToken && isStyleMember(node.left)) {

@@ -11,6 +11,7 @@ import { checkTypographyPolicy, collectTypographyPolicy } from './typography-pol
 const root = fileURLToPath(new URL('../', import.meta.url));
 const owner = ':root { --text-xs: .75rem; --text-sm: .875rem; --text-base: 1rem; --text-lg: 1.125rem; --text-xl: 1.375rem; --text-2xl: 1.75rem; }';
 const roles = readTypographyRoles(owner);
+const bridgedOwner = owner.replace('}', '--text-interface:var(--text-sm); }');
 const fixture = async (run: (directory: string, put: (path: string, text: string) => Promise<void>) => Promise<void>): Promise<void> => {
   await mkdir(join(root, '.tmp'), { recursive: true });
   const directory = await mkdtemp(join(root, '.tmp/typography-test-'));
@@ -118,6 +119,8 @@ test('checks unimported production files and static TS writes with precise legac
 
 test('tracks retired static strings, runtime reads and writes including concatenation', async () => {
   await fixture(async (directory, put) => {
+    await put('src/styles/typography.css', owner.replace('}', '--text-interface:var(--text-sm); --text-metadata:var(--text-xs); --text-reading:var(--text-base); }'));
+    await put('src/ui/native-select/native-select.css', '.native-select {--native-select-font-size:var(--text-sm)}');
     await put('src/legacy.ts', `
       const name = '--text-' + 'interface';
       const alias = name;
@@ -190,6 +193,62 @@ test('reports malformed unimported TypeScript', async () => {
   await fixture(async (directory, put) => {
     await put('src/bad.tsx', 'const broken = <span');
     assert.ok((await checkTypographyPolicy(directory)).diagnostics.some(value => /src\/bad.tsx:\d+:\d+: TypeScript parse failed/.test(value)));
+  });
+});
+
+test('requires a legacy definition until its final consumer migrates even when its budget is removed', async () => {
+  await fixture(async (directory, put) => {
+    for (const reference of ['var(--text-interface)', String.raw`var(--te\78 t-interface)`]) {
+      await put('src/styles/typography.css', bridgedOwner);
+      await put('src/view.css', `.a {font-size:${reference}}`);
+      const baseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'B');
+      assert.deepEqual((await checkTypographyPolicy(directory, { baseline })).diagnostics, []);
+      await put('src/styles/typography.css', owner);
+      const consumers = baseline.filter(item => item.category !== 'legacy-definition');
+      assert.ok((await checkTypographyPolicy(directory, { baseline: consumers })).diagnostics.some(value => value.includes('has no definition')));
+    }
+    await put('src/ui/selection-control/selection-control.css', '.selection-control {--selection-control-font-size:var(--text-sm)}');
+    await put('src/view.css', '.a {font-size:var(--selection-control-font-size)}');
+    const selectionBaseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'B');
+    await put('src/ui/selection-control/selection-control.css', '');
+    assert.ok((await checkTypographyPolicy(directory, { baseline: selectionBaseline.filter(item => item.category !== 'legacy-definition') })).diagnostics.some(value => value.includes('--selection-control-font-size has no definition')));
+    await put('src/view.css', '.a {font-size:var(--text-sm)}');
+    assert.deepEqual((await checkTypographyPolicy(directory, { baseline: [] })).diagnostics, []);
+    assert.deepEqual((await checkTypographyPolicy(directory, { zeroLegacy: true })).diagnostics, []);
+  });
+});
+
+test('rejects wrapped retired values at inline writes in both migration modes', async () => {
+  await fixture(async (directory, put) => {
+    for (const expression of [
+      "('var(--text-interface)' as const)", "('var(--text-interface)')",
+      "('var(--text-interface)' satisfies string)",
+      "condition ? 'var(--text-interface)' : 'inherit'",
+    ]) {
+      await put('src/wrapped.ts', `element.style.fontSize = ${expression};`);
+      for (const options of [{ baseline: [] }, { zeroLegacy: true }]) {
+        assert.ok((await checkTypographyPolicy(directory, options)).diagnostics.some(value => value.includes('retired typography')), expression);
+      }
+    }
+  });
+});
+
+test('preserves escaped CSS dependencies in cssText, setAttribute and JSX declarations', async () => {
+  await fixture(async (directory, put) => {
+    const css = String.raw`font-size:var(--te\78 t-interface)`;
+    for (const statement of [
+      `element.style.cssText = ${JSON.stringify(css)};`,
+      `element.setAttribute('style', ${JSON.stringify(css)});`,
+      `<div style="${css}" />;`,
+      `<div style={${JSON.stringify(css)}} />;`,
+    ]) {
+      await put('src/escaped.tsx', statement);
+      for (const options of [{ baseline: [] }, { zeroLegacy: true }]) {
+        const diagnostics = (await checkTypographyPolicy(directory, options)).diagnostics;
+        assert.ok(diagnostics.some(value => value.includes('retired typography')), statement);
+        assert.ok(diagnostics.every(value => !value.includes('undefined')));
+      }
+    }
   });
 });
 

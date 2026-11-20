@@ -2607,6 +2607,8 @@ and count, with a module owner for each entry. Selection aliases and the existin
 Mermaid font setting receive individual entries. Unrecorded uses, increased
 counts and stale entries fail. A module migration must remove or reduce its own
 entries in the same change; review baseline diffs to ensure they only shrink.
+Retired definitions must remain present while collected consumers reference
+them, even if their definition entries are removed from the baseline.
 The production check never regenerates or expands the baseline. Formatting and
 line-number changes do not change occurrence identity.
 

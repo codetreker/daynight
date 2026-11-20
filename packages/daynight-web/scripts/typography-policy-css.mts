@@ -60,8 +60,8 @@ export const collectTypographyCss = (text: string, path: string, roles: Readonly
     enter(node: CssNode) {
       if (node.type === 'Rule') contexts.push(generate(node.prelude));
       if (node.type === 'Atrule') contexts.push(`@${node.name}${node.prelude === null ? '' : ` ${generate(node.prelude)}`}`);
-      const add = (category: TypographyOccurrence['category'], context: string, value: string, message: string): void => {
-        result.push({ path, category, context: [...contexts, context].join(' > '), value, line: node.loc?.start.line ?? 1, column: node.loc?.start.column ?? 1, message });
+      const add = (category: TypographyOccurrence['category'], context: string, value: string, message: string, identifiers: string[] = []): void => {
+        result.push({ path, category, context: [...contexts, context].join(' > '), value, line: node.loc?.start.line ?? 1, column: node.loc?.start.column ?? 1, message, identifiers });
       };
       if (node.type === 'Atrule' && node.name.toLowerCase() === 'property' && node.prelude !== null) {
         const name = ident.decode(generate(node.prelude));
@@ -75,15 +75,15 @@ export const collectTypographyCss = (text: string, path: string, roles: Readonly
       walk(node.value, child => { if (child.type === 'Identifier') references.push(ident.decode(child.name)); });
       const legacy = [...new Set(references.filter(name => retired.has(name)))].sort();
       if (property.startsWith('--text-') && (path !== typographyOwner || inline)) add('invalid', property, value, `${property} is owned by ${typographyOwner}; local overrides are forbidden.`);
-      else if (retired.has(property)) add('legacy-definition', property, value, `retired definition ${property}.`);
+      else if (retired.has(property)) add('legacy-definition', property, value, `retired definition ${property}.`, [property]);
       else if (property.endsWith('-font-size') && property.startsWith('--')) add('invalid', property, value, `private typography alias ${property} is forbidden.`);
-      if (legacy.length > 0) add('legacy-reference', property, value, `retired typography reference ${legacy.join(', ')}.`);
+      if (legacy.length > 0) add('legacy-reference', property, value, `retired typography reference ${legacy.join(', ')}.`, legacy);
       if ((property === 'font-size' || property === 'font') && legacy.length === 0) {
         const problem = typographyValueProblem(property, value, roles, inline ? '' : path);
         if (problem !== undefined) add('invalid', property, value, problem);
       }
       walk(node.value, child => {
-        if (child.type === 'String' && retiredIn(child.value).length > 0) add('legacy-reference', `${property} string`, child.value, 'retired typography identifier in a CSS string.');
+        if (child.type === 'String' && retiredIn(child.value).length > 0) add('legacy-reference', `${property} string`, child.value, 'retired typography identifier in a CSS string.', retiredIn(child.value));
       });
     },
     leave(node: CssNode) { if (node.type === 'Rule' || node.type === 'Atrule') contexts.pop(); },
