@@ -122,7 +122,9 @@ func TestAssistantTaskInboundConcurrentSameKeyWritesOneEvent(t *testing.T) {
 }
 
 // A receive that waits for a concurrent immediate rotation must observe the
-// rotated digest after the task lock is released, never the stale token.
+// rotated digest after the task lock is released, never the stale token. Both
+// barriers honor cancellation, and every exit releases the rotation and joins
+// both goroutines so a failure never strands a transaction.
 func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	f := newInboundFixture(t)
@@ -133,8 +135,18 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	locked, release := make(chan struct{}), make(chan struct{})
-	rotated := make(chan error, 1)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	rotated, received := make(chan error, 1), make(chan error, 1)
+	var workers sync.WaitGroup
+	defer func() {
+		unblock()
+		cancel()
+		workers.Wait()
+	}()
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		_, err := f.database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
 			d := scope.AssistantTaskDAO()
 			if _, err := d.Task(ctx, f.task.OwnerUserID, f.task.ID, true); err != nil {
@@ -150,23 +162,30 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 				return errors.Join(err, errors.New("rotation was not saved"))
 			}
 			close(locked)
-			<-release
-			return nil
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
 		rotated <- err
 	}()
-	<-locked
-	received := make(chan error, 1)
+	select {
+	case <-locked:
+	case err := <-rotated:
+		t.Fatalf("rotation ended before holding the task lock: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("rotation did not take the task lock: %v", ctx.Err())
+	}
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		_, err := f.inbox.Receive(ctx, f.input(f.token, "", `{"n":1}`))
 		received <- err
 	}()
-	select {
-	case err := <-received:
-		t.Fatalf("receive did not wait for the rotation's task lock: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	close(release)
+	waitInboundTaskLock(t, ctx, f.database, received)
+	unblock()
 	if err := <-rotated; err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +195,28 @@ func TestAssistantTaskInboundWaitsForConcurrentRotation(t *testing.T) {
 	}
 	if result, err := f.inbox.Receive(ctx, f.input(next, "", `{"n":2}`)); err != nil || result.EventID == nil || f.inboundEvents(t) != 1 {
 		t.Fatalf("rotated token: %+v %v", result, err)
+	}
+}
+
+// waitInboundTaskLock returns once a backend of this test waits on a lock
+// while reading assistant_tasks, and fails if the receive ends first.
+func waitInboundTaskLock(t *testing.T, ctx context.Context, database *Store, received <-chan error) {
+	t.Helper()
+	for {
+		var waiting bool
+		if err := database.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock' AND query LIKE '%FROM assistant_tasks%')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case err := <-received:
+			t.Fatalf("receive did not wait for the rotation's task lock: %v", err)
+		case <-ctx.Done():
+			t.Fatalf("receive lock wait not observed: %v", ctx.Err())
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 

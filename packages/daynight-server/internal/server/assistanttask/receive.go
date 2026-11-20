@@ -92,6 +92,9 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	if problem != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
 	}
+	if problem := inboxKeyProblem(r.Header); problem != "" {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
+	}
 	if r.ContentLength > InboxBodyLimit {
 		return h.refuse(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "The request body exceeds 64 KiB.", "")
 	}
@@ -194,6 +197,19 @@ func requestInboxToken(r *http.Request) (*string, string) {
 		return nil, "The inbox token form is invalid."
 	}
 	return &token, ""
+}
+
+// inboxKeyProblem rejects a Webhook-Id or Idempotency-Key header that is
+// present but empty or blank. Header.Get cannot tell such a header from an omitted one,
+// so accepting it would turn a keyed retry into unkeyed delivery that writes a
+// second event. A request that omits both headers stays unkeyed.
+func inboxKeyProblem(header http.Header) string {
+	for _, name := range []string{"Webhook-Id", "Idempotency-Key"} {
+		if values := header.Values(name); len(values) > 0 && strings.TrimSpace(values[0]) == "" {
+			return "The " + name + " header must not be empty."
+		}
+	}
+	return ""
 }
 
 // inboxMediaType accepts application/json, any +json type and text/plain,

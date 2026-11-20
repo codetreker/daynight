@@ -100,7 +100,8 @@ type AssistantTaskDAO interface {
 	TransferOpenItems(context.Context, string, string, *string) error
 	InsertItemClosure(context.Context, model.AssistantTaskItemClosure) error
 	// RetargetPendingInbound moves the task's pending inbound events that target
-	// another Bot to the given responsible Bot; other event types are unchanged.
+	// another Bot to the given responsible Bot, together with the recipient of
+	// their receipts; delivered history and other event types are unchanged.
 	RetargetPendingInbound(context.Context, string, string, string) error
 	Record(context.Context, string, string, string) (model.AssistantTaskRecord, error)
 	Records(context.Context, AssistantTaskQuery) ([]model.AssistantTaskRecord, error)
@@ -153,10 +154,10 @@ type AssistantTaskInboxDAO interface {
 	// PendingInboundEvents counts, up to limit, pending inbound events of the
 	// task targeted at bot.
 	PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error)
-	// ReceivedInbound reports whether bot was the target of an unsuppressed
-	// receipt about the project Task subject at or after since, across the
-	// owner's assistant tasks.
-	ReceivedInbound(ctx context.Context, owner, bot, subject string, since time.Time) (bool, error)
+	// ReceivedInbound reports whether bot is the recipient of an unsuppressed
+	// receipt about the project Task subject received in [from, until], across
+	// the owner's assistant tasks.
+	ReceivedInbound(ctx context.Context, owner, bot, subject string, from, until time.Time) (bool, error)
 	// ReclaimInboxReceipts deletes at most limit receipts of the task, from any
 	// of its inboxes, that expired by current database time.
 	ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error)

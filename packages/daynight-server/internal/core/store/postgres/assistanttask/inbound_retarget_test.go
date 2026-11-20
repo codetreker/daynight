@@ -96,14 +96,32 @@ func TestRetargetMovesOnlyTheTasksPendingInboundEvents(t *testing.T) {
 	foreign := f.event(f.task.ID, oldBot, "inbound", "pending")
 	foreign.OwnerUserID = uuid.NewString()
 	kept = append(kept, foreign)
+	// The receipt of a moved pending event follows it to the new recipient;
+	// the receipt of a delivered event keeps the Bot that received it.
+	inbox := f.inbox(t)
+	movedReceipt := f.receipt(inbox.InboxID, "moved", f.task.CreatedAt, f.task.CreatedAt.Add(time.Hour))
+	movedReceipt.EventID, movedReceipt.TargetBotID = &moved[0].ID, oldBot
+	deliveredReceipt := f.receipt(inbox.InboxID, "delivered", f.task.CreatedAt, f.task.CreatedAt.Add(time.Hour))
+	deliveredReceipt.EventID, deliveredReceipt.TargetBotID = &kept[1].ID, oldBot
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, event := range append(append([]model.AssistantTaskEvent{}, moved...), kept...) {
 			if _, err := d.InsertEvent(ctx, event); err != nil {
 				return err
 			}
 		}
+		for _, receipt := range []model.AssistantTaskInboxReceipt{movedReceipt, deliveredReceipt} {
+			if _, err := d.InsertInboxReceipt(ctx, receipt); err != nil {
+				return err
+			}
+		}
 		return d.RetargetPendingInbound(ctx, f.owner, f.task.ID, newBot)
 	})
+	for key, want := range map[string]string{"moved": newBot, "delivered": oldBot} {
+		var got string
+		if err := f.db.Pool.QueryRow(ctx, `SELECT target_bot_id::text FROM assistant_task_inbox_receipts WHERE inbox_id=$1 AND idempotency_key=$2`, inbox.InboxID, key).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s receipt targets %s, want %s: %v", key, got, want, err)
+		}
+	}
 	for _, event := range moved {
 		got := f.eventTarget(t, f.owner, event.ID)
 		if got != newBot {

@@ -31,9 +31,10 @@ const (
 	// InboundRetention is how long a settled inbound event is kept.
 	InboundRetention = 30 * 24 * time.Hour
 	// InboundReactionWindow is how long after an unsuppressed receipt another
-	// Bot of the owner is treated as reacting to it, so events it causes about
+	// Bot of the owner is treated as reacting to it, so writes it makes about
 	// the same project Task are suppressed instead of waking assistants in a
-	// loop.
+	// loop. The window ends at the write's occurrence time, not at its
+	// delivery, so delivery delay neither creates nor hides a reaction.
 	InboundReactionWindow = 10 * time.Minute
 )
 
@@ -122,15 +123,16 @@ func ReclaimInbound(ctx context.Context, dao store.AssistantTaskDAO, owner, task
 // SuppressInbound reports whether a verified Daynight event about the project
 // Task subject is a self-loop for target, the task's current responsible Bot.
 // It is when the stored actor is a Bot of the task owner that is either target
-// itself or, within InboundReactionWindow before now inclusive, was the target
-// of an unsuppressed receipt about the same subject. Users, the system,
-// unknown actors and Bots of other users are never suppressed.
-func SuppressInbound(ctx context.Context, dao store.AssistantTaskDAO, owner, target, subject string, actor *InboundActor, now time.Time) (bool, error) {
+// itself or was the recipient of an unsuppressed receipt about the same
+// subject within InboundReactionWindow before occurredAt, the verified time of
+// the write, both ends inclusive. Users, the system, unknown actors and Bots
+// of other users are never suppressed.
+func SuppressInbound(ctx context.Context, dao store.AssistantTaskDAO, owner, target, subject string, actor *InboundActor, occurredAt time.Time) (bool, error) {
 	if actor == nil || actor.Kind != InboundActorBot || actor.BotID == nil || actor.UserID == nil || *actor.UserID != owner {
 		return false, nil
 	}
 	if *actor.BotID == target {
 		return true, nil
 	}
-	return dao.ReceivedInbound(ctx, owner, *actor.BotID, subject, now.Add(-InboundReactionWindow))
+	return dao.ReceivedInbound(ctx, owner, *actor.BotID, subject, occurredAt.Add(-InboundReactionWindow), occurredAt)
 }

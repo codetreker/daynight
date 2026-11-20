@@ -42,8 +42,14 @@ func (d *DAO) SaveEvent(ctx context.Context, v model.AssistantTaskEvent, state s
 	// delivery time.
 	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13,settled_at=CASE WHEN $6='pending' THEN NULL WHEN state='pending' THEN COALESCE($11,clock_timestamp()) ELSE settled_at END WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
 }
+
+// RetargetPendingInbound moves the receipts of the moved events with them, so
+// the reaction lookup that suppresses self-loops names the Bot that will
+// actually receive each pending event. Receipts of delivered events keep the
+// Bot that received them.
 func (d *DAO) RetargetPendingInbound(ctx context.Context, owner, task, target string) error {
-	return d.execute(ctx, "retarget assistant inbound events", `UPDATE assistant_task_events SET target_bot_id=$3 WHERE owner_user_id=$1 AND task_id=$2 AND type='inbound' AND state='pending' AND target_bot_id<>$3::uuid`, owner, task, target)
+	return d.execute(ctx, "retarget assistant inbound events", `WITH moved AS (UPDATE assistant_task_events SET target_bot_id=$3 WHERE owner_user_id=$1 AND task_id=$2 AND type='inbound' AND state='pending' AND target_bot_id<>$3::uuid RETURNING id)
+ UPDATE assistant_task_inbox_receipts r SET target_bot_id=$3 FROM moved WHERE r.task_id=$2 AND r.owner_user_id=$1 AND r.event_id=moved.id`, owner, task, target)
 }
 func (d *DAO) MarkAttentionSeen(ctx context.Context, owner, target string, at time.Time, exceptTypes []string) error {
 	if exceptTypes == nil {

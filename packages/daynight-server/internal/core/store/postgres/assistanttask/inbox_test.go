@@ -319,13 +319,14 @@ func TestPendingInboundEventsCountsTargetUpToLimit(t *testing.T) {
 	})
 }
 
-func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
+func TestReceivedInboundFindsUnsuppressedReceiptInWindow(t *testing.T) {
 	f := setup(t)
 	f.create(t)
 	ctx := t.Context()
 	inbox := f.inbox(t)
 	bot, subject := uuid.NewString(), uuid.NewString()
-	since := f.task.CreatedAt
+	from := f.task.CreatedAt
+	until := from.Add(10 * time.Minute)
 	at := func(key string, received time.Time, suppressed bool, subject string) model.AssistantTaskInboxReceipt {
 		v := f.receipt(inbox.InboxID, key, received, received.Add(time.Hour))
 		v.TargetBotID, v.SubjectTaskID, v.Suppressed = bot, &subject, suppressed
@@ -333,25 +334,35 @@ func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
 	}
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, v := range []model.AssistantTaskInboxReceipt{
-			at("old", since.Add(-time.Microsecond), false, subject),
-			at("suppressed", since, true, subject),
-			at("other", since, false, uuid.NewString()),
+			at("old", from.Add(-time.Microsecond), false, subject),
+			at("later", until.Add(time.Microsecond), false, subject),
+			at("suppressed", from, true, subject),
+			at("other", from, false, uuid.NewString()),
 		} {
 			if _, err := d.InsertInboxReceipt(ctx, v); err != nil {
 				return err
 			}
 		}
-		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since); err != nil || found {
-			t.Fatalf("old, suppressed or unrelated receipt woke: %v %v", found, err)
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, from, until); err != nil || found {
+			t.Fatalf("receipt outside the window, suppressed or unrelated woke: %v %v", found, err)
 		}
-		if _, err := d.InsertInboxReceipt(ctx, at("boundary", since, false, subject)); err != nil {
+		if _, err := d.InsertInboxReceipt(ctx, at("until", until, false, subject)); err != nil {
 			return err
 		}
-		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, since); err != nil || !found {
-			t.Fatalf("receipt at since not found: %v %v", found, err)
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, from, until); err != nil || !found {
+			t.Fatalf("receipt at until not found: %v %v", found, err)
+		}
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, from, from); err != nil || found {
+			t.Fatalf("empty instant at from found a receipt: %v %v", found, err)
+		}
+		if _, err := d.InsertInboxReceipt(ctx, at("from", from, false, subject)); err != nil {
+			return err
+		}
+		if found, err := d.ReceivedInbound(ctx, f.owner, bot, subject, from, from); err != nil || !found {
+			t.Fatalf("receipt at from not found: %v %v", found, err)
 		}
 		for _, c := range []struct{ owner, bot string }{{uuid.NewString(), bot}, {f.owner, uuid.NewString()}} {
-			if found, err := d.ReceivedInbound(ctx, c.owner, c.bot, subject, since); err != nil || found {
+			if found, err := d.ReceivedInbound(ctx, c.owner, c.bot, subject, from, until); err != nil || found {
 				t.Fatalf("receipt found for %+v: %v %v", c, found, err)
 			}
 		}

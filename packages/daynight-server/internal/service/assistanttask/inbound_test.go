@@ -58,7 +58,7 @@ type inboundDAO struct {
 	destinationOwner, destinationOrigin, destinationEvent string
 	woke, countRejected                                   bool
 	wakeBot, wakeSubject                                  string
-	wakeSince                                             time.Time
+	wakeFrom, wakeUntil                                   time.Time
 	suppressedCount                                       int
 	// lockedTask, when set, is the projection after the task lock; task is
 	// the earlier unlocked projection.
@@ -178,11 +178,11 @@ func (d *inboundDAO) PendingInboundEvents(_ context.Context, owner, task, bot st
 	return d.pending, d.step("pending")
 }
 
-func (d *inboundDAO) ReceivedInbound(_ context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+func (d *inboundDAO) ReceivedInbound(_ context.Context, owner, bot, subject string, from, until time.Time) (bool, error) {
 	if owner != inOwner {
 		d.t.Fatalf("wake owner %s", owner)
 	}
-	d.wakeBot, d.wakeSubject, d.wakeSince = bot, subject, since
+	d.wakeBot, d.wakeSubject, d.wakeFrom, d.wakeUntil = bot, subject, from, until
 	return d.woke, d.step("wake")
 }
 
@@ -753,14 +753,39 @@ func TestReceiveReplaysSuppressedReceipt(t *testing.T) {
 	}
 }
 
+// A token-bearing retry of a suppressed Daynight request that no longer
+// verifies, for example after the owner lost project access, authenticates
+// with its token but reports the stored Daynight outcome.
+func TestReceiveReplaysStoredClassification(t *testing.T) {
+	s, _, d, token := newInbound(t)
+	sum := sha256.Sum256(inboundEventBody(t))
+	subject := inSubject
+	d.receipt = &model.AssistantTaskInboxReceipt{IdempotencyKey: inEvent, BodySHA256: hex.EncodeToString(sum[:]), Suppressed: true, SubjectTaskID: &subject}
+	d.projectErr = model.ErrNotFound
+	in := daynightInput(t)
+	in.Token = &token
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || result.Classification != core.InboundDaynight || !result.Suppressed || !result.Duplicate || result.EventID != nil {
+		t.Fatal(err, result)
+	}
+	original := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	external := sha256.Sum256([]byte(`{"order":1}`))
+	d.receipt = &model.AssistantTaskInboxReceipt{IdempotencyKey: "order-1", BodySHA256: hex.EncodeToString(external[:]), EventID: &original}
+	if result, err = s.Receive(context.Background(), externalInput(token)); err != nil || result.Classification != core.InboundExternal || !result.Duplicate {
+		t.Fatal(err, result)
+	}
+}
+
 func TestReceiveDeliversPeerOutsideReactionWindow(t *testing.T) {
 	s, _, d, _ := newInbound(t)
 	result, err := s.Receive(context.Background(), daynightInput(t))
 	if err != nil || result.Suppressed || result.EventID == nil || len(d.events) != 1 || d.suppressedCount != 0 {
 		t.Fatal(err, result, d.suppressedCount)
 	}
-	if d.wakeBot != inPeer || d.wakeSubject != inSubject || !d.wakeSince.Equal(inEpoch.Add(-10*time.Minute)) {
-		t.Fatalf("wake query %s %s %v", d.wakeBot, d.wakeSubject, d.wakeSince)
+	// The window ends at the verified write time inEpoch-1s, not at delivery.
+	occurred := inEpoch.Add(-time.Second)
+	if d.wakeBot != inPeer || d.wakeSubject != inSubject || !d.wakeFrom.Equal(occurred.Add(-10*time.Minute)) || !d.wakeUntil.Equal(occurred) {
+		t.Fatalf("wake query %s %s %v %v", d.wakeBot, d.wakeSubject, d.wakeFrom, d.wakeUntil)
 	}
 	if d.receipts[0].Suppressed {
 		t.Fatalf("%+v", d.receipts[0])
