@@ -59,7 +59,7 @@ beforeEach(() => {
   mockSidebarMediaQuery();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   // JSDOM has no scrolling geometry; browser suites verify actual reveal behavior.
-  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: vi.fn() });
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
