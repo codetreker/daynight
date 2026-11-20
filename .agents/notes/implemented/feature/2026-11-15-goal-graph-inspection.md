@@ -16,10 +16,11 @@ Details button. Goal cards use shared compact geometry, scaling with larger root
 execution presentation, and separate room for Details. They retain the complete
 Parent projection and provide no progressive expansion or external navigation.
 
-`GoalTaskGraph` owns selection for its Goal and derives complete upstream H from
-the project index through `tracePrerequisites`. Shared inspection Context and
-node/edge presentation highlight only visible H nodes and real visible edges
-whose endpoints both belong to H. Hidden upstream Tasks are counted outside the
+`GoalTaskGraph` owns selection for its Goal and derives complete upstream H and
+downstream D from the project index through `tracePrerequisites` and
+`traceSuccessors`. Shared inspection Context classifies visible nodes and real
+edges independently for each direction, as defined by the
+[successor inspection decision](2026-11-20-graph-successor-inspection.md). Hidden upstream Tasks are counted outside the
 current projection, including ancestors beyond its one-layer prerequisite scope.
 A still-visible selection survives same-Goal snapshots and is recomputed against
 the current index; removal or a different Goal clears it. Direction changes,

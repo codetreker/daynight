@@ -40,9 +40,12 @@ export const graph: GraphMessages = {
   expandExternal: '展开',
   expandExternalLabel: ({ title }) => `展开 ${title} 所属的任务或 Goal`,
   detailsLabel: ({ title }) => `${title}，详情`,
-  inspectionSuffix: { normal: '', selected: '，已选中', prerequisite: '，所选任务的前置', unrelated: '，不在所选依赖路径中' },
+  inspectionSuffix: { normal: '', selected: '，已选中', prerequisite: '，所选任务的前置', successor: '，所选任务的后继', unrelated: '，不在所选依赖路径中' },
   hiddenPrerequisites: ({ count }) => `另有${number(count)}个上游未展开`,
   dependencyHighlightedSuffix: '，所选依赖路径',
+  dependencySuccessorSuffix: '，所选任务的后继依赖路径',
+  prerequisiteLegend: '前序',
+  successorLegend: '后继',
   expandTitle: ({ direction, tasks }) => `展开${direction === 'prerequisites' ? '前置' : '后续'} ${number(tasks)}`,
   expandSummary: ({ edges, remaining }) => `+${number(edges)} 条依赖${remaining > 0 ? ` · 余 ${number(remaining)}` : ''}`,
   expandLabel: ({ direction, tasks, edges, remaining }) => {
