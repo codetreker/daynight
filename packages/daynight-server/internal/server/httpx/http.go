@@ -269,6 +269,14 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "unsupported", "upgrade_required":
 			status = http.StatusNotImplemented
+		case "lifecycle_unsupported":
+			status = http.StatusUnprocessableEntity
+		case "worker_disabled":
+			status = http.StatusLocked
+		case "lifecycle_unavailable":
+			status = http.StatusServiceUnavailable
+		case "disable_incomplete", "safety_blocked", "stale_instance", "stale_intent", "stale_report", "operation_resolved_not_committed":
+			status = http.StatusConflict
 		case "busy":
 			status = http.StatusTooManyRequests
 		case "history_unavailable":

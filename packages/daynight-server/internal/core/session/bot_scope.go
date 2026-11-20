@@ -78,6 +78,9 @@ func (s *Execution) RegisterBot(ctx context.Context, p model.Principal, workerID
 			out = BotRegistrationResult{Bot: bot, Session: permissions(access.record, true, s.now())}
 			return nil
 		}
+		if err := RequireWorkerExecution(ctx, scope, p.UserID, workerID); err != nil {
+			return err
+		}
 		v := initialTestSnapshot(p, input.Registration)
 		// The unique registration/execution indexes also fence collisions with
 		// ordinary Test Sessions and concurrent registrations of different Bots.

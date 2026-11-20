@@ -457,9 +457,11 @@ func (d *fixtureDAO) TerminalHistory(a0 context.Context, a1 string, a2 string, a
 }
 
 type fixtureWriter struct {
-	dao     *fixtureDAO
-	bot     store.BotWriteDAO
-	WriteFn func(context.Context, func(store.SessionScope) error) (store.Completion, error)
+	WorkerVersion *int64
+	WorkerCheck   func(context.Context, string, string) error
+	dao           *fixtureDAO
+	bot           store.BotWriteDAO
+	WriteFn       func(context.Context, func(store.SessionScope) error) (store.Completion, error)
 }
 
 func (w *fixtureWriter) SessionDAO() store.SessionDAO { return w.dao }
@@ -509,4 +511,16 @@ type fixtureData struct {
 	UnreconciledCount   int
 	OtherFirstInput     bool
 	InteractionResponse bool
+}
+
+func (w *fixtureWriter) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return w }
+func (w *fixtureWriter) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	return w.WorkerCheck(ctx, user, worker)
+}
+
+func (w *fixtureWriter) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	if err := w.WorkerCheck(ctx, user, worker); err != nil {
+		return nil, err
+	}
+	return w.WorkerVersion, nil
 }

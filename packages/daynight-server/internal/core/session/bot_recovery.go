@@ -89,8 +89,15 @@ func (op *Operation) CheckBotRecoveryBinding(a *Access, input BotRecoveryBinding
 // GrantBotRecovery rotates the authorization and invalidates the old connection
 // in the caller's Bot/Session transaction. Process-stop evidence remains the
 // responsibility of the Worker; reconnecting preserves the native execution.
-func (op *Operation) GrantBotRecovery(ctx context.Context, a *Access, p model.Principal, input BotRecoveryGrant) (GrantResult, error) {
+// The caller must authorize destinationWorkerID against the locked Bot and its
+// current hosting generation before this call. A new generation checks that
+// destination's admission without reopening or granting work on the old host.
+func (op *Operation) GrantBotRecovery(ctx context.Context, a *Access, p model.Principal, destinationWorkerID string, input BotRecoveryGrant) (GrantResult, error) {
 	var empty GrantResult
+	destination, err := model.CanonicalID(destinationWorkerID)
+	if err != nil || destination != destinationWorkerID || destinationWorkerID == "00000000-0000-0000-0000-000000000000" {
+		return empty, fault("invalid_input", "Invalid recovery destination Worker.")
+	}
 	if err := op.CheckBotRecoveryBinding(a, input.BotRecoveryBinding); err != nil {
 		return empty, err
 	}
@@ -113,7 +120,7 @@ func (op *Operation) GrantBotRecovery(ctx context.Context, a *Access, p model.Pr
 		return empty, conflict()
 	}
 	s := &Execution{Engine: op.engine}
-	result, err := s.grantRecordWithToken(ctx, a.tx, p, a.record, task{}, input.Grant, input.ControllerToken)
+	result, err := s.grantRecordWithToken(ctx, a.tx, p, a.record, task{}, input.Grant, input.ControllerToken, destinationWorkerID)
 	if err != nil {
 		return empty, err
 	}

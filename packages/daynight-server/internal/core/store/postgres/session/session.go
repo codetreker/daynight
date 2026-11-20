@@ -414,7 +414,7 @@ func (tx *DAO) SessionOperation(ctx context.Context, session, id string) (store.
 	o := store.SessionOperation{SessionID: session, OperationID: id}
 	var command, receipt []byte
 	var kind string
-	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,operation_seq,deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, session, id).Scan(&command, &receipt, &o.Actor.UserID, &o.Actor.CredentialID, &kind, &o.Hash, &o.Epoch, &o.Seq, &o.Deadline)
+	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,operation_seq,deadline,worker_intent_version,worker_id::text FROM session_operations WHERE session_id=$1 AND operation_id=$2`, session, id).Scan(&command, &receipt, &o.Actor.UserID, &o.Actor.CredentialID, &kind, &o.Hash, &o.Epoch, &o.Seq, &o.Deadline, &o.WorkerIntentVersion, &o.WorkerID)
 	if err != nil {
 		return store.SessionOperation{}, pginternal.QueryError("read session operation", err)
 	}
@@ -437,7 +437,7 @@ func (tx *DAO) InsertSessionOperation(ctx context.Context, o store.SessionOperat
 	if err != nil {
 		return pginternal.QueryError("encode session receipt", err)
 	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, o.SessionID, o.OperationID, o.Seq, o.Hash, command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), receipt)
+	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,worker_intent_version,worker_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, o.SessionID, o.OperationID, o.Seq, o.Hash, command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), receipt, o.WorkerIntentVersion, o.WorkerID)
 	if err != nil {
 		return pginternal.QueryError("insert session operation", err)
 	}

@@ -710,3 +710,9 @@ func TestSourceCaptureFailurePropagatesFromTaskAndStepWrites(t *testing.T) {
 		})
 	}
 }
+
+func (sourceClaimAdmission) CheckWorkerExecution(context.Context, string, string) error { return nil }
+
+func (m sourceClaimAdmission) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	return nil, m.CheckWorkerExecution(ctx, user, worker)
+}

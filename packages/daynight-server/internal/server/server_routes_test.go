@@ -1397,7 +1397,8 @@ func (s mcpBotSessionScope) BotDAO() store.BotWriteDAO    { return s.bot }
 
 type mcpBotSessionDAO struct {
 	sessionHTTPRejectedDAO
-	s *mcpBotCallScript
+	ctx context.Context
+	s   *mcpBotCallScript
 }
 
 func (d *mcpBotSessionDAO) LockCredential(ctx context.Context, p model.Principal, now time.Time) error {
@@ -1467,7 +1468,7 @@ func mcpBotSession(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall)
 	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("WriteSession", nil)}, calls...)...)
 	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		s.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: s}, bot: &mcpBotWriteDAO{s: s}})
+		err := fn(mcpBotSessionScope{session: &mcpBotSessionDAO{ctx: ctx, sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: s}, bot: &mcpBotWriteDAO{s: s}})
 		s.verify()
 		return mcpBotResult(err)
 	}
@@ -1642,7 +1643,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 		}
 		inserted = value
 	}}
-	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), insertCall, bindCall, mcpBotLockCredentialCall(t, principal))
+	mcpBotSession(t, tx, mcpBotLockCredentialCall(t, principal), mcpBotCall("Bot", []any{id}, expected, nil), mcpBotCall("CheckWorkerExecution", []any{principal.UserID, worker}, nil), insertCall, bindCall, mcpBotLockCredentialCall(t, principal))
 	bound := decodeResponse[struct {
 		Bot     api.Bot     `json:"bot"`
 		Session sp.Snapshot `json:"session"`
@@ -1713,7 +1714,7 @@ func TestMCPBotProductionLifecycle(t *testing.T) {
 		mcpBotCall("RedactDeletedBot", []any{id}, nil), mcpBotCall("SaveBotDeletion", []any{id, final.Deletion}, final, nil))
 	tx.WriteSessionCall = func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
 		receiptScript.call("WriteSession")
-		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
+		err := fn(mcpBotSessionScope{session: &mcpBotResourceSessionDAO{mcpBotSessionDAO: &mcpBotSessionDAO{ctx: ctx, sessionHTTPRejectedDAO: sessionHTTPRejectedDAO{t: t}, s: receiptScript}}, bot: &mcpBotWriteDAO{s: receiptScript}})
 		return mcpBotResult(err)
 	}
 	completed := decodeResponse[api.Bot](t, projectRequest(h, "POST", base+"/deletion-complete", jsonBody(t, receipt)), 200)
@@ -3012,4 +3013,21 @@ func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, iden
 		panic("missing creation identity")
 	}
 	return false, nil
+}
+
+func (s mcpBotSessionScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission {
+	return s.session.(store.WorkerExecutionAdmission)
+}
+func (d *mcpBotSessionDAO) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	if ctx != d.ctx {
+		unexpectedHTTPCall(d.s.t, "Worker admission escaped Session transaction")
+	}
+	return mcpBotErr(d.s.call("CheckWorkerExecution", user, worker)[0])
+}
+func (d *mcpBotSessionDAO) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	if ctx != d.ctx {
+		unexpectedHTTPCall(d.s.t, "Worker admission escaped Session transaction")
+	}
+	result := d.s.call("WorkerExecutionVersion", user, worker)
+	return result[0].(*int64), mcpBotErr(result[1])
 }

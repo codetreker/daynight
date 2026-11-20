@@ -340,6 +340,9 @@ var patBusinessScopesSQL string
 //go:embed schema/migrations/109_oauth_business_scopes.sql
 var oauthBusinessScopesSQL string
 
+//go:embed schema/migrations/110_worker_lifecycle.sql
+var workerLifecycleSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -455,6 +458,7 @@ var schemaMigrations = []migration{
 	{version: 107, sql: reviewPollIndexesSQL},
 	{version: 108, sql: patBusinessScopesSQL},
 	{version: 109, sql: oauthBusinessScopesSQL},
+	{version: 110, sql: workerLifecycleSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

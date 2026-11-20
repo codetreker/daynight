@@ -77,6 +77,10 @@ type SessionGrant struct {
 }
 
 type SessionOperation struct {
+	// WorkerIntentVersion binds queued execution to its original lifecycle intent.
+	// A missing value cannot authorize a command after lifecycle initialization.
+	WorkerID               *string
+	WorkerIntentVersion    *int64
 	SessionID, OperationID string
 	Command                sp.Command
 	Receipt                sp.Operation

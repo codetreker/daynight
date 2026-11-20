@@ -114,6 +114,13 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker lifecycle contract](../../docs/spec/worker-lifecycle.md) and
+[design](../../docs/design/worker-lifecycle.md) define persistent stop intent,
+instance and observation fencing, explicit activation and original-operation
+resolution. The independent resource preserves legacy report/configuration
+shapes; Task, Bot and Session execution admission obeys its established gate.
+Server receipts do not prove that native Worker processes have stopped.
+
 The [Worker review participation resource](../../docs/design/worker-review-participation.md)
 provides an account-owned GET/PUT preference at
 `/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,

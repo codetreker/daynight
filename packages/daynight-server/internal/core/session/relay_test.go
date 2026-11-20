@@ -163,7 +163,7 @@ func setup(t *testing.T) fixture {
 	f.data.LocationError = model.ErrNotFound
 	f.data.OperationDeadline = time.Now().Add(30 * time.Second)
 	f.dao = newFixtureDAO(t)
-	f.writer = &fixtureWriter{dao: f.dao}
+	f.writer = &fixtureWriter{WorkerCheck: func(context.Context, string, string) error { return nil }, dao: f.dao}
 	f.writer.WriteFn = f.writer.runFixtureScope
 	f.s = New(f.writer)
 	configureFixtureData(t, f)

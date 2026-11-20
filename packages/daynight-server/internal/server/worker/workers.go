@@ -72,6 +72,7 @@ func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(ht
 func registerRoutesObserved(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc, observe func(ScopeRoute)) {
 	logger := handler.logger
 	routes := routeRegistry{mux: mux, observe: observe}
+	registerLifecycleRoutes(routes, handler, require)
 	base := "/api/v1/me/workers"
 	routes.handle("GET "+base+"/{workerId}/review-pull-requests", require(handler.reviewPullRequests), routeReviewRead)
 	routes.handle(base+"/{workerId}/review-pull-requests", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)

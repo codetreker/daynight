@@ -43,7 +43,7 @@ type propertyCapturer struct {
 
 func (f *propertyWriteFixture) expectClaimAdmission(workerID string) {
 	f.scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
-		return &workerClaimAdmissionMock{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+		return &workerClaimAdmissionMock{check: func(context.Context, string, string) error { return nil }, read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 			if ctx != f.ctx || user != f.principal.UserID || worker != workerID {
 				f.t.Fatal("claim admission identity changed")
 			}
