@@ -127,7 +127,18 @@ The Worker patrol journey uses the compiled Worker and Controller against the
 real Server and isolated PostgreSQL, with a controlled Codex protocol peer in
 place of the upstream model. It retains the original claim, worktree and native
 Session across Worker restart, verifies the resumed assignment and repeated idle
-pings, and checks pause, resumption and claim-bound completion. The peer does not
+pings, and checks pause, resumption and claim-bound completion. After the Task
+completes, the same Worker hosts a Bot that reaches the compiled CLI through
+`agentCliAliases`. For that Bot the peer presents the Codex 0.169.0 legacy
+rollout profile that Bot recovery verifies, writing the rollout file its
+recovery point captures. An auto-takeover assistant task with an enabled inbox is
+claimed by that Bot; an external JSON body posted with the bearer token becomes
+an `inbound` event, and the Worker renders it as fenced untrusted data into the
+Bot's native Session before acknowledging delivery. Claiming and delivery wait
+for the Worker's minute-loop cadence. Each Worker run has a seven-minute process
+limit so the restarted run covers the rest of the patrol and the inbox journey,
+including a delivery that lands on a later minute-loop tick, while staying below
+the test deadline. The peer does not
 establish autonomous behavior by a real model. On an explicit version-conflict
 response to completion, the fixture reads the Task again and rechecks the original
 active assignment and authorization before another attempt. It makes at most
@@ -191,9 +202,9 @@ runner process is dead, and it does not replace the original test failure with
 success. Only results and logs are uploaded; private files and build artifacts
 stay excluded.
 
-The Playwright process has a seven-minute limit within the journey step; each
-test retains its own deadline. This leaves room for the sequential login and
-cross-client flows on CI without changing their assertions or the independent
+The Playwright process has a ten-minute limit within the journey step; each
+test retains its own deadline. This leaves room for the sequential login,
+cross-client flows and the assistant inbox's minute-loop waits on CI without changing their assertions or the independent
 recovery step's deadline. It leaves less time for normal cleanup within the
 journey step when the process approaches its limit.
 
