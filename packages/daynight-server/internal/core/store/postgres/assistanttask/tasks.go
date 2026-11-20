@@ -2,6 +2,7 @@ package assistanttask
 
 import (
 	"context"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -9,15 +10,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const taskColumns = `t.id::text,t.owner_user_id::text,t.application,t.name,t.purpose,t.scope,t.kind,t.state,t.takeover,t.request_fingerprint,t.trigger,t.version,t.manual_version,t.claim_generation,t.holder_bot_id::text,t.claim_token_hash,t.credential_operation_id::text,t.claimed_at,t.renewed_at,t.lease_until,t.created_at,t.updated_at,
+const taskColumns = `t.id::text,t.owner_user_id::text,t.application,t.name,t.purpose,t.scope,t.kind,t.state,t.takeover,t.request_fingerprint,t.trigger,t.version,t.manual_version,t.claim_generation,t.holder_bot_id::text,t.claim_token_hash,t.credential_operation_id::text,t.claimed_at,t.renewed_at,t.lease_until,t.created_at,t.updated_at,t.last_retrospective_at,
  (t.holder_bot_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM bots b WHERE b.id=t.holder_bot_id AND b.owner_user_id=t.owner_user_id AND b.deletion IS NULL)),clock_timestamp()`
 
 func scanTask(row pgx.Row) (model.AssistantTask, error) {
 	var v model.AssistantTask
-	err := row.Scan(&v.ID, &v.OwnerUserID, &v.Application, &v.Name, &v.Purpose, &v.Scope, &v.Kind, &v.State, &v.Takeover, &v.RequestFingerprint, &v.Trigger, &v.Version, &v.ManualVersion, &v.ClaimGeneration, &v.HolderBotID, &v.ClaimTokenHash, &v.CredentialOperationID, &v.ClaimedAt, &v.RenewedAt, &v.LeaseUntil, &v.CreatedAt, &v.UpdatedAt, &v.HolderDeleted, &v.ObservedAt)
+	err := row.Scan(&v.ID, &v.OwnerUserID, &v.Application, &v.Name, &v.Purpose, &v.Scope, &v.Kind, &v.State, &v.Takeover, &v.RequestFingerprint, &v.Trigger, &v.Version, &v.ManualVersion, &v.ClaimGeneration, &v.HolderBotID, &v.ClaimTokenHash, &v.CredentialOperationID, &v.ClaimedAt, &v.RenewedAt, &v.LeaseUntil, &v.CreatedAt, &v.UpdatedAt, &v.LastRetrospectiveAt, &v.HolderDeleted, &v.ObservedAt)
 	v.ObservedAt = v.ObservedAt.UTC()
 	v.CreatedAt, v.UpdatedAt = v.CreatedAt.UTC(), v.UpdatedAt.UTC()
 	v.ClaimedAt, v.RenewedAt, v.LeaseUntil = pg.UTCTime(v.ClaimedAt), pg.UTCTime(v.RenewedAt), pg.UTCTime(v.LeaseUntil)
+	v.LastRetrospectiveAt = pg.UTCTime(v.LastRetrospectiveAt)
 	return v, err
 }
 
@@ -73,8 +75,40 @@ func (d *DAO) SaveTask(ctx context.Context, v model.AssistantTask, c store.Assis
 	return d.changed(ctx, "save assistant task", `UPDATE assistant_tasks SET application=$3,name=$4,purpose=$5,scope=$6,kind=$7,state=$8,takeover=$9,request_fingerprint=$10,trigger=$11,version=$12,manual_version=$13,claim_generation=$14,holder_bot_id=$15,claim_token_hash=$16,credential_operation_id=$17,claimed_at=$18,renewed_at=$19,lease_until=$20,created_at=$21,updated_at=$22 WHERE id=$1 AND owner_user_id=$2 AND ($23::bigint=0 OR version=$23) AND (NOT $24 OR (claim_generation=$25 AND holder_bot_id IS NOT DISTINCT FROM $26::uuid AND claim_token_hash IS NOT DISTINCT FROM $27::text)) AND (NOT $28 OR (lease_until>clock_timestamp() AND EXISTS(SELECT 1 FROM bots b WHERE b.id=assistant_tasks.holder_bot_id AND b.owner_user_id=$2 AND b.deletion IS NULL)))`, values...)
 }
 
+// RetrospectiveTasks preselects, in ID order, active tasks with a live holder
+// whose periodic retrospective window started at or before cutoff and contains
+// an outcome record. Callers recheck each task under its lock.
+func (d *DAO) RetrospectiveTasks(ctx context.Context, q store.AssistantTaskQuery, cutoff time.Time) ([]string, error) {
+	return many(ctx, d.tx, "list due assistant retrospectives", `SELECT t.id::text FROM assistant_tasks t WHERE t.owner_user_id=$1 AND t.state='active' AND ($2::uuid IS NULL OR t.id=$2) AND ($3::uuid IS NULL OR t.holder_bot_id=$3)
+ AND EXISTS(SELECT 1 FROM bots b WHERE b.id=t.holder_bot_id AND b.owner_user_id=t.owner_user_id AND b.deletion IS NULL)
+ AND COALESCE(t.last_retrospective_at,t.created_at)<=$4
+ AND EXISTS(SELECT 1 FROM assistant_task_records r WHERE r.task_id=t.id AND r.owner_user_id=t.owner_user_id AND r.kind='outcome' AND r.created_at>COALESCE(t.last_retrospective_at,t.created_at))
+ ORDER BY t.id LIMIT $5`, scanID, q.OwnerUserID, nullableID(q.TaskID), nullableID(q.TargetBotID), cutoff, q.Limit)
+}
+
+func scanID(row pgx.Row) (string, error) {
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+// LatestOutcomeAt returns the newest outcome record time, or nil without one.
+func (d *DAO) LatestOutcomeAt(ctx context.Context, owner, task string) (*time.Time, error) {
+	var latest *time.Time
+	if err := d.tx.QueryRow(ctx, `SELECT max(created_at) FROM assistant_task_records WHERE owner_user_id=$1 AND task_id=$2 AND kind='outcome'`, owner, task).Scan(&latest); err != nil {
+		return nil, pg.QueryError("read latest assistant outcome", err)
+	}
+	return pg.UTCTime(latest), nil
+}
+
+// MarkRetrospective moves only the periodic retrospective time, leaving the
+// task version and editable state unchanged.
+func (d *DAO) MarkRetrospective(ctx context.Context, owner, task string, at time.Time) (bool, error) {
+	return d.changed(ctx, "mark assistant retrospective", `UPDATE assistant_tasks SET last_retrospective_at=$3 WHERE owner_user_id=$1 AND id=$2 AND state='active'`, owner, task, at)
+}
+
 func (d *DAO) DeleteTaskContent(ctx context.Context, owner, task string) error {
-	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inbox_receipts", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix", "assistant_task_manual_versions"} {
+	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inbox_receipts", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_item_closures", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix", "assistant_task_manual_versions"} {
 		if err := d.execute(ctx, "delete assistant task content", `DELETE FROM `+table+` WHERE owner_user_id=$1 AND task_id=$2`, owner, task); err != nil {
 			return err
 		}

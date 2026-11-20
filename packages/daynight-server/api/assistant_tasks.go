@@ -122,6 +122,29 @@ type AssistantTaskRecord struct {
 	CreatedAt      time.Time       `json:"createdAt"`
 }
 
+// AssistantTaskMetrics is the trailing-window capability summary of one task.
+// AverageResolutionMs is null when no closure in the window has a known open
+// time; UntimedClosureCount counts the closures excluded from that average.
+type AssistantTaskMetrics struct {
+	ObservedAt          time.Time                   `json:"observedAt"`
+	WindowStart         time.Time                   `json:"windowStart"`
+	WindowEnd           time.Time                   `json:"windowEnd"`
+	ActionCount         int64                       `json:"actionCount"`
+	Outcomes            AssistantTaskOutcomeMetrics `json:"outcomes"`
+	EscalationCount     int64                       `json:"escalationCount"`
+	ResultUnknownCount  int64                       `json:"resultUnknownCount"`
+	ClosureCount        int64                       `json:"closureCount"`
+	UntimedClosureCount int64                       `json:"untimedClosureCount"`
+	AverageResolutionMs *int64                      `json:"averageResolutionMs"`
+	RecurringItemCount  int64                       `json:"recurringItemCount"`
+}
+
+type AssistantTaskOutcomeMetrics struct {
+	Effective    int64 `json:"effective"`
+	Ineffective  int64 `json:"ineffective"`
+	Inconclusive int64 `json:"inconclusive"`
+}
+
 type AssistantTaskEvent struct {
 	ID             string          `json:"id"`
 	TaskID         string          `json:"taskId"`

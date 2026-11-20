@@ -1,4 +1,4 @@
--- Schema snapshot version: 100
+-- Schema snapshot version: 103
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -100,6 +100,16 @@ CREATE TABLE "assistant_task_inquiries" (
     "answered_at" timestamp with time zone
 );
 
+CREATE TABLE "assistant_task_item_closures" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "item_id" "uuid" NOT NULL,
+    "episode" bigint NOT NULL,
+    "opened_at" timestamp with time zone,
+    "closed_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "assistant_task_items" (
     "id" "uuid" NOT NULL,
     "owner_user_id" "uuid" NOT NULL,
@@ -113,7 +123,9 @@ CREATE TABLE "assistant_task_items" (
     "app_state" "jsonb" NOT NULL,
     "version" bigint NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "opened_at" timestamp with time zone,
+    "closed_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_manual_versions" (
@@ -185,7 +197,8 @@ CREATE TABLE "assistant_tasks" (
     "record_last_created_at" timestamp with time zone,
     "record_last_id" "uuid",
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "last_retrospective_at" timestamp with time zone
 );
 
 CREATE TABLE "bot_configuration_preferences" (
@@ -1668,6 +1681,9 @@ ALTER TABLE ONLY "assistant_task_inboxes"
 ALTER TABLE ONLY "assistant_task_inquiries"
     ADD CONSTRAINT "assistant_task_inquiries_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_item_closures"
+    ADD CONSTRAINT "assistant_task_item_closures_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "assistant_task_items"
     ADD CONSTRAINT "assistant_task_items_pkey" PRIMARY KEY ("id");
 
@@ -2066,6 +2082,8 @@ CREATE UNIQUE INDEX "assistant_task_inboxes_live" ON "assistant_task_inboxes" US
 CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING "btree" ("task_id", "created_at", "id");
 
 CREATE INDEX "assistant_task_inquiries_state_deadline" ON "assistant_task_inquiries" USING "btree" ("state", "deadline");
+
+CREATE INDEX "assistant_task_item_closures_task_closed" ON "assistant_task_item_closures" USING "btree" ("task_id", "closed_at");
 
 CREATE UNIQUE INDEX "assistant_task_items_open_key" ON "assistant_task_items" USING "btree" ("task_id", "key") WHERE ("state" = 'open'::"text");
 

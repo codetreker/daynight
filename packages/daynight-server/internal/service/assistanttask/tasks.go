@@ -171,6 +171,12 @@ func (s *Tasks) SaveItem(ctx context.Context, actor core.Actor, input core.ItemI
 	})
 }
 
+func (s *Tasks) Metrics(ctx context.Context, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	return execute(ctx, s, "Metrics", func(dao store.AssistantTaskDAO) (model.AssistantTaskMetrics, error) {
+		return s.operations.Metrics(ctx, dao, actor, taskID)
+	})
+}
+
 func (s *Tasks) ListRecords(ctx context.Context, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 	return execute(ctx, s, "ListRecords", func(dao store.AssistantTaskDAO) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 		return s.operations.ListRecords(ctx, dao, actor, taskID, input)
@@ -230,6 +236,7 @@ type operations interface {
 	EnablePreset(context.Context, store.AssistantTaskDAO, core.Actor, core.CreateInput, string) (core.TaskResult, error)
 	Create(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
 	Get(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.TaskResult, error)
+	Metrics(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error)
 	List(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.PageInput) (model.AssistantTaskPage[core.TaskResult], error)
 	Update(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.UpdateInput) (core.TaskResult, error)
 	Claim(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.ClaimInput) (model.AssistantTaskClaimResult, error)

@@ -18,12 +18,13 @@
 
 | 表 | 持久职责 |
 | --- | --- |
-| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头 |
+| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `102_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
-| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
+| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `101_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
+| `assistant_task_item_closures` | 迁移 `101_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
 | `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `098_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
@@ -38,7 +39,15 @@
 
 时间由数据库提供。受保护写入在锁等待后取当前时间，最终返回事务 callback 前再次核验凭据、相关 Bot 和原租约期限；不能用事务起点 `now()` 证明等待后的有效性。认领回执中的 `admittedAt` 是事务内准入时间，不是 COMMIT 时间。公开任务观测的时间与 holder 删除状态来自同次数据库投影，不能给旧数据附上一次较新的时间读取。
 
-结果记录由 core 在任务锁内按 owner 与任务读取被引用记录，确认其类型为 `action` 后写入；跨任务或不存在的引用与类型不符一样被拒绝。请求指纹只在结果记录中追加结果取值与动作记录 ID，迁移前保存的其他记录指纹保持不变，重放仍须完全一致。经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
+结果记录由 core 在任务锁内按 owner 与任务读取被引用记录，确认其类型为 `action` 后写入；跨任务或不存在的引用与类型不符一样被拒绝。请求指纹只在结果记录中追加结果取值与动作记录 ID，迁移前保存的其他记录指纹保持不变，重放仍须完全一致。
+
+事项写入在任务锁内比较新旧状态：以 `open` 创建或从 `closed` 变为 `open` 时，以数据库时间写入本次打开时间；从 `open` 变为 `closed` 时写入最近关闭时间，并在同一事务中追加一条关闭登记，复制本次打开时间；其他更新保留两个时间。迁移不回填既有事项，因为已有数据无法证明真实的打开时刻，这些事项此后的关闭登记打开时间为空。任务删除时关闭登记与其他业务材料一同删除。
+
+事项从 `open` 变为 `closed` 时，同一事务在关闭登记之后写入 `retrospective` 系统事件，目标为当前负责 Bot，负载为 `reason`（`item_closed`）、`itemId` 与 `episode`；`episode` 与事项 API 一致编码为十进制字符串，超出 JavaScript 安全整数范围的值也能被 CLI 与 Worker 精确解析。事项写入要求有效认领且任务未暂停，因此暂停任务不会产生事项复盘；关闭被回滚时事件一同回滚。
+
+周期复盘沿用问答超时的无调度器模式，只在事件拉取时推进。拉取先按 owner 及请求的任务和目标 Bot 有界预选候选：任务为 active、负责 Bot 未删除、上次周期复盘时间（为空时取任务创建时间）不晚于当前数据库时间前 7 天，且其后存在 `outcome` 记录。到期问答与复盘候选所涉任务合并后按 ID 顺序各取一次任务锁，两类维护不会反转锁顺序。core 在锁内重读任务与最新结果记录时间并再次判定，满足时写入负载为 `reason`（`periodic`）与窗口起点 `since` 的复盘事件，并单独更新上次周期复盘时间；该更新不推进任务版本，普通任务写入也不覆盖它。并发拉取中后取得锁者读到已前移的窗口，不再生成事件。事项复盘不移动周期窗口；问答读取只推进问答超时，不生成复盘。`retrospective` 不点亮关注，Bot 不能通过事件写入接口创建。
+
+经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
 
 记录写入在任务记录头保护下使用数据库真实时钟，沿用 Thread 的有界前进机制；不能用 `head+1ms` 合成未来时间。成功写入返回实际持久位置，下一页以 `(created_at, id)` 继续。同一事务中的附录、问答和系统记录保持真实顺序。
 
@@ -77,6 +86,7 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录。`outcome` 记录另带 `outcome` 与 `actionRecordId`，其他类型提交任一键被拒绝；响应只在结果记录中包含这两个键，使只认识原记录结构的客户端仍可读取没有结果记录的任务 |
+| `metrics` | GET 读取最近 30 天的能力指标，口径见[经验沉淀设计](assistant-task-learning.md#能力指标) |
 | `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
 

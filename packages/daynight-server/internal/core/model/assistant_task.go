@@ -13,8 +13,11 @@ type AssistantTask struct {
 	Version, ManualVersion, ClaimGeneration            int64
 	HolderBotID, ClaimTokenHash, CredentialOperationID *string
 	ClaimedAt, RenewedAt, LeaseUntil                   *time.Time
-	HolderDeleted                                      bool
-	CreatedAt, UpdatedAt, ObservedAt                   time.Time
+	// LastRetrospectiveAt is maintained only by periodic retrospectives and is
+	// not part of ordinary task writes.
+	LastRetrospectiveAt              *time.Time
+	HolderDeleted                    bool
+	CreatedAt, UpdatedAt, ObservedAt time.Time
 }
 
 type AssistantTaskClaim struct {
@@ -79,6 +82,19 @@ type AssistantTaskItem struct {
 	FollowerBotID                                                     *string
 	AppState                                                          json.RawMessage
 	CreatedAt, UpdatedAt                                              time.Time
+	// OpenedAt is the start of the current open period and ClosedAt the most
+	// recent close. Both are nil for items that predate lifecycle tracking.
+	OpenedAt, ClosedAt *time.Time
+}
+
+// AssistantTaskItemClosure is an append-only record of one open-to-closed
+// transition. OpenedAt is nil when the closed period began before lifecycle
+// tracking existed, so its duration is unknown.
+type AssistantTaskItemClosure struct {
+	ID, OwnerUserID, TaskID, ItemID string
+	Episode                         int64
+	OpenedAt                        *time.Time
+	ClosedAt                        time.Time
 }
 
 type AssistantTaskRecord struct {
@@ -105,6 +121,19 @@ type AssistantTaskInquiry struct {
 	ItemID, AnswerBotID                                                                      *string
 	CreatedAt, Deadline                                                                      time.Time
 	AnsweredAt                                                                               *time.Time
+}
+
+// AssistantTaskMetrics aggregates one task's capability window from a single
+// database snapshot. WindowEnd equals ObservedAt. AverageResolution covers only
+// closures whose open time is known; nil means no such closure in the window.
+// UntimedClosureCount counts closures excluded from that average.
+type AssistantTaskMetrics struct {
+	ObservedAt, WindowStart, WindowEnd                    time.Time
+	ActionCount                                           int64
+	EffectiveCount, IneffectiveCount, InconclusiveCount   int64
+	EscalationCount, ResultUnknownCount                   int64
+	ClosureCount, UntimedClosureCount, RecurringItemCount int64
+	AverageResolution                                     *time.Duration
 }
 
 type AssistantTaskPage[T any] struct {
