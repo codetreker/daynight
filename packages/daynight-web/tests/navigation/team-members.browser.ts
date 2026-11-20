@@ -686,8 +686,9 @@ for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`ret
   const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite member' : '邀请成员' });
   await expect(invite).toBeVisible(); await expect(invite).toBeEnabled();
   const panel = invite.locator('xpath=ancestor::section');
-  const originalPanel = await panel.elementHandle(), panelBox = await panel.boundingBox();
+  const originalPanel = await panel.elementHandle();
   await invite.click();
+  const panelBox = await panel.boundingBox();
   const dialog = page.getByRole('dialog'), originalDialog = await dialog.elementHandle(), dialogBox = await dialog.boundingBox();
   const rosterStarted = Promise.withResolvers<void>(), rosterFinish = Promise.withResolvers<void>();
   const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
