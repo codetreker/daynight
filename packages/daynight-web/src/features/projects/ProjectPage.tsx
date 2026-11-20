@@ -847,7 +847,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       </div>
       <div className="project-heading-container" ref={headingContainer}><div className="page-heading project-heading">
         <div>
-          <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
             <h1 ref={heading} tabIndex={-1}>{projectRead.project?.name ?? app.projectTasks}</h1>
             {projectRead.project !== null && <div className="project-repository">
