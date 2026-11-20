@@ -63,7 +63,7 @@ export const SecretDialog = ({ kind, secret, onClose, suspended = false, typogra
       : <button className="button primary" type="button" onClick={onClose}>{m.savedClose}</button>}
   </>}>
     <p>{invitation ? m.invitationBody : m.tokenBody}</p>
-    <div className="credential"><textarea ref={value} aria-label={invitation ? m.invitationLabel : m.tokenLabel} readOnly value={secret} rows={3} /><CopyButton label={invitation ? m.copyLink : m.copy} onClick={() => { void copy(); }}>{invitation ? m.copyLink : m.copy}</CopyButton></div>
+    <div className="credential"><textarea ref={value} aria-label={invitation ? m.invitationLabel : m.tokenLabel} data-touch-text={typography ? 'responsive' : undefined} readOnly value={secret} rows={3} /><CopyButton label={invitation ? m.copyLink : m.copy} onClick={() => { void copy(); }}>{invitation ? m.copyLink : m.copy}</CopyButton></div>
     {copied && <p role="status">{m.copied}</p>}
     {failed && <p className="notice" role="status">{m.copyFailed}</p>}
     {invitation && <div className="notice">{members.inviteTerms}</div>}

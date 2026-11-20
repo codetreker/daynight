@@ -1,5 +1,5 @@
 .locale-preference { min-width: 0; }
 .locale-control { display: inline-flex; max-width: 100%; }
-.locale-notice { margin-top: 10px; padding: 10px 12px; border: 1px solid #e8d8bb; border-radius: 7px; background: #fffaf1; color: #79623d; font-size: var(--text-interface); overflow-wrap: anywhere; }
+.locale-notice { margin-top: 10px; padding: 10px 12px; border: 1px solid #e8d8bb; border-radius: 7px; background: #fffaf1; color: #79623d; font-size: var(--text-sm); overflow-wrap: anywhere; }
 .locale-notice p { margin: 0 0 8px; }
 .locale-notice-description { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

@@ -32,7 +32,7 @@ export const typographyValueProblem = (property: string, text: string, roles: Re
   if (['inherit', 'unset'].includes(value.toLowerCase())) return;
   const role = /^var\((--[\w-]+)\)$/.exec(value)?.[1];
   if (property === 'font-size' && role !== undefined && roles.has(role)) return;
-  if (property === 'font-size' && path === 'src/styles/typography.css' && value === 'max(var(--text-base),16px)') return;
+  if (property === 'font-size' && path === 'src/ui/selection-control/selection-control.css' && value === 'max(var(--text-base),16px)') return;
   const terminal = 'calc(var(--text-sm)*var(--terminal-text-scale,1))';
   if (path === 'src/features/task-agent-session/terminal-session.css' && property === 'font' && value.startsWith(`${terminal}/`)
     && lexer.matchProperty('font', text.replace(/calc\(var\(--text-sm\)\s*\*\s*var\(--terminal-text-scale,\s*1\)\)/, '1rem')).error === null) return;
