@@ -134,6 +134,8 @@ Team 菜单优先处理 Escape，创建 Team 窗口保留原有焦点交接。
 
 个人与项目普通 Task 行遵循 W4 Session 的同一归一化规则：不可用优先于过期，成功观测的 `freshUntil=null` 立即过期，只有当前 active claim 的已验证 Session 能成为当前入口。completed Worker 仅表达历史机器，无保留记录不表示从未执行；暂停或离线不抹去已确认机器。Task 耗时及 120 秒 warning 宽限使用各条目响应的数据库 `responseTaskAt`，Session 有效期使用 Engine `responseSessionAt`，二者分别加 body 接收后的单调增量。不能用第一批分页的时钟、机器墙钟或早期样本时间替代。warning 在真实开始后的 `[0,120000ms)` 内暂缓检查提示及关注后缀，已确认有效的独立 Session 入口仍保留；未知起点立即按有效观测展示，重挂载、刷新和元数据更新不重开宽限。原始观测、发送资格、Worker 生命周期及链和 Goal 汇总规则保持各自语义。
 
+普通 Task 行的 `warning` 与 `needsAttention=true` 同时出现时，显示“Session 需要关注”／“Session needs attention”，可用入口的可访问名称使用同一文案。独立 warning 保留“Session 需要检查”／“Session needs checking”；`notice` 与关注同时出现时保留“Session 需要响应 · 需要关注”／“Session needs a response · Needs attention”。此规则不改变状态、视觉语义或入口资格，链与 Goal 汇总、图及详情保留各自提示。
+
 普通点击任务标题或实际 Parent Goal 入口，在总览原位打开现有完整详情；修饰键和新标签继续使用真实资源链接。Goal 内子任务沿用嵌套详情与逐层关闭。关闭后恢复入口焦点，入口消失时回到项目或页面标题；分页、阅读位置和草稿保护随浏览器历史保留。任务完成、转待办或更换负责人而退出总览时，已打开且仍有权读取的详情保持可用；真实删除、失权和账号退役沿用详情的清理与错误行为。
 
 首次读取未完成或失败时不得将局部结果作为完整数量或空集；后台刷新失败保留仍获准展示的内容并提示未更新。已确认撤权的项目立即撤下，重新授权后通过新读取恢复。页面提供手动刷新，并以可见 15 秒、隐藏 5 分钟的节奏自动读取。中英文和窄屏均须保持长名称及详情入口可读可操作。

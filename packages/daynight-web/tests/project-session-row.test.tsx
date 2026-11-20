@@ -69,6 +69,49 @@ it('renders English attention and an independently accessible unavailable Sessio
   expect(openSession).toHaveBeenCalledWith(task.id, action);
 });
 
+it.each(['standalone', 'chain', 'goal'] as const)('combines warning and attention for %s in both languages and entry states', async kind => {
+  for (const [locale, text, openLabel] of [['en', 'Session needs attention', 'Open Session'], ['zh-CN', 'Session 需要关注', '打开 Session']] as const) {
+    for (const canOpen of [false, true]) {
+      current.value = { state: 'warning', needsAttention: true, canOpen };
+      const openSession = vi.fn();
+      const row = kind === 'standalone'
+        ? <StandaloneTaskRow projectId={projectId} task={task} title="Example" instanceId="example" onSelectTask={vi.fn()} onOpenSession={openSession} />
+        : <TaskMemberRow projectId={projectId} task={task} title="Example" instanceId={kind} workerMachine={undefined} onOpenTask={vi.fn()} onOpenSession={openSession} />;
+      const view = renderWithLocale(<ul>{row}</ul>, { locale, taskCache: true });
+      const status = view.container.querySelector('[data-session-state="warning"]')!;
+      expect(status).toHaveTextContent(new RegExp(`^${text}$`));
+      expect(status).toHaveAttribute('data-needs-attention', 'true');
+      if (canOpen) {
+        expect(status).toHaveAccessibleName(new RegExp(`${text}.*${openLabel}`));
+        expect(status.tagName).toBe('BUTTON');
+        (status as HTMLButtonElement).focus();
+        await userEvent.setup().keyboard('{Enter}');
+        expect(openSession).toHaveBeenCalledWith(task.id, status);
+      } else {
+        expect(status.tagName).toBe('SPAN');
+        expect(within(view.container).queryByRole('button', { name: new RegExp(openLabel) })).toBeNull();
+      }
+      view.unmount();
+    }
+  }
+});
+
+it.each([
+  ['en', 'Session needs checking', 'Session needs a response · Needs attention'],
+  ['zh-CN', 'Session 需要检查', 'Session 需要响应 · 需要关注'],
+] as const)('keeps standalone warning and notice meanings in %s', (locale, warning, notice) => {
+  const row = () => <ul><StandaloneTaskRow projectId={projectId} task={task} title="Example" instanceId="example" onSelectTask={vi.fn()} /></ul>;
+  for (const needsAttention of [false, null]) {
+    current.value = { state: 'warning', needsAttention, canOpen: false };
+    const view = renderWithLocale(row(), { locale, taskCache: true });
+    expect(view.container.querySelector('[data-session-state="warning"]')).toHaveTextContent(warning);
+    view.unmount();
+  }
+  current.value = { state: 'notice', needsAttention: true, canOpen: false };
+  const view = renderWithLocale(row(), { locale, taskCache: true });
+  expect(view.container.querySelector('[data-session-state="notice"]')).toHaveTextContent(notice);
+});
+
 it('distinguishes English unobserved, unavailable and expired states without offering an entrance', () => {
   const row = () => <ul><StandaloneTaskRow projectId={projectId} task={task} title="Example" instanceId="example" onSelectTask={vi.fn()} onOpenSession={vi.fn()} /></ul>;
   current.value = { state: 'unobserved', needsAttention: null, canOpen: false };

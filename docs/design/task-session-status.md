@@ -16,6 +16,8 @@
 
 缺项或尚未准入显示未观测；单项观测不可用及整体读取失败显示不可用，非 `unavailable` 的成功观测失效显示过期。三者均不是已确认无当前执行；completed Worker 及旧 Session 是历史记录，不提供当前入口。`needsAttention` 仅在真实、有效的事实支持时展示，并独立于无当前 Session 文字的省略。可读性与活动状态独立：有效且 `canOpen` 的 pending、暂缓 warning 或活动未知的 Session 仍提供入口；过期、观测失败或身份失效不能沿用旧入口。可用入口与行主体是独立控件，只导航该 Task 的 Session，不改变链或 Goal 展开状态。
 
+共享状态组件在本地化展示时将 `warning` 与 `needsAttention=true` 合为一个 Session 关注提示，按钮、纯文本和按钮可访问名称使用同一描述；独立 warning 与 `notice` 加关注保留各自含义。原始状态、关注属性及入口判定不变。
+
 项目与个人列表各自的适配器提供同一显示归一化规则所需的观测事实。个人必填 `sessionRow` 与完整 Session 由同一次 Engine 采样生成，复用项目投影规则及服务端 Task 版本、执行来源和采样后 recheck；浏览器严格解析其精确版本和组合，不从完整 Session 缺少的归档／阅读事实或没有 claimId 的轻量 Worker 摘要猜测绑定；completed Worker 和无 active claim 均不能沿用历史 Session 入口。已确认注册、绑定和有效期但活动未知时可保持独立阅读入口，观测失败或绑定未知时不可打开。
 
 仅 warning 在真实启动后不足 120 秒时暂缓完整检查提示及关注后缀，独立且有效的 Session 入口保持可用；启动时间未知时立即展示，满 120 秒后只显示仍有效的观测。重新挂载、刷新和元数据编辑不重置起点。
