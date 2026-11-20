@@ -18,20 +18,14 @@ introduces its six numeric definitions and equal transitional role mappings.
 The Web entry stylesheet loads six shared size values and transitional roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size. The body and migrated shell and selection
-controls use the `sm` size directly; remaining consumers use transitional roles.
-Worker pages and configuration, shared Worker Prompt editors and project settings
-select the public sizes directly, preserving the corresponding computed values.
-Their responsive text inputs use the shared touch adjustment; affected Task
-metadata explicitly selects `xs`, and project-transfer impact copy inherits `sm`.
-Task filters and rows, personal
-task groups, Goal summaries, task search, Markdown reading surfaces, dependency
-graphs, project overview, statistics, usage panels, pull requests, and Session
-controls and timeline details use semantic roles
-at all viewport widths. Selection text retains the existing touch conditions and
+controls use `sm` directly; unmigrated consumers use transitional roles. The
+[migration policy](2026-11-20-web-typography-migration-policy.md) identifies the
+modules that select public sizes directly. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
-count badges select `xs` directly. Markdown code and tables use the interface
-role; Bot first-paragraph emphasis retains its weight without a separate size.
+count badges select `xs` directly. Shared Markdown selects magnitude-based sizes
+under the [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md);
+Bot first-paragraph emphasis retains its weight without a separate size.
 Team member search, GitHub management and Webhooks select public sizes directly.
 Their marked text fields use the shared responsive adjustment to preserve a 16 CSS
 px minimum on narrow or coarse-pointer displays while responding to larger browser
@@ -40,11 +34,12 @@ on coarse pointers, use the transitional `--text-touch-field` size.
 Terminal recordings use a shared `--text-terminal` base, multiplied by their
 independent zoom scale; reading-role changes do not affect terminal output.
 
-Business states, errors, controls, tool paths, and code use the interface role;
-IDs, times, versions, and secondary counts use metadata. The [ordinary Task row decision](../bug-fix/2026-11-20-task-row-metadata-size.md) assigns its secondary badges and status text to metadata while preserving other status contexts. The [claim phase decision](../bug-fix/2026-11-20-task-claim-phase-size.md) assigns the read-only execution phase badge in Task details to metadata. The [machine record decision](../bug-fix/2026-11-20-task-row-machine-size.md) assigns ordinary row Worker records to metadata. Shared forms, Portal
+The original role-based choices assign business states, errors, controls, tool
+paths and code to interface; IDs, times, versions and secondary counts to metadata.
+Their migrated equivalents use the corresponding public sizes. The [ordinary Task row decision](../bug-fix/2026-11-20-task-row-metadata-size.md) assigns its secondary badges and status text to metadata while preserving other status contexts. The [claim phase decision](../bug-fix/2026-11-20-task-claim-phase-size.md) assigns the read-only execution phase badge in Task details to metadata. The [machine record decision](../bug-fix/2026-11-20-task-row-machine-size.md) assigns ordinary row Worker records to metadata. Shared forms, Portal
 dialogs, account notices, attachment controls, Goal details and Bot management
-use the same roles. Superseded fixed declarations are removed or mapped to their
-semantic role, so later overrides cannot conceal a competing size definition.
+follow the same scale. Superseded fixed declarations are removed or mapped to a
+shared size, so later overrides cannot conceal a competing size definition.
 Narrow layouts wrap and rearrange controls, while dense panels retain local
 scrolling where needed. Webhook detail tabs use a locally scrollable single row
 with selected-item visibility, as defined by the later
@@ -57,10 +52,9 @@ rearrange at narrow widths; chart axes preserve horizontal scrolling and provide
 room for enlarged labels.
 
 Public landing and Setup pages, and standalone login, invitation, device
-authorization and OAuth consent pages, use the semantic roles at all viewport
-widths. Public reading copy and demo prose use the reading role; commands,
-status, errors and actions use the interface role. Authorization codes use the
-detail heading role, with the input using the section heading role. Account
+authorization and OAuth consent pages, select public sizes at all viewport
+widths. Public reading copy and the demo introduction use `base`; commands, status, errors
+and actions use `sm`. Authorization codes use `xl`, with the input using `lg`. Account
 actions and command copying reflow to accommodate larger text. The public header
 remains sticky only while it occupies at most half the viewport; larger headers
 scroll with the document. Anchor clearance uses the measured sticky height and
@@ -75,7 +69,8 @@ The Web harness enforces size ownership using the existing CSS and TypeScript
 parsers across the complete production source tree. The central stylesheet owns
 size values and fixed transitional mappings. The migration policy replaces the
 original selection-alias and typed Mermaid theme permissions with exact legacy
-occurrences and counts. Strict checks reject local overrides, fixed font sizes,
+occurrences and counts. Mermaid now uses the measured-size adapter and its
+restricted source contract. Strict checks reject local overrides, fixed font sizes,
 numeric fallbacks, unknown aliases and invalid font shorthands, with source
 locations; only recorded legacy occurrences retain transitional permission.
 The [Web validation guide](../../../../packages/daynight-web/README.md#typography-validation)

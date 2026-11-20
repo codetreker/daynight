@@ -31,12 +31,16 @@ deleting a definition and its baseline entry cannot strand unmigrated consumers.
 
 Retired identifiers are tracked independently of font declarations, including
 CSS geometry and statically readable TypeScript strings and style operations.
-Mermaid's current configuration receives individual entries, so its surrounding
-files and configuration objects retain normal inspection. The workspace shell,
+Mermaid font configuration uses the measured-size adapter under a restricted
+source contract; other font configuration values are rejected. The workspace shell,
 public landing and setup pages, authentication styles, shared selection controls,
 Worker pages and configuration, Worker Prompt editors, project settings, Team
 member search, GitHub management, Webhook consumers, Project and personal Task
-lists, Goal cards, tags and search use public sizes directly.
+lists, Goal cards, tags and search use public sizes directly. Dependency graphs,
+charts, project statistics, Usage and pull request views also select the public
+scale. Chart plot geometry scales from `xs` and label rows use their computed
+line height; graph geometry retains its independent root-size adaptation and view
+zoom. Usage and pull request search inputs use the shared responsive adjustment.
 
 The shared selection CSS owns touch text adjustments and sizes controls from
 their actual text instead of private font aliases. Responsive input attributes use
@@ -51,6 +55,8 @@ the tag input derives its height from its line box and padding with a 44px minim
 The zero-legacy mode refuses the bridge and all remaining baseline uses, supplying
 the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
+The [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md)
+records the independent SVG measurement boundary.
 
 ## Alternatives
 
