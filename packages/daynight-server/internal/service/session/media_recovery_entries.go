@@ -44,6 +44,20 @@ func (s *Service) grantWithMediaRecovery(ctx context.Context, p model.Principal,
 	if g.PreviousGeneration == nil {
 		return run(ctx, p, project, taskID, id, g)
 	}
+	if s.producerAuthorization != nil && project != "" && taskID != "" {
+		ctx = context.WithValue(ctx, taskRecoveryAdmissionKey{}, true)
+		// Media lease recovery acts outside the grant transaction. Refuse an
+		// unauthorized caller before it can trigger recovery, then recheck in
+		// the grant's own transaction after the external work finishes.
+		if err = s.browserFor(ctx, p, project, taskID, id, sessioncore.ProducerAccess, func(access *sessioncore.Access) error {
+			if access.Authority().OwnerID != p.UserID {
+				return &model.Fault{Code: "session_conflict", Message: "Session identity or state no longer matches."}
+			}
+			return nil
+		}); err != nil {
+			return out, err
+		}
+	}
 	err = s.afterMediaRecovery(ctx, recover, func(ctx context.Context) error {
 		var e error
 		out, e = run(ctx, p, project, taskID, id, g)
