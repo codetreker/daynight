@@ -52,7 +52,9 @@ const blockedAdmission = (cause: unknown): BotAdmissionBlockedError | undefined 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
+  sessionApi: Omit<BotSessionApi, "registerRecovery">; recoveryLimit: number | (() => number); now?: () => number;
+  reconcileHosting?: (record: BotRecord) => boolean;
+  canControl?: (record: BotRecord) => boolean;
   canAdmitNewExecution(): boolean;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
@@ -240,6 +242,7 @@ export const createBotProcess = (options: {
         if (["starting", "ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped) {
           const observed = remember(record, snapshot);
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
@@ -250,6 +253,7 @@ export const createBotProcess = (options: {
         const observed = remember(record, observation.snapshot);
         if (["starting", "ready", "working"].includes(observed.lifecycle) && !observed.nativeStopped) {
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original controller remains observable but is not available for recovery.");
@@ -390,6 +394,7 @@ export const createBotProcess = (options: {
     // Migration required proven stop and fences every launch until takeover.
     if (retained.migration !== undefined) return;
     if (retained.intent === null) return;
+    if (options.canControl?.(retained) === false) throw new Error("Bot hosting is unconfirmed; the original writer and recovery evidence are retained.");
     const record = current(retained, true);
     const execution = options.executions.get(record);
     if (execution === null || execution.launchSubmission === "not-submitted") return;
@@ -558,6 +563,7 @@ export const createBotProcess = (options: {
      */
     withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
       assertBotMigrationExecutable(record);
+      if (record.cleanup === undefined && options.canControl?.(record) === false) throw new Error("Bot deletion requires confirmed local hosting.");
       signal.throwIfAborted(); deletionRecord(record);
       let active = true;
       try { return await action(() => {
@@ -586,7 +592,9 @@ export const createBotProcess = (options: {
       if (execution === null || execution.launchSubmission === "not-submitted" || execution.snapshot?.nativeStopped) return;
       const ticket = await checkedTicket(record);
       if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, now())) return;
-      const grant = await options.sessionApi.grant(sessionRecord(record), signal);
+      const snapshot = remember(record, await observe(ticket, signal));
+      if (!["starting", "ready", "working"].includes(snapshot.lifecycle) || snapshot.nativeStopped) return;
+      const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal);
       current(record); signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     }),

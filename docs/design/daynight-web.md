@@ -124,6 +124,8 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `WorkersPage` 和 `WorkerDetailPage` 在既有按 `user.id:generation` 重挂载的认证工作空间内呈现 `/workers` 与 `/workers/{workerId}`。它们直接挂载在 `WorkspaceRoutes`，项目目录只为侧栏供给数据，成功与否不控制 Worker 页面准入。详情将运行观测与配置作为独立资源组合，即使近期观测不存在，仍保留 Worker ID 与配置入口。路由沿用规范 UUID 解析、登录 returnPath、原生 history、标题与面包屑；Worker 任务链接通过现有 taskDetailUrl 打开当前完整任务。
 
+活动任务和保留快照共用 `TaskRows`。表格外容器按自身内宽切换布局：不超过 430px 时用可换行布局将任务身份放在全宽，状态与阶段和 Agent 放在下一行；空间不足时执行信息可继续换行。表头仅视觉隐藏，显式表格角色和单元格表头关联维持重排后的语义。宽布局保留三列。两种布局使用同一任务数据和链接，刷新只更新对应行。
+
 `api/workers.ts` 拥有 Worker 摘要、详情和 Probe 的严格读取器，以及列表和详情 GET。请求复用现有同源、no-store、取消、401 和 requestId 机制；在 JSON 解码或 404 处理前对每个非 401 响应执行 principal 校验。读取器区分 unknown/observed/stale 清单，验证显式 null、任务计数和数组一致、重复引用、Worker 请求身份、联合分支、时间与数值范围。客户端采样时间不与数据库时间强制排序。版本为实际非空文本，不在展示层加入 semver 或最低版本拒绝。
 
 `useWorkers`、`useWorker` 通过共享 `useWorkerObservation` 持有页面内存。既有 TaskCacheScope 提供认证生命周期、ready gate、mismatch 失效回调及 Project 撤权事件；Worker 数据不进入其项目集合或 IndexedDB。读取开始前捕获用户 Project generation，发布前核对取消信号、请求 generation 和资源身份。独立投影按其读取快照判断撤权事件；匹配或未知代际使旧读取失效，较新代际不受旧事件影响。snapshot 换代与缓存失效在同一事务保存完整代际关系，撤权 ticket 携带祖先，因此换代提示丢失或乱序时仍可撤回祖先投影。损坏使前驱不可证明时隔离无法比较的内容并重新读取；可证明为后继的准入不受旧提示影响。存储不可用时隐藏项目私有投影，仍读取 Worker 身份和遥测并显示错误；单项目 generation 损坏只隔离该项目。Workspace 传入 readEnabled；账户变化等待刷新时取消私有读取并暂停计时，保留旧内存和展示。scope gate 还阻止身份状态尚未完成 React 重绘时的旧响应发布。
@@ -271,6 +273,7 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 - 桌面左侧竖向导航，窄屏改为内容上方横排；`tablist` 的 `aria-orientation`、方向键、稳定的 tab/panel ID 和实际方向一致。空项目、首屏加载、失败及保留旧快照的刷新错误继续由同一项目 owner 管理，外层导航不依赖任务总数。
 - 任务区首次选择后才挂载，后续以 `hidden` / `inert` 隐藏而不卸载，保留列表与独立偏好；主动外层离开任务列表或内层离开当前图所属类别时关闭图浮层并清除临时定位任务，主动返回后不自动打开；历史遍历可恢复此前的图选择。详情对话框位于两个内容面板之外，切换不会建立新的详情会话。内层“独立任务 / 任务链 / Goal”容器保留稳定关联 ID，只有活动类别挂载列表内容。该层次区分的历史取舍见[项目分区决策](../../.agents/notes/archived/feature/2026-10-25-project-overview-task-sections.md)。
 - 内层默认任务链，后续新访问恢复该项目保存的选择。独立任务和任务链只包含 `parentId=null` 的普通 Task；Goal 页签读取 typed 摘要，空项目也保留三个页签。普通图先按完整可见普通依赖构造分量，再与所选 Parent 求交：完整多成员分量在某个范围只有一个成员时仍是任务链。链进度仅计算当前范围的唯一普通 Task，Goal 列表以实际直接孩子计算进度，Goal 自身不进入普通图。
+- 类别页签根据自身容器宽度布局：420px 及以下按标签和计数的自然宽度分配空间，保留完整词及不可压缩的计数，必要时在自然边界换行；更宽时保留原有布局。极窄内容或较大计数使页签带横向滚动，选择或聚焦的页签在带内显露，不改变页面滚动。按钮保留原有名称、选择、键盘导航与计数语义，窄布局至少 44px 高，并随字号增长。取舍见[类别页签布局决策](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-tab-width.md)。
 - 代表任务仍为完整分量中的真实代表，用作链标题与图 witness；范围外代表不作为范围内 Task 显示负责人或状态。范围内每个 Task 包括代表恰好展示一次，链图保留完整可见依赖和原有普通/外部边分类。范围内独立 Task 直接展示；项目 Goal 列表单层展示全部直接孩子，Goal 详情只展示资源内容与分类统计。
 - 普通任务链分享使用项目根路由的 `tab=tasks&chain={taskId}` 查询；路由 helper 严格解析单个 canonical UUID 并生成同源绝对地址。`ProjectPage` 在完整索引和现有访问准入就绪后复用外部链导航，历史 owner 原子提交阅读选择并替换 URL 清除入口；无效目标也消费，主动切换节区丢弃等待中的入口。有效查询优先于旧 fragment，消费时一并清除 fragment，避免重复导航。登录返回仍只接受原有受约束的 pathname 与 search。详细锚点和菜单机制见[任务链浏览设计](daynight-task-inspection.md)。
 
@@ -293,6 +296,7 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 - 跨范围导航按目标 Task 当前 Parent 和动作分别准入：`onNavigateExternalTask` 的 Details 跳转在同一次阅读选择中打开对应 Goal 及其目标子 Task；`onNavigateExternalChain` 的链外展开对多成员目标打开 Goal 及 `GoalChildren.graphRootId` 指定的完整链图，并清空子 Task 选择。单成员展开仍打开 Task 详情。未归属的多成员展开直接更新项目图 witness，普通任务阅读仍沿用列表或详情导航。Goal 描述、图和目标 Task 使用原受控宿主，不依赖详情子任务行。资源不可用时显示回退提示。直接详情和附件地址使用真实资源 ID；历史代际退休时撤销旧详情及资料请求。机制和取舍见 [Goal 浏览决策](../../.agents/notes/implemented/feature/2026-11-11-goal-browsing.md)。
 - 项目任务搜索独立持有草稿、已应用表达式、状态、负责人和游标栈，不从摘要匹配或重新排序。非空输入变化只更新草稿；输入变空或点击 × 取消在途请求和分页，保留标签条件并恢复普通列表。`api/task-search.ts` 校验主体、项目、类型、Parent、标签条件、搜索投影和固定错误详情，包括按 `id`、`title`、`description` 顺序且不重复的命中字段与描述摘录的一致性；Unicode 错误位置只转换为输入控件的 UTF-16 选择范围。每页请求绑定相同规范化条件，首页成功重读退休后续游标，续页变化时清栈并有界重读首页。请求绑定项目、身份、历史、generation 和取消信号；可见时周期重读，后台检查保持既有界面，历史或访问退休撤回结果。命中仅选择 `direct` 详情观察，不制造完整 Task 或缓存资格；详情从实时读取准入。搜索决策见[Web 搜索记录](../../.agents/notes/implemented/feature/2026-11-06-web-task-search.md)，接口机制见[任务搜索设计](daynight-task-search.md)。
 - `ProjectView` 在项目页面生命周期内持有平台单选，读取同步快照的 `requiredPlatform` 精确匹配，在同一范围内普通成员上与负责人、状态及标签求交后分页。两个普通列表共享该选择并在变更时回首页；Goal、搜索、完整链和统计不受影响。列表定位先处理既有条件，再仅在平台仍遮挡目标时清除平台；概览标签异步核查将平台纳入取消与过期围栏。直接详情和图不依赖列表筛选。取舍见[平台筛选决策](../../.agents/notes/implemented/feature/2026-11-18-project-platform-filter.md)。
+- 普通项目任务筛选栏由独立的 `project-task-filter-region` 建立 inline-size 容器；内容宽 264–420px 时按原 DOM 顺序排列两列，低于 264px 单列，其余沿用 flex 换行。负责人、状态和平台题签覆盖在原选择控件内部，控件高度随字号增长且不少于 44px；标签入口保留自身文字、数量与箭头，已选 chip 和错误反馈正常占据空间。搜索筛选栏不进入该容器。布局不重建选择器或改变其菜单、状态与焦点所有权；取舍见[窄筛选栏决策](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-filter-layout.md)。
 - `TagFilter` 和 `useTagFilter` 保存选中 ID、名称和匹配模式，使用项目目录分页与 resolve 校验页外选择。`ProjectView` 在完整索引和自身摘要上计算匹配，同时持有独立于顶层筛选的一个子 Task 标签 controller，将其 `value` 和 `invalid` 经 `GoalList` 传给所有 `GoalItem`，后者只对自己的直接孩子逐行匹配。普通任务筛选栏按负责人、状态、平台、标签排列，Goal 类别省略平台并在标签后提供唯一的子 Task 标签入口；搜索结果筛选栏将顶层标签放在状态之后。子项 controller 在类别切换、分页和展开生命周期之外保留条件、搜索文字及目录核验状态，只有普通 Goal 类别激活其目录读取；目录 epoch、账号和项目权限的核验沿用 `useTagFilter` 的围栏。标签入口和计数徽标由公共展示层拥有；面板正文保持 14px，自然宽度为 352px，并受可见视口留白限制，入口尺寸变化由既有几何观察更新定位；顶层链的筛选只选择展示分量，不修改成员或图。概览显式定位在标签条件挡住目标时先核验选中 ID，再清除有效条件；核验失败保留条件，失效条件仍须用户移除。请求受身份、项目权限、当前筛选和概览选择围栏约束；定位页码优先于自动清除标签时的分页复位。详情关系跳转被标签挡住时直接打开目标详情并保留条件。目录 epoch 或服务拒绝可标记失效选择，条件保留至用户移除；无效条件不发布扩大后的查询。标签查询语义见[Web 标签筛选决策](../../.agents/notes/implemented/feature/2026-11-13-web-tag-filter.md)，筛选栏与子项条件归属见[统一筛选栏决策](../../.agents/notes/implemented/feature/2026-11-14-unified-tag-filter-toolbar.md)。
 
 - `TagFilter` 将标题与清空筛选、查找及清空查找、颜色标签复选列表与分页、独立的仅无标签、原生 radio 匹配方式及主入口管理动作依次呈现。条件立即生效；清空查找仅修改 query，清空筛选只清除 ID 和 untagged，保留 query 与匹配模式。少于两个 ID 或仅无标签时禁用 radio 并关联原因，保留所选模式。入口徽标显示生效条件数量，外部 chip 可移除条件并保留失效名称。`useProjectTags` 与 `useTagColors` 继续拥有目录、颜色和请求生命周期；相同查找的普通读取失败保留已有目录并单独提供重试，显式刷新从当前查找首页读取，权限撤回和身份退休仍撤回不可准入数据。界面组织和取舍见[标签选择器决策](../../.agents/notes/implemented/feature/2026-11-16-tag-filter-selector.md)。
@@ -708,8 +712,10 @@ endpoint 纯生成命令、远程终端变体及官方链接。地址以
 禁用全部复制按钮；结果保存语义，由当前目录生成浮动 `role=status` 反馈，提示不占据
 文档流。剪贴板不可用或拒绝时保留可选择内容并说明手动复制。语言或客户端切换推进
 generation、清理提示与等待状态，旧调用的成功、失败和结束处理均不能影响新状态；卸载
-也使旧调用失效。切换本身不执行复制。页面、命令块与顶栏在公开阅读布局的可用宽度内
-自然换行或局部滚动，320px/390px 下没有整页横向溢出。
+也使旧调用失效。切换本身不执行复制。步骤列表以自身内联宽度为容器：不超过 324px 时，
+网格将编号限制在标题行，正文跨越两列；命令块以 `minmax(0, 1fr)` 和 32px 双轨及 8px
+间隔排列，复制按钮与代码顶端对齐。较宽时保留编号轨道与原有命令布局。页面、命令块与
+顶栏自然换行或局部滚动，320px/390px 下没有整页横向溢出。布局取舍见[窄屏引导决策](../../.agents/notes/implemented/bug-fix/2026-11-20-setup-narrow-command-layout.md)。
 
 `server/webui.UI.RegisterRoutes` 注册 `/setup`，与其他页面共享 GET/HEAD、
 `no-store`、方法拒绝和请求记录。`validateAuthSettings` 同时保留 `/setup` 根和后代

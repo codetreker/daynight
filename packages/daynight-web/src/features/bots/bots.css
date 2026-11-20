@@ -1,6 +1,6 @@
 .bots-page { container: bots-workspace / inline-size; display: flex; flex: 1; min-height: 0; min-width: 0; }
 .bot-list-panel { --muted: #657084; display: flex; flex: 0 0 256px; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); padding: 18px 14px; overflow: auto; overscroll-behavior: contain; background: #f6f7fb; }
-.bot-list-panel > :not(.bot-list) { flex-shrink: 0; }
+.bot-list-panel > * { flex-shrink: 0; }
 .bot-list-heading, .bot-conversation-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .bot-list-heading { justify-content: space-between; gap: 8px; padding-left: 8px; }
 .bot-list-heading h1, .bot-conversation-heading h2 { margin: 0; overflow-wrap: anywhere; }
@@ -20,7 +20,7 @@
 .bot-list-count { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .bot-refresh svg { width: 18px; height: 18px; }
 .bot-refresh[aria-busy="true"] { opacity: .5; background: #eeeef9; }
-.bot-list { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; list-style: none; padding: 0; margin: 0; }
+.bot-list { flex: 0 0 auto; min-height: 0; max-height: clamp(144px, 40dvh, 288px); overflow: auto; list-style: none; padding: 0; margin: 0; }
 .bot-list a { display: flex; align-items: center; gap: 10px; min-height: 68px; padding: 10px; color: inherit; text-decoration: none; border-radius: 11px; }
 .bot-list-item:hover, .bot-list-item:has(a[aria-current]) { background: #eeeef9; }
 .bot-list a[aria-current] strong { color: var(--indigo); }
@@ -113,7 +113,6 @@
 }
 
 @media (max-height: 500px) {
-  .bot-list { min-height: 88px; }
   .bot-conversation-heading, .bot-conversation .session-header { min-height: 52px; padding-block: 4px; }
 }
 

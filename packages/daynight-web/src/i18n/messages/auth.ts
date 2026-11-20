@@ -256,9 +256,7 @@ export type AuthMessages = {
       readonly revokeLabel: (args: { readonly name: string }) => string;
     };
     readonly members: {
-      readonly eyebrow: string;
       readonly title: string;
-      readonly subtitle: (args: { readonly projectName: string }) => string;
       readonly invite: string;
       readonly loading: string;
       readonly memberNotice: string;
