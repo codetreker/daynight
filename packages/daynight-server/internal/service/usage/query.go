@@ -1,11 +1,11 @@
 package usage
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -207,37 +207,105 @@ func (s *Service) encodeCursor(c cursor) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	h := hmac.New(sha256.New, s.cursorKey)
-	h.Write(raw)
-	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
-func (s *Service) decodeCursor(token string, now time.Time) (cursor, error) {
+
+func cursorAlphabet(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func cursorHash(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) decodeCursor(token string, now time.Time, detail bool) (cursor, error) {
 	var c cursor
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 || len(token) > 4096 {
-		return c, core.Fault("invalid_cursor")
+	invalid := func() (cursor, error) { return cursor{}, core.Fault("invalid_cursor") }
+	if len(token) > 4096 {
+		return invalid()
 	}
-	raw, e := base64.RawURLEncoding.DecodeString(parts[0])
-	if e != nil {
-		return c, core.Fault("invalid_cursor")
+	// Signed cursors from the previous release cannot continue on this server.
+	// Detect their shape without trusting or decoding either part.
+	if left, right, ok := strings.Cut(token, "."); ok {
+		if len(right) == 43 && cursorAlphabet(left) && cursorAlphabet(right) {
+			return c, core.Fault("reset_required")
+		}
+		return invalid()
 	}
-	signature, e := base64.RawURLEncoding.DecodeString(parts[1])
-	if e != nil {
-		return c, core.Fault("invalid_cursor")
+	if !cursorAlphabet(token) {
+		return invalid()
 	}
-	h := hmac.New(sha256.New, s.cursorKey)
-	h.Write(raw)
-	if !hmac.Equal(signature, h.Sum(nil)) {
-		return c, core.Fault("invalid_cursor")
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	if err != nil {
+		return invalid()
 	}
-	if e = json.Unmarshal(raw, &c); e != nil {
-		return c, core.Fault("invalid_cursor")
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return invalid()
 	}
-	expiry, e := time.Parse(time.RFC3339Nano, c.ExpiresAt)
-	if e != nil {
-		return c, core.Fault("invalid_cursor")
+	seen := map[string]bool{}
+	for decoder.More() {
+		keyToken, e := decoder.Token()
+		key, ok := keyToken.(string)
+		if e != nil || !ok || seen[key] {
+			return invalid()
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil || bytes.Equal(value, []byte("null")) {
+			return invalid()
+		}
+		var target any
+		switch key {
+		case "binding":
+			target = &c.Binding
+		case "revision":
+			target = &c.Revision
+		case "lastTime":
+			target = &c.LastTime
+		case "lastId":
+			target = &c.LastID
+		case "expiresAt":
+			target = &c.ExpiresAt
+		default:
+			return invalid()
+		}
+		if json.Unmarshal(value, target) != nil {
+			return invalid()
+		}
 	}
-	if !now.Before(expiry) {
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') || len(seen) != 5 {
+		return invalid()
+	}
+	if _, err = decoder.Token(); err != io.EOF {
+		return invalid()
+	}
+	if !cursorHash(c.Binding) || !cursorHash(c.Revision) || !core.UUID(c.LastID) || detail && c.LastTime.IsZero() {
+		return invalid()
+	}
+	expires, err := time.Parse(time.RFC3339Nano, c.ExpiresAt)
+	if err != nil || expires.IsZero() {
+		return invalid()
+	}
+	if !now.Before(expires) {
 		return c, core.Fault("cursor_expired")
 	}
 	return c, nil
@@ -317,7 +385,7 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 		out.SnapshotToken = revision.Hash
 		expiry := now.Add(15 * time.Minute).Format(time.RFC3339Nano)
 		if input.Cursor != "" {
-			c, e := s.decodeCursor(input.Cursor, now)
+			c, e := s.decodeCursor(input.Cursor, now, true)
 			if e != nil {
 				return e
 			}

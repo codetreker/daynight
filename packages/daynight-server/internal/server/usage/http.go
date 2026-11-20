@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -517,9 +518,12 @@ func (h *handler) records(w http.ResponseWriter, r *http.Request, p model.Princi
 		h.fail(w, r, core.Fault("resource_unavailable"))
 		return
 	}
-	q := r.URL.Query()
+	q, err := pageQuery(r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	limit := 100
-	var err error
 	if q.Has("limit") {
 		limit, err = strconv.Atoi(q.Get("limit"))
 		if err != nil {
@@ -552,10 +556,27 @@ func (h *handler) aggregate(w http.ResponseWriter, r *http.Request, p model.Prin
 		h.fail(w, r, err)
 		return
 	}
-	out, err := h.service.Aggregate(r.Context(), p, project, kind, id, r.URL.Query().Get("cursor"))
+	q, err := pageQuery(r.URL.RawQuery)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out, err := h.service.Aggregate(r.Context(), p, project, kind, id, q.Get("cursor"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	h.write(w, r, 200, out)
+}
+
+// pageQuery rejects malformed input before using any partial parse result.
+func pageQuery(raw string) (url.Values, error) {
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, core.Fault("invalid_filter")
+	}
+	if len(q["cursor"]) > 1 {
+		return nil, core.Fault("invalid_cursor")
+	}
+	return q, nil
 }

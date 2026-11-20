@@ -66,7 +66,7 @@ func TestBatchSummaryConditionalRequestsBindOrderedTaskSelection(t *testing.T) {
 	const a = "10000000-0000-4000-8000-000000000002"
 	const b = "10000000-0000-4000-8000-000000000003"
 	scope := &emptySummaryScope{now: time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)}
-	service, err := app.New(emptySummaryStore{scope}, app.Options{CursorKey: []byte(strings.Repeat("k", 32))})
+	service, err := app.New(emptySummaryStore{scope}, app.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

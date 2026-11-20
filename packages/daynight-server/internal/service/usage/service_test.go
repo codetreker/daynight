@@ -19,9 +19,6 @@ type controlledStore struct {
 
 func newTestService(t *testing.T, db store.UsageStore, options Options) *Service {
 	t.Helper()
-	if len(options.CursorKey) == 0 {
-		options.CursorKey = []byte(strings.Repeat("k", 32))
-	}
 	s, err := New(db, options)
 	if err != nil {
 		t.Fatal(err)
@@ -93,18 +90,18 @@ func TestGrantAndCursorBoundaries(t *testing.T) {
 		t.Fatal(got)
 	}
 	s := newTestService(t, nil, Options{})
-	c := cursor{Binding: "principal-filter-permission", Revision: "revision", LastTime: now, LastID: "id", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano)}
+	c := cursor{Binding: strings.Repeat("a", 64), Revision: strings.Repeat("b", 64), LastTime: now, LastID: "10000000-0000-4000-8000-000000000001", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano)}
 	encoded, err := s.encodeCursor(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := s.decodeCursor(encoded, now)
+	decoded, err := s.decodeCursor(encoded, now, true)
 	if err != nil || decoded.Binding != c.Binding || !decoded.LastTime.Equal(c.LastTime) {
 		t.Fatal(decoded, err)
 	}
-	_, err = s.decodeCursor(encoded, now.Add(time.Hour))
+	_, err = s.decodeCursor(encoded, now.Add(time.Hour), true)
 	code(t, err, "cursor_expired")
-	_, err = s.decodeCursor(encoded+"tamper", now)
+	_, err = s.decodeCursor(encoded+"tamper", now, true)
 	code(t, err, "invalid_cursor")
 }
 

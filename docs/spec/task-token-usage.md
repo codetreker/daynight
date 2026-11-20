@@ -197,12 +197,12 @@ ETag 基于可见完整投影，包含有效状态和权限/成员变化，排�
 
 records 使用 `kind=measurement|execution_state`，支持 stateId/model/provider/
 aggregationRole 精确过滤，limit 1..100，按 `(createdAt,id)` 升序 keyset。
-签名游标绑定身份、资源、过滤、权限、集合 revision 和最后键，15 分钟过期。
+游标记录身份、资源、过滤、权限、集合 revision 和最后键，首次签发后 15 分钟过期，续页不延长有效期。游标不提供防篡改保证，也不能扩大当前授权范围。
 每页同一 repeatable-read 快照中重新授权、验证集合 revision；新增、修正、删除、
 归属或权限变化返回 `reset_required`，不混合两个时点。页面包含 execution_state 时，
 还须绑定影响可见派生状态的事实，包括原父凭据、Task pause/allowAgents、
 generation 停止和 grant 自然到期；不能只比较 usage 行版本。
-过期为 `cursor_expired`。
+过期为 `cursor_expired`。格式非法或重复的 `cursor` 返回 `invalid_cursor`；旧格式游标在授权后返回 `reset_required`，客户端从第一页重读。
 
 ## Task 用量界面
 

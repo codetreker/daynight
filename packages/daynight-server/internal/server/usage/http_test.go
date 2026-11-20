@@ -165,7 +165,7 @@ func (fixedAuth) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
 }
 func TestUsageRoutesKeepOrdinaryAndGrantAuthenticationSeparate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service, err := app.New(nil, app.Options{CursorKey: []byte(strings.Repeat("k", 32))})
+	service, err := app.New(nil, app.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
