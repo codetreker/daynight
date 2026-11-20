@@ -26,6 +26,8 @@ have independent layout and typography responsibilities.
 
 ## Consequences
 
+The [list secondary text decision](2026-11-20-list-secondary-text-size.md) extends this hierarchy to assignees, Goal links and aggregate headers.
+
 All ordinary row machine states scale with the browser root size alongside other
 metadata. Existing wrapping and interaction remain intact; browser checks cover
 long names, narrow layouts and enlarged text.
