@@ -2591,8 +2591,14 @@ geometry or system-menu behavior.
 The [Web typography specification](../../docs/spec/web-typography.md) owns the
 allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
 `src/styles/typography.css` owns the six numeric scale values. Its fixed transitional
-role mappings preserve unmigrated consumers, including the terminal's `xs` base
-and the touch-field `max(var(--text-base), 16px)` minimum.
+role mappings preserve unmigrated consumers. The retained terminal bridge still
+maps to `xs`, but recording output directly selects `sm` and multiplies it by
+its unitless user zoom. Surrounding controls, timestamps and errors use ordinary
+shared sizes independently of that zoom. The touch-field bridge retains
+`max(var(--text-base), 16px)`; migrated Session fields use the shared coarse-pointer
+adjustment, and Bot creation and directory inputs use the responsive adjustment.
+The [Session and Bot typography decision](../../.agents/notes/implemented/architecture/2026-11-20-session-bot-typography.md)
+records these renderer and input responsibilities.
 
 The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
 TSX file under `src/`, including unreferenced sources. Run the scan independently:
