@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
@@ -50,7 +50,8 @@ describe("owned command birth handshake", () => {
       const error = await pending;
       expect(error).toBe(operation.signal.reason);
       expect(events.at(-1)?.stage).toBe("stopped");
-      expect(await inspectProcessProof(originalLeaf)).toBe("stopped");
+      // Job membership can be empty before Windows finishes process object teardown.
+      await vi.waitFor(async () => expect(await inspectProcessProof(originalLeaf)).toBe("stopped"), { timeout: 5000, interval: 25 });
       expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
     } finally { cancellation.abort(); await pending; operation.dispose(); }
   }, 35_000);
