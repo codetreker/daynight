@@ -476,6 +476,7 @@ test('mounts the Team authorization projection and keeps Personal Team navigatio
   for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
     await page.setViewportSize({ width, height: 800 });
     await page.goto('/projects');
+    if (width <= 740) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
     await page.getByRole('link', { name: 'GitHub Apps', exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/teams/${teamId}/github-apps$`));
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
