@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
@@ -12,6 +13,9 @@ import (
 func (s *Workers) ReviewParticipation(ctx context.Context, principal model.Principal, workerID string) (model.WorkerReviewParticipation, error) {
 	var result model.WorkerReviewParticipation
 	err := s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		if err := s.readAdmission(ctx, scope, principal, scopepolicy.WorkerRead); err != nil {
+			return err
+		}
 		var err error
 		result, err = workercore.ReadReviewParticipation(ctx, scope.WorkerDAO(), principal, workerID)
 		return err
@@ -29,6 +33,9 @@ func (s *Workers) PutReviewParticipation(ctx context.Context, principal model.Pr
 	}
 	var result model.WorkerReviewParticipation
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
+		if err := s.writeAdmission(ctx, scope, principal, scopepolicy.WorkerConfigure, scopepolicy.WorkerRead); err != nil {
+			return err
+		}
 		var err error
 		result, err = workercore.PutReviewParticipation(ctx, scope.WorkerDAO(), principal, workerID, expected, enabled)
 		return err

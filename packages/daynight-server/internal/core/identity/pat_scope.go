@@ -60,6 +60,15 @@ func (s *Identity) LockPATAuthorization(ctx context.Context, dao store.PATScopeD
 // UpdatePATScope replaces the explicit policy after rechecking account, session,
 // target expiry and the caller's observed version within the caller's transaction.
 func (s *Identity) UpdatePATScope(ctx context.Context, dao store.IdentityDAO, scopes store.PATScopeDAO, clock store.PATManagementDAO, p model.Principal, id, expectedUserID string, expected int64, selected []scopepolicy.ScopeID, now time.Time) (model.PersonalAccessToken, error) {
+	return s.updatePATScope(ctx, dao, scopes, clock, p, id, expectedUserID, expected, selected, nil, now)
+}
+
+// UpdatePATScopeWithCatalog permits an unavailable scope only when already saved.
+func (s *Identity) UpdatePATScopeWithCatalog(ctx context.Context, dao store.IdentityDAO, scopes store.PATScopeDAO, clock store.PATManagementDAO, p model.Principal, id, expectedUserID string, expected int64, selected []scopepolicy.ScopeID, catalog scopepolicy.CatalogSnapshot, now time.Time) (model.PersonalAccessToken, error) {
+	return s.updatePATScope(ctx, dao, scopes, clock, p, id, expectedUserID, expected, selected, &catalog, now)
+}
+
+func (s *Identity) updatePATScope(ctx context.Context, dao store.IdentityDAO, scopes store.PATScopeDAO, clock store.PATManagementDAO, p model.Principal, id, expectedUserID string, expected int64, selected []scopepolicy.ScopeID, catalog *scopepolicy.CatalogSnapshot, now time.Time) (model.PersonalAccessToken, error) {
 	if err := ValidatePATOwner(p, expectedUserID); err != nil {
 		return model.PersonalAccessToken{}, err
 	}
@@ -99,6 +108,12 @@ func (s *Identity) UpdatePATScope(ctx context.Context, dao store.IdentityDAO, sc
 	}
 	if current.ScopePolicy.Version() != expected {
 		return model.PersonalAccessToken{}, &model.Fault{Code: "version_conflict", Message: "Token scopes changed. Read the current token before trying again."}
+	}
+	if catalog != nil {
+		selected, err = catalog.ValidateEditSelection(scopepolicy.PAT, selected, current.ScopePolicy.Scopes())
+		if err != nil {
+			return model.PersonalAccessToken{}, invalidInput("Invalid token scopes.")
+		}
 	}
 	return scopes.ComparePATScope(ctx, p.UserID, id, expected, selected, fresh)
 }

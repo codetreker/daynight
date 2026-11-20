@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -20,6 +21,7 @@ import (
 
 // Redelivery is one immutable, caller-observed manual operation.
 type Redelivery struct {
+	ReturnReceipt                                        bool
 	OperationID, IssuedAt, ExpectedUserID, RequestSHA256 string
 	IfVersion, IfGeneration                              int64
 }
@@ -61,6 +63,20 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 		w := sc.WebhookWriter()
 		existing, e := w.Operation(ctx, o, m.OperationID)
 		if e == nil {
+			manage, authErr := authorize(ctx, sc, p, o)
+			if authErr != nil {
+				return authErr
+			}
+			if !manage && existing.ActorID != p.UserID {
+				return fault("forbidden", "Access to this operation is denied.")
+			}
+			ops := []scopepolicy.Operation{scopepolicy.WebhookDeliver}
+			if !m.ReturnReceipt {
+				ops = append(ops, scopepolicy.WebhookRead)
+			}
+			if authErr = requireScope(ctx, sc, p, ops...); authErr != nil {
+				return authErr
+			}
 			op, replay, conflict = existing, true, existing.Fingerprint != fp
 			return nil
 		}
@@ -135,9 +151,6 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 		if !store.WebhookHistoryRetained(d, attempts, now) {
 			return fault("not_found", "Webhook resource was not found.")
 		}
-		if !now.Before(d.PayloadExpiresAt) {
-			return fault("payload_expired", "Webhook payload has expired.")
-		}
 		if err := verifyProof(d, sources); err != nil {
 			return fault("internal_error", "Webhook original proof integrity failure.")
 		}
@@ -149,6 +162,23 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 		}
 		if _, _, _, e = historySources(ctx, sc, history, p, d); e != nil {
 			return e
+		}
+		eligible, e := sc.EligibilityDAO().ReadEligibility(ctx, o, d.ProjectID, p.UserID)
+		if e != nil {
+			return e
+		}
+		if eligible.Status != "eligible" || eligible.ProjectName == nil {
+			return fault("forbidden", "Access to this resource is denied.")
+		}
+		ops := []scopepolicy.Operation{scopepolicy.WebhookDeliver}
+		if !m.ReturnReceipt {
+			ops = append(ops, scopepolicy.WebhookRead)
+		}
+		if e = requireScope(ctx, sc, p, ops...); e != nil {
+			return e
+		}
+		if !now.Before(d.PayloadExpiresAt) {
+			return fault("payload_expired", "Webhook payload has expired.")
 		}
 		if !sources.EndpointPresent || sources.Endpoint.DeletedAt != nil {
 			return fault("delivery_stopped", "Webhook delivery is no longer eligible.")
@@ -167,13 +197,6 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 		}
 		if !sources.Endpoint.Enabled || !sources.ProjectEligible || (d.EventType != protocol.Deleted && !sources.TaskPresent) || !continuous(sources.Matches) || d.ManualOperationCount >= policy.MaxManualOperations {
 			return fault("delivery_stopped", "Webhook delivery is no longer eligible.")
-		}
-		eligible, e := sc.EligibilityDAO().ReadEligibility(ctx, o, d.ProjectID, p.UserID)
-		if e != nil {
-			return e
-		}
-		if eligible.Status != "eligible" || eligible.ProjectName == nil {
-			return fault("forbidden", "Access to this resource is denied.")
 		}
 		if d.PayloadRemovedAt != nil || d.PayloadRemovedReason != nil || d.Body == nil || len(d.Body) > 65536 || len(d.Body) != d.OriginalBodyBytes {
 			return fault("internal_error", "Webhook payload integrity failure.")
@@ -275,6 +298,9 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 	if completion.Outcome != store.TransactionCommitted {
 		return Result{}, fault("write_outcome_unknown", "The write outcome is unknown. Check the original operation.")
 	}
+	if m.ReturnReceipt && !replay {
+		return Result{Body: map[string]any{"operationId": op.ID, "resourceId": op.DeliveryID}}, nil
+	}
 	var body any
 	err = s.DB.ReadWebhookSnapshot(ctx, func(sc store.WebhookReadScope) error {
 		manage, e := authorize(ctx, sc, p, o)
@@ -292,6 +318,16 @@ func (s *Service) Redeliver(ctx context.Context, p model.Principal, o Owner, end
 			return fault("operation_conflict", "Operation ID was already used for a different intent.")
 		}
 		if e = requireLiveOperation(ctx, sc, cur, "operation_expired"); e != nil {
+			return e
+		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookDeliver); e != nil {
+			return e
+		}
+		if m.ReturnReceipt {
+			body = map[string]any{"operationId": cur.ID, "resourceId": cur.DeliveryID}
+			return nil
+		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookRead); e != nil {
 			return e
 		}
 		view, e := s.deliveryViewInSnapshot(ctx, sc, p, o, endpointID, deliveryID)
