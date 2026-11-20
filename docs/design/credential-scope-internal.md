@@ -49,6 +49,28 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## 账户与集成准入
+
+账户资料、Worker 与 Reviewer Prompt、用户可见用量及 GitHub 用户操作的
+scoped 服务入口接收明确的 `model.CredentialAuthorization`，并通过
+`scopeadmission` 检查操作所需的全部权限。原有身份、资源可见性和角色检查
+继续适用；固定 session 与 OAuth API profile 保留原有限制。权限不足时，
+已确认可见的资源使用原有 `403 forbidden` 响应和
+`Daynight-Scope-Status: insufficient_scope`，不可见资源与凭据失效保持原有
+拒绝。真实路由注册同时记录操作、自动 HEAD、回退和独立 profile 分类。
+
+账户资料更新需要 `account:write`；`GET /api/v1/me` 保留自省行为。
+Prompt 读取需要 `prompt:read`，原 PUT 回执包含既有资源事实，因而需要
+`prompt:write` 与 `prompt:read`。用户用量读取需要 `usage:read`，能力检查、
+生产者和专用上传凭据沿用原协议。普通项目 PR 投影使用 `project:read`；
+GitHub 集成读取及管理分别使用 `github:read` 和 `github:manage`，返回既有
+资料的管理写入还需要读取权限。
+
+先以窄查询确认目标和原有业务权限，再检查 scope，最后读取受保护投影或
+执行写入。账户和用量的既有事务内凭据复核同时复核当前策略；缺少复核
+能力时受限入口失败关闭。GitHub 操作在远端证明或跨阶段定位后继续时，
+重新取得原凭据当前策略；涉及事务内凭据复核的路径在该事务中复核。
+
 ## Team 准入
 
 `service/team` 的 scoped 构造入口接收明确的凭据授权提供器；Team 不可见时
@@ -96,10 +118,10 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 ## 装配边界
 
-生产仍使用原有 `tag.New`、REST 和 MCP 注册，尚未启用受限凭据签发或
-scoped Tag 或 Team 装配。scoped 入口只接受显式授权事实，不以缺失 policy 放行。
-凭据持久化、认证时读取最新策略、完整入口分类、迁移和公开启用由相应
-实现接入；Tag 的直接操作使用调用方已认证的策略快照。生产 Bot 组装也保持
-原有入口；scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
+生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
+放行。PAT 已具备策略存储与复核能力；MCP 持久化、认证时读取最新策略、
+完整入口分类、历史回填和公开启用由相应实现接入。Tag 的直接操作使用调用方
+已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。

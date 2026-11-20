@@ -24,6 +24,17 @@ type AuthorsPage struct {
 
 // Authors reads the canonical directory within the same authorized snapshot as its revision.
 func (r *Reader) Authors(ctx context.Context, principal model.Principal, projectID string, request AuthorsRequest) (AuthorsPage, error) {
+	return r.authors(ctx, principal, projectID, request, nil)
+}
+
+func (r *Reader) AuthorsAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, request AuthorsRequest) (AuthorsPage, error) {
+	if err := authorization.Validate(); err != nil {
+		return AuthorsPage{}, err
+	}
+	return r.authors(ctx, authorization.Principal, projectID, request, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) authors(ctx context.Context, principal model.Principal, projectID string, request AuthorsRequest, check func() error) (AuthorsPage, error) {
 	if request.RepositoryID != nil && *request.RepositoryID <= 0 {
 		return AuthorsPage{}, invalid("Repository ID must be positive.")
 	}
@@ -47,7 +58,10 @@ func (r *Reader) Authors(ctx context.Context, principal model.Principal, project
 		query.AnchorNameKey, query.AnchorAuthorID = &cursor.nameKey, &cursor.authorID
 	}
 	var result AuthorsPage
-	err = r.snapshot(ctx, principal, id, func(s store.SnapshotScope, id string) error {
+	err = r.snapshot(ctx, principal, id, nil, func(s store.SnapshotScope, id string) error {
+		if err := checkRepositoryScope(ctx, s, id, request.RepositoryID, check); err != nil {
+			return err
+		}
 		dao := s.GitHubDAO()
 		var e error
 		result.Connection, e = dao.Connection(ctx, id)

@@ -35,6 +35,17 @@ func selectedRepository(ctx context.Context, dao store.GitHubReadDAO, projectID 
 }
 
 func (r *Reader) Repositories(ctx context.Context, principal model.Principal, projectID string, request RepositoriesRequest) (RepositoriesPage, error) {
+	return r.repositories(ctx, principal, projectID, request, nil)
+}
+
+func (r *Reader) RepositoriesAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, request RepositoriesRequest) (RepositoriesPage, error) {
+	if err := authorization.Validate(); err != nil {
+		return RepositoriesPage{}, err
+	}
+	return r.repositories(ctx, authorization.Principal, projectID, request, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) repositories(ctx context.Context, principal model.Principal, projectID string, request RepositoriesRequest, check func() error) (RepositoriesPage, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return RepositoriesPage{}, invalid("Limit must be between 1 and 100.")
 	}
@@ -50,7 +61,7 @@ func (r *Reader) Repositories(ctx context.Context, principal model.Principal, pr
 		}
 	}
 	result := RepositoriesPage{Items: []githubpr.Repository{}}
-	err = r.snapshot(ctx, principal, id, func(s store.SnapshotScope, id string) error {
+	err = r.snapshot(ctx, principal, id, check, func(s store.SnapshotScope, id string) error {
 		dao := s.GitHubDAO()
 		connection, e := dao.Connection(ctx, id)
 		if e != nil {

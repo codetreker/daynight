@@ -20,6 +20,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
 type Authentication struct {
@@ -75,24 +76,50 @@ func (h *Authentication) cookie(name, value string, expires time.Time, maxAge in
 }
 
 func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterRoutesWithScopeObserver(mux, nil)
+}
+
+// RegisterRoutesWithScopeObserver reports account classifications from actual registrations.
+func (h *Authentication) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
+	h.registerRoutes(mux, observe, nil)
+}
+
+// RegisterScopedRoutes selects policy-aware profile admission while preserving the
+// existing authentication and account-management routes. scoped must retain the
+// original authentication and Origin checks.
+func (h *Authentication) RegisterScopedRoutes(mux *http.ServeMux, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) {
+	if scoped == nil || profile == nil {
+		panic("scoped profile dependencies are required")
+	}
+	h.registerRoutes(mux, observe, scoped.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
+		h.patchMeAuthorized(w, r, authorization, profile, recheck)
+	}))
+}
+
+func (h *Authentication) registerRoutes(mux *http.ServeMux, observe func(ScopeRoute), scopedPatch http.HandlerFunc) {
+	routes := accountRouteRegistry{mux: mux, observe: observe}
 	h.registerDeviceRoutes(mux)
-	h.registerCredentialRoutes(mux)
+	h.registerCredentialRoutes(routes)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)
 	mux.HandleFunc("HEAD /api/v1/auth/login", httpx.MethodNotAllowed(h.logger, "GET"))
 	mux.HandleFunc("HEAD "+h.callbackPath, httpx.MethodNotAllowed(h.logger, "GET"))
-	mux.HandleFunc("GET /api/v1/me", h.Require(h.me))
-	mux.HandleFunc("PATCH /api/v1/me", h.Require(h.patchMe))
-	mux.HandleFunc("POST /api/v1/auth/logout", h.Require(h.logout))
-	mux.HandleFunc("GET /api/v1/me/tokens", h.Require(h.listTokens))
-	mux.HandleFunc("POST /api/v1/me/tokens", h.Require(h.createToken))
-	mux.HandleFunc("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken))
-	mux.HandleFunc("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken))
+	routes.handle("GET /api/v1/me", h.Require(h.me), accountSelf, true)
+	if scopedPatch == nil {
+		scopedPatch = h.Require(h.patchMe)
+	}
+	routes.handle("PATCH /api/v1/me", scopedPatch, accountWrite, false)
+	routes.handle("POST /api/v1/auth/logout", h.Require(h.logout), accountBrowser, false)
+	routes.handle("GET /api/v1/me/tokens", h.Require(h.listTokens), accountBrowser, true)
+	routes.handle("POST /api/v1/me/tokens", h.Require(h.createToken), accountBrowser, false)
+	routes.handle("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken), accountBrowser, false)
+	routes.handle("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken), accountBrowser, false)
 	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD, PATCH", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
 		fallback := httpx.MethodNotAllowed(h.logger, methods)
 		if path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/me") {
-			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }))
+			routes.handle(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }), accountFallback, false)
+
 		} else {
 			mux.HandleFunc(path, fallback)
 		}

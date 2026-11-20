@@ -60,6 +60,17 @@ func (d *appDAO) Create(ctx context.Context, input store.GitHubAppCreate) (githu
 	return d.Get(ctx, input.ID, input.CreatorUserID)
 }
 
+func (d *appDAO) RequireAppVisible(ctx context.Context, id, actorID string) error {
+	var visible int
+	err := d.tx.QueryRow(ctx, `SELECT 1 FROM github_apps a
+ WHERE a.id=$1 AND a.deleted_at IS NULL AND EXISTS
+ (SELECT 1 FROM github_app_admins m WHERE m.app_resource_id=a.id AND m.user_id=$2)`, id, actorID).Scan(&visible)
+	if err != nil {
+		return pg.QueryError("check github app visibility", err)
+	}
+	return nil
+}
+
 func (d *appDAO) Get(ctx context.Context, id, actorID string) (githubpr.AppMetadata, error) {
 	a, err := scanApp(d.tx.QueryRow(ctx, `SELECT `+appProjection+` FROM github_apps a
  WHERE a.id=$1 AND a.deleted_at IS NULL AND EXISTS

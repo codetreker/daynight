@@ -48,12 +48,20 @@ func (s projectAppScopeStub) WriteGitHubProjectApp(ctx context.Context, id, acto
 
 type projectAppDAOStub struct {
 	store.GitHubProjectAppWriteDAO
-	facts  func(context.Context, model.Principal) (store.GitHubProjectAppFacts, error)
-	app    func(context.Context, string, string, string) (store.GitHubProjectApp, error)
-	save   func(context.Context, store.GitHubProjectAppWrite) (bool, error)
-	impact func(context.Context, string) error
+	facts   func(context.Context, model.Principal) (store.GitHubProjectAppFacts, error)
+	access  func(context.Context, model.Principal) (store.GitHubProjectAppAccess, error)
+	version func(context.Context, string, string, string) (int64, error)
+	app     func(context.Context, string, string, string) (store.GitHubProjectApp, error)
+	save    func(context.Context, store.GitHubProjectAppWrite) (bool, error)
+	impact  func(context.Context, string) error
 }
 
+func (d projectAppDAOStub) ProjectAppAccess(ctx context.Context, p model.Principal) (store.GitHubProjectAppAccess, error) {
+	return d.access(ctx, p)
+}
+func (d projectAppDAOStub) ProjectAppVersion(ctx context.Context, a, g, team string) (int64, error) {
+	return d.version(ctx, a, g, team)
+}
 func (d projectAppDAOStub) Facts(ctx context.Context, p model.Principal) (store.GitHubProjectAppFacts, error) {
 	return d.facts(ctx, p)
 }
