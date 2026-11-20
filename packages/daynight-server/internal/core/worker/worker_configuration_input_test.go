@@ -268,6 +268,38 @@ func TestSudoCleanupConfigurationAndObservation(t *testing.T) {
 	}
 }
 
+func TestWindowsProcessCleanupConfigurationAndObservation(t *testing.T) {
+	for _, value := range []any{false, true} {
+		document := configurationInputDocument()
+		document["enableWindowsProcessCleanup"] = value
+		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
+		if err != nil || parsed.EnableWindowsProcessCleanup != value {
+			t.Fatalf("configuration %v: %+v %v", value, parsed, err)
+		}
+		item := configurationInputItem("enableWindowsProcessCleanup", value)
+		exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || string(exchange.Observation.Items[0].AppliedValue) != fmt.Sprint(value) {
+			t.Fatalf("observation %v: %+v %v", value, exchange, err)
+		}
+	}
+	for _, value := range []any{nil, "false", 1, []any{}} {
+		document := configurationInputDocument()
+		document["enableWindowsProcessCleanup"] = value
+		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {
+			t.Fatalf("invalid configuration accepted: %v", value)
+		}
+		item := configurationInputItem("enableWindowsProcessCleanup", value)
+		if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err == nil {
+			t.Fatalf("invalid applied observation accepted: %v", value)
+		}
+	}
+	item := configurationInputItem("enableWindowsProcessCleanup", nil)
+	item["state"] = "pending"
+	if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err != nil {
+		t.Fatalf("pending null rejected: %v", err)
+	}
+}
+
 func TestWorkerConfigurationInputRejectsInvalidExchange(t *testing.T) {
 	cases := map[string]func(map[string]any){
 		"missing bootstrap":        func(v map[string]any) { delete(v, "bootstrap") },
