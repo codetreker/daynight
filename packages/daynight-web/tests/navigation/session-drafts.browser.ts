@@ -51,8 +51,9 @@ test('clears the real client send gate after observing acceptance of a lost imag
   await expect.poll(() => api.observations.queries.length).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.operationId)).toBe(operationId);
   expect(api.observations.commands).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   api.setQuery('provider_accepted');
-  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   expect(await page.evaluate(id => window.sessionDraftClient.client.snapshot().state.operations.get(id)?.state, operationId)).toBe('provider_accepted');
   api.setDispatch('confirmed'); await page.getByRole('textbox').fill('next message'); await page.locator('input[type=file]').setInputFiles(file('Second.png'));
@@ -104,7 +105,8 @@ test('keeps a lost native command durable across reload and preserves later edit
   expect(refused).not.toBeNull(); expect(api.observations.commands).toHaveLength(1);
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('keep later command edits');
   await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
-  api.setQuery('confirmed'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('confirmed'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   await expect(page.getByRole('textbox')).toHaveValue('keep later command edits');
   await page.reload(); await expect(page.getByRole('textbox')).toBeEditable(); await expect(page.getByRole('textbox')).toHaveValue('keep later command edits');
@@ -182,8 +184,8 @@ test('moves an earlier null-target successor explicitly after acceptance while r
   expect(before.owners.find(owner => owner.ownerKey === original.owner.ownerKey)?.allocatedBytes).toBe(first.buffer.length + later.reduce((sum, item) => sum + item.buffer.length, 0));
   api.changeTarget('native-established'); await expect(page.getByRole('textbox')).toHaveValue('');
   await expect(page.getByText('Earlier message', { exact: true })).toBeVisible();
-  await expect(page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true })).toBeEnabled();
-  api.setQuery('confirmed'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('confirmed'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(async () => (await window.sessionDraftClient.storage.inventory()).blobs.length)).toBe(2);
   const accepted = await page.evaluate(() => window.sessionDraftClient.storage.inventory());
@@ -235,8 +237,8 @@ test('keeps a rejected earlier native draft discoverable after choosing it and m
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('discard this later draft'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
   api.changeTarget('native-after-refusal'); await expect(page.getByRole('textbox')).toHaveValue('');
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentOwner && entry.canCheck))).toBe(true);
-  await expect(page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true })).toBeEnabled();
-  api.setQuery('rejected'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('rejected'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await page.getByRole('button', { name: 'Restore failed draft and discard later edits', exact: true }).click();
   await page.getByRole('group', { name: 'Confirm', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect(page.getByText('Earlier draft', { exact: true })).toBeVisible(); await expect(page.getByRole('textbox')).toHaveValue('');
@@ -273,7 +275,8 @@ test('preserves image drafts and unknown submissions through the actual Session 
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission?.state)).toBe('unknown');
   const frozen = await page.evaluate(() => window.sessionDraftClient.storage.read()), operationId = api.observations.commands[0]!.operationId;
   await page.getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click(); await expect(root).toHaveAttribute('data-session-fullscreen', 'true');
-  await expect(page.locator('.session-draft-attachments')).toContainText('Awaiting the original message result');
+  await expect(page.locator('.session-receipts')).toContainText('Delivery outcome is unknown');
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Exit Session fullscreen', exact: true }).click(); await expect(root).not.toHaveAttribute('data-session-fullscreen');
   const retained = await page.evaluate(() => window.sessionDraftClient.storage.read());
   expect(retained?.submission?.operationId).toBe(operationId); expect(retained?.submission?.state).toBe('unknown'); expect(retained?.frozen).toEqual(frozen?.frozen);
@@ -298,8 +301,9 @@ test('resolves an earlier native target failure without replacing the current ta
   await expect(page.getByRole('textbox')).toHaveValue('');
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries.some(entry => !entry.currentOwner && entry.currentExecution))).toBe(true);
   await page.getByRole('textbox').fill('new target retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
   api.setQuery('rejected');
-  await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   const keep = page.getByRole('button', { name: 'Keep later edits and discard failed draft', exact: true }); await expect(keep).toBeVisible();
   const choices = await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().recoveries);
   expect(choices[0]).toMatchObject({ currentOwner: false, state: 'rejected', frozen: { text: 'original submitted text' }, successor: { text: 'old target later edits' } });
@@ -672,7 +676,8 @@ test('migrates a legacy unknown operation without replay and retains its success
   expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.submission).toMatchObject({ operationId, state: 'unknown', command: null });
   expect(api.observations.queries.every(id => id === operationId)).toBe(true); expect(api.observations.commands).toEqual([]);
   await page.getByRole('button', { name: 'Continue editing', exact: true }).click(); await page.getByRole('textbox').fill('legacy successor retained'); await page.evaluate(() => window.sessionDraftClient.client.imageDrafts.flush());
-  api.setQuery('provider_accepted'); await page.locator('.session-draft-attachments').getByRole('button', { name: 'Check status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check original operation', exact: true })).toBeEnabled();
+  api.setQuery('provider_accepted'); await page.getByRole('button', { name: 'Check original operation', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().submission)).toBeNull();
   await expect(page.getByRole('textbox')).toHaveValue('legacy successor retained'); expect(api.observations.commands).toEqual([]);
   expect((await page.evaluate(() => window.sessionDraftClient.storage.read()))?.editable?.text).toBe('legacy successor retained');
