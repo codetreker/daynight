@@ -1,4 +1,4 @@
-import { parseReviewerPage, parseReviewerPrompt, type ReviewerPage } from "./reviewer.js";
+import type { ReviewerPage } from "./reviewer.js";
 import type { WorkerPromptKey, WorkerPromptResource } from "./worker-configuration.js";
 import { parseGoalDependencies, parseGoalDependencyReceipt, validGoalRevision } from "./goal-dependencies.js";
 import type { GoalDependencies, GoalDependencyEdit, GoalDependencyReceipt } from "./goal-dependencies.js";
@@ -1331,6 +1331,7 @@ export const createApiClient = (options: {
       const worker = resourceId(workerId);
       if (cursor !== undefined && (typeof cursor !== "string" || cursor === "")) throw new Error("Invalid reviewer cursor.");
       const query = new URLSearchParams({ limit: "100", ...(cursor === undefined ? {} : { cursor }) });
+      const { parseReviewerPage } = await import("./reviewer.js");
       let authenticated = false;
       try {
         return await exchange({ operation: "reviewer.list" }, `/me/workers/${encodeURIComponent(worker)}/review-pull-requests?${query}`, "GET", {
@@ -1341,7 +1342,8 @@ export const createApiClient = (options: {
         throw error;
       }
     },
-    getReviewerPrompt: (key, userId, workerId) => {
+    getReviewerPrompt: async (key, userId, workerId) => {
+      const { parseReviewerPrompt } = await import("./reviewer.js");
       const user = resourceId(userId), worker = resourceId(workerId);
       const pathname = key.scope === "project" ? `/me/projects/${encodeURIComponent(resourceId(key.projectId))}/reviewer-prompt` : key.scope === "worker" ? `/me/workers/${encodeURIComponent(worker)}/reviewer-prompt` : "/me/reviewer-prompt";
       return exchange({ operation: "reviewer.prompt" }, pathname, "GET", { kind: "json", requirePrincipal: true, checkPrincipalOnError: true, parse: value => parseReviewerPrompt(value, key, user, worker) }, [200], undefined, true);
