@@ -27,6 +27,7 @@ type FixtureOptions = {
   readonly previousChanges?: Partial<TaskDetail>;
   readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
   readonly additionalTasks?: readonly TaskDetail[];
+  readonly snapshotTasks?: (details: readonly TaskDetail[]) => readonly TaskDetail[];
   readonly exposeDeleteTask?: (remove: () => void) => void;
   readonly dualPauseReceipt?: boolean;
 };
@@ -37,7 +38,7 @@ async function install(page: Page, running = false, linked = false, large = fals
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   let previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n, ...options.previousChanges });
   const details = () => [...(taskRemoved ? [] : [task]), previous, ...(options.additionalTasks ?? [])];
-  const graph = () => ({ ...graphFixture(details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
+  const graph = () => ({ ...graphFixture(options.snapshotTasks?.(details()) ?? details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
   let statusRequests = 0;
   options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
   options.exposePreviousUpdate?.((changes) => { previous = { ...previous, ...changes }; });
@@ -1739,6 +1740,75 @@ test('removing the usage anchor retains an open member detail and its draft', as
   await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
   expect(await title.evaluate((element, before) => element === before, original)).toBe(true);
   await expect(detail).toBeVisible();
+});
+
+test('removing the usage anchor retains a direct member detail and Step draft', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  const directRead = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200);
+  await usage.getByRole('button', { name: 'History origin' }).click(); await directRead;
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form input'); await draft.fill('Direct member draft');
+  const original = await draft.elementHandle();
+  const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, async route => { started.resolve(); await gate.promise; await route.fallback(); });
+  try {
+    updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+    const synchronized = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    const reread = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200 && response.headers()['daynight-task-epoch'] === '00000000-0000-4000-8000-000000000901');
+    await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await synchronized; await started.promise;
+    await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+    gate.resolve(); await reread;
+    await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+    await expect(detail).toHaveAccessibleName('History origin'); await expect(draft).toHaveValue('Direct member draft');
+    expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  } finally { gate.resolve(); }
+  expect(writes).toEqual([]);
+});
+
+test('direct member draft survives a failed recheck but is retired on denial', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  await page.locator('.chain-usage-dialog').getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form input'); await draft.fill('Private direct draft');
+  const original = await draft.elementHandle();
+  let outcome: 'temporary' | 'denied' | 'ok' = 'temporary';
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, route => outcome === 'ok' ? route.fallback() : route.fulfill({ status: outcome === 'temporary' ? 503 : 403, json: { error: { code: outcome === 'temporary' ? 'unavailable' : 'forbidden', message: 'Fixture failure', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(detail.locator('.task-detail-error')).toBeVisible();
+  await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  outcome = 'denied'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(draft).toHaveCount(0);
+  outcome = 'ok'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  await expect(detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' })).toHaveValue('');
+  expect(writes).toEqual([]);
 });
 
 test('browser history does not restore the transient chain usage layer', async ({ page }) => {
