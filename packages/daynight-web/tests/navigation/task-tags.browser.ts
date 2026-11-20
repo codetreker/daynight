@@ -140,24 +140,32 @@ for (const width of [1100, 600, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.setViewportSize({ width, height: 700 });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  const task = page.getByRole('button', { name: zh ? '新建 Task' : 'New Task', exact: true });
-  const entry = page.getByRole('button', { name: zh ? '新建 Goal' : 'New Goal', exact: true });
-  await expect(entry).toHaveCount(1);
+  const trigger = page.getByRole('button', { name: zh ? '项目操作' : 'Project actions', exact: true });
+  const taskName = zh ? '新建 Task' : 'New Task', goalName = zh ? '新建 Goal' : 'New Goal';
+  const compact = width === 320;
+  const task = page.getByRole(compact ? 'menuitem' : 'button', { name: taskName, exact: true });
+  const entry = page.getByRole(compact ? 'menuitem' : 'button', { name: goalName, exact: true });
+  if (compact) await trigger.click();
   await expect(task).toBeVisible(); await expect(entry).toBeVisible();
   const taskBox = (await task.boundingBox())!, goalBox = (await entry.boundingBox())!;
-  expect(taskBox.y <= goalBox.y + 1).toBe(true);
-  if (Math.abs(taskBox.y - goalBox.y) < 1) expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(goalBox.x + 1);
-  const actionsWidth = await page.locator('.project-title-actions').evaluate(element => element.getBoundingClientRect().width);
-  if (actionsWidth >= taskBox.width + goalBox.width + 8) expect(Math.abs(taskBox.y - goalBox.y)).toBeLessThanOrEqual(1);
+  if (compact) {
+    expect(taskBox.y + taskBox.height).toBeLessThanOrEqual(goalBox.y + 1);
+    await page.keyboard.press('Escape');
+  } else {
+    expect(taskBox.y <= goalBox.y + 1).toBe(true);
+    if (Math.abs(taskBox.y - goalBox.y) < 1) expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(goalBox.x + 1);
+    const actionsWidth = await page.locator('.project-title-actions').evaluate(element => element.getBoundingClientRect().width);
+    if (actionsWidth >= taskBox.width + goalBox.width + 8) expect(Math.abs(taskBox.y - goalBox.y)).toBeLessThanOrEqual(1);
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   for (const view of ['goals', 'standalone', 'chains']) {
     await page.locator(`#project-task-tab-${view}`).click();
-    await expect(entry).toHaveCount(1); await expect(entry).toBeVisible();
+    await expect(compact ? trigger : entry).toBeVisible();
   }
   const search = page.locator('.task-search-form input');
   await search.fill('no matching task'); await search.press('Enter');
   await expect(page.locator('.task-search-results')).toBeVisible();
-  await expect(entry).toBeVisible();
+  if (compact) await trigger.click();
   await entry.focus(); await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: zh ? '新建 Goal' : 'New Goal' });
   await dialog.getByRole('textbox', { name: zh ? '名称' : 'Name', exact: true }).first().fill('Created from search');
@@ -165,7 +173,7 @@ for (const width of [1100, 600, 320]) for (const locale of ['en', 'zh-CN'] as co
   await dialog.getByRole('button', { name: zh ? '创建' : 'Create', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect.poll(() => state.syncReads).toBeGreaterThan(syncReads);
-  await expect(entry).toBeFocused();
+  await expect(compact ? trigger : entry).toBeFocused();
   await expect(search).toHaveValue('no matching task');
   await expect(page.locator('.task-search-results')).toBeVisible();
   expect(state.tasks.find(item => item.title === 'Created from search')?.type).toBe('goal');
@@ -1094,9 +1102,13 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
   if (kind === 'goal') await page.locator('#project-task-tab-goals').click();
-  const open = page.getByRole('button', { name: kind === 'goal' ? (zh ? '新建 Goal' : 'New Goal') : (zh ? '新建 Task' : 'New Task'), exact: true });
-  await expect(open).toBeEnabled();
-  await open.focus(); await page.keyboard.press('Enter');
+  const trigger = page.getByRole('button', { name: zh ? '项目操作' : 'Project actions', exact: true });
+  const open = page.getByRole(width === 320 ? 'menuitem' : 'button', { name: kind === 'goal' ? (zh ? '新建 Goal' : 'New Goal') : (zh ? '新建 Task' : 'New Task'), exact: true });
+  const openForm = async () => {
+    if (width === 320) { await trigger.focus(); await page.keyboard.press('Enter'); }
+    await expect(open).toBeEnabled(); await open.focus(); await page.keyboard.press('Enter');
+  };
+  await openForm();
   const dialog = page.locator('.task-organization-dialog');
   const picker = dialog.locator('.tag-picker');
   await expect(picker.getByRole('checkbox', { name: 'Goal label' })).toBeVisible();
@@ -1137,11 +1149,12 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   expect(state.tagCreates).toEqual([{ name: 'Created independently', color: kind === 'task' ? '#AF377D' : '#12A4CD' }]);
   await dialog.getByRole('button', { name: zh ? '取消' : 'Cancel', exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(width === 320 ? trigger : open).toBeFocused();
   expect(state.tags.some(tag => tag.name === 'Created independently')).toBe(true);
   expect(state.tasks).toHaveLength(6);
   expect(state.writes.filter(write => write === `POST /api/v1/projects/${projectId}/tasks`)).toEqual([]);
 
-  await open.focus(); await page.keyboard.press('Enter');
+  await openForm();
   await expect(picker.getByRole('checkbox', { name: 'Goal label' })).toBeVisible();
   const removeCreated = picker.getByRole('button', { name: zh ? '移除 Created independently' : 'Remove Created independently' });
   if (await removeCreated.count()) { await removeCreated.focus(); await page.keyboard.press('Enter'); }
@@ -1161,6 +1174,7 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   await page.keyboard.press('Enter');
   await expect(dialog).toHaveCount(0);
+  await expect(width === 320 ? trigger : open).toBeFocused();
   const created = state.tasks.find(item => item.title === `Created ${kind}`)!;
   expect(created.type).toBe(kind);
   expect(created.parentId).toBe(kind === 'task' ? goal.id : null);
