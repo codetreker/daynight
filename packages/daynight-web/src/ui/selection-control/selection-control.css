@@ -79,6 +79,15 @@
 .select-trigger[data-density]:disabled, .select-trigger[data-density][aria-disabled="true"] { color: #747d91; background: #f5f6f9; cursor: default; }
 .select-trigger[data-density]:focus-visible { outline: 3px solid var(--selection-control-focus); outline-offset: 2px; }
 
+@container project-task-filters (max-width: 420px) {
+  .project-task-filters > :is(.task-assignee-filter, .task-status-filter) > .selection-control {
+    --selection-control-height: max(44px, calc(1.5 * var(--selection-control-font-size) + 1.5 * var(--text-metadata) + 2px));
+  }
+  .project-task-filters > :is(.task-assignee-filter, .task-status-filter) > .select-trigger { padding-top: calc(1.5 * var(--text-metadata)); }
+  .project-task-filters > .tag-filter-wrap > .tag-filter > .select-trigger { block-size: auto; min-block-size: 44px; padding-block: 2px; }
+  .project-task-filters > .tag-filter-wrap > .tag-filter > .select-trigger > .select-trigger__label { white-space: normal; overflow-wrap: anywhere; line-height: 1.125; }
+}
+
 @media (forced-colors: active) {
   .selection-control[data-density] { --selection-control-focus: Highlight; }
   .select-trigger[data-density], .select-trigger[data-density][aria-expanded="true"], .select-trigger[data-density][aria-invalid="true"], .select-trigger[data-density][data-pending="true"] { color: CanvasText; background: Canvas; border-color: CanvasText; }
