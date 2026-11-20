@@ -323,12 +323,17 @@ describe("owned worktree content removal", () => {
     const f = await fixture();
     const held = path.join(f.target, "held");
     await writeFile(held, "original");
+    // Prepared outside the walked tree so it holds its own inode. Recreating the
+    // name in place is not enough: Linux reuses the inode it just freed, leaving
+    // the entry's identity unchanged.
+    const replacement = path.join(f.root, "replacement");
+    await writeFile(replacement, "replacement");
     let attempts = 0;
     await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async target => {
       if (String(target) !== held) throw new Error(`Unexpected removal target: ${String(target)}`);
       attempts++;
       await actualFs.rm(held);
-      await writeFile(held, "replacement");
+      await actualFs.rename(replacement, held);
       throw busy();
     })).rejects.toThrow(/identity changed/);
     expect(attempts).toBe(1);
