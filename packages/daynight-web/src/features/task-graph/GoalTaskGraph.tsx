@@ -43,7 +43,7 @@ const boundsOf = (geometry: CanvasLayout) => {
   return { x: left, y: top, width: right - left, height: bottom - top };
 };
 
-export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, onDirectionChange, directionIssue, onOpenTask, fullscreen }: Props) => {
+export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirectionChange, directionIssue, onOpenTask, fullscreen }: Props) => {
   const { messages: { graph: m, workspace: { project } } } = useI18n();
   const fontScale = useGraphFontScale();
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -101,17 +101,13 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
   const { containerRef, onFocusCapture } = useGraphFocusRecovery(fallbackGeometry, focusFallback);
   const nodes = useMemo<TaskFlowNode[]>(() => (geometry?.nodes ?? []).map((node) => {
     const task = index.nodes.get(node.id)!;
-    const owner = task.parentId === null ? m.unassignedGoal : (() => {
-      const goal = summaries?.get(task.parentId!);
-      return goal?.type === 'goal' ? m.goalOwner({ title: `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}` }) : m.unavailableGoal({ id: task.parentId! });
-    })();
     return { id: node.id, position: node.position, type: 'task', width: node.width, height: node.height,
       style: { width: node.width, height: node.height }, data: {
-        task, kind: node.kind, ownerLabel: node.kind === 'external' ? owner : null,
+        task, kind: node.kind,
         center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
         size: { width: node.width, height: node.height }, actions: { kind: 'goal', onInspectTask, onOpenTask },
       } };
-  }), [geometry, index, summaries, m, onInspectTask, onOpenTask]);
+  }), [geometry, index, onInspectTask, onOpenTask]);
   const viewportFactory = useCallback(() => {
     const bounds = boundsOf(geometry!);
     const { width, height } = activeRequest!.size;

@@ -46,8 +46,10 @@ const Host = () => {
       <NativeSelect size={3} defaultValue="b" aria-label="Single list" data-testid="single-list">{options}</NativeSelect>
       <NativeSelect multiple size={4} defaultValue={['a', 'b']} aria-label="Multiple list" data-testid="multiple-list">{options}</NativeSelect>
       <NativeSelect touchMode="responsive" aria-label="Responsive touch" data-testid="responsive">{options}</NativeSelect>
+      <NativeSelect touchMode="responsive-target" aria-label="Responsive target" data-testid="responsive-target">{options}</NativeSelect>
       <div className="container-case wide" data-testid="container-wide"><div className="inner-container"><NativeSelect layout="fill" touchMode="container" aria-label="Wide container" data-testid="wide-container">{options}</NativeSelect></div></div>
       <div className="container-case narrow" data-testid="container-narrow"><div className="inner-container"><NativeSelect layout="fill" touchMode="container" aria-label="Narrow container" data-testid="narrow-container">{options}</NativeSelect></div></div>
+      <div className="text-inputs"><input data-testid="text-responsive" data-touch-text="responsive" /><input data-testid="text-coarse" data-touch-text="coarse" /><input data-testid="text-ordinary" /></div>
     </section>
     <section aria-label="Native interaction">
       <button data-testid="before">Before field</button>
@@ -69,6 +71,7 @@ const Host = () => {
       </fieldset>))}
       <details className="tag-filter"><SelectTrigger as="summary" density="filter" focusTone="task" count={3} data-testid="trigger-summary">{short}</SelectTrigger><p>Options</p></details>
       <SelectTrigger touchMode="responsive" density="filter" data-testid="trigger-responsive">{short}</SelectTrigger>
+      <SelectTrigger touchMode="responsive-target" density="filter" count={3} data-testid="trigger-responsive-target">{short}</SelectTrigger>
       <div className="container-case narrow"><SelectTrigger touchMode="container" density="filter" data-testid="trigger-container">{short}</SelectTrigger></div>
     </section>
   </main>;

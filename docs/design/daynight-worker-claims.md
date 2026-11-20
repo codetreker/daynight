@@ -115,7 +115,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 assignedTo、workerId 和�
 
 ## Web 归属展示与撤回
 
-任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；只读阶段徽标使用共享 `--text-metadata`，作为次于使用 `--text-interface` 的相邻认领信息的辅助信息，两者均随浏览器根字号缩放。completed 不作为当前认领。CLI 与 Web 严格拒绝旧 released 表示；无 worker 时沿用无当前归属与历史入口。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。
+任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；只读阶段徽标使用共享 12px 档，作为次于使用 14px 档 的相邻认领信息的辅助信息，两者均随浏览器根字号缩放。completed 不作为当前认领。CLI 与 Web 严格拒绝旧 released 表示；无 worker 时沿用无当前归属与历史入口。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。
 
 原 owner/admin 可从“强制撤回”进入确认；其他成员只读归属。确认冻结完整 task/claim 和精确版本，说明回到 todo、清空归属与计时、关闭自动执行，以及远端 agent 无法保证立即停止。取消不提交，后台已知变化使确认失效。Web 通过既有 TaskDetailSession 串行提交，验证完整返回值再更新详情和图；版本冲突要求重新审阅，未知结果只用 GET 核对，不重发请求或把观察到的状态归因于未知写入。成员显示和按钮可见性不替代服务端权限校验。
 

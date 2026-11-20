@@ -491,7 +491,7 @@ and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 |---|---|
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
-| [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
+| [`docs/ui-design.md`](docs/ui-design.md) | Cross-product UI design principles and links to their owning standards |
 | [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
 | [`docs/daynight-server-database.md`](docs/daynight-server-database.md) | Server database usage rules: business logic, SQL, constraints, concurrency and query costs |
 | [`docs/writing_tests.md`](docs/writing_tests.md) | Test ownership, real dependencies, normal integration flows and CI responsibilities |

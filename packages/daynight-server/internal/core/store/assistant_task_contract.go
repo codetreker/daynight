@@ -154,9 +154,9 @@ type AssistantTaskInboxDAO interface {
 	// task targeted at bot.
 	PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error)
 	// ReceivedInbound reports whether bot was the target of an unsuppressed
-	// receipt about the project Task subject at or after since, across the
-	// owner's assistant tasks.
-	ReceivedInbound(ctx context.Context, owner, bot, subject string, since time.Time) (bool, error)
+	// receipt about the project Task subject received within the inclusive
+	// interval [since, until], across the owner's assistant tasks.
+	ReceivedInbound(ctx context.Context, owner, bot, subject string, since, until time.Time) (bool, error)
 	// ReclaimInboxReceipts deletes at most limit receipts of the task, from any
 	// of its inboxes, that expired by current database time.
 	ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error)

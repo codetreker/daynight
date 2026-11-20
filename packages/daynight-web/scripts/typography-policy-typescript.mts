@@ -5,10 +5,12 @@ import {
   isShorthandPropertyAssignment, isStringLiteral, isTemplateExpression, isVariableDeclaration, isVariableDeclarationList, NodeFlags, SyntaxKind, type Node, type SourceFile,
 } from 'typescript/unstable/ast';
 import type { Checker } from 'typescript/unstable/sync';
-import { inspectTypographyCss, typographyValueProblem } from './typography-policy-css.mts';
+import { collectTypographyCss, typographyValueProblem } from './typography-policy-css.mts';
+import { occurrenceDiagnostic, retiredIn, type TypographyOccurrence } from './typography-policy-contract.mts';
 
-export const inspectTypographyTypeScript = (source: SourceFile, path: string, roles: ReadonlySet<string>, checker: Checker): string[] => {
-  const diagnostics: string[] = [];
+export const collectTypographyTypeScript = (source: SourceFile, path: string, roles: ReadonlySet<string>, checker: Checker): TypographyOccurrence[] => {
+  const diagnostics: TypographyOccurrence[] = [];
+  let context = '';
   const aliases = new Map<number, Node>();
   const collect = (node: Node): void => {
     if (isVariableDeclarationList(node) && (node.flags & NodeFlags.Const) !== 0) {
@@ -52,9 +54,9 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     return;
   };
-  const report = (node: Node, message: string): void => {
+  const report = (node: Node, message: string, category: TypographyOccurrence['category'] = 'invalid', value = node.getText(source).replace(/\s+/g, ' '), identifiers = retiredIn(value), inlineContext?: string): void => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    diagnostics.push(`${path}:${line + 1}:${character + 1}: typography ownership: ${message}`);
+    diagnostics.push({ path, category, context: inlineContext === undefined ? context : `${context} > inline ${inlineContext}`, value, line: line + 1, column: character + 1, message, identifiers });
   };
   const name = (node: Node): string[] | undefined => isComputedPropertyName(node) ? strings(node.expression)
     : isIdentifier(node) ? [node.text] : strings(node);
@@ -65,6 +67,10 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
     const values = value === undefined ? undefined : strings(value);
     if (values === undefined) { report(node, `${normalized} must be a statically readable shared role or inheritance value.`); return; }
     for (const text of values) {
+      if (retiredIn(text).length > 0) {
+        report(node, 'retired typography identifier in an inline style write.', 'legacy-reference', text);
+        continue;
+      }
       const problem = typographyValueProblem(normalized, text, roles, '');
       if (problem !== undefined) report(node, problem);
     }
@@ -73,20 +79,39 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
     const values = value === undefined ? undefined : strings(value);
     if (values === undefined) return;
     for (const text of values) {
-      for (const diagnostic of inspectTypographyCss(text, path, roles, true)) report(node, diagnostic.slice(diagnostic.indexOf('typography ownership: ') + 'typography ownership: '.length));
+      for (const item of collectTypographyCss(text, path, roles, true)) {
+        report(node, item.message, item.category, item.value, item.identifiers, item.context);
+      }
     }
   };
   const member = (node: Node): string[] | undefined => isPropertyAccessExpression(node) ? [node.name.text]
     : isElementAccessExpression(node) ? strings(node.argumentExpression) : undefined;
   const isStyleMember = (node: Node): boolean => (isPropertyAccessExpression(node) || isElementAccessExpression(node)) && member(node.expression)?.includes('style') === true;
+  const isTrackedExpression = (node: Node): boolean => isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) || isTemplateExpression(node)
+    || isParenthesizedExpression(node) || isAsExpression(node) || isSatisfiesExpression(node) || isConditionalExpression(node) || isJsxExpression(node)
+    || (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken);
   const visit = (node: Node, ancestors: readonly Node[]): void => {
+    context = ancestors.flatMap(parent => {
+      if (isVariableDeclaration(parent) && isIdentifier(parent.name)) return [`const ${parent.name.text}`];
+      if (isPropertyAssignment(parent)) return [`property ${(name(parent.name) ?? ['computed']).join('|')}`];
+      return [];
+    }).concat(SyntaxKind[node.kind]).join(' > ');
+    const values = isTrackedExpression(node) ? strings(node) : undefined;
+    if (values !== undefined && values.some(value => retiredIn(value).length > 0)) {
+      // Record resolved values once at their outer expression; whitespace and
+      // quotation changes do not create a new legacy allowance.
+      const parent = ancestors.at(-1);
+      const parentValues = parent === undefined || !isTrackedExpression(parent) ? undefined : strings(parent);
+      if (parentValues === undefined) {
+        for (const value of [...new Set(values)].sort()) if (retiredIn(value).length > 0) report(node, 'retired typography identifier in TypeScript.', 'legacy-reference', value);
+      }
+    }
     if (isPropertyAssignment(node)) {
       const names = name(node.name);
-      // Mermaid's typed theme configuration controls external diagram rendering,
-      // independently of the surrounding first-party UI and its semantic roles.
       const diagramTheme = ancestors.some(parent => isVariableDeclaration(parent) && parent.type?.getText(source) === 'MermaidConfig')
-        && ancestors.some(parent => isPropertyAssignment(parent) && name(parent.name)?.includes('themeVariables'));
-      if (!diagramTheme) names?.forEach(property => inspect(node, property, node.initializer));
+        && names?.some(property => property !== 'maxTextSize' && (/(?:FontSize|TextSize)$/.test(property) || property === 'fontSize'));
+      if (diagramTheme) report(node, 'Mermaid font configuration requires migration to measured public sizes.', 'legacy-mermaid-size', JSON.stringify([names, strings(node.initializer) ?? node.initializer.getText(source).replace(/\s+/g, ' ')]));
+      else names?.forEach(property => inspect(node, property, node.initializer));
     }
     if (isShorthandPropertyAssignment(node)) {
       const symbol = checker.getShorthandAssignmentValueSymbol(node)?.id;
@@ -94,7 +119,7 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     if (isJsxAttribute(node)) {
       const property = node.name.getText(source);
-      if (property === 'style' && node.initializer !== undefined && isStringLiteral(node.initializer)) declarations(node, node.initializer);
+      if (property === 'style' && node.initializer !== undefined) declarations(node, node.initializer);
       else inspect(node, property, node.initializer);
     }
     if (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.EqualsToken && isStyleMember(node.left)) {
@@ -105,6 +130,11 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     if (isCallExpression(node) && isPropertyAccessExpression(node.expression)) {
       const method = node.expression.name.text;
+      if (['getPropertyValue', 'setProperty', 'setAttribute'].includes(method)) {
+        for (const argument of node.arguments) {
+          for (const value of strings(argument) ?? []) if (retiredIn(value).length > 0) report(node, 'retired typography identifier in a runtime style access.', 'legacy-reference', value);
+        }
+      }
       if (method === 'setProperty' && member(node.expression.expression)?.includes('style') && node.arguments[0] !== undefined) {
         strings(node.arguments[0])?.forEach(property => inspect(node, property, node.arguments[1]));
       }
@@ -117,3 +147,4 @@ export const inspectTypographyTypeScript = (source: SourceFile, path: string, ro
   visit(source, []);
   return diagnostics;
 };
+export const inspectTypographyTypeScript = (source: SourceFile, path: string, roles: ReadonlySet<string>, checker: Checker): string[] => collectTypographyTypeScript(source, path, roles, checker).map(occurrenceDiagnostic);

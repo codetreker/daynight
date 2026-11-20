@@ -9,7 +9,6 @@
   vertical-align: middle;
   color: #344258;
   --native-select-height: var(--selection-control-height);
-  --native-select-font-size: var(--selection-control-font-size);
   --native-select-focus: var(--selection-control-focus);
 }
 
@@ -28,14 +27,14 @@
   background: #fff;
   color: #344258;
   font-family: inherit;
-  font-size: var(--native-select-font-size);
+  font-size: inherit;
   font-weight: 400;
   line-height: normal;
   padding: 6px 10px;
 }
 
 .native-select[data-density][data-mode="popup"] > .native-select__control {
-  block-size: max(var(--native-select-height), calc(1.5 * var(--native-select-font-size) + 2px));
+  block-size: max(var(--native-select-height), calc(1.5em + 2px));
   padding-block: 0;
   padding-inline-end: 30px;
   text-overflow: ellipsis;
@@ -61,7 +60,7 @@
 
 @container project-task-filters (max-width: 420px) {
   .project-task-filters > .task-status-filter > .native-select { display: grid; }
-  .project-task-filters > .task-status-filter > .native-select > .native-select__control { padding-top: calc(1.5 * var(--text-metadata)); }
+  .project-task-filters > .task-status-filter > .native-select > .native-select__control { padding-top: calc(1.5 * var(--text-xs)); }
 }
 
 @media (forced-colors: active) {

@@ -421,6 +421,26 @@ test('invitation copy retains its labelled control and selects the secret after 
   expect(api.invitationWrites).toBe(1);
 });
 
+for (const hasTouch of [false, true]) test(`Team invitation secret keeps responsive text at 320px (touch=${hasTouch})`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+  const page = await context.newPage();
+  try {
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+    expect(await page.evaluate(() => matchMedia('(pointer: fine)').matches)).toBe(!hasTouch);
+    const api = await install(page); await start(page); api.invitationSuccess = true;
+    await page.getByRole('button', { name: 'Invite member' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+    const value = page.getByLabel('One-time invitation link');
+    await expect(value).toHaveAttribute('data-touch-text', 'responsive');
+    await expect(value).toHaveValue(/#dnteam_/);
+    for (const rootSize of [16, 12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      await expect(value).toHaveCSS('font-size', `${Math.max(rootSize, 16)}px`);
+    }
+    expect(api.invitationWrites).toBe(1);
+  } finally { await context.close(); }
+});
+
 for (const access of ['admin', 'member', 'unavailable'] as const) test(`a displayed invitation remains available across navigation and ${access}`, async ({ page }) => {
   const api = await install(page); await start(page); api.invitationSuccess = true;
   await page.getByRole('button', { name: 'Invite member' }).click();
