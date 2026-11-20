@@ -35,7 +35,9 @@ func TestPATScopePreparationProcessStartup(t *testing.T) {
 ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes;
 ALTER TABLE oauth_grants DROP COLUMN business_scopes, DROP COLUMN scope_version;
 ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes;
-DELETE FROM schema_migrations WHERE version IN (108,109)`); err != nil {
+DROP TABLE worker_lifecycle_observations, worker_lifecycle_operations, worker_lifecycle;
+ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_version;
+DELETE FROM schema_migrations WHERE version IN (108,109,110)`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64

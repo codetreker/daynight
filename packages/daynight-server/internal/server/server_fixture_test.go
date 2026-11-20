@@ -1667,7 +1667,7 @@ type sessionHTTPStore struct {
 
 type sessionHTTPScope struct {
 	t   *testing.T
-	dao store.SessionDAO
+	dao *sessionHTTPDAO
 }
 
 func (s sessionHTTPScope) SessionDAO() store.SessionDAO { return s.dao }
@@ -2892,4 +2892,20 @@ func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
 func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	mock.need("WorkerClaimAdmissionDAO", false)
 	return nil
+}
+
+func (s sessionHTTPScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return s.dao }
+
+func (d *sessionHTTPDAO) CheckWorkerExecution(ctx context.Context, user, worker string) error {
+	_, err := d.WorkerExecutionVersion(ctx, user, worker)
+	return err
+}
+func (d *sessionHTTPDAO) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	d.called(ctx, "WorkerExecutionVersion")
+	if user != d.f.handler.principal.UserID || worker != d.f.registration.WorkerID || d.calls["LockSession"] != 1 || d.calls["LockCredential"] < 1 {
+		d.fail("Worker admission changed the declared owner, Worker or Session lock order")
+	}
+	// This fixture's declared Worker has no lifecycle history. Other identities
+	// fail above; production admission still requires its transaction capability.
+	return nil, nil
 }

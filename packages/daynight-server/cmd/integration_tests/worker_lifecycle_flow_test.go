@@ -23,8 +23,10 @@ func serverAPIWorkerLifecycleFlow(t *testing.T, f *fixture) {
 		"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 1}),
 		"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
 		"versions": map[string]any{"daynight": "1.0.0", "codex": probe("1.0.0"), "copilot": probe("1.0.0")}, "taskInventory": nil,
+		"toolPaths": map[string]any{"schemaVersion": 1, "observedAt": stamp, "entries": []any{}},
 	}
-	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK)
+	reportHeaders := http.Header{"Daynight-Worker-Tool-Paths": {"2"}}
+	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK, reportHeaders)
 	base += "/lifecycle"
 	headers := http.Header{"X-Daynight-Worker-Lifecycle": {"1"}}
 	registered := requestJSON[model.LifecycleInstanceReceipt](t, f, http.MethodPost, base+"/instances", model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: uuid.NewString(), InstanceID: instanceID, Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "linux"}, http.StatusOK, headers)
