@@ -75,12 +75,12 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await page.goto('/tests/navigation/my-tasks-browser.html');
     await page.getByLabel('Language').selectOption(locale);
     const task = page.getByRole('link', { name: longTask, exact: true }).locator('xpath=ancestor::li');
-    await expect(task.locator('.project-session-status')).toHaveCount(0);
+    await expect(task.locator('.task-row-primary-status')).toHaveText(locale === 'en' ? 'In progress' : '进行中');
     await expect(task).toContainText(locale === 'en' ? 'In progress' : '进行中');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     allowAgents = true;
     await page.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).click();
-    await expect(task.locator('.project-session-status')).toHaveText(locale === 'en' ? 'No current Session' : '无当前 Session');
+    await expect(task.locator('.task-row-primary-status')).toContainText(locale === 'en' ? 'No current session' : '无当前会话');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
@@ -151,7 +151,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   }, headers: { 'Daynight-User-ID': userId } }));
   await page.goto('/tests/navigation/my-tasks-browser.html');
   await expect(page.getByText(`Claim machine: ${longWorker}`)).toBeVisible();
-  await expect(page.getByText('Session unavailable')).toBeVisible();
+  await expect(page.getByText('Unavailable')).toBeVisible();
   const replacement = '机器  名称\nA\tB' + ' \t'.repeat(60);
   current = { workerId: taskId(72), state: 'active', machine: { id: taskId(73), name: replacement } };
   await page.getByRole('button', { name: 'Refresh' }).click();
@@ -218,16 +218,16 @@ for (const width of [320, 390, 1280]) {
     await task.focus();
     const originalRow = await taskRow.elementHandle();
     await page.clock.fastForward(2_000);
-    await expect(taskRow.getByText('Session needs attention', { exact: true })).toBeVisible();
-    await expect(fallbackRow.getByText('Session needs attention', { exact: true })).toBeVisible();
-    await expect(archivedRow.getByText('Session needs attention', { exact: true })).toBeVisible();
+    await expect(taskRow.locator('.task-row-primary-status')).toContainText('Needs attention');
+    await expect(fallbackRow.locator('.task-row-primary-status')).toContainText('Needs attention');
+    await expect(archivedRow.locator('.task-row-primary-status')).toContainText('Needs attention');
     await expect(task).toBeFocused();
     expect(await originalRow!.evaluate(row => row === document.activeElement?.closest('li'))).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByLabel('Language').selectOption('zh-CN');
-    await expect(taskRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
-    await expect(fallbackRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
-    await expect(archivedRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
+    await expect(taskRow.locator('.task-row-primary-status')).toContainText('需要关注');
+    await expect(fallbackRow.locator('.task-row-primary-status')).toContainText('需要关注');
+    await expect(archivedRow.locator('.task-row-primary-status')).toContainText('需要关注');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
@@ -338,8 +338,8 @@ for (const width of [320, 1280]) {
     await page.keyboard.press('Escape');
     await expect(taskDialog).toHaveCount(0);
     await expect(task).toBeFocused();
-    const session = task.locator('xpath=ancestor::li').getByRole('button', { name: /Session needs attention.*Open Session/ });
-    await expect(session).toHaveText('Session needs attention');
+    const session = task.locator('xpath=ancestor::li').getByRole('button', { name: /Needs attention.*Open Session/ });
+    await expect(session).toHaveText('Needs attention');
     await session.focus(); await page.keyboard.press('Enter');
     await expect(taskDialog.getByRole('tab', { name: 'Session', exact: true })).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Escape'); await expect(session).toBeFocused();
@@ -500,5 +500,55 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) {
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect(machine).toHaveText(`${locale === 'en' ? 'Claim machine: ' : '认领机器：'}${longWorker}`);
     await expect(page.getByRole('link', { name: longTask, exact: true })).toBeVisible();
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`unified status preserves focused entrance until withdrawal at ${width}px in ${locale}`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    let state: 'working' | 'notice' | 'warning' = 'working';
+    let needsAttention = false, canOpen = true;
+    const example = row(1);
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
+      ...payload, totalTaskCount: 1, totalProjectCount: 1, sessionPartial: false,
+      items: [{ ...example, project: { ...project, matchedTaskCount: 1 },
+        task: { ...example.task, paused: true, startedAt: '2026-11-13T07:00:00Z' },
+        session: { ...registered, needsAttention, indicator: state }, sessionRow: { ...sessionRow, state, needsAttention, canOpen } }],
+    }, headers: { 'Daynight-User-ID': userId } }));
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    await page.getByLabel('Language').selectOption(locale);
+    const item = page.getByRole('link', { name: longTask, exact: true }).locator('xpath=ancestor::li');
+    const title = item.locator('.task-row-title');
+    const status = item.locator('.task-row-primary-status');
+    const action = item.getByRole('button', { name: locale === 'en' ? /Open Session/ : /打开 Session/ });
+    await expect(action).toHaveText(locale === 'en' ? 'Working' : '工作中');
+    await expect(item.locator('.task-paused-badge')).toBeVisible();
+    await expect(item.locator('.task-stuck-label')).toBeVisible();
+    await expect(action).toHaveCSS('color', 'rgb(40, 91, 159)');
+    await page.screenshot({ path: info.outputPath('unified-working-overdue.png') });
+    await action.focus();
+    const original = await action.elementHandle();
+    const refresh = async () => {
+      // A programmatic activation keeps focus on the observed control while the real refresh publishes the response.
+      await page.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).evaluate((element: HTMLButtonElement) => element.click());
+    };
+    for (const next of [
+      { state: 'notice' as const, attention: true, en: 'Needs a response', zh: '需要响应' },
+      { state: 'warning' as const, attention: true, en: 'Needs attention', zh: '需要关注' },
+      { state: 'warning' as const, attention: false, en: 'Needs checking', zh: '需要检查' },
+    ]) {
+      state = next.state; needsAttention = next.attention; await refresh();
+      await expect(action).toHaveText(locale === 'en' ? next.en : next.zh);
+      await expect(action).toBeFocused();
+      expect(await original!.evaluate(element => element === document.activeElement)).toBe(true);
+      await expect(action).toHaveCSS('color', 'rgb(128, 91, 39)');
+      await expect(status).toHaveCount(1);
+    }
+    canOpen = false; await refresh();
+    await expect(action).toHaveCount(0);
+    await expect(title).toBeFocused();
+    await expect(status).toContainText(locale === 'en' ? 'Needs checking' : '需要检查');
+    await expect(status.locator('.task-row-status-lifecycle')).toHaveText(locale === 'en' ? ', In progress' : '，进行中');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }

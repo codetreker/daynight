@@ -432,7 +432,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     for (const [index, status] of statuses.entries()) {
       const row = taskRow(page.locator(`#standalone-task-${ids[index]}`));
       await expect(row).toHaveAttribute('data-task-status', status);
-      await expect(row.locator('.root-status')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-row-primary-status')).toHaveCSS('font-size', '12px');
       await expect(row.locator('.task-platform')).toHaveCSS('font-size', '12px');
       await expect(row.locator('.task-platform')).toHaveText(['Windows', 'Linux', 'macOS', locale === 'en' ? 'Any platform' : '不限平台', locale === 'en' ? 'Any platform' : '不限平台'][index]!);
       await expect(row.locator('.task-row-title')).toHaveCSS('font-size', '14px');
@@ -453,14 +453,14 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       for (const hover of [false, true]) {
         if (hover) await row.hover();
         await expect(row).toHaveCSS('background-color', roleColors[status][hover ? 1 : 0]);
-        for (const selector of ['.task-row-title', '.task-row-meta', '.root-status']) await expectTextContrast(row.locator(selector));
+        for (const selector of ['.task-row-title', '.task-row-meta', '.task-row-primary-status']) await expectTextContrast(row.locator(selector));
         if (index % 2 === 0) await expectTextContrast(badge);
       }
     }
     const overdue = taskRow(page.locator(`#standalone-task-${overdueId}`)), blocked = taskRow(page.locator(`#standalone-task-${blockedId}`));
     await page.mouse.move(0, 0);
     await expect(overdue).toHaveCSS('background-color', roleColors.attention[0]);
-    await expect(overdue.locator('.root-status')).toHaveCSS('color', roleColors.in_progress[3]);
+    await expect(overdue.locator('.task-row-primary-status')).toHaveCSS('color', 'rgb(85, 97, 118)');
     await expect(overdue.locator('.task-stuck-label')).toBeVisible();
     await expect(overdue.locator('.task-agent-permission')).toHaveCount(1);
     await expectTextContrast(overdue.locator('.task-agent-permission'));
@@ -513,7 +513,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
   });
 }
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) test(`project Session entries remain separate and fit at ${width}px in ${locale}`, async ({ page }) => {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) test(`project Session entries remain separate and fit at ${width}px in ${locale}`, async ({ page }, info) => {
   const goalId = '00000000-0000-4000-8000-000000000060';
   const memberId = '00000000-0000-4000-8000-000000000061';
   const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
@@ -535,6 +535,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   const assertFit = async (item: Locator) => {
     const action = item.getByRole('button', { name: openLabel });
     await expect(action).toBeVisible(); await expectTextContrast(action);
+    await expect(item.locator('.task-row-primary-status')).toHaveCount(1);
+    await expect(action).toHaveAttribute('title', locale === 'en' ? 'Open Session' : '打开 Session');
+    await expect(action).toHaveAccessibleName(new RegExp(locale === 'en' ? 'In progress.*Open Session' : '进行中.*打开 Session'));
+    await expect(action).toHaveCSS('text-decoration-line', 'underline');
     await expect(action).toHaveCSS('font-size', '12px');
     await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '12px');
     await expect(action).toHaveCSS('min-height', '36px');
@@ -546,7 +550,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await expect(action).toHaveCSS('font-size', '18px');
     await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '18px');
     expect(await item.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(item.locator('.root-status')).toHaveCSS('font-size', '18px');
+    await expect(item.locator('.task-row-primary-status')).toHaveCSS('font-size', '18px');
     if (await item.locator('.task-paused-badge').count()) await expect(item.locator('.task-paused-badge')).toHaveCSS('font-size', '18px');
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     expect(await item.evaluate(element => {
@@ -561,7 +565,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
   const standalone = taskRow(page.locator(`#standalone-task-${standaloneId}`));
   const standaloneAction = await assertFit(standalone);
-  await expect(standaloneAction).toHaveText(locale === 'en' ? 'Session working · Needs attention' : 'Session 工作中 · 需要关注');
+  await expect(standaloneAction).toHaveText(locale === 'en' ? 'Needs attention' : '需要关注');
+  await page.screenshot({ path: info.outputPath('unified-standalone.png') });
   await expect(standalone.locator('.task-paused-badge')).toHaveCSS('font-size', '12px');
   const titleWidth = await standalone.locator('.task-row-title').evaluate(element => element.getBoundingClientRect().width);
   expect(titleWidth).toBeGreaterThanOrEqual(width === 320 ? 100 : 240);
@@ -575,7 +580,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   const chainToggle = page.locator(`#task-root-${taskId}`);
   const chainAction = await assertFit(taskRow(page.locator(`#chain-task-${taskId}-${successorId}`)));
   await expect(chainAction).toHaveCSS('color', roleColors.attention[3]);
-  await expect(chainAction).toHaveText(locale === 'en' ? 'Session needs a response' : 'Session 需要响应');
+  await expect(chainAction).toHaveText(locale === 'en' ? 'Needs a response' : '需要响应');
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${successorId}/sessions/current`);
@@ -588,7 +593,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await goalToggle.click();
   const goalAction = await assertFit(page.locator(`[data-goal-id="${goalId}"] .task-row`).first());
   await expect(goalAction).toHaveCSS('color', roleColors.attention[3]);
-  await expect(goalAction).toHaveText(locale === 'en' ? 'Session needs checking' : 'Session 需要检查');
+  await expect(goalAction).toHaveText(locale === 'en' ? 'Needs checking' : '需要检查');
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${memberId}/sessions/current`);
@@ -736,11 +741,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
       await expect(element.locator('.task-agent-permission')).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
       await expect(element.locator('.project-session-text')).toHaveCSS('font-size', '12px');
     }
-    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '12px');
+    for (const selector of ['.task-platform', '.task-row-primary-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '12px');
     for (const selector of ['.task-row-title', '.assignee-name']) await expect(element.locator(selector)).toHaveCSS('font-size', '14px');
     expect(await element.evaluate(row => row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
-    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission', '.project-session-text'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '18px');
+    for (const selector of ['.task-platform', '.task-row-primary-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission', '.project-session-text'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '18px');
     await expect(element.locator('.task-row-title')).toHaveCSS('font-size', '21px');
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     return element.evaluate(row => ({ meta: Array.from(row.querySelector('.task-row-meta')!.children).filter(child => !child.matches('.task-row-goal')).map(child => child.textContent), state: row.querySelector('.task-row-status')!.textContent, background: getComputedStyle(row).backgroundColor, titleSize: getComputedStyle(row.querySelector('.task-row-title')!).fontSize, idSize: getComputedStyle(row.querySelector('.task-row-id')!).fontSize }));

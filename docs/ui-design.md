@@ -122,15 +122,23 @@ An error feedback panel does not create a failed Task lifecycle state.
 
 Preserve the existing overdue precedence: eligible ordinary Task rows and graph
 cards may use the attention background over their lifecycle background, while
-retaining the genuine in-progress label and overdue icon or explanation. This
-override does not propagate to chain or overview summaries. Blocked and paused
+retaining the genuine in-progress state and overdue icon or explanation. Ordinary
+Task rows keep the genuine lifecycle available to assistive technology while their
+[single primary status](design/task-session-status.md#普通-task-行) may display
+Session activity or attention. Overdue presentation does not replace that phrase;
+a working observation still reads Working. Graph cards retain their lifecycle
+label. This override does not propagate to chain or overview summaries. Blocked and paused
 items retain their lifecycle background with attention badges, counts, or an
 existing strip.
 
 Actual Session work, running tools, and active Worker claims use activity blue
 from `in_progress`. Completed tool results use `done`; failed results use `error`.
 Waiting for input uses `attention`. Session summary `notice` and `warning` both
-use `attention`, retaining their distinct text and aggregation priority; a
+use `attention`, retaining their distinct text and aggregation priority. Ordinary
+Task rows use attention for notice, warning, or a valid attention flag; notice
+selects Needs a response, otherwise attention selects Needs attention. Working
+uses activity only when no attention flag takes precedence. The shared row has
+one visible primary phrase while preserving accessible lifecycle information; a
 warning name, disconnection, or stopped Session alone does not establish failure.
 
 A green online dot expresses runtime availability. Its adjacent header label

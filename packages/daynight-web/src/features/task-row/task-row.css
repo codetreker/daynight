@@ -19,6 +19,10 @@
 .task-row-execution { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .task-row .task-row-status { display: flex; flex-direction: row; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .task-row-status .project-session-status { position: static; }
+.task-row-status-lifecycle { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.task-row .project-session-control:is([data-session-state="no_session"], [data-session-state="not_registered"], [data-session-state="pending"], [data-session-state="unavailable"], [data-session-state="unobserved"], [data-session-state="expired"]) { color: var(--task-helper); }
+.task-row .project-session-text[data-session-state="working"] { color: var(--task-in_progress-ink); }
+.task-row .task-row-primary-status[data-needs-attention] { color: var(--task-attention-ink); }
 .goal-task-list > .task-row-item + .task-row-item { border-top: 0; }
 .goal-task-list .task-row { padding-inline-start: calc(var(--task-row-inline-padding) + var(--member-content-indent)); border-radius: 0; }
 @media (max-width: 650px) {
