@@ -961,7 +961,7 @@ test('overview paused selection preserves the task list assignee, category and p
   const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
   await pagination.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(pagination).toContainText('Page 2 of 2');
-  const visibleIds = await page.locator('.task-row-item .root-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')));
+  const visibleIds = await page.locator('.task-row-item .task-row-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')));
   expect(visibleIds.length).toBeGreaterThan(0);
   await expect(page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count')).toContainText('1');
   await page.locator('#project-section-tab-overview').click();
@@ -976,7 +976,7 @@ test('overview paused selection preserves the task list assignee, category and p
   await expect(assignee).toContainText('Assigned to me');
   await expect(page.locator('#project-task-tab-standalone')).toHaveAttribute('aria-selected', 'true');
   await expect(pagination).toContainText('Page 2 of 2');
-  expect(await page.locator('.task-row-item .root-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')))).toEqual(visibleIds);
+  expect(await page.locator('.task-row-item .task-row-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')))).toEqual(visibleIds);
   expect(writes).toEqual([]);
 });
 
@@ -1015,7 +1015,7 @@ for (const section of ['overview', 'tasks'] as const) test(`${section} paused de
   await expect(dialog).toHaveAccessibleName('Target task');
   updateTask({ properties: { paused: false }, version: 6n, updatedAt: '2026-10-23T09:00:00Z' });
   const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+  await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
   await refreshed;
   await expect(badge).toHaveCount(0);
   await dialog.locator('.task-detail-close').click();
@@ -1027,9 +1027,13 @@ for (const section of ['overview', 'tasks'] as const) test(`${section} paused de
 test('overview paused menu retains admitted tasks on refresh failure and withdraws them on denied access', async ({ page }) => {
   const writes = await install(page, false, false, false, false, true);
   let failure: number | null = null;
+  await page.route(`**/api/v1/projects/${projectId}/access`, route => failure === 404 ? route.fulfill({ status: 404,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: 'not_found', message: 'Project access withdrawn', requestId: 'access-withdrawn' } }),
+  }) : route.fallback());
   await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => failure === null ? route.fallback() : route.fulfill({ status: failure,
     headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
-    body: JSON.stringify({ error: { code: failure === 403 ? 'forbidden' : 'unavailable', message: 'Project snapshot unavailable', requestId: `snapshot-${failure}` } }),
+    body: JSON.stringify({ error: { code: failure === 404 ? 'not_found' : 'unavailable', message: 'Project snapshot unavailable', requestId: `snapshot-${failure}` } }),
   }));
   await page.goto(`/projects/${projectId}`);
   const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
@@ -1039,13 +1043,13 @@ test('overview paused menu retains admitted tasks on refresh failure and withdra
   const refresh = async (status: number) => {
     failure = status;
     const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && result.status() === status);
-    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+    await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
     await response;
   };
   await refresh(503);
   await expect(menu.getByRole('menuitem')).toBeFocused();
   await expect(menu.getByRole('menuitem')).toContainText('Target task');
-  await refresh(403);
+  await refresh(404);
   await expect(menu).toHaveCount(0);
   await expect(badge).toHaveCount(0);
   expect(writes).toEqual([]);
@@ -1162,7 +1166,8 @@ for (const section of ['overview', 'tasks'] as const) for (const [width, locale]
     await page.goBack();
     await expect(badge).toBeFocused();
     await badge.click();
-    await page.locator(`#project-section-tab-${section === 'overview' ? 'tasks' : 'overview'}`).click();
+    await page.locator(`#project-section-tab-${section === 'overview' ? 'tasks' : 'overview'}`).focus();
+    await page.keyboard.press('Enter');
     await expect(menu).toHaveCount(0);
     expect(writes).toEqual([]);
   });
@@ -1189,7 +1194,7 @@ for (const section of ['overview', 'tasks'] as const) test(`${section} paused po
   await expect(rows.first()).toBeFocused();
   const refresh = async () => {
     const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+    await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
     await response;
   };
   await refresh();
@@ -1208,9 +1213,8 @@ for (const section of ['overview', 'tasks'] as const) test(`${section} paused po
   await expect(rows.first()).toBeFocused();
   deleteTask();
   await refresh();
-  await expect(menu).toHaveCount(0);
   await expect(badge).toContainText('1');
-  await badge.click();
+  await expect(menu).toBeVisible();
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('History origin');
   await expect(rows.first()).toBeFocused();
@@ -1244,7 +1248,7 @@ for (const section of ['overview', 'tasks'] as const) test(`${section} many paus
   await page.bringToFront();
   await otherPage.close();
   const refreshed = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+  await page.locator('[data-project-action="refresh"]').evaluate((element: HTMLButtonElement) => element.click());
   await refreshed;
   await expect(menu.getByRole('menuitem').last()).toBeFocused();
   expect(await menu.evaluate(element => element.scrollTop)).toBe(scrollTop);
