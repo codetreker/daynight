@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -16,8 +17,27 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/google/uuid"
 )
+
+func TestRegisterScopedGrantRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	auth := &authhttp.Authentication{RequestAuthentication: &authhttp.RequestAuthentication{}}
+	RegisterScopedRoutes(mux, observedLifecycle{}, &scopedStub{}, auth, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct{ method, path, pattern string }{
+		{"GET", "/api/v3/oauth/grants", "GET /api/v3/oauth/grants"},
+		{"HEAD", "/api/v3/oauth/grants", "HEAD /api/v3/oauth/grants"},
+		{"PATCH", "/api/v3/oauth/grants/123/scopes", "PATCH /api/v3/oauth/grants/{id}/scopes"},
+		{"POST", "/api/v3/oauth/grants/123/scopes", "/api/v3/oauth/grants/{id}/scopes"},
+	} {
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		_, pattern := mux.Handler(r)
+		if pattern != tc.pattern {
+			t.Errorf("%s %s matched %q, want %q", tc.method, tc.path, pattern, tc.pattern)
+		}
+	}
+}
 
 type scopedStub struct {
 	items   []store.OAuthGrant
