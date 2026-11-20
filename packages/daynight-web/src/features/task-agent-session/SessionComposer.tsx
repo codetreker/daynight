@@ -391,7 +391,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   else if (!sendReady) notice = m.readOnly;
   useLayoutEffect(() => {
     if (!active) return;
-    const form = formRef.current!, section = form.closest('.task-agent-session');
+    const form = formRef.current!, section = form.closest<HTMLElement>('.task-agent-session');
     const taskBody = form.closest<HTMLElement>('.task-detail-body');
     const standalone = form.closest<HTMLElement>('.test-session-shell .content');
     const owner = taskBody ?? standalone;
