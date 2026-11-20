@@ -20,7 +20,12 @@ bottom right. Container queries on the composer's inner surface choose the
 number of group rows. Their thresholds use the actual inner width budget for
 settings, buttons and gaps, rather than a prototype container width that includes
 outer padding. Without visible activity or Interrupt, ordinary Send shares the
-settings row from 234px. Longer pending, command or steer actions, and a visible
+settings row from 234px without an image entry, or 276px with it. At 276px to
+324px, the image-enabled idle row reduces its gaps and trigger padding and lets
+the model shrink to 44px. Image-enabled thresholds grow with the root font size
+while retaining their pixel minimums, accommodating larger labels and the fixed
+image target. Below 236px at the default root size, its settings flow in two ordered rows;
+the primary actions remain together on the last row. Longer pending, command or steer actions, and a visible
 Interrupt even when status is hidden, keep a separate row until the full
 single-row width is available. When status and
 actions share a row, their width budgets preserve readable space for each; the
@@ -70,8 +75,7 @@ height. Container geometry and actual Session pages must be checked alongside
 operation and keyboard regression tests. Mobile viewport simulation does not
 establish real-device keyboard behavior.
 
-Session headers and outer page spacing remain separately owned. Attachment
-input is deferred; the settings group remains an explicit place for
-capability-dependent entries, but adding one requires rechecking its width
-budget and thresholds. This avoids coupling future entries to activity or
-submission without claiming arbitrary extra controls fit the current layout.
+Session headers and outer page spacing remain separately owned. The original
+decision reserved a place for capability-dependent entries without assuming
+their width; the image entry now has its own measured width budget. Further
+entries still require their own budget rather than arbitrary individual wrapping.

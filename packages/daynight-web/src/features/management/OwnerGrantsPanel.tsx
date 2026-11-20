@@ -166,7 +166,7 @@ const OwnerGrantsContent = ({ user, onIdentityMismatch, transport, visible }: {
   const uncertain = recovery?.kind === "unknown";
   return <>
     <section className="panel" aria-labelledby="grants-title">
-      <div className="panel-heading"><div><h2 id="grants-title" ref={heading} tabIndex={-1}>{m.grantsTitle}</h2><p>{m.grantsDescription}</p></div><button className="button" type="button" disabled={loading || pending} aria-busy={loading} onClick={refresh}>{m.grantsRefresh}</button></div>
+      <div className="panel-heading panel-heading-description"><div><h2 id="grants-title" ref={heading} tabIndex={-1}>{m.grantsTitle}</h2><p>{m.grantsDescription}</p></div><button className="button" type="button" disabled={loading || pending} aria-busy={loading} onClick={refresh}>{m.grantsRefresh}</button></div>
       {grants === null && loading && <div className="empty-inline" role="status">{m.grantsLoading}</div>}
       {error !== null && selected === null && <div className="grant-status-notice"><ManagementError error={error} retry={refresh} /></div>}
       {storageError && <div className="notice error grant-status-notice" role="alert">{m.grantStorage}</div>}

@@ -1086,3 +1086,114 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     }
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390, 600, 601, 1280]) {
+  test(`ordinary task tabs retain one row and navigation at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const surface = page.locator('.task-detail-page');
+    const bar = surface.locator('.ordinary-task-tabs-wrap [role=tablist]');
+    const usage = bar.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量' });
+    await expect(usage).toHaveAttribute('aria-selected', 'true');
+    const geometry = () => bar.evaluate(element => {
+      const barBox = element.getBoundingClientRect();
+      const tabs = [...element.querySelectorAll<HTMLElement>('[role=tab]')].map(tab => tab.getBoundingClientRect());
+      const selected = element.querySelector<HTMLElement>('[aria-selected=true]')!.getBoundingClientRect();
+      return { singleRow: tabs.every(tab => Math.abs(tab.top - tabs[0]!.top) < 1), height: barBox.height,
+        selectedVisible: selected.left >= barBox.left && selected.right <= barBox.right,
+        pageFits: document.documentElement.scrollWidth <= innerWidth };
+    });
+    expect(await geometry()).toMatchObject({ singleRow: true, selectedVisible: true, pageFits: true });
+    if (width <= 600) expect((await geometry()).height).toBeLessThan(50);
+    await usage.focus(); await page.keyboard.press('Home');
+    await expect(bar.getByRole('tab').first()).toBeFocused();
+    await page.keyboard.press('ArrowRight'); await expect(bar.getByRole('tab').nth(1)).toBeFocused();
+    await page.keyboard.press('End'); await expect(usage).toBeFocused();
+    expect((await geometry()).selectedVisible).toBe(true);
+    if (await bar.evaluate(element => element.scrollWidth > element.clientWidth + 1)) {
+      await expect(surface.locator('.ordinary-task-tabs-edge.start')).toBeVisible();
+      await bar.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+      await expect(surface.locator('.ordinary-task-tabs-edge.end')).toBeHidden();
+      await bar.evaluate(element => { element.scrollLeft = 0; });
+      await expect(surface.locator('.ordinary-task-tabs-edge.end')).toBeVisible();
+      await expect(usage).toHaveAttribute('aria-selected', 'true');
+    }
+    await page.goBack(); await page.goForward();
+    await expect(usage).toHaveAttribute('aria-selected', 'true');
+    expect((await geometry()).selectedVisible).toBe(true);
+  });
+}
+
+test('narrow task tabs preserve reading state across dialog, fullscreen and short viewports', async ({ page }) => {
+  const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
+    workerId: '00000000-0000-4000-8000-000000000072', worktreeId: '00000000-0000-4000-8000-000000000073',
+    machine: { id: '00000000-0000-4000-8000-000000000074', name: 'Worker' }, platform: 'linux' as const,
+    agent: 'codex' as const, agentControlMode: 'web' as const, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+  const task = detailFixture(projectId, taskId, { title: 'Reading task', description, version: 5n, status: 'in_progress', startedAt: time, properties: { worker } });
+  const state = await install(page, false, false, 'unused', [task], true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
+  await page.locator(`#standalone-task-${taskId}`).click();
+  const dialog = page.locator('.task-detail-dialog');
+  const bar = dialog.locator('.ordinary-task-tabs-wrap [role=tablist]');
+  await expect(bar.getByRole('tab')).toHaveCount(6);
+  await expect(dialog.getByRole('button', { name: 'Dismiss notification' })).toHaveCount(2);
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
+  await bar.evaluate(element => { element.scrollLeft = 0; });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+  const barBox = (await bar.boundingBox())!;
+  const x = barBox.x + barBox.width - 35, y = barBox.y + barBox.height / 2;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  for (let distance = 20; distance <= 160; distance += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x - distance, y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect.poll(() => bar.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  await expect(bar.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await cdp.detach();
+  const overview = dialog.locator('.task-detail-panel-overview');
+  await overview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const scroll = await overview.evaluate(element => element.scrollTop); expect(scroll).toBeGreaterThan(0);
+  const outerScroll = await page.evaluate(() => [window.scrollX, window.scrollY]);
+  await page.setViewportSize({ width: 375, height: 844 });
+  expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
+  expect(await page.evaluate(() => [window.scrollX, window.scrollY])).toEqual(outerScroll);
+  await bar.getByRole('tab', { name: 'Discussion' }).click();
+  expect(await bar.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
+    return selected.left >= box.left + 11 && selected.right <= box.right - 11;
+  })).toBe(true);
+  const draft = dialog.locator('.thread-composer textarea'); await draft.fill('Retained draft');
+  await bar.getByRole('tab', { name: 'Usage' }).click();
+  await bar.getByRole('tab', { name: 'Overview' }).click();
+  expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
+  await bar.getByRole('tab', { name: 'Discussion' }).click(); await expect(draft).toHaveValue('Retained draft');
+  await dialog.getByRole('button', { name: 'Enter fullscreen' }).click();
+  await expect(draft).toHaveValue('Retained draft');
+  await page.setViewportSize({ width: 320, height: 490 });
+  await bar.getByRole('tab', { name: 'Discussion' }).press('End');
+  await expect(bar.getByRole('tab', { name: 'Usage' })).toBeFocused();
+  expect(await bar.evaluate(element => {
+    const outer = element.getBoundingClientRect();
+    const boxes = [...element.querySelectorAll('[role=tab]')].map(tab => tab.getBoundingClientRect());
+    const last = boxes[boxes.length - 1]!;
+    return boxes.every(box => Math.abs(box.top - boxes[0]!.top) < 1) && last.left >= outer.left && last.right <= outer.right && document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+  await bar.getByRole('tab', { name: 'Discussion' }).click(); await expect(draft).toHaveValue('Retained draft');
+  expect(state.writes).toEqual([]);
+  await page.setViewportSize({ width: 601, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+  const pageBar = page.locator('.task-detail-page .ordinary-task-tabs-wrap [role=tablist]');
+  await expect(pageBar.getByRole('tab')).toHaveCount(6);
+  await expect.poll(() => pageBar.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const selected = element.querySelector('[aria-selected=true]')!.getBoundingClientRect();
+    return element.scrollWidth > element.clientWidth && selected.left >= box.left && selected.right <= box.right && document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+});

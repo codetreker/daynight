@@ -23,23 +23,23 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty' | 'interaction';
-async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false) {
+type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six';
+async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false, options: { timelineGate?: Promise<void>; timelineStarted?: () => void; failResponse?: boolean } = {}) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content === 'interaction' } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && content.startsWith('interaction') } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : content === 'interaction' ? [{
+  const entries = content === 'empty' ? [] : content.startsWith('interaction') ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
-    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
+    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: archived ? 'expired' : 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
-      { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) },
+      { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: content === 'interaction' ? Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) : (locale === 'en' ? ['Standard', 'Development configuration with validation and local diagnostics enabled', 'path/with/a/very/long/unbroken/segment/abcdefghijklmnopqrstuvwxyz0123456789', 'Validation profile alpha', 'Validation profile beta', 'Read-only preview'] : ['标准配置', '使用包含验证及本地诊断的标准开发配置', '路径/包含很长的连续片段/abcdefghijklmnopqrstuvwxyz0123456789', '验证配置甲', '验证配置乙', '只读预览']).slice(0, content === 'interaction-two' ? 2 : 6).map((label, index) => ({ id: `feature-${index}`, label })) },
       { fieldId: 'enabled', label: 'Enabled flag', type: 'boolean', required: true },
     ] },
   }] : Array.from({ length: content === 'long' ? 30 : 1 }, (_, index) => ({ entryId: `00000009-1111-4111-8111-${String(index + 1).padStart(12, '0')}`, entrySeq: String(index + 1), revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: content === 'long' ? `### Message ${index + 1}\n\nSession column acceptance conversation. Long content wraps within the reading column. 中文正文与输入框保持一致。\n\n\`\`\`text\n${'long_code_without_spaces_'.repeat(60)}\n\`\`\`` : 'Session column acceptance conversation' }] }));
@@ -78,13 +78,18 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
     if (path === `${root}/commands` && request.method() === 'POST') {
       const command = request.postDataJSON() as SessionCommand;
       settingUpdate.resolve(command);
+      if (options.failResponse && command.kind === 'interaction_response') return send({ error: { code: 'invalid_request', message: 'Response unavailable', requestId: source.sessionId } }, 400);
       await settingReceipt.promise;
       return send({ operation: { protocol: snapshot.protocol, ...sessionFence(snapshot), operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'handled', error: null }, operationUrl: `${root}/operations/${command.operationId}` }, 202);
     }
     if (path === (entry === 'task' ? `${taskRoot}/sessions/current` : root)) {
       observations.currentReads++; return send(entry === 'task' ? { status: 'registered', session: snapshot } : { session: snapshot });
     }
-    if (path === `${root}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries, resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    if (path === `${root}/timeline`) {
+      options.timelineStarted?.();
+      await options.timelineGate;
+      return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries, resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    }
     if (path === `${root}/archive`) return send({ archive: { state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null } });
     if (path === `${root}/archive/content`) return send({ archive: { schemaVersion: 1, ...sessionFence(snapshot), controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, provider, nativeSessionId: snapshot.identity.nativeSessionId, entries, resources: [] } });
     if (path.endsWith('/attachments') || path.endsWith('/steps')) return send({ items: [], nextCursor: null });
@@ -130,6 +135,205 @@ async function assertColumn(page: Page) {
 async function scrollbarMode(page: Page, mode: 'native' | 'classic' | 'stable') {
   if (mode === 'native') return;
   await page.addStyleTag({ content: `.session-timeline::-webkit-scrollbar { width: 17px; height: 17px; } .session-timeline { scrollbar-gutter: ${mode === 'stable' ? 'stable both-edges' : 'auto'}; }` });
+}
+
+async function imageFooterGeometry(page: Page) {
+  return page.locator('.session-composer-footer-default').evaluate(footer => {
+    const surface = footer.closest<HTMLElement>('.session-composer-surface')!;
+    const nodes = [...footer.querySelectorAll<HTMLElement>('.session-controls-toolbar button, .session-actions button')];
+    const rect = (node: Element) => node.getBoundingClientRect().toJSON();
+    const style = getComputedStyle(surface);
+    return { contentWidth: surface.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      footer: rect(footer), surface: rect(surface), controls: nodes.map(rect),
+      overflow: footer.scrollWidth > footer.clientWidth || surface.scrollWidth > surface.clientWidth };
+  });
+}
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN']) {
+  test(`${entry} ${locale} aligns image and send actions at narrow content widths`, async ({ browser }, info) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true });
+    try {
+      const page = await context.newPage();
+      const { observations, publishConfirmedModel } = await open(page, locale, 'idle', entry);
+      const image = page.locator('.session-add-images'), input = page.locator('.session-composer textarea');
+      const send = page.locator('.session-primary-actions button[type=submit]');
+      await expect(image).toBeEnabled(); await expect(send).toBeDisabled();
+      const empty = await imageFooterGeometry(page);
+      await input.fill('Draft for the image toolbar'); await expect(send).toBeEnabled();
+      const filled = await imageFooterGeometry(page);
+      expect(empty.contentWidth).toBe(278); expect(filled.footer.height).toBe(44);
+      expect(empty.footer.height).toBe(filled.footer.height);
+      const evidence: Array<Record<string, unknown>> = [{ viewport: 320, ...filled }];
+      for (const measured of [empty, filled]) {
+        expect(measured.controls).toHaveLength(5); expect(measured.overflow).toBe(false);
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        expect(measured.controls[3]!.width).toBe(44); expect(measured.controls[3]!.height).toBe(44);
+        for (const control of measured.controls) expect(control.height).toBeGreaterThanOrEqual(36);
+      }
+      const originalInput = await input.elementHandle();
+      for (const width of [375, 390, 768, 1360]) {
+        await page.setViewportSize({ width, height: 844 });
+        const measured = await imageFooterGeometry(page);
+        expect(measured.overflow).toBe(false);
+        expect(measured.controls[4]!.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        expect(await input.evaluate((node, original) => node === original, originalInput)).toBe(true);
+        await expect(input).toHaveValue('Draft for the image toolbar');
+        evidence.push({ viewport: width, ...measured });
+      }
+      // Exercise the query against the real surface content width in a narrow embedded panel.
+      await page.setViewportSize({ width: 1360, height: 844 });
+      for (const width of [235, 256, 275, 276, 277]) {
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await imageFooterGeometry(page);
+        expect(measured.contentWidth).toBe(width); expect(measured.overflow).toBe(false);
+        const settings = measured.controls.slice(0, 4), action = measured.controls[4]!;
+        expect(action.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        expect(measured.footer.right - action.right).toBeLessThanOrEqual(1);
+        if (width < 276) expect(action.top).toBeGreaterThanOrEqual(Math.max(...settings.map(rect => rect.bottom)) - 1);
+        else {
+          const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+          expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        }
+        evidence.push({ viewport: width, ...measured });
+      }
+      await page.locator('.session-composer-surface').evaluate(node => { node.style.removeProperty('width'); node.style.removeProperty('box-sizing'); });
+      await page.setViewportSize({ width: 320, height: 640 });
+      await page.locator('.session-fullscreen-toggle').click();
+      const fullscreen = await imageFooterGeometry(page);
+      expect(fullscreen.overflow).toBe(false);
+      expect(fullscreen.controls[4]!.right).toBeLessThanOrEqual(fullscreen.footer.right + 1);
+      evidence.push({ viewport: 320, fullscreen: true, ...fullscreen });
+      await page.keyboard.press('Escape');
+      for (const size of [12, 20, 24]) for (const width of [235, 256, 278]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, size);
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await imageFooterGeometry(page);
+        expect(measured.overflow).toBe(false);
+        for (const [index, control] of measured.controls.entries()) {
+          expect(control.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(control.right).toBeLessThanOrEqual(measured.footer.right + 1);
+          for (const other of measured.controls.slice(index + 1)) {
+            const overlapX = Math.min(control.right, other.right) - Math.max(control.left, other.left);
+            const overlapY = Math.min(control.bottom, other.bottom) - Math.max(control.top, other.top);
+            expect(overlapX <= 1 || overlapY <= 1).toBe(true);
+          }
+        }
+        expect(measured.footer.right - measured.controls[4]!.right).toBeLessThanOrEqual(1);
+        evidence.push({ viewport: 320, rootFontSize: size, ...measured });
+      }
+      await page.evaluate(() => { document.documentElement.style.removeProperty('font-size'); });
+      await page.locator('.session-composer-surface').evaluate(node => { node.style.removeProperty('width'); node.style.removeProperty('box-sizing'); });
+      const model = page.locator('.session-model-trigger');
+      const modelParts = await model.evaluate(node => {
+        const label = node.querySelector<HTMLElement>('.session-model-label')!, caret = node.querySelector<HTMLElement>('.session-control-caret')!;
+        const button = node.getBoundingClientRect(), arrow = caret.getBoundingClientRect();
+        return { truncated: label.scrollWidth > label.clientWidth, arrowLeft: arrow.left, arrowRight: arrow.right, buttonLeft: button.left, buttonRight: button.right };
+      });
+      expect(modelParts.truncated).toBe(true);
+      expect(modelParts.arrowLeft).toBeGreaterThanOrEqual(modelParts.buttonLeft);
+      expect(modelParts.arrowRight).toBeLessThanOrEqual(modelParts.buttonRight);
+      await model.click();
+      await expect(page.locator('.session-controls-panel')).toContainText('A long native model name for layout verification');
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.session-controls-panel')).toHaveCount(0);
+      await model.focus(); await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Permissions', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(page.locator('.session-command-trigger')).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(image).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(send).toBeFocused();
+      publishConfirmedModel();
+      await expect(model).toContainText('Native B');
+      const shortModel = await imageFooterGeometry(page);
+      const shortCenters = shortModel.controls.map(rect => rect.top + rect.height / 2);
+      expect(shortModel.overflow).toBe(false);
+      expect(Math.max(...shortCenters) - Math.min(...shortCenters)).toBeLessThanOrEqual(1);
+      evidence.push({ viewport: 320, model: 'Native B', ...shortModel });
+      const chooser = page.waitForEvent('filechooser'); await image.tap();
+      expect((await chooser).isMultiple()).toBe(true);
+      await expect(input).toHaveValue('Draft for the image toolbar');
+      await send.tap();
+      await expect.poll(() => observations.writes.some(write => write.endsWith('/commands'))).toBe(true);
+      expect(observations.pageErrors).toEqual([]);
+      await info.attach('image-footer-geometry', { body: JSON.stringify({ entry, locale, evidence, boundary: 'Production Web page with Session transport fixtures, touch emulation and Chromium; no native provider or physical device.' }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
+}
+
+test('preserves the no-image footer width policy', async ({ browser }, info) => {
+  const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, hasTouch: true });
+  try {
+    const page = await context.newPage(); await open(page, 'en', 'idle', 'test');
+    await page.locator('.session-add-images').waitFor({ state: 'visible' });
+    // The production Session always supplies an image binding; remove its button
+    // only to exercise the CSS policy for a composer without that entry.
+    await page.locator('.session-add-images').evaluate(node => node.remove());
+    const evidence = [];
+    for (const width of [233, 234, 256]) {
+      await page.locator('.session-composer-surface').evaluate((node, width) => {
+        node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+      }, width);
+      const measured = await imageFooterGeometry(page);
+      expect(measured.contentWidth).toBe(width); expect(measured.controls).toHaveLength(4);
+      expect(measured.overflow).toBe(false);
+      const settings = measured.controls.slice(0, 3), send = measured.controls[3]!;
+      if (width < 234) expect(send.top).toBeGreaterThanOrEqual(Math.max(...settings.map(rect => rect.bottom)) - 1);
+      else {
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+      }
+      evidence.push({ width, ...measured });
+    }
+    await info.attach('no-image-footer-geometry', { body: JSON.stringify({ evidence, boundary: 'Production CSS and markup with the image button removed as a layout fixture; not a product capability state.' }), contentType: 'application/json' });
+  } finally { await context.close(); }
+});
+
+for (const state of ['working', 'waiting_input'] as const) {
+  test(`image footer keeps ${state} groups distinct at desktop breakpoints and larger fonts`, async ({ browser }, info) => {
+    const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, hasTouch: true });
+    try {
+      const page = await context.newPage(); await open(page, 'en', state, 'test');
+      const evidence = [];
+      for (const size of [16, 20, 24]) for (const width of [516, 599, 600]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, size);
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await page.locator('.session-composer-footer-default').evaluate(footer => {
+          const nodes = [...footer.querySelectorAll<HTMLElement>(':scope > .session-controls-toolbar, :scope > .session-composer-activity, :scope > .session-primary-actions')];
+          return { footer: footer.getBoundingClientRect().toJSON(), groups: nodes.map(node => node.getBoundingClientRect().toJSON()),
+            buttons: [...footer.querySelectorAll<HTMLElement>('button')].map(node => node.getBoundingClientRect().toJSON()),
+            overflow: footer.scrollWidth > footer.clientWidth };
+        });
+        expect(measured.groups).toHaveLength(3); expect(measured.overflow).toBe(false);
+        for (const [index, control] of measured.groups.entries()) {
+          expect(control.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(control.right).toBeLessThanOrEqual(measured.footer.right + 1);
+          for (const other of measured.groups.slice(index + 1)) {
+            const overlapX = Math.min(control.right, other.right) - Math.max(control.left, other.left);
+            const overlapY = Math.min(control.bottom, other.bottom) - Math.max(control.top, other.top);
+            expect(overlapX <= 1 || overlapY <= 1).toBe(true);
+          }
+        }
+        for (const button of measured.buttons) {
+          expect(button.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(button.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        }
+        for (const button of measured.buttons.slice(0, 4)) {
+          expect(button.left).toBeGreaterThanOrEqual(measured.groups[0]!.left - 1);
+          expect(button.right).toBeLessThanOrEqual(measured.groups[0]!.right + 1);
+        }
+        evidence.push({ size, width, ...measured });
+      }
+      await info.attach('image-footer-activity-geometry', { body: JSON.stringify({ state, evidence }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
 }
 
 for (const entry of ['task', 'test', 'assistant'] as const) for (const content of ['short', 'long', 'empty'] as const) {
@@ -431,23 +635,109 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} timeline nati
   await toggle.click();
   const select = page.getByLabel('Destination region', { exact: true });
   await select.selectOption('eu');
-  const multiple = page.getByLabel('Enabled features', { exact: true });
-  await multiple.selectOption(['feature-1', 'feature-3']);
-  await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
-  await expect(multiple.locator('..').locator('svg')).toHaveCount(0);
-  expect(await multiple.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+  const first = page.getByRole('checkbox', { name: 'Feature 1', exact: true });
+  const third = page.getByRole('checkbox', { name: 'Feature 3', exact: true });
+  await first.check();
+  await third.check();
   await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
   await select.click();
   await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
   await page.keyboard.press('Escape');
   await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  await expect(select).toHaveValue('eu'); await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
+  await expect(select).toHaveValue('eu'); await expect(first).toBeChecked(); await expect(third).toBeChecked();
   await expect(page.getByLabel('Enabled flag', { exact: true })).toHaveValue('false');
   await page.keyboard.press('Escape');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
   expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
   await info.attach('native-interaction-cancel', { body: JSON.stringify({ entry, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true, multiple: ['feature-1', 'feature-3'], flag: false }), contentType: 'application/json' });
+});
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const content of ['interaction-two', 'interaction-six'] as const) {
+  test(`${entry} ${locale} ${content} wraps and submits form choices`, async ({ browser }, info) => {
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 640 }, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      const fixture = await open(page, locale, 'waiting_input', entry, content);
+      const rows = page.locator('.session-multiselect-choice');
+      const checks = rows.locator('input');
+      await expect(rows).toHaveCount(content === 'interaction-two' ? 2 : 6);
+      for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]] as const) {
+        await page.setViewportSize({ width, height });
+        const geometry = await rows.evaluateAll(nodes => nodes.map(node => {
+          const label = node as HTMLElement, text = label.querySelector('span')!;
+          return { width: label.clientWidth, scrollWidth: label.scrollWidth, textWidth: text.clientWidth, textScrollWidth: text.scrollWidth, height: label.getBoundingClientRect().height, font: getComputedStyle(label).fontSize };
+        }));
+        for (const row of geometry) {
+          expect(row.scrollWidth).toBeLessThanOrEqual(row.width);
+          expect(row.textScrollWidth).toBeLessThanOrEqual(row.textWidth);
+          expect(row.height).toBeGreaterThanOrEqual(44);
+          expect(row.font).toBe('16px');
+        }
+      }
+      await page.setViewportSize({ width: 320, height: 640 });
+      await rows.nth(1).tap();
+      await page.getByLabel('Destination region', { exact: true }).focus();
+      await page.keyboard.press('Tab');
+      await expect(checks.nth(0)).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
+      await rows.nth(1).evaluate(node => node.scrollIntoView({ block: 'center' }));
+      await rows.nth(1).click({ position: { x: 12, y: 10 } }); await expect(checks.nth(1)).not.toBeChecked();
+      await rows.nth(1).tap({ position: { x: 12, y: 10 } });
+      await page.setViewportSize({ width: 1360, height: 900 });
+      await page.setViewportSize({ width: 320, height: 640 });
+      await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
+      await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+      await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
+      await page.locator('.session-interaction button[type=submit]').evaluate(node => node.scrollIntoView({ block: 'center' }));
+      await page.locator('.session-interaction button[type=submit]').click();
+      const command = await fixture.settingUpdate;
+      expect(command.kind).toBe('interaction_response');
+      if (command.kind !== 'interaction_response') throw new Error('Expected interaction response');
+      expect(command.payload.response).toEqual({ kind: 'form', values: [
+        { fieldId: 'region', value: 'eu' }, { fieldId: 'features', value: ['feature-0', 'feature-1'] }, { fieldId: 'enabled', value: false },
+      ] });
+      await expect(checks.nth(0)).toBeDisabled();
+      fixture.confirmSetting();
+      expect(fixture.observations.pageErrors).toEqual([]);
+      await info.attach('form-choices', { body: JSON.stringify({ entry, locale, content, widths: [320, 375, 390, 768, 1360], response: command.payload.response }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
+}
+
+test('desktop form choices use interface typography and compact rows', async ({ page }) => {
+  await open(page, 'en', 'waiting_input', 'task', 'interaction-two');
+  const row = page.locator('.session-multiselect-choice').first();
+  await expect(row).toHaveCSS('font-size', '14px');
+  expect(await row.evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(36);
+});
+
+test('form loading and failed response preserve the selected choices', async ({ page }) => {
+  const gate = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  const opening = open(page, 'en', 'waiting_input', 'test', 'interaction-two', false, { timelineGate: gate.promise, timelineStarted: started.resolve, failResponse: true });
+  await started.promise;
+  await expect(page.locator('.session-multiselect-choice')).toHaveCount(0);
+  gate.resolve();
+  const fixture = await opening;
+  const checks = page.locator('.session-multiselect-choice input');
+  await checks.nth(1).check();
+  await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+  await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
+  await page.locator('.session-interaction button[type=submit]').click();
+  await expect(page.locator('.session-error')).toBeVisible();
+  await expect(checks.nth(1)).toBeChecked();
+  await expect(checks.nth(1)).toBeEnabled();
+  expect(fixture.observations.writes).toHaveLength(1);
+});
+
+test('archived form requests remain readable without response controls', async ({ page }) => {
+  const fixture = await open(page, 'en', 'archived', 'test', 'interaction-two');
+  await expect(page.locator('.session-multiselect-choice')).toHaveCount(0);
+  await page.getByText('Show request').click();
+  await expect(page.getByRole('region', { name: 'Request content' })).toContainText('Enabled features');
+  await expect(page.getByRole('button', { name: 'Submit' })).toHaveCount(0);
+  expect(fixture.observations.writes).toEqual([]);
 });
 
 for (const entry of ['task', 'assistant'] as const) test(`${entry} composer follows interface and touch typography without losing its draft`, async ({ browser }) => {

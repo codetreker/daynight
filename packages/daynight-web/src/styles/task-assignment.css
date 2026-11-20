@@ -51,6 +51,19 @@
 .task-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; margin-bottom: 12px; }
 .task-status-filter { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 8px; color: #637087; font-size: var(--text-interface); }
 
+.project-task-filter-region { container: project-task-filters / inline-size; min-width: 0; }
+@container project-task-filters (max-width: 420px) {
+  .project-task-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px 10px; }
+  .project-task-filters > :is(.task-assignee-filter, .task-status-filter) { position: relative; display: block; }
+  .project-task-filters > :is(.task-assignee-filter, .task-status-filter) > span:first-child { position: absolute; z-index: 1; inset: 2px 30px auto 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; font-size: var(--text-metadata); line-height: 1.2; }
+  .project-task-filters > :is(.task-assignee-filter, .task-status-filter) > :is(.select-trigger, .native-select) { width: 100%; max-width: none; }
+  .project-task-filters > .tag-filter-wrap { width: 100%; }
+  .project-task-filters > .tag-filter-wrap > .tag-filter > .select-trigger { width: 100%; }
+}
+@container project-task-filters (width < 264px) {
+  .project-task-filters { grid-template-columns: minmax(0, 1fr); }
+}
+
 .assignee-option[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 
 @media (pointer: coarse) { .assignee-search { font-size: var(--text-touch-field); } }

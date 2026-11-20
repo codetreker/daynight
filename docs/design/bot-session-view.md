@@ -71,7 +71,7 @@ Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩�
 
 `compactMenus` 缺省为关闭。Bot 显式启用后，仅 active pane 且 `visualViewport.height`（缺省用 innerHeight）≤500px 时使用短屏路径：共享菜单在 textarea 上方限高，命令标题、刷新、关闭与候选在同一容器滚动，设置面板整体滚动，菜单不占普通流高度预算。它保留原 DOM、输入及底部动作。键盘或辅助技术打开 Model/Permissions 时聚焦首个可用控件；指针打开沿原焦点路径。非原生 popup 的 Escape 或显式关闭返回 textarea，焦点移向被覆盖的其他内容时关闭菜单并保留新目标；命令菜单允许 textarea 保持焦点以输入与选择。宽高切换和隐藏 pane 清理布局监听、滚动锚点与样式，不重建客户端。
 
-`SessionComposer` 的设置面板 Escape 与 `useSessionFullscreen` 的共享 React/document 处理器均尊重 `defaultPrevented`、IME/isComposing 和键码 229，并通过 `isNativeSelectPopupOpen` 判断真实控件的 `:open`。原生 popup 打开时只停止传播，保留原生 Escape 取消，不关闭设置面板或全屏，也不清除文本草稿。非 popup Escape 继续按原层级关闭和恢复焦点。全屏处理器同时保护不经过 Composer 的 Timeline 交互表单和录制缩放控件；交互多选仍以原生列表呈现并返回数组。
+`SessionComposer` 的设置面板 Escape 与 `useSessionFullscreen` 的共享 React/document 处理器均尊重 `defaultPrevented`、IME/isComposing 和键码 229，并通过 `isNativeSelectPopupOpen` 判断真实控件的 `:open`。原生 popup 打开时只停止传播，保留原生 Escape 取消，不关闭设置面板或全屏，也不清除文本草稿。非 popup Escape 继续按原层级关闭和恢复焦点。全屏处理器同时保护不经过 Composer 的 Timeline 交互表单和录制缩放控件；交互表单多选使用 fieldset 和 legend 关联字段名，复选框行支持文字换行并按原选项顺序返回 ID 数组；单值选择仍保留原生 popup 的 Escape 行为。
 
 `renderAttachments` 是正常流、可收缩的布局槽，`setText` 使用原草稿和命令意图失效逻辑。共享高度预算优先保留 textarea、footer 与错误所需空间，不把完整附件高度设为硬性下限；大预览应有局部上限，极端视口中附件区可能缩至零，不能承诺所有附件操作同时可见。宿主不得包裹或替换 textarea，也不得强制附件容器不可收缩。
 
