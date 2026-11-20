@@ -50,7 +50,8 @@ Scoped callers must provide current authorization sources; missing or mismatched
 facts fail closed. Existing Session roles and protocol profiles remain separate
 from business scope. Production activation and complete cross-domain route
 classification remain with the coordinated scope cutover.
-Scoped PAT image status and retry remain unavailable until their read and control checks are
-implemented together with the existing settlement behavior. The separate route
-retains that integration point; fixed profiles and the existing production entry
-continue to use their original behavior.
+Scoped PAT image status and retry require the guarded command execution; a
+read-only scoped assembly remains closed. The [image admission
+decision](2026-11-20-session-image-scope.md) records the combined checks and
+settlement. Fixed profiles and the existing production entry retain their
+original behavior.

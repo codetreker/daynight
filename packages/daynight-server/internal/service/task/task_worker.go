@@ -7,12 +7,14 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
 
 func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.ClaimWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerClaim)
 	if err := taskcore.ValidateTaskTagFilterKey(input.TaskTagFilterKey); err != nil {
 		return model.Task{}, err
 	}
@@ -53,6 +55,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 }
 
 func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerReport)
 	claimID, err := taskcore.ValidateWorkerUpdate(input)
 	if err != nil {
 		return model.Task{}, err
@@ -83,6 +86,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.ReleaseWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerRelease)
 	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err
@@ -107,6 +111,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 }
 
 func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.WithdrawWorker) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, scopepolicy.WorkerRelease)
 	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err

@@ -170,6 +170,7 @@ test('relationship pagination reads the selected cursor and returns to the prece
   await page.goto(sourceUrl);
   const dependencies = panel(page);
   await expect(dependencies.getByRole('link', { name: 'Staged rollout', exact: true })).toBeVisible();
+  await expect(dependencies.getByRole('button', { name: /Next/ })).toHaveCSS('font-size', '12px');
   await dependencies.getByRole('button', { name: /Next/ }).click();
   await expect(dependencies.getByRole('link', { name: 'Second rollout', exact: true })).toBeVisible();
   await expect(dependencies.getByRole('link', { name: 'Staged rollout', exact: true })).toHaveCount(0);
@@ -383,6 +384,7 @@ test('first read, failure, retry and refresh failure retain the source and admit
   await page.goto(sourceUrl);
   await expect.poll(fixture.held).toBe(true);
   await expect(panel(page).getByRole('status')).toBeVisible();
+  await expect(panel(page).getByRole('status')).toHaveCSS('font-size', '12px');
   await expect(page.locator('.goal-detail-description-body')).toContainText('Deliver the client');
   fixture.release();
   const link = panel(page).getByRole('link', { name: externalTitle, exact: true });
@@ -391,6 +393,8 @@ test('first read, failure, retry and refresh failure retain the source and admit
   await link.focus();
   fixture.mode('failure'); await refresh(page);
   await expect(panel(page).getByRole('alert')).toContainText(/refresh/i);
+  await expect(panel(page).getByRole('alert')).toHaveCSS('font-size', '12px');
+  await expect(panel(page).getByRole('button', { name: 'Retry', exact: true })).toHaveCSS('font-size', '12px');
   await expect(link).toBeVisible(); await expect(link).toBeFocused();
   expect(await link.evaluate((element, previous) => element === previous, original)).toBe(true);
   fixture.mode('ready');

@@ -14,6 +14,8 @@ import (
 // in the supplied transaction. It must not substitute request-time authority.
 type ProducerAuthorization func(context.Context, store.SessionScope, model.Principal) (model.CredentialAuthorization, error)
 
+type taskRecoveryAdmissionKey struct{}
+
 func (s *Service) requireProducer(ctx context.Context, scope store.SessionScope, p model.Principal) error {
 	if s.producerAuthorization == nil {
 		return nil
@@ -28,5 +30,9 @@ func (s *Service) requireProducer(ctx context.Context, scope store.SessionScope,
 	if auth.Principal != p || auth.Profile != model.ScopedPATProfile {
 		return errors.New("session producer authorization changed identity or profile")
 	}
-	return scopeadmission.Require(auth, scopepolicy.SessionProduce)
+	operations := []scopepolicy.Operation{scopepolicy.SessionProduce}
+	if recovery, _ := ctx.Value(taskRecoveryAdmissionKey{}).(bool); recovery {
+		operations = append(operations, scopepolicy.WorkerRetry)
+	}
+	return scopeadmission.Require(auth, operations...)
 }
