@@ -18,10 +18,18 @@ App 启动一个有界周期对账循环，关闭时取消并等待循环退出�
 
 单项写入在短事务中依次取得活 Project 写锁、授权来源锁、当前连接共享锁和候选 Worker 共享锁，再锁定 PR 行。锁后核对仓库及默认分支、授权、Worker 开关、目标项目覆盖、在线时间及同一 GitHub PR 仍为 Open 且目标分支匹配默认分支，再以 `INSERT ... ON CONFLICT DO NOTHING` 保存归属。已有归属不被覆盖。提交未知时不推断回滚或重放结果，后续遍次按主键重新观察。日志按扫描遍次记录故障分类及可用身份，不包含 PR 正文、远端响应或凭据。
 
+## Worker 轮询
+
+`GET`、`HEAD` `/api/v1/me/workers/{workerId}/review-pull-requests` 以当前账号和已注册 Worker 定位名单。响应包含 `reviewEnabled`、`pullRequests` 和 `nextCursor`；每项的 `projectId` 为规范 UUID，`repositoryId` 和 `number` 为规范正十进制字符串，`repositoryUrl` 使用当前已验证的 GitHub 仓库名称。未知或其他账号的 Worker 返回 404；参与开关关闭时返回空名单和 null 游标。响应禁止缓存。
+
+每页在同一只读快照中读取 Worker 开关和目标项目选择，再按当前 Project 读取权限、当前仓库、Open 状态及已同步默认分支过滤长期归属。Draft 保留；改向、终态、权限撤销或换仓使候选退出名单，但不删除归属。默认 20 条、最多 100 条，以 `(project_id, repository_id, github_pr_id)` 升序 keyset 查询多一条判断后页。游标绑定账号、Worker 和页大小，每页重新核对资格；跨页变化可在下一轮才被观察。调用方须成功遍历所有页后才应用本轮名单。
+
+迁移 `107_review_poll_indexes.sql` 的 Worker 归属键序索引和 Open PR 身份索引支持过滤及分页。索引增加写入和存储成本；迁移在数据库事务中建索引，部署时须考虑建索引期间的写入等待。
+
 ## 归属查询
 
 `GET`、`HEAD` `/api/v1/projects/{projectId}/pull-requests/{number}/review-assignment` 使用现有 PR 详情的参数和 Project 读取权限，响应 `Cache-Control: no-store`。可选 `repositoryId` 是规范正十进制 int64，必须是该 Project 保留的来源；省略时使用固定的 legacy 来源，不随当前连接变化。对账扫描当前连接仓库；若当前仓库不是 legacy 来源，查询该仓库时须显式传 `repositoryId`。不存在的 Project、来源或 PR 沿用详情的未找到语义。
 
 项目权限、所选 PR、调用账号持有的归属及 Worker 状态在同一只读快照取得。无归属的 Open PR 返回 `{"status":"waiting","assignment":null}`，无归属的 Closed/Merged 返回 `{"status":"not_applicable","assignment":null}`。存在归属时返回 `{"status":"assigned","assignment":{"workerId":"…","assignedAt":"…","online":false,"reviewEnabled":true}}`，终态仍保留归属。按账号和精确 Worker ID 读取状态，不受 Worker 列表 72 小时窗口裁剪；Worker 行缺失时仍返回身份和分配时间，`online` 和 `reviewEnabled` 均为 null。
 
-迁移 `096_pr_review_assignment.sql` 创建归属表和参与者部分索引；`106` 增加可空默认分支列，两者均反映在 schema snapshot 中。旧 PR 列表、详情与 Worker 上报协议保持原样；新消费者单独调用归属查询。设计选择及其成本见[长期归属决策](../../.agents/notes/implemented/architecture/2026-11-19-pr-review-assignment.md)和[默认分支资格决策](../../.agents/notes/implemented/feature/2026-11-20-review-assignment-default-branch.md)。
+迁移 `096_pr_review_assignment.sql` 创建归属表和参与者部分索引；`106` 增加可空默认分支列，`107` 添加轮询索引，均反映在 schema snapshot 中。旧 PR 列表、详情与 Worker 上报协议保持原样。设计选择及其成本见[长期归属决策](../../.agents/notes/implemented/architecture/2026-11-19-pr-review-assignment.md)和[默认分支资格决策](../../.agents/notes/implemented/feature/2026-11-20-review-assignment-default-branch.md)。

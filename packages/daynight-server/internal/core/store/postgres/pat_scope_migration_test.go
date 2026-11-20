@@ -7,7 +7,7 @@ import (
 
 func TestPATScopePreparationMigration(t *testing.T) {
 	ctx := t.Context()
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 107 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 108 })
 	if index < 1 {
 		t.Fatal("PAT scope migration missing")
 	}
@@ -37,7 +37,7 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 			t.Fatal("faulted migration succeeded")
 		}
 		var ok bool
-		if err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND column_name IN ('business_scopes','scope_version','approved_business_scopes') AND table_name IN ('personal_access_tokens','device_authorizations')) AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=107)`).Scan(&ok); err != nil || !ok {
+		if err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND column_name IN ('business_scopes','scope_version','approved_business_scopes') AND table_name IN ('personal_access_tokens','device_authorizations')) AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=108)`).Scan(&ok); err != nil || !ok {
 			t.Fatalf("failed migration left schema or ledger changes: %v %v", ok, err)
 		}
 		if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
@@ -61,7 +61,7 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 			t.Fatal(err)
 		}
 		var ok bool
-		if err := pool.QueryRow(ctx, `SELECT (SELECT business_scopes IS NULL AND scope_version IS NULL FROM personal_access_tokens) AND (SELECT approved_business_scopes IS NULL FROM device_authorizations) AND EXISTS(SELECT FROM schema_migrations WHERE version=107)`).Scan(&ok); err != nil || !ok {
+		if err := pool.QueryRow(ctx, `SELECT (SELECT business_scopes IS NULL AND scope_version IS NULL FROM personal_access_tokens) AND (SELECT approved_business_scopes IS NULL FROM device_authorizations) AND EXISTS(SELECT FROM schema_migrations WHERE version=108)`).Scan(&ok); err != nil || !ok {
 			t.Fatalf("preparation defaults or ledger incorrect: %v %v", ok, err)
 		}
 	})

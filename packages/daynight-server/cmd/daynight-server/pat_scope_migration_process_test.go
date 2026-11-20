@@ -30,15 +30,15 @@ func TestPATScopePreparationProcessStartup(t *testing.T) {
 	if err := initial.stop(); err != nil {
 		t.Fatalf("stop empty-schema process: %v", err)
 	}
-	// Migration 107 only adds these columns, so removing its ledger entry and
-	// columns reconstructs the exact 106 schema with the original checksums.
+	// Migration 108 only adds these columns, so removing its ledger entry and
+	// columns reconstructs the exact 107 schema with the original checksums.
 	if _, err := pool.Exec(ctx, `ALTER TABLE personal_access_tokens DROP COLUMN business_scopes, DROP COLUMN scope_version;
 ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes;
-DELETE FROM schema_migrations WHERE version=107`); err != nil {
+DELETE FROM schema_migrations WHERE version=108`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64
-	if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 106 {
+	if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 107 {
 		t.Fatalf("historical ledger: version=%d err=%v", latest, err)
 	}
 	user, team, tokenID, deviceID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -60,7 +60,7 @@ DELETE FROM schema_migrations WHERE version=107`); err != nil {
 
 	upgraded := startPersistenceProcess(t, values)
 	var preserved bool
-	err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=107) AND
+	err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=108) AND
 EXISTS(SELECT FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND token_hash=$3 AND name='historical' AND expires_at>clock_timestamp() AND business_scopes IS NULL AND scope_version IS NULL) AND
 EXISTS(SELECT FROM device_authorizations WHERE id=$4 AND user_id=$2 AND status='approved' AND approved_business_scopes IS NULL)`, tokenID, user, secret.Hash(token), deviceID).Scan(&preserved)
 	if err != nil || !preserved {
