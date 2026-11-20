@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { type AssistantTask, type AssistantTaskInboxRotation, assistantTaskInboxUrl, disableAssistantTaskInbox, enableAssistantTaskInbox, getAssistantTaskInbox, getAssistantTaskInboxOperation, rotateAssistantTaskInbox } from '../../api/assistant-tasks';
+import { type AssistantTask, type AssistantTaskInboxResult, type AssistantTaskInboxRotation, assistantTaskInboxUrl, disableAssistantTaskInbox, enableAssistantTaskInbox, getAssistantTaskInbox, getAssistantTaskInboxOperation, rotateAssistantTaskInbox } from '../../api/assistant-tasks';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -18,6 +18,7 @@ const en = {
   created: 'Enabled at', rotated: 'Token rotated at', overlap: 'Previous token valid until', suppressed: 'Suppressed self-triggered events', never: '—',
   token: 'New token', tokenHint: 'This token is shown only once. Copy it now and store it with the external sender. If it is lost, rotate the token to get a new one.',
   copyToken: 'Copy token', tokenCopied: 'Token copied.', hideToken: 'I have saved the token',
+  receiptToken: 'This request issued a new token, and its receipt cannot return it. If you did not copy that token, rotate the token to issue a new one.',
   rotateTitle: 'Rotate inbox token', rotateMode: 'Rotation mode',
   overlapMode: 'Keep the previous token for 24 hours', overlapHint: 'Use this to switch external senders without dropping messages.',
   overlapBlocked: 'The previous token is still in its overlap period. Rotate immediately instead.',
@@ -36,6 +37,7 @@ const zh: typeof en = {
   created: '开启时间', rotated: '令牌轮换时间', overlap: '旧令牌有效至', suppressed: '已抑制的自触发事件', never: '—',
   token: '新令牌', tokenHint: '令牌只显示这一次。请立即复制并交给外部发送方保存；如果丢失，请轮换令牌获取新的令牌。',
   copyToken: '复制令牌', tokenCopied: '已复制令牌。', hideToken: '我已保存令牌',
+  receiptToken: '这次请求生成了新令牌，回执无法返回该令牌。如果没有复制它，请轮换令牌以获取新的令牌。',
   rotateTitle: '轮换收件箱令牌', rotateMode: '轮换方式',
   overlapMode: '旧令牌继续有效 24 小时', overlapHint: '用于让外部发送方平稳切换，不丢失消息。',
   overlapBlocked: '旧令牌仍在重叠有效期内，只能立即轮换。',
@@ -51,6 +53,8 @@ const useInboxMessages = () => { const { locale } = useI18n(); return { ...(loca
  * Every write submits the task version paired with the displayed inbox snapshot: the version observed before that inbox read
  * started. The inbox shown is therefore never older than the submitted version, so a concurrent inbox change becomes a conflict
  * instead of a write against an inbox other than the one displayed. A confirmation keeps the version it was opened against.
+ * The token is published as soon as its write response is validated, without waiting for the task detail refresh, and is
+ * retired once a snapshot read after that write shows the issuing credential disabled, replaced or rotated.
  */
 export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), admission = assistantTaskAdmission(scope), taskId = task.id, heading = useId(), modeName = useId();
@@ -65,11 +69,15 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const current = read.value !== null && read.value.version === task.version, refreshRead = read.refresh;
   useEffect(() => { if (read.value !== null && read.value.version !== task.version) refreshRead(); }, [read.value, task.version, refreshRead]);
   const reload = async () => { read.refresh(); await onChanged(); };
-  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
-  // The issued token stays bound to the identity scope that received it and is never shown to another identity.
-  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string } | null>(null);
-  const token = issuedToken !== null && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
-  const setToken = (value: string | null) => setIssuedToken(value === null ? null : { scope, value });
+  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation, receipt => (receipt as AssistantTaskInboxResult).operation.kind === 'inbox_disable' ? null : m.receiptToken);
+  // The issued token stays bound to the identity scope that received it and is never shown to another identity. It also keeps
+  // the issuing inbox and rotation so a snapshot read after its write (version at least the write's resulting version) that
+  // no longer shows that credential, such as a disable, re-enable or rotation from another tab, retires it.
+  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string; readonly inboxId: string | null; readonly rotatedAt: string | null; readonly version: string } | null>(null);
+  const superseded = issuedToken !== null && read.value !== null && BigInt(read.value.version) >= BigInt(issuedToken.version)
+    && (!read.value.inbox.enabled || read.value.inbox.inboxId !== issuedToken.inboxId || read.value.inbox.rotatedAt !== issuedToken.rotatedAt);
+  useEffect(() => { if (superseded) setIssuedToken(null); }, [superseded]);
+  const token = issuedToken !== null && !superseded && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
   const [dialog, setDialog] = useState<{ readonly kind: 'rotate' | 'disable'; readonly version: string } | null>(null);
   const owner = useRef({ scope, taskId }); owner.current = { scope, taskId };
   const inbox = read.value?.inbox ?? null, snapshotVersion = read.value?.version ?? task.version, overlapActive = inbox?.overlapUntil != null;
@@ -77,12 +85,17 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const blocked = disabled || mutation.blocked || !current, changed = dialog !== null && dialog.version !== task.version;
   // Hiding the tab stops new writes, but a token from a completed request is unrecoverable elsewhere,
   // so it stays visible while this panel remains mounted for the same identity and task.
-  const issue = async (operation: (signal: AbortSignal, admission: ReturnType<typeof assistantTaskAdmission>) => Promise<{ readonly token: string | null }>) => {
+  // The token is published from inside the write, before the mutation's task detail reload, so a stalled reload cannot withhold it.
+  const issue = async (operation: (signal: AbortSignal, admission: ReturnType<typeof assistantTaskAdmission>) => Promise<AssistantTaskInboxResult>, onIssued?: () => void) => {
     const origin = { scope, taskId };
-    let issued: string | null = null;
-    const ok = await mutation.run(async signal => { issued = (await operation(signal, admission)).token; });
-    const retained = issued !== null && !origin.scope.isInvalidated && owner.current.scope === origin.scope && owner.current.taskId === origin.taskId;
-    if (ok || retained) setToken(issued);
+    let retained = false;
+    const ok = await mutation.run(async signal => {
+      const result = await operation(signal, admission);
+      if (result.token === null || origin.scope.isInvalidated || owner.current.scope !== origin.scope || owner.current.taskId !== origin.taskId) return;
+      retained = true;
+      setIssuedToken({ scope: origin.scope, value: result.token, inboxId: result.inbox.inboxId, rotatedAt: result.inbox.rotatedAt, version: result.operation.resultingVersion });
+      onIssued?.();
+    });
     // A retained result skipped the mutation's own reload; refresh the task so later writes use its new version.
     if (!ok && retained) void onChanged().catch(() => undefined);
     return ok || retained;
@@ -96,7 +109,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
     {token ? <div className="assistant-task-inbox-token" role="group" aria-label={m.token}>
       <strong>{m.token}</strong><p>{m.tokenHint}</p>
       <div className="assistant-task-inbox-value"><code>{token}</code><InboxCopy value={token} label={m.copyToken} copied={m.tokenCopied} failed={m.copyFailed} /></div>
-      <button className="button" type="button" onClick={() => setToken(null)}>{m.hideToken}</button>
+      <button className="button" type="button" onClick={() => setIssuedToken(null)}>{m.hideToken}</button>
     </div> : null}
     {inbox && !inbox.enabled ? <><p>{m.off}</p><div className="assistant-task-actions"><InboxAction label={m.enable} primary disabled={blocked} onClick={() => void issue((signal, access) => enableAssistantTaskInbox(taskId, { operationId: crypto.randomUUID(), ifVersion: snapshotVersion }, signal, access))} /></div></> : null}
     {inbox?.enabled && inbox.inboxId ? <>
@@ -110,9 +123,9 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
     {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); if (changed) return; void (async () => {
       const operationId = crypto.randomUUID(), ifVersion = dialog.version;
       const ok = dialog.kind === 'rotate'
-        ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion, mode }, signal, access))
+        ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion, mode }, signal, access), () => setDialog(null))
         : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion }, signal, admission); });
-      if (ok) { setDialog(null); if (dialog.kind === 'disable') setToken(null); }
+      if (ok) { setDialog(null); if (dialog.kind === 'disable') setIssuedToken(null); }
     })(); }}>
       <div className="dialog-body assistant-task-form">{dialog.kind === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
         <label><input type="radio" name={modeName} value="overlap" checked={mode === 'overlap'} disabled={overlapActive} onChange={() => setMode('overlap')} /><span><strong>{m.overlapMode}</strong><span className="assistant-task-meta">{overlapActive ? m.overlapBlocked : m.overlapHint}</span></span></label>
