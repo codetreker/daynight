@@ -53,7 +53,9 @@ function server(initial: ReturnType<typeof endpoint>[] = []) {
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 function mount(named: AssistantTask = task) {
   const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={named} inboxId={inboxId} active serviceOrigin={origin} /></TaskCacheProvider>, { locale: 'en' });
+  const panel = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={named} inboxId={inboxId} active={active} serviceOrigin={origin} /></TaskCacheProvider>;
+  const view = renderWithLocale(panel(true), { locale: 'en' });
+  return { setActive: (active: boolean) => view.rerender(panel(active)) };
 }
 beforeEach(() => { directories.projects = [project(alpha, 'Alpha'), project(beta, 'Beta')]; sessionStorage.clear(); });
 /** Event checkboxes are bound to one project and appear only while that project is checked. */
@@ -180,6 +182,40 @@ it('reports a version conflict and discards the edits only when the user reloads
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
   await waitFor(() => expect(s.writes).toHaveLength(1));
   expect(s.writes[0]).toMatchObject({ method: 'PATCH', body: { ifVersion: '5' } });
+});
+
+it('keeps the edits and a pending conflict when the panel becomes active again', async () => {
+  const linked = endpoint(personalId, inboxUrl, [alphaCreated()]);
+  const s = server([linked]); const view = mount();
+  await screen.findByRole('checkbox', { name: 'Alpha' });
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
+  s.state.personal = [{ ...linked, configVersion: '5' }];
+  s.fetch.mockImplementationOnce(async () => botError(409, 'version_conflict'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
+  const reads = s.fetch.mock.calls.length;
+  view.setActive(false); view.setActive(true);
+  await Promise.resolve();
+  expect(s.fetch).toHaveBeenCalledTimes(reads);
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
+  expect(screen.getByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
+});
+
+it('releases a create refused for Webhook maintenance and keeps the edits', async () => {
+  const s = server(); mount();
+  await screen.findByRole('button', { name: 'Create subscription' });
+  s.fetch.mockImplementationOnce(async () => botError(503, 'webhooks_unavailable'));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('The Webhook request failed. webhooks_unavailable');
+  expect(screen.queryByRole('button', { name: 'Check operation' })).toBeNull();
+  expect(s.fetch.mock.calls.some(([url]) => String(url).includes('/operations/'))).toBe(false);
+  expect(sessionStorage.length).toBe(0);
+  expect(screen.getByRole('checkbox', { name: 'Alpha' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body.subscriptions).toEqual([{ id: null, projectId: alpha, eventTypes: ['task.created'] }]);
 });
 
 it('shows the service error code as returned and keeps the edits', async () => {

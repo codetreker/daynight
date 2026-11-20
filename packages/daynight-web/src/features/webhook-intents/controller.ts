@@ -281,7 +281,9 @@ export class WebhookIntentController {
       return this.#publish({ ...this.#state, phase: "confirmed", result, error: result.currentError ?? null });
     } catch (error) {
       if (this.#state.phase === "confirmed") return this.#publish({ ...this.#state, error });
-      const definite = !dispatched || error instanceof ApiError && error.kind === "server" && error.status !== null && error.status < 500;
+      // The service returns `webhooks_unavailable` only from inside the write transaction it then rolls back; a rollback
+      // that cannot be confirmed is reported as `write_outcome_unknown` instead, so this 503 is a definite refusal.
+      const definite = !dispatched || error instanceof ApiError && error.kind === "server" && (error.status !== null && error.status < 500 || error.code === "webhooks_unavailable");
       if (definite) { this.#body = null; this.#persist(null); }
       this.#publish({ ...this.#state, phase: definite ? "rejected" : "unknown", error });
       if (!definite && !signal.aborted && !authRequestsPaused()) return this.#observe(signal);
