@@ -5,14 +5,4 @@
   --text-lg: 1.125rem;
   --text-xl: 1.375rem;
   --text-2xl: 1.75rem;
-
-  /* Module migrations remove these bridges together with their recorded consumers. */
-  --text-metadata: var(--text-xs);
-  --text-interface: var(--text-sm);
-  --text-reading: var(--text-base);
-  --text-section-heading: var(--text-lg);
-  --text-detail-heading: var(--text-xl);
-  --text-page-heading: var(--text-2xl);
-  --text-terminal: var(--text-xs);
-  --text-touch-field: max(var(--text-base), 16px);
 }

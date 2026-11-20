@@ -12,59 +12,46 @@ would let new role references and private sizes survive indefinitely.
 ## Decision
 
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css)
-owns the six numeric sizes. The six former roles point to equal scale values;
-the terminal bridge points to `xs`, and the touch bridge uses
-`max(var(--text-base), 16px)`. Unmigrated consumers retain their computed sizes.
-This introduces the foundation of the [size-scale proposal](../../proposed/architecture/2026-11-20-web-font-size-scale.md)
-without treating the remaining consumer migration as delivered. It replaces the
-broad checking exceptions recorded in the [semantic typography decision](2026-11-20-web-semantic-typography.md).
+owns the six numeric sizes described by the [size-scale decision](2026-11-20-web-font-size-scale.md).
+The transition initially retained six former role mappings to equal scale values,
+a terminal bridge to `xs`, and a touch bridge using `max(var(--text-base), 16px)`.
+These preserved computed sizes while modules migrated independently and replaced
+the broad checking exceptions in the [semantic typography decision](2026-11-20-web-semantic-typography.md).
+The bridges and temporary baseline have now been removed.
 
-Strict CSS and TypeScript AST inspection runs across every production source,
-including unreferenced files. A checked-in migration baseline records exact
-legacy occurrences by relative path, category, normalized value, syntax context,
-count and module owner. Only those occurrences receive temporary permission.
-New occurrences, increased counts and stale entries fail the check. Module
-migrations may only remove or reduce their own entries; review verifies that
-baseline diffs only shrink. The production check never expands the baseline.
-Collected references also require their retired definitions to remain present;
-deleting a definition and its baseline entry cannot strand unmigrated consumers.
-
-Retired identifiers are tracked independently of font declarations, including
-CSS geometry and statically readable TypeScript strings and style operations.
-Mermaid font configuration uses the measured-size adapter under a restricted
-source contract; other font configuration values are rejected. The workspace shell,
-public landing and setup pages, authentication styles, shared selection controls,
-Worker pages and configuration, Worker Prompt editors, project settings, Team
-member search, GitHub management, Webhook consumers, Project and personal Task
-lists, Goal cards, tags and search use public sizes directly. Dependency graphs,
-charts, project statistics, Usage and pull request views also select the public
-scale. Task and Goal details, Steps, Thread and attachment controls also select
-the public scale; shared Markdown retains its own selection. Session timelines,
-tool records, drafts, Test Sessions, terminal recordings,
-Bot conversations, Bot management and Assistant Task panels also select public
-sizes directly. The [Session and Bot typography decision](2026-11-20-session-bot-typography.md)
-records terminal output's direct `sm` selection and the input inheritance rules;
-terminal recordings no longer reference the retained `xs` bridge.
-Chart plot geometry scales from `xs` and label rows use their computed line
-height; graph geometry retains its independent root-size adaptation and view
-zoom. Usage and pull request search inputs use the shared responsive adjustment.
+The checker inspects every production CSS and TypeScript source, including
+unreferenced files, and rejects retired identifiers even in CSS geometry and
+statically readable TypeScript strings and style operations. Mermaid font
+configuration uses the measured-size adapter under a restricted source contract;
+other font configuration values are rejected. The workspace shell, public
+landing and setup pages, authentication styles, selection controls, Worker and
+project configuration, Task and Goal views, graphs, charts, Markdown, Session
+timelines, terminal recordings, Bot conversations and Assistant Task panels
+select public sizes directly. The [Session and Bot typography decision](2026-11-20-session-bot-typography.md)
+records terminal output's direct `sm` selection and input inheritance. Chart
+plot geometry scales from `xs` and label rows use their computed line height;
+graph geometry retains its independent root-size adaptation and view zoom.
 
 The shared selection CSS owns touch text adjustments and sizes controls from
 their actual text instead of private font aliases. Responsive input attributes use
 two attribute selectors so the shared adjustment outranks generic field fonts
-without changing their normal size. Marked responsive fields also take precedence
-over transitional form typography. Consumers select the ordinary size on their
+without changing their normal size. Consumers select the ordinary size on their
 field container and retain local control geometry, including the Prompt editor's
 196px minimum height. Management dialog fields and invitation secret text use the
 shared responsive adjustment, while ordinary account tokens retain their inherited
 size. Project and Task search inputs, Step editors, attachment paths and assignee
-search use the shared coarse-pointer adjustment;
-the tag input derives its height from its line box and padding with a 44px minimum.
-The zero-legacy mode refuses the bridge and all remaining baseline uses, supplying
-the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
-owns commands and static-analysis limits.
-The [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md)
+search use the shared coarse-pointer adjustment; the tag input derives its height
+from its line box and padding with a 44px minimum. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+owns commands and static-analysis limits. The [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md)
 records the independent SVG measurement boundary.
+
+During migration, an exact baseline identified legacy occurrences by relative
+path, category, normalized value, syntax context, count and module owner. New
+occurrences, increased counts and stale entries failed the check, and collected
+references required their retired definitions to remain present. Review required
+module migrations to shrink their own entries. This bounded permission made the
+compatibility window safe without permitting new uses, and the zero-legacy gate
+identified when the temporary structure could be removed.
 
 ## Alternatives
 
@@ -81,9 +68,8 @@ limited to the existing code while allowing formatting and line-number changes.
 
 ## Consequences
 
-Modules can migrate independently against one numeric source, with an explicit
-owner for each remaining use. Removing or changing a legacy use requires updating
-its baseline entry in the same change. The bridge and baseline add temporary
-maintenance cost and must disappear when all consumers have migrated. The
-checker cannot execute arbitrary runtime code or prove browser rendering;
-production-browser measurements remain necessary at renderer boundaries.
+Modules migrated independently against one numeric source without making the
+compatibility aliases permanent. The production checker now admits no legacy
+occurrences or exemption baseline. It cannot execute arbitrary runtime code or
+prove browser rendering; production-browser measurements remain necessary at
+renderer boundaries.

@@ -14,8 +14,8 @@ changes to surrounding text cannot change playback scale or hide form controls.
 
 Session, Test Session, Bot and Assistant Task consumers select the public sizes
 defined by [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
-The [migration policy](2026-11-20-web-typography-migration-policy.md) retains exact
-permissions for remaining consumers. This decision replaces the terminal base
+The [shared size scale](2026-11-20-web-font-size-scale.md) applies across the
+production source tree. This decision replaces the terminal base
 selection in the [semantic typography decision](2026-11-20-web-semantic-typography.md)
 without changing the original role mappings preserved there as history.
 
@@ -25,9 +25,7 @@ percentage; the output renderer owns the shared base selection. Selecting
 `sm` gives terminal text the same ordinary reading size as Session text while
 preserving independent user zoom. Surrounding actions, states and errors use
 `sm`; time and the first caption column use `xs`. Changing `base` does not
-resize output, and terminal zoom does not resize surrounding UI. The unused
-transitional `--text-terminal` bridge keeps its original `xs` mapping until
-the global migration removes the bridge definitions together.
+resize output, and terminal zoom does not resize surrounding UI.
 
 Shared Markdown owns its `sm` body size in Session and Bot hosts. Host styling
 retains color, spacing and emphasis without repeating that size. Native proposal
@@ -67,5 +65,4 @@ The [Web validation guide](../../../../packages/daynight-web/README.md#typograph
 owns commands and static-analysis limits. Browser checks measure actual Session,
 terminal and Bot text with altered roots, user zoom and narrow or coarse-pointer
 layouts. Static ownership checks cannot establish clipping, focus, selection,
-draft continuity or directory reachability. Other consumers still depend on
-transitional mappings; their migration and removal of the bridges require the migration policy's zero-legacy gate.
+draft continuity or directory reachability.
