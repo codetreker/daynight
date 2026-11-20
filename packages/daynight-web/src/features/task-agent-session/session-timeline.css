@@ -54,10 +54,18 @@
 .session-diagnostic-details pre { max-height: 280px; max-width: 100%; margin: 6px 0 0; padding: 10px; overflow: auto; border-radius: 5px; background: #f0f2f6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .session-diagnostic-details > summary:focus-visible, .session-diagnostic-details pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
 
-.session-timeline-navigation { position: absolute; bottom: 12px; left: 12px; right: 12px; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
-.session-timeline-navigation .button { max-width: 100%; pointer-events: auto; box-shadow: 0 3px 12px #24304a22; }
+.session-timeline-navigation { flex: none; display: flex; justify-content: center; gap: 6px; padding: 6px 12px; }
+.session-timeline-navigation .button { max-width: 100%; }
 .session-timeline-navigation .session-latest { position: static; transform: none; }
 .session-pending-request { min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
+.session-pending-request { min-width: 0; }
 .session-pending-request > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-pending-request > span:last-child { flex: none; }
 .session-interaction:focus { outline: 2px solid #6262ba; outline-offset: 2px; }
+@container session-timeline-shell (max-height: 120px) {
+  .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 45%; gap: 4px; padding: 2px; pointer-events: none; }
+  .session-pending-request { flex: 1 1 0; }
+  .session-latest { flex: none; }
+  .session-pending-prefix { display: none; }
+  .session-timeline-navigation .button { min-height: 36px; padding-inline: 4px; pointer-events: auto; }
+}

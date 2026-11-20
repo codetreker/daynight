@@ -103,8 +103,8 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
       </div>
     </div>
     {pending.target || scroll.showLatest ? <div className="session-timeline-navigation">
-      {pending.target ? <button type="button" className="button session-pending-request" onClick={pending.reveal}><span>{m.pendingRequest} · {pending.target.title}</span><span aria-hidden="true">{pending.target.direction === 'up' ? '↑' : '↓'}</span></button> : null}
-      {scroll.showLatest ? <button type="button" className="button session-latest" onClick={history.latest}>{m.latest} ↓</button> : null}
+      {pending.target ? <button type="button" className="button session-pending-request" aria-label={`${m.pendingRequest} · ${pending.target.title}`} onClick={pending.reveal}><span className="session-pending-label"><span className="session-pending-prefix">{m.pendingRequest} · </span><span>{pending.target.title}</span></span><span aria-hidden="true">{pending.target.direction === 'up' ? '↑' : '↓'}</span></button> : null}
+      {scroll.showLatest ? <button type="button" className="button session-latest" aria-label={`${m.latest} ↓`} title={m.latest} onClick={history.latest}><span className="session-latest-label">{m.latest} </span><span aria-hidden="true">↓</span></button> : null}
     </div> : null}
   </div>;
 }

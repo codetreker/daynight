@@ -23,19 +23,26 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six';
+type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six' | 'tall-form';
 async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false, options: { timelineGate?: Promise<void>; timelineStarted?: () => void; failResponse?: boolean } = {}) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && content.startsWith('interaction') } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && (content.startsWith('interaction') || content === 'tall-form') } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : content.startsWith('interaction') ? [{
+  const entries = content === 'empty' ? [] : content === 'tall-form' ? [{
+    entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
+    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
+      { fieldId: 'name', label: 'Workspace profile name', type: 'text', required: true, sensitive: false },
+      { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
+      { fieldId: 'profile', label: 'Workspace profile', type: 'multiselect', required: false, options: [{ id: 'standard', label: 'Standard' }, { id: 'development', label: 'Development configuration with validation and local diagnostics enabled' }] },
+    ] },
+  }] : content.startsWith('interaction') ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
     interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: archived ? 'expired' : 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
@@ -137,6 +144,111 @@ async function scrollbarMode(page: Page, mode: 'native' | 'classic' | 'stable') 
   await page.addStyleTag({ content: `.session-timeline::-webkit-scrollbar { width: 17px; height: 17px; } .session-timeline { scrollbar-gutter: ${mode === 'stable' ? 'stable both-edges' : 'auto'}; }` });
 }
 
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN'] as const) {
+  test(`${entry} ${locale} locates a clipped tall form using the actual timeline`, async ({ browser }, info) => {
+    const evidence = [];
+    for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]] as const) {
+      const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width, height }, hasTouch: width < 400 });
+      try {
+        const page = await context.newPage();
+        const { observations } = await open(page, locale, 'waiting_input', entry, 'tall-form');
+        const timeline = page.locator('.session-timeline'), card = page.locator('.session-interaction');
+        const heading = card.locator('h4'), first = page.getByLabel('Workspace profile name', { exact: true });
+        const jump = page.locator('.session-pending-request');
+        if (entry === 'task' && width <= 375) {
+          await expect(jump).toContainText('↑');
+          const nav = await jump.evaluate(node => ({ button: node.getBoundingClientRect().toJSON(), shell: node.closest('.session-timeline-shell')!.getBoundingClientRect().toJSON() }));
+          expect(nav.button.top).toBeGreaterThanOrEqual(nav.shell.top);
+          expect(nav.button.bottom).toBeLessThanOrEqual(nav.shell.bottom);
+          await page.getByRole('button', { name: locale === 'en' ? 'Submit' : '提交', exact: true }).click({ timeout: 5000 });
+          await expect(page.getByRole('alert')).toBeVisible();
+          await jump.click(); await expect(card).toBeFocused();
+          await timeline.evaluate(node => { node.scrollTop += 45; node.dispatchEvent(new Event('scroll')); });
+          await expect(jump).toBeVisible(); await expect(page.locator('.session-latest')).toBeVisible();
+          expect(await jump.locator('.session-pending-label').evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(40);
+          await expect(page.locator('.session-latest-label')).toBeVisible();
+          await expect(jump).toHaveAccessibleName('Pending request · Choose session options'.replace('Pending request', locale === 'en' ? 'Pending request' : '待处理请求'));
+          await first.click({ position: { x: 10, y: 10 }, timeout: 5000 });
+          await first.fill('Embedded draft');
+          await page.locator('.session-fullscreen-toggle').click();
+          await expect(first).toHaveValue('Embedded draft');
+        }
+        const geometry = await card.evaluate(node => {
+          const box = node.closest('.session-timeline')!.getBoundingClientRect(), card = node.getBoundingClientRect(), title = node.querySelector('h4')!.getBoundingClientRect();
+          return { viewport: box.toJSON(), card: card.toJSON(), title: title.toJSON() };
+        });
+        const clipped = geometry.card.height > geometry.viewport.height - 24 && (geometry.title.top < geometry.viewport.top || geometry.title.bottom > geometry.viewport.bottom);
+        if (entry === 'test' && width <= 375) expect(clipped).toBe(true);
+        if (clipped) {
+          await expect(jump).toContainText('↑');
+          if (width === 320) await jump.tap(); else { await jump.focus(); await page.keyboard.press('Enter'); }
+          await expect(card).toBeFocused(); await expect(jump).toHaveCount(0);
+          const after = await heading.evaluate(node => ({ title: node.getBoundingClientRect().toJSON(), first: node.closest('.session-interaction')!.querySelector('input')!.getBoundingClientRect().toJSON(), viewport: node.closest('.session-timeline')!.getBoundingClientRect().toJSON() }));
+          expect(after.title.top).toBeGreaterThanOrEqual(after.viewport.top);
+          expect(after.title.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          expect(after.first.top).toBeGreaterThanOrEqual(after.viewport.top);
+          if (entry === 'test' || width !== 390) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          await first.fill('Retained profile');
+          await page.locator('.session-latest').click();
+          await expect(first).toHaveValue('Retained profile');
+          await expect(jump).toBeVisible();
+          await page.getByRole('checkbox', { name: 'Standard', exact: true }).check();
+          await page.getByRole('button', { name: locale === 'en' ? 'Submit' : '提交', exact: true }).click();
+          await expect(page.getByRole('alert')).toBeVisible();
+        } else if (entry === 'task' && width <= 375) {
+          const visible = await first.evaluate(node => ({ input: node.getBoundingClientRect().toJSON(), viewport: node.closest('.session-timeline')!.getBoundingClientRect().toJSON() }));
+          expect(visible.input.top).toBeGreaterThanOrEqual(visible.viewport.top);
+          expect(visible.input.bottom).toBeLessThanOrEqual(visible.viewport.bottom);
+        } else {
+          expect(clipped).toBe(false);
+          await expect(jump).toHaveCount(0);
+        }
+        expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+        evidence.push({ width, height, clipped, ...geometry });
+      } finally { await context.close(); }
+    }
+    await info.attach('pending-form-geometry', { body: JSON.stringify(evidence), contentType: 'application/json' });
+  });
+}
+
+test('a located form retains values through a real response command', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 640 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    const fixture = await open(page, 'en', 'waiting_input', 'test', 'tall-form');
+    await page.locator('.session-pending-request').tap();
+    await page.getByLabel('Workspace profile name', { exact: true }).fill('Retained profile');
+    await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+    await page.getByRole('checkbox', { name: 'Standard', exact: true }).check();
+    expect(fixture.observations.writes).toEqual([]);
+    await page.getByRole('button', { name: 'Submit', exact: true }).click();
+    const command = await fixture.settingUpdate;
+    expect(command.kind).toBe('interaction_response');
+    if (command.kind !== 'interaction_response') throw new Error('Expected an interaction response');
+    expect(command.payload.response).toEqual({ kind: 'form', values: [
+      { fieldId: 'name', value: 'Retained profile' }, { fieldId: 'region', value: 'eu' }, { fieldId: 'profile', value: ['standard'] },
+    ] });
+    fixture.confirmSetting();
+    await expect(page.locator('.session-pending-request')).toHaveCount(0);
+    expect(fixture.observations.pageErrors).toEqual([]);
+  } finally { await context.close(); }
+});
+
+for (const entry of ['task', 'test'] as const) test(`${entry} uses its narrow desktop container height for the locator`, async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 900 });
+  const { observations } = await open(page, 'en', 'waiting_input', entry, 'tall-form');
+  const root = page.locator('.task-agent-session'), timeline = page.locator('.session-timeline');
+  await root.evaluate(node => { node.style.width = '375px'; node.style.height = '400px'; node.style.flex = 'none'; });
+  const jump = page.locator('.session-pending-request');
+  await expect(jump).toContainText('↑');
+  await jump.click();
+  await expect(page.locator('.session-interaction')).toBeFocused();
+  const dimensions = await timeline.evaluate(node => ({ width: innerWidth, height: node.getBoundingClientRect().height, heading: node.querySelector('h4')!.getBoundingClientRect().toJSON(), bounds: node.getBoundingClientRect().toJSON() }));
+  expect(dimensions.width).toBe(1360);
+  expect(dimensions.heading.top).toBeGreaterThanOrEqual(dimensions.bounds.top);
+  expect(dimensions.heading.bottom).toBeLessThanOrEqual(dimensions.bounds.bottom);
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+});
 async function imageFooterGeometry(page: Page) {
   return page.locator('.session-composer-footer-default').evaluate(footer => {
     const surface = footer.closest<HTMLElement>('.session-composer-surface')!;

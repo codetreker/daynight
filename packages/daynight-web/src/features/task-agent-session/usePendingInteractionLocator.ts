@@ -18,7 +18,8 @@ export function usePendingInteractionLocator(scroll: ReturnType<typeof useTimeli
       if (!request) return [];
       const card = row.querySelector<HTMLElement>('.session-interaction');
       const controls = card?.querySelector<HTMLFieldSetElement>('form > fieldset');
-      return card && controls && !controls.disabled ? [{ ...request, card }] : [];
+      const heading = card?.querySelector<HTMLElement>(':scope > h4');
+      return card && heading && controls && !controls.disabled ? [{ ...request, card, heading }] : [];
     });
   };
   const measure = () => {
@@ -28,11 +29,13 @@ export function usePendingInteractionLocator(scroll: ReturnType<typeof useTimeli
     if (bounds && bounds.height > 0) {
       for (const request of available) {
         const rect = request.card.getBoundingClientRect();
-        // A visible portion is sufficient even when a form is taller than the
-        // viewport. Ignore tiny edge slivers that do not expose usable content.
         const inset = Math.min(24, bounds.height / 4, rect.height / 2);
-        if (rect.height > 0 && (rect.bottom <= bounds.top + inset || rect.top >= bounds.bottom - inset)) {
-          next = { entryId: request.entryId, title: request.title, direction: rect.top < bounds.top ? 'up' : 'down' };
+        const outside = rect.bottom <= bounds.top + inset || rect.top >= bounds.bottom - inset;
+        const heading = request.heading.getBoundingClientRect();
+        const hiddenHeading = rect.height > bounds.height - 24 && (heading.top < bounds.top || heading.bottom > bounds.bottom);
+        if (rect.height > 0 && (outside || hiddenHeading)) {
+          const direction = outside ? (rect.top < bounds.top ? 'up' : 'down') : (heading.top < bounds.top ? 'up' : 'down');
+          next = { entryId: request.entryId, title: request.title, direction };
           break;
         }
       }
