@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -62,11 +63,18 @@ type Execution struct {
 	taskRun                  TaskRunner
 	credentialRun            CredentialRunner
 	authorizationRun         AuthorizationRunner
+	commandAdmission         func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error
 	botRun                   BotRunner
 }
 
 func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, authorization AuthorizationRunner) *Execution {
 	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization}
+}
+
+// SetCommandAdmission installs transaction-bound command authorization before
+// the Execution is published. A nil check retains the legacy assembly.
+func (s *Execution) SetCommandAdmission(check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) {
+	s.commandAdmission = check
 }
 
 // BeginOperation admits work without taking a live-cell lock. Database locks
