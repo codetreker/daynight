@@ -109,6 +109,13 @@ func (s *Service) browser(ctx context.Context, principal model.Principal, projec
 }
 
 func (s *Service) browserFor(ctx context.Context, principal model.Principal, project, taskID, id string, purpose sessioncore.BrowserPurpose, work func(*sessioncore.Access) error) error {
+	return s.browserForReadCheck(ctx, principal, project, taskID, id, purpose, nil, work)
+}
+
+// browserForReadCheck acquires current credential policy in the same scope as
+// the existing Session admission. The returned check runs only after resource
+// visibility is established and before the result is delivered.
+func (s *Service) browserForReadCheck(ctx context.Context, principal model.Principal, project, taskID, id string, purpose sessioncore.BrowserPurpose, current func(store.SessionScope) (func() error, error), work func(*sessioncore.Access) error) error {
 	op, err := s.beginBrowser()
 	if err != nil {
 		return err
@@ -123,15 +130,38 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 			if err = op.CheckTestScope(access); err != nil {
 				return err
 			}
+			var check func() error
+			if current != nil {
+				check, err = current(scope)
+			} else {
+				check, err = readCheck(ctx, scope, principal)
+			}
+			if err != nil {
+				return err
+			}
 			if err = authorizeTest(ctx, op, scope, principal, access); err != nil {
 				return err
 			}
 			if err = op.BindTestBrowser(ctx, access); err != nil {
 				return err
 			}
+			if check != nil {
+				if err = check(); err != nil {
+					return err
+				}
+			}
 			return work(access)
 		}
 		task, err := op.LockTask(ctx, scope, project, taskID)
+		if err != nil {
+			return err
+		}
+		var check func() error
+		if current != nil {
+			check, err = current(scope)
+		} else {
+			check, err = readCheck(ctx, scope, principal)
+		}
 		if err != nil {
 			return err
 		}
@@ -155,6 +185,11 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 		}
 		if purpose != sessioncore.TaskReceiptAccess {
 			if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+				return err
+			}
+		}
+		if check != nil {
+			if err = check(); err != nil {
 				return err
 			}
 		}

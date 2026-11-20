@@ -21,6 +21,10 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if project != "" {
 			if err = op.LockCredential(ctx, scope, principal); err != nil {
 				return err
@@ -48,6 +52,9 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
 			return err
 		}
+		if err = check(); err != nil {
+			return err
+		}
 		return work(access)
 	})
 }
@@ -63,6 +70,10 @@ func (s *Service) terminalHistory(ctx context.Context, principal model.Principal
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
@@ -74,6 +85,9 @@ func (s *Service) terminalHistory(ctx context.Context, principal model.Principal
 			return err
 		}
 		if err = op.BindTerminalHistory(access, principal, project, taskID, deleted); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
 			return err
 		}
 		return work(access)
@@ -93,10 +107,17 @@ func (s *Service) terminalDirectory(ctx context.Context, principal model.Princip
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if err = op.LockCredential(ctx, scope, principal); err != nil {
 			return err
 		}
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
 			return err
 		}
 		return work(op, scope, task)
@@ -117,10 +138,17 @@ func (s *Service) taskTerminalDirectory(ctx context.Context, principal model.Pri
 		if err != nil {
 			return err
 		}
+		check, err := readCheck(ctx, scope, principal)
+		if err != nil {
+			return err
+		}
 		if err = s.historyOps.credential(op, ctx, scope, principal); err != nil {
 			return err
 		}
 		if err = s.historyOps.project(op, ctx, scope, principal, project); err != nil {
+			return err
+		}
+		if err = check(); err != nil {
 			return err
 		}
 		return work(op, scope, task)

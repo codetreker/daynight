@@ -86,9 +86,15 @@ func (s *Service) archivePreflight(ctx context.Context, principal model.Principa
 		defer op.Close()
 		var owner string
 		err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-			var e error
+			check, e := readCheck(ctx, scope, principal)
+			if e != nil {
+				return e
+			}
 			owner, e = op.ArchivePreflight(ctx, scope, principal, project, taskID, id, mode)
-			return e
+			if e != nil {
+				return e
+			}
+			return check()
 		})
 		return owner, err
 	}
@@ -107,9 +113,15 @@ func (s *Service) archivePreflightWithRecovery(ctx context.Context, principal mo
 		return "", err
 	}
 	err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		var e error
+		check, e := readCheck(ctx, scope, principal)
+		if e != nil {
+			return e
+		}
 		owner, e = preflight(op, ctx, scope, principal, project, taskID, id, mode)
-		return e
+		if e != nil {
+			return e
+		}
+		return check()
 	})
 	return owner, err
 }

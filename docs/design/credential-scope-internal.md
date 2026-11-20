@@ -129,12 +129,29 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 `Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
 拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
 
+## Session 读取与订阅准入
+
+Session 的 scoped 读取沿用原 Task、Test Session、归档及 Terminal 的资源和
+角色检查，并在对应事务或只读快照中复核原凭据的当前 `session:read`。PAT
+复用凭据行锁；OAuth 按 grant、access 顺序锁定并保留原资源与客户端绑定。
+历史目录和 inspection 使用同一只读快照，inspection 在采样前后分别复核。
+缺失授权来源、身份或 profile 不匹配均拒绝，不能把缺失策略解释为固定授权。
+
+Task 与 Test Session 的状态、历史、操作回执、内容、Terminal 及归档读取，
+以及 Task 历史目录和 inspection 使用独立的 scoped 接线。MCP 的
+`task_session_current`、`task_session_list`、`task_session_show`、
+`task_session_read`、`task_session_entry` 和 `task_session_operation` 共享这些业务准入，保持原工具
+schema 与资源绑定。用户通道在握手及每次投递前复核当前权限，撤权后停止
+后续投递并关闭连接、释放资源；网络 I/O 不持有凭据事务。能力查询、生产者
+与命令入口保留各自的协议和准入责任。
+
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量、GitHub 和 Session 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方
-已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
+已认证的策略快照，scoped Bot 和 Session 授权事实来源由启用阶段接入事务或
+快照绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。

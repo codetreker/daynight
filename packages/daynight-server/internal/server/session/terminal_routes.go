@@ -59,7 +59,7 @@ func terminalFault(code, message string) error { return &model.Fault{Code: code,
 func (h *Routes) registerTerminalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+sessionBase, h.auth.Require(h.Parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		h.Failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
-	})))
+	}, true)))
 }
 
 // terminalRoute retains only historical directory and archive reads. The

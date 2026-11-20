@@ -11,24 +11,27 @@ import (
 )
 
 func (h *Routes) registerTestRoutes(mux *http.ServeMux) {
-	routes := map[string]httpx.AuthenticatedHandler{
-		"GET /api/v1/test-sessions":                                            h.listTest,
-		"GET /api/v1/test-session-capabilities":                                h.testCapabilities,
-		"POST /api/v1/test-sessions":                                           h.registerTest,
-		"GET /api/v1/test-sessions/{sessionId}":                                h.testSnapshot,
-		"POST /api/v1/test-sessions/{sessionId}/controller-grant":              h.grant,
-		"POST /api/v1/test-sessions/{sessionId}/stop":                          h.stopTest,
-		"GET /api/v1/test-sessions/{sessionId}/timeline":                       h.timeline,
-		"POST /api/v1/test-sessions/{sessionId}/commands":                      h.submit,
-		"GET /api/v1/test-sessions/{sessionId}/operations/{operationId}":       h.operation,
-		"GET /api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": h.resource,
-		"GET /api/v1/test-sessions/{sessionId}/channel":                        h.browserChannel,
+	routes := map[string]struct {
+		handler httpx.AuthenticatedHandler
+		read    bool
+	}{
+		"GET /api/v1/test-sessions":                                            {h.listTest, true},
+		"GET /api/v1/test-session-capabilities":                                {h.testCapabilities, false},
+		"POST /api/v1/test-sessions":                                           {h.registerTest, false},
+		"GET /api/v1/test-sessions/{sessionId}":                                {h.testSnapshot, true},
+		"POST /api/v1/test-sessions/{sessionId}/controller-grant":              {h.grant, false},
+		"POST /api/v1/test-sessions/{sessionId}/stop":                          {h.stopTest, false},
+		"GET /api/v1/test-sessions/{sessionId}/timeline":                       {h.timeline, true},
+		"POST /api/v1/test-sessions/{sessionId}/commands":                      {h.submit, false},
+		"GET /api/v1/test-sessions/{sessionId}/operations/{operationId}":       {h.operation, true},
+		"GET /api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": {h.resource, true},
+		"GET /api/v1/test-sessions/{sessionId}/channel":                        {h.browserChannel, true},
 	}
-	for route, handler := range routes {
+	for route, item := range routes {
 		if route == "GET /api/v1/test-sessions/{sessionId}/channel" {
-			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(handler), true))
+			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(item.handler, item.read), true))
 		} else {
-			mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+			mux.HandleFunc(route, h.auth.Require(h.Parameters(item.handler, item.read)))
 		}
 	}
 	for path, method := range map[string]string{"/api/v1/test-session-capabilities": "GET", "/api/v1/test-sessions": "GET, POST", "/api/v1/test-sessions/{sessionId}": "GET", "/api/v1/test-sessions/{sessionId}/controller-grant": "POST", "/api/v1/test-sessions/{sessionId}/stop": "POST", "/api/v1/test-sessions/{sessionId}/timeline": "GET", "/api/v1/test-sessions/{sessionId}/commands": "POST", "/api/v1/test-sessions/{sessionId}/operations/{operationId}": "GET", "/api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": "GET", "/api/v1/test-sessions/{sessionId}/channel": "GET"} {
