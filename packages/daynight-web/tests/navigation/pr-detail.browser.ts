@@ -36,6 +36,16 @@ for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Initial PR title' })).toBeVisible();
     await expect(dialog.getByRole('heading', { name: 'Description heading' })).toBeVisible();
+    await expect(dialog.locator('.dialog-header h2')).toHaveCSS('font-size', '22px');
+    await expect(dialog.locator('.description-heading h3')).toHaveCSS('font-size', '18px');
+    await expect(dialog.locator('.detail-fields dt').first()).toHaveCSS('font-size', '14px');
+    await expect(dialog.locator('.dialog-footer > span')).toHaveCSS('font-size', '12px');
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    await expect(dialog.locator('.dialog-header h2')).toHaveCSS('font-size', '44px');
+    await expect(dialog.locator('.description-heading h3')).toHaveCSS('font-size', '36px');
+    await expect(dialog.locator('.detail-fields dt').first()).toHaveCSS('font-size', '28px');
+    await expect(dialog.locator('.dialog-footer > span')).toHaveCSS('font-size', '24px');
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const table = dialog.getByRole('region', { name: locale === 'en' ? 'Description table' : 'Description 表格' });
     const code = dialog.getByRole('region', { name: locale === 'en' ? 'Code' : '代码' }).filter({ hasText: longCode });

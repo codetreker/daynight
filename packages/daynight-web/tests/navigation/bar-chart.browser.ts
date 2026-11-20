@@ -2,16 +2,22 @@ import { expect, test } from '@playwright/test';
 import { expectChartLabelsFit } from './bar-chart-geometry';
 const fixture = '/tests/navigation/bar-chart-fixture.html';
 
-for (const width of [320, 1280]) test(`label rows contain their content at ${width}px`, async ({ page }) => {
+for (const width of [320, 1280]) test(`axis and label rows follow root text size at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 700 });
   await page.goto(fixture);
   const scrolls = page.locator('.bar-chart__scroll');
-  for (const variant of ['normal', 'large', 'zoom'] as const) {
+  for (const variant of [{ root: 16, zoom: 1 }, { root: 24, zoom: 1 }, { root: 24, zoom: 2 }]) {
     await page.reload();
-    await page.locator('.bar-chart__labels').evaluateAll((nodes, value) => {
-      for (const node of nodes) (node as HTMLElement).style.fontSize = value === 'large' ? '14px' : '';
+    await page.evaluate(({ root, zoom }) => {
+      document.documentElement.style.fontSize = `${root}px`;
+      document.querySelector<HTMLElement>('main')!.style.zoom = `${zoom}`;
     }, variant);
-    await page.locator('main').evaluate((node, value) => { node.style.zoom = value === 'zoom' ? '2' : ''; }, variant);
+    const chart = page.locator('.bar-chart').first();
+    await expect(chart.locator('.bar-chart__reading')).toHaveCSS('font-size', `${variant.root * 0.875}px`);
+    await expect(chart.locator('.bar-chart__scale')).toHaveCSS('font-size', `${variant.root * 0.75}px`);
+    await expect(chart.locator('.bar-chart__labels')).toHaveCSS('font-size', `${variant.root * 0.75}px`);
+    const plotHeight = Math.max(width <= 740 ? 92 : 112, 10.5 * variant.root * 0.75);
+    await expect(chart.locator('.bar-chart__plot')).toHaveCSS('height', `${plotHeight}px`);
     await expectChartLabelsFit(scrolls.first());
     await expectChartLabelsFit(scrolls.last());
     await page.getByRole('button', { name: 'Zero' }).click();

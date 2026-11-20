@@ -161,15 +161,34 @@ for (const locale of ['en', 'zh-CN'] as const) test(`dense usage ${locale} retai
   await expect(panel.locator('.usage-record')).toHaveCount(5);
   await font(panel.locator('.usage-completeness'), 14);
   await font(panel.locator('.usage-metrics dt'), 14);
+  await font(panel.locator('.usage-metrics small'), 12);
   await font(panel.locator('.usage-filters input'), 16);
+  await expect(panel.locator('.usage-filters input')).toHaveCount(3);
+  for (const input of await panel.locator('.usage-filters input').all()) {
+    await expect(input).toHaveAttribute('data-touch-text', 'responsive');
+    expect(await input.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  }
   await font(panel.locator('.usage-record code'), 14);
   await noOverflow(page); await fit(panel.locator('.usage-record').first());
   const provider = panel.getByLabel('Provider'); await provider.fill('codex');
   await provider.press('Enter'); await expect(provider).toHaveValue('codex');
   await expect(panel.locator('.usage-record')).toHaveCount(5);
+  await provider.focus();
+  await provider.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4));
   await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
   await font(panel.locator('.usage-completeness'), 28);
+  await font(panel.locator('.usage-metrics small'), 24);
+  await font(provider, 32);
+  await expect(provider).toBeFocused(); await expect(provider).toHaveValue('codex');
+  expect(await provider.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
   await noOverflow(page);
+  const scroller = page.locator('.task-detail-panel-usage');
+  const position = await scroller.evaluate(element => { element.scrollTop = Math.floor(element.scrollHeight / 2); return element.scrollTop; });
+  expect(position).toBeGreaterThan(0);
+  await page.getByRole('tab', { name: locale === 'en' ? 'Overview' : '概览', exact: true }).click();
+  await page.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量', exact: true }).click();
+  expect(await scroller.evaluate(element => element.scrollTop)).toBe(position);
+  await expect(provider).toHaveValue('codex');
   await info.attach('dense-usage-double-font-size', { body: await page.screenshot(), contentType: 'image/png' });
 });
 

@@ -41,8 +41,12 @@ the shared responsive touch adjustment, while ordinary account tokens retain
 their inherited size. Project and personal Task lists, Goal cards, tags and
 search select the public scale directly. Their search inputs use the shared
 coarse-pointer adjustment; the tag input derives its height from its line box
-and padding with a 44px minimum. The zero-legacy mode refuses the bridge and all
-remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+and padding with a 44px minimum. Dependency graphs, charts, project statistics,
+Usage and pull request views also select the public scale. Chart plot geometry
+scales from `xs` and label rows use their computed line height; graph geometry
+retains its independent root-size adaptation and view zoom. Usage and pull request
+search inputs use the shared responsive touch adjustment. The zero-legacy mode
+refuses the bridge and all remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
 ## Alternatives
