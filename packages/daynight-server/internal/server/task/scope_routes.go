@@ -69,6 +69,7 @@ func ScopedReadRoutes(mux httpx.RouteRegistrar, tasks *service.Tasks, observatio
 		run  func(*taskHandler, http.ResponseWriter, *http.Request, model.Principal)
 	}{
 		{"/api/v1/projects/{projectId}/tasks", (*taskHandler).list},
+		{"/api/v1/projects/{projectId}/task-assignees", (*taskHandler).assignees},
 		{"/api/v1/projects/{projectId}/tasks/{taskId}", (*taskHandler).get},
 		{"/api/v1/projects/{projectId}/task-work", (*taskHandler).work},
 		{"/api/v1/projects/{projectId}/task-graph", (*taskHandler).graph},

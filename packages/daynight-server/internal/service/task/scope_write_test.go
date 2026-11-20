@@ -98,7 +98,7 @@ func TestScopedTaskUpdateAdmissionPrecedesMutation(t *testing.T) {
 				if writes != 1 || err != nil || result.Version != target.Version+1 {
 					t.Fatalf("admitted: writes=%d result=%+v err=%v", writes, result, err)
 				}
-				hasSession := false
+				hasSession := !tc.full
 				for _, id := range tc.ids {
 					if id == "session:read" {
 						hasSession = true
@@ -131,11 +131,11 @@ func TestScopedTaskTagAssociationDoesNotRequireCatalogWrite(t *testing.T) {
 	principal.Kind = model.PATCredential
 	target.Type = model.TaskTypeTask
 	target.Properties = model.TaskProperties{"worker": json.RawMessage(`{"claimId":"private"}`), "sessionStartup": json.RawMessage(`{"state":"private"}`), "custom": json.RawMessage(`true`)}
-	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:write"}, 1)
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read", "task:write"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := taskservice.WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, false)
+	ctx := taskservice.WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, true)
 	base := newTaskMockBase(t, "tag-scope")
 	projectDAO := &projectWriterMock{taskMockBase: base, ProjectAccessFn: func(_ context.Context, p model.Principal) (model.ProjectAccess, error) {
 		return taskMockAccess(project, p), nil

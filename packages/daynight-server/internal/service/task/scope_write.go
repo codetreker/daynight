@@ -143,8 +143,8 @@ func checkTaskWriteScope(ctx context.Context, principal model.Principal) error {
 }
 
 func projectTaskWriteResponse(ctx context.Context, task model.Task) model.Task {
-	auth, _, scoped := TaskWriteAuthorizationFromContext(ctx)
-	if scoped && !sessionProjectionAllowed(&auth) {
+	auth, full, scoped := TaskWriteAuthorizationFromContext(ctx)
+	if scoped && full && !sessionProjectionAllowed(&auth) {
 		return taskcore.WithoutSessionProperties(task)
 	}
 	return task
