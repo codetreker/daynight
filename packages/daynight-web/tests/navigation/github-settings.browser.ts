@@ -476,6 +476,7 @@ test('mounts the Team authorization projection and keeps Personal Team navigatio
   for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
     await page.setViewportSize({ width, height: 800 });
     await page.goto('/projects');
+    if (width <= 740) await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
     await page.getByRole('link', { name: 'GitHub Apps', exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/teams/${teamId}/github-apps$`));
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
@@ -486,4 +487,29 @@ test('mounts the Team authorization projection and keeps Personal Team navigatio
     await expect(page.getByText('Example App', { exact: true })).toBeVisible();
   }
   expect(state.writes).toHaveLength(0);
+});
+
+test('GitHub settings input uses the shared responsive text at the real route', async ({ page }) => {
+  await install(page); await open(page);
+  const input = page.getByLabel('Poll interval');
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+    }
+  }
+});
+
+test.describe('coarse pointer GitHub settings', () => {
+  test.use({ hasTouch: true });
+  test('keeps the input at the shared responsive size on a wide viewport', async ({ page }) => {
+    await install(page); await open(page);
+    const input = page.getByLabel('Poll interval');
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  });
 });

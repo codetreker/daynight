@@ -2634,6 +2634,12 @@ and long paths in narrow desktop containers. Run it with
 `pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/worker-settings-typography-playwright.config.ts`.
 Its reports and captures belong to `.tmp/typography-h/`.
 
+Team, GitHub management and Webhook browser fixtures exercise the shared size
+scale at their actual routes. They cover responsive member and configuration
+inputs, Team invitation secrets, request IDs, narrow layouts and Webhook tab
+navigation with controlled API responses. The responsive field rule also takes
+precedence over transitional form typography for marked inputs.
+
 ### Workspace quality checks
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,

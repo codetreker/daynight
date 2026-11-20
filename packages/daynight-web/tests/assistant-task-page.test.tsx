@@ -21,7 +21,7 @@ const page = (items: unknown[]) => ({ items, nextCursor: null, observedAt: BOT_T
 beforeEach(mockWideAssistantWorkspace);
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); });
 function fixture() {
-  const state = { task: baseTask(), appendix: { ...appendix }, manual: { ...manual }, histories: [{ ...manual }], proposals: [{ ...proposal }], tasks: true };
+  const state = { task: baseTask(), appendix: { ...appendix }, manual: { ...manual }, histories: [{ ...manual }], proposals: [{ ...proposal }], tasks: true, inbox: { inboxId: null as string | null, enabled: false, createdAt: null as string | null, rotatedAt: null, overlapUntil: null, suppressedCount: '0' } };
   const writes: { path: string; input: Record<string, unknown> }[] = [];
   let write: ((path: string, input: Record<string, unknown>) => Promise<Response>) | null = null;
   const fetch = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
@@ -39,6 +39,7 @@ function fixture() {
     if (path.endsWith('/manual/versions')) return botResponse(page(state.histories));
     if (path.endsWith('/appendix')) return botResponse(page([state.appendix]));
     if (path.endsWith('/proposals')) return botResponse(page(state.proposals));
+    if (path.endsWith('/inbox')) return botResponse(state.inbox);
     if (path.endsWith('/items') || path.endsWith('/records') || path.endsWith('/events') || path.endsWith('/assistant-task-events')) return botResponse(page([]));
     return botError(404, 'not_found');
   });
@@ -47,9 +48,9 @@ function fixture() {
 }
 function mount(task: string | null = taskId) {
   const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const node = (id: string | null, taskTab: 'manual' | 'records' | 'proposals' = 'manual') => <TaskCacheProvider scope={scope}><BotsPage botId={null} taskId={id} taskTab={taskTab} readEnabled /></TaskCacheProvider>;
+  const node = (id: string | null, taskTab: 'manual' | 'records' | 'proposals' | 'inbox' = 'manual') => <TaskCacheProvider scope={scope}><BotsPage botId={null} taskId={id} taskTab={taskTab} readEnabled /></TaskCacheProvider>;
   const view = renderWithLocale(node(task), { locale: 'en' });
-  return { ...view, select: (id: string | null, tab: 'manual' | 'records' | 'proposals' = 'manual') => view.rerender(node(id, tab)) };
+  return { ...view, select: (id: string | null, tab: 'manual' | 'records' | 'proposals' | 'inbox' = 'manual') => view.rerender(node(id, tab)) };
 }
 it.each([['active', 'Responsible'], ['paused', 'Paused'], ['expired', 'Claim expired'], ['unowned', 'Unassigned']] as const)('shows %s task registration without inferring monitoring availability', async (state, label) => {
   const f = fixture();
@@ -174,4 +175,17 @@ it('keeps Bot attention outstanding while the task detail hides its conversation
   await waitFor(() => expect(screen.queryByLabelText('1 items need your attention')).toBeNull());
   expect(screen.getByTestId('retained-session')).toBeVisible();
   expect(f.fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+});
+
+it('opens the inbox panel from the task detail and enables it against the current task version', async () => {
+  const f = fixture();
+  const view = mount(); const detail = await screen.findByRole('region', { name: 'Coordination task' });
+  expect(within(detail).getByRole('button', { name: 'Inbox' })).toBeVisible();
+  expect(f.fetch.mock.calls.some(([url]) => String(url).endsWith('/inbox'))).toBe(false);
+  view.select(taskId, 'inbox');
+  const panel = await screen.findByRole('region', { name: 'Inbox' });
+  f.setWrite(async (_path, input) => { f.state.inbox = { ...f.state.inbox, inboxId: botId(84), enabled: true, createdAt: BOT_TIME }; return botResponse({ operation: { operationId: input.operationId, kind: 'inbox_enable', taskId, requestFingerprint: 'a'.repeat(64), admittedAt: BOT_TIME, resultingVersion: '8' }, inbox: f.state.inbox, token: `dnib_${'C'.repeat(43)}` }); });
+  fireEvent.click(await within(panel).findByRole('button', { name: 'Enable inbox' }));
+  await waitFor(() => expect(f.writes).toEqual([{ path: `/api/v1/assistant-tasks/${taskId}/inbox/enable`, input: { operationId: expect.any(String), ifVersion: '7' } }]));
+  expect(await within(panel).findByText(`dnib_${'C'.repeat(43)}`)).toBeVisible();
 });

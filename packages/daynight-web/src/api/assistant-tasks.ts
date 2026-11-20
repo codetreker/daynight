@@ -375,3 +375,43 @@ export async function rollbackAssistantTaskManual(taskId: string, value: { reado
   const body = input(() => { fields(value, ['ifVersion', 'manualVersion']); return { ifVersion: decimal(value.ifVersion), manualVersion: decimal(value.manualVersion) }; });
   return write(taskId, '/manual/rollback', 'POST', body, signal, admission, result => { const manual = parseAssistantTaskManual(result, taskId); if (manual.source !== 'rollback' || BigInt(manual.version) <= BigInt(body.manualVersion)) return malformed(); return manual; });
 }
+
+/** Readable inbox state. It never carries a token; a task without an enabled inbox has enabled=false and null identity and times. */
+export type AssistantTaskInbox = { readonly inboxId: string | null; readonly enabled: boolean; readonly createdAt: string | null; readonly rotatedAt: string | null; readonly overlapUntil: string | null; readonly suppressedCount: string };
+export type AssistantTaskInboxOperation = { readonly operationId: string; readonly kind: 'inbox_enable' | 'inbox_disable' | 'inbox_rotate_overlap' | 'inbox_rotate_immediate'; readonly taskId: string; readonly requestFingerprint: string; readonly admittedAt: string; readonly resultingVersion: string };
+/** Token is present only in the enable or rotate response that generated it; a replay returns null. */
+export type AssistantTaskInboxResult = { readonly operation: AssistantTaskInboxOperation; readonly inbox: AssistantTaskInbox; readonly token: string | null };
+export type AssistantTaskInboxRotation = 'overlap' | 'immediate';
+export const parseAssistantTaskInbox = (value: unknown): AssistantTaskInbox => {
+  const data = fields(value, ['inboxId', 'enabled', 'createdAt', 'rotatedAt', 'overlapUntil', 'suppressedCount']);
+  const inbox = { inboxId: nullableId(data.inboxId), enabled: boolean(data.enabled), createdAt: nullableTimestamp(data.createdAt), rotatedAt: nullableTimestamp(data.rotatedAt), overlapUntil: nullableTimestamp(data.overlapUntil), suppressedCount: decimal(data.suppressedCount, true) };
+  if (inbox.enabled !== (inbox.inboxId !== null) || inbox.enabled !== (inbox.createdAt !== null) || !inbox.enabled && (inbox.rotatedAt !== null || inbox.overlapUntil !== null)) return malformed();
+  return inbox;
+};
+const inboxResult = (value: unknown, taskId: string, operationId: string, token: boolean): AssistantTaskInboxResult => {
+  const data = fields(value, ['operation', 'inbox', ...(token ? ['token'] : [])]), op = fields(data.operation, ['operationId', 'kind', 'taskId', 'requestFingerprint', 'admittedAt', 'resultingVersion']);
+  const operation = { operationId: uuid(op.operationId), kind: choice(op.kind, ['inbox_enable', 'inbox_disable', 'inbox_rotate_overlap', 'inbox_rotate_immediate']), taskId: taskIdentity(op, taskId), requestFingerprint: text(op.requestFingerprint), admittedAt: timestamp(op.admittedAt), resultingVersion: decimal(op.resultingVersion) };
+  if (operation.operationId !== requestId(operationId) || !/^[a-f0-9]{64}$/.test(operation.requestFingerprint)) return malformed();
+  const result = { operation, inbox: parseAssistantTaskInbox(data.inbox), token: token && data.token !== null ? text(data.token, true) : null };
+  if (result.token !== null && !/^dnib_[A-Za-z0-9_-]{43}$/.test(result.token)) return malformed();
+  return result;
+};
+export const getAssistantTaskInbox = (taskId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/inbox`, signal, admission, parseAssistantTaskInbox);
+export const getAssistantTaskInboxOperation = (taskId: string, operationId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/inbox-operations/${target(operationId)}`, signal, admission, value => inboxResult(value, taskId, operationId, false));
+/** The receiving URL carries no token, so it may be shown, copied and used as an outbound Webhook target. */
+export const assistantTaskInboxUrl = (inboxId: string, origin = globalThis.location?.origin ?? '') => `${origin}/api/v1/assistant-task-inbox/${encodeURIComponent(inboxId)}`;
+async function manageInbox(taskId: string, kind: 'enable' | 'disable' | 'rotate', value: { readonly operationId: string; readonly ifVersion: string; readonly mode?: AssistantTaskInboxRotation }, signal: AbortSignal, admission: AssistantTaskAdmission): Promise<AssistantTaskInboxResult> {
+  const body = input(() => {
+    fields(value, ['operationId', 'ifVersion', ...(kind === 'rotate' ? ['mode'] : [])]);
+    return { operationId: target(value.operationId), ifVersion: decimal(value.ifVersion), ...(kind === 'rotate' ? { mode: choice(value.mode, ['overlap', 'immediate']) } : {}) };
+  });
+  const expected = kind === 'rotate' ? `inbox_rotate_${body.mode}` : `inbox_${kind}`;
+  return write(taskId, `/inbox/${kind}`, 'POST', body, signal, admission, value => {
+    const result = inboxResult(value, taskId, body.operationId, kind !== 'disable');
+    if (result.operation.kind !== expected || BigInt(result.operation.resultingVersion) !== BigInt(body.ifVersion) + 1n || result.inbox.enabled !== (kind !== 'disable')) return malformed();
+    return result;
+  });
+}
+export const enableAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'enable', value, signal, admission);
+export const disableAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'disable', value, signal, admission);
+export const rotateAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string; readonly mode: AssistantTaskInboxRotation }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'rotate', value, signal, admission);

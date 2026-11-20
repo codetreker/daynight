@@ -25,16 +25,18 @@ Their responsive text inputs use the shared touch adjustment; affected Task
 metadata explicitly selects `xs`, and project-transfer impact copy inherits `sm`.
 Task filters and rows, personal
 task groups, Goal summaries, task search, Markdown reading surfaces, dependency
-graphs, project overview, statistics, usage panels, teams, GitHub integration, pull
-requests, Webhooks, and Session controls and timeline details use semantic roles
+graphs, project overview, statistics, usage panels, pull requests, and Session
+controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
 count badges select `xs` directly. Markdown code and tables use the interface
 role; Bot first-paragraph emphasis retains its weight without a separate size.
-Touch fields, including Step title and Markdown editors
-on coarse pointers, use the shared `--text-touch-field` size to preserve a 16 CSS
-px minimum while responding to larger browser font preferences.
+Team member search, GitHub management and Webhooks select public sizes directly.
+Their marked text fields use the shared responsive adjustment to preserve a 16 CSS
+px minimum on narrow or coarse-pointer displays while responding to larger browser
+font preferences. Other touch fields, including Step title and Markdown editors
+on coarse pointers, use the transitional `--text-touch-field` size.
 Terminal recordings use a shared `--text-terminal` base, multiplied by their
 independent zoom scale; reading-role changes do not affect terminal output.
 

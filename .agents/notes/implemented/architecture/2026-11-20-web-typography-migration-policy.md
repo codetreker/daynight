@@ -34,19 +34,22 @@ CSS geometry and statically readable TypeScript strings and style operations.
 Mermaid's current configuration receives individual entries, so its surrounding
 files and configuration objects retain normal inspection. The workspace shell,
 public landing and setup pages, authentication styles, shared selection controls,
-Worker pages and configuration, Worker Prompt editors and project settings use
-public sizes directly. The shared selection CSS owns touch text adjustments and
-sizes controls from their actual text instead of private font aliases. Responsive
-input attributes use two attribute selectors so the shared adjustment outranks
-generic field fonts without changing their normal size. Consumers select the
-ordinary size on their field container and retain local control geometry,
-including the Prompt editor's 196px minimum height. Management dialog fields and
-invitation secret text use the shared responsive touch adjustment, while ordinary
-account tokens retain their inherited size. Project and personal Task lists, Goal
-cards, tags and search select the public scale directly. Their search inputs use
-the shared coarse-pointer adjustment; the tag input derives its height from its
-line box and padding with a 44px minimum. The zero-legacy mode refuses the bridge
-and all remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+Worker pages and configuration, Worker Prompt editors, project settings, Team
+member search, GitHub management, Webhook consumers, Project and personal Task
+lists, Goal cards, tags and search use public sizes directly.
+
+The shared selection CSS owns touch text adjustments and sizes controls from
+their actual text instead of private font aliases. Responsive input attributes use
+two attribute selectors so the shared adjustment outranks generic field fonts
+without changing their normal size. Marked responsive fields also take precedence
+over transitional form typography. Consumers select the ordinary size on their
+field container and retain local control geometry, including the Prompt editor's
+196px minimum height. Management dialog fields and invitation secret text use the
+shared responsive adjustment, while ordinary account tokens retain their inherited
+size. Project and Task search inputs use the shared coarse-pointer adjustment;
+the tag input derives its height from its line box and padding with a 44px minimum.
+The zero-legacy mode refuses the bridge and all remaining baseline uses, supplying
+the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
 ## Alternatives

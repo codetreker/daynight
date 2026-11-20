@@ -686,8 +686,9 @@ for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`ret
   const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite member' : '邀请成员' });
   await expect(invite).toBeVisible(); await expect(invite).toBeEnabled();
   const panel = invite.locator('xpath=ancestor::section');
-  const originalPanel = await panel.elementHandle(), panelBox = await panel.boundingBox();
+  const originalPanel = await panel.elementHandle();
   await invite.click();
+  const panelBox = await panel.boundingBox();
   const dialog = page.getByRole('dialog'), originalDialog = await dialog.elementHandle(), dialogBox = await dialog.boundingBox();
   const rosterStarted = Promise.withResolvers<void>(), rosterFinish = Promise.withResolvers<void>();
   const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
@@ -783,4 +784,29 @@ test('member search retains its page during account-change waiting and sends no 
     await input.fill('another'); await page.waitForTimeout(500);
     expect(searches).toBe(before); await expect(input).toHaveValue('another'); await expect(input).toBeFocused();
   } finally { await other.close(); }
+});
+
+test('member search input follows browser text preferences at responsive widths', async ({ page }) => {
+  await install(page); await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+    }
+  }
+});
+
+test.describe('coarse pointer member search', () => {
+  test.use({ hasTouch: true });
+  test('keeps the input at the shared responsive size on a wide viewport', async ({ page }) => {
+    await install(page); await start(page);
+    const input = page.getByRole('searchbox', { name: 'Search and add members' });
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  });
 });

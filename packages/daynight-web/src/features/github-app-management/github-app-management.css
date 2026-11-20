@@ -1,9 +1,9 @@
-.github-app-list-panel .panel-heading h2 { font-size: var(--text-section-heading); font-weight: 700; }
+.github-app-list-panel .panel-heading h2 { font-size: var(--text-lg); font-weight: 700; }
 .github-app-list { list-style: none; padding: 0; margin: 0; }
 .github-app-list > li { display: flex; align-items: center; gap: 16px; padding: 18px 24px; border-top: 1px solid #e4e8ef; }
 .github-app-list > li > div { min-width: 0; flex: 1; }
 .github-app-list h3, .github-app-list p { margin: 0; overflow-wrap: anywhere; }
-.github-app-list h3 { font-size: var(--text-interface); font-weight: 650; }
+.github-app-list h3 { font-size: var(--text-sm); font-weight: 650; }
 .github-app-list p, .github-app-meta { color: #556176; margin-top: 6px; }
 .github-app-summary { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: #556176; }
 .github-app-details dl { margin: 0; display: grid; gap: 18px; }
