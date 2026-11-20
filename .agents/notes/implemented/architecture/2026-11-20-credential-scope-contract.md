@@ -19,11 +19,19 @@ the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly.
 
-Assistant task operations classify their business actions in core, where mixed
-updates and returned resource views can require multiple scopes. Scoped admission
-reads the authoritative policy through the transaction-bound authorization
-reader and retains the existing identity, Bot ownership and claim checks. Inbox
-management has its own capability and does not change inbound token authentication.
+Bot definition services accept an explicitly supplied authorization source for
+snapshot reads and transaction-bound writes. Definition reads, writes and
+deletion use their respective operations, alongside the existing credential and
+owner checks. Full definition responses also require Session read permission
+because their existing representation includes execution facts. Deletion retains
+its coordinated Session revocation and cleanup. The existing production
+constructors remain unchanged until scoped authorization is assembled. Defaults
+that expose Worker status also require Worker read permission; their explicit
+native model discovery checks Worker inspect permission before each broker request.
+The necessary discovery within Bot creation retains Bot admission and the
+existing Worker resource checks, including for MCP grants.
+The optional Bot attention projection requires Assistant Task read permission;
+its creation response is admitted before the definition is written.
 
 ## Alternatives
 
@@ -36,10 +44,6 @@ small per-credential set; bitsets require a durable allocation protocol. The
 selected model uses readable normalized IDs and allows atomic replacement in the
 persistence implementation.
 
-**Transport-only admission.** HTTP methods do not distinguish a deletion encoded
-as a PATCH or a combined update, and other callers can reuse the same operations.
-Classifying the action in core keeps those paths under the same business rules.
-
 ## Consequences
 
 CLI and MCP defaults use the applicable available entries; Team defaults to read
@@ -47,7 +51,9 @@ and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
 itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
-the policy through opt-in service and transport entry points. The scoped assistant
-task path requires a transaction-bound policy reader. Existing production
-assembly remains on its original credential paths; persistence, production
-activation and issuance remain independent work.
+the policy through opt-in service and transport entry points. Persistence,
+production activation and issuance remain independent work. Bot definition
+permission does not confer Session or runtime control. A scoped
+authorization source must read current authority at each supplied boundary and
+preserve the principal; it cannot substitute a stale request snapshot for an
+existing transactional recheck.

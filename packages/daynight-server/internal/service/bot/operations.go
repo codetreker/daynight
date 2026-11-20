@@ -11,8 +11,10 @@ import (
 
 type botOperations struct {
 	create           func(context.Context, store.BotWriteDAO, model.Principal, botcore.CreateBot, string, bool) (model.Bot, error)
+	createScoped     func(context.Context, store.BotWriteDAO, model.Principal, botcore.CreateBot, string, bool, func() error) (model.Bot, error)
 	get              func(context.Context, store.SnapshotScope, model.Principal, string) (model.Bot, error)
 	list             func(context.Context, store.SnapshotScope, model.Principal, *string, store.Page) (store.BotPage, error)
+	listScoped       func(context.Context, store.SnapshotScope, model.Principal, *string, store.Page, func() error) (store.BotPage, error)
 	creationDefaults func(context.Context, store.BotCreationReader, string, model.BotOverrides) (model.BotDefaultsInput, botcore.BotDefaults, error)
 	defaults         func(model.BotDefaultsInput, model.BotOverrides) (botcore.BotDefaults, error)
 	workerDefaults   func(model.BotDefaultsInput, model.BotOverrides, string) (model.BotConfiguration, error)
@@ -21,7 +23,7 @@ type botOperations struct {
 
 func defaultBotOperations() botOperations {
 	return botOperations{
-		create: botcore.Create, get: botcore.Get, list: botcore.List,
+		create: botcore.Create, createScoped: botcore.CreateScoped, get: botcore.Get, list: botcore.List, listScoped: botcore.ListScoped,
 		creationDefaults: botcore.CreationDefaults, defaults: botcore.ResolveBotDefaults,
 		workerDefaults: botcore.WorkerNativeDefaults, nativeSelection: botcore.ResolveNativeSelection,
 	}
