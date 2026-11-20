@@ -7,6 +7,8 @@
 [原始鉴权决策](../../.agents/notes/archived/architecture/2026-10-22-auth-architecture.md)
 保留架构取舍，[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)记录了当前配置、组合与验收隐私规则的历史取舍。
 
+业务 Scope 的[内部合同](credential-scope-internal.md)定义目录、策略快照与既有 profile 的区分；当前生产认证与业务准入尚未使用该合同。
+
 ## 已采纳的架构边界
 
 附件 HTML 在 Task 独立 origin 执行，预览凭据关联原主站 session，资源请求继续检查
