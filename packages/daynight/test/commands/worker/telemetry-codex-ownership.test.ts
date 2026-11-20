@@ -182,11 +182,11 @@ describe("production Bot host Codex ownership", () => {
     vi.stubEnv("PATHEXT", searchEnvironment.PATHEXT);
     const paths = resolveWorkerPaths(path.resolve("fixture-home"));
     const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
-      owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},
+      owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" }, serverToken: "fixture-placeholder", emit: () => {},
       configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), canAdmitNewExecution: () => true, pollIntervalMs: () => 1000, recoveryLimit: () => 3 });
     hosts.push(host);
     return createWorkerTelemetryCollector({ paths, homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd,
-      machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: host });
+      machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "00000000-0000-4000-8000-000000000002", serverOrigin: "https://daynight.example", assistantHost: host });
   };
   const originalCleanup = async (terminationFailure = false) => {
     const actual = await vi.importActual<typeof OwnedCommandModule>("../../../src/commands/worker/owned-command.js");

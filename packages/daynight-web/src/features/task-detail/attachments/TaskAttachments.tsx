@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
@@ -56,8 +56,9 @@ const ancestorDirectories = (path: string | null): readonly string[] => {
   return segments.slice(0, -1).map((_segment, index) => segments.slice(0, index + 1).join('/'));
 };
 
-const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, expanded, onDirectoryToggle }: {
+const FileTree = ({ nodes, depth, selectedPath, onSelect, onActions, actionPath, busy, expanded, onDirectoryToggle }: {
   readonly nodes: readonly AttachmentNode[];
+  readonly depth: number;
   readonly selectedPath: string | null;
   readonly onSelect: (path: string) => void;
   readonly onActions: (target: AttachmentActionTarget) => void;
@@ -67,7 +68,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
   readonly onDirectoryToggle: (path: string, open: boolean) => void;
 }) => {
   const { format, messages } = useI18n();
-  return <ul className="attachment-tree">
+  return <ul className="attachment-tree" style={{ '--attachment-tree-depth': depth } as CSSProperties}>
     {nodes.map((node) => <li key={node.path}>{node.kind === 'directory' ? (
       <details open={expanded.has(node.path)} onToggle={(event) => onDirectoryToggle(node.path, event.currentTarget.open)}>
         <summary onClick={(event) => {
@@ -75,7 +76,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
           event.preventDefault();
           onDirectoryToggle(node.path, !expanded.has(node.path));
         }}><span aria-hidden="true">▱</span> {node.name}</summary>
-        <FileTree nodes={node.children} selectedPath={selectedPath} onSelect={onSelect} onActions={onActions} actionPath={actionPath} busy={busy} expanded={expanded} onDirectoryToggle={onDirectoryToggle} />
+        <FileTree nodes={node.children} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} onActions={onActions} actionPath={actionPath} busy={busy} expanded={expanded} onDirectoryToggle={onDirectoryToggle} />
       </details>
     ) : (
       <div className={`attachment-file-row${selectedPath === node.path ? ' attachment-file-selected' : ''}`}><button className="attachment-file" type="button" aria-pressed={selectedPath === node.path} onClick={() => onSelect(node.path)}>
@@ -185,7 +186,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
             </div>
           )}
           {attachments.complete && attachments.items.length === 0 && <p className="attachment-state">{m.empty}</p>}
-          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy || paused} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
+          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} depth={0} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy || paused} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
           <details className="attachment-upload-disclosure">
             <summary>{m.upload}</summary>
             <form className="attachment-upload" onSubmit={(event) => { void upload(event); }}>

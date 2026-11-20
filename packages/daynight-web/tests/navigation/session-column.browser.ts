@@ -241,6 +241,204 @@ for (const entry of ['task', 'test'] as const) test(`${entry} uses its narrow de
   expect(dimensions.heading.bottom).toBeLessThanOrEqual(dimensions.bounds.bottom);
   expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
 });
+async function imageFooterGeometry(page: Page) {
+  return page.locator('.session-composer-footer-default').evaluate(footer => {
+    const surface = footer.closest<HTMLElement>('.session-composer-surface')!;
+    const nodes = [...footer.querySelectorAll<HTMLElement>('.session-controls-toolbar button, .session-actions button')];
+    const rect = (node: Element) => node.getBoundingClientRect().toJSON();
+    const style = getComputedStyle(surface);
+    return { contentWidth: surface.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      footer: rect(footer), surface: rect(surface), controls: nodes.map(rect),
+      overflow: footer.scrollWidth > footer.clientWidth || surface.scrollWidth > surface.clientWidth };
+  });
+}
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN']) {
+  test(`${entry} ${locale} aligns image and send actions at narrow content widths`, async ({ browser }, info) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true });
+    try {
+      const page = await context.newPage();
+      const { observations, publishConfirmedModel } = await open(page, locale, 'idle', entry);
+      const image = page.locator('.session-add-images'), input = page.locator('.session-composer textarea');
+      const send = page.locator('.session-primary-actions button[type=submit]');
+      await expect(image).toBeEnabled(); await expect(send).toBeDisabled();
+      const empty = await imageFooterGeometry(page);
+      await input.fill('Draft for the image toolbar'); await expect(send).toBeEnabled();
+      const filled = await imageFooterGeometry(page);
+      expect(empty.contentWidth).toBe(278); expect(filled.footer.height).toBe(44);
+      expect(empty.footer.height).toBe(filled.footer.height);
+      const evidence: Array<Record<string, unknown>> = [{ viewport: 320, ...filled }];
+      for (const measured of [empty, filled]) {
+        expect(measured.controls).toHaveLength(5); expect(measured.overflow).toBe(false);
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        expect(measured.controls[3]!.width).toBe(44); expect(measured.controls[3]!.height).toBe(44);
+        for (const control of measured.controls) expect(control.height).toBeGreaterThanOrEqual(36);
+      }
+      const originalInput = await input.elementHandle();
+      for (const width of [375, 390, 768, 1360]) {
+        await page.setViewportSize({ width, height: 844 });
+        const measured = await imageFooterGeometry(page);
+        expect(measured.overflow).toBe(false);
+        expect(measured.controls[4]!.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        expect(await input.evaluate((node, original) => node === original, originalInput)).toBe(true);
+        await expect(input).toHaveValue('Draft for the image toolbar');
+        evidence.push({ viewport: width, ...measured });
+      }
+      // Exercise the query against the real surface content width in a narrow embedded panel.
+      await page.setViewportSize({ width: 1360, height: 844 });
+      for (const width of [235, 256, 275, 276, 277]) {
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await imageFooterGeometry(page);
+        expect(measured.contentWidth).toBe(width); expect(measured.overflow).toBe(false);
+        const settings = measured.controls.slice(0, 4), action = measured.controls[4]!;
+        expect(action.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        expect(measured.footer.right - action.right).toBeLessThanOrEqual(1);
+        if (width < 276) expect(action.top).toBeGreaterThanOrEqual(Math.max(...settings.map(rect => rect.bottom)) - 1);
+        else {
+          const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+          expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+        }
+        evidence.push({ viewport: width, ...measured });
+      }
+      await page.locator('.session-composer-surface').evaluate(node => { node.style.removeProperty('width'); node.style.removeProperty('box-sizing'); });
+      await page.setViewportSize({ width: 320, height: 640 });
+      await page.locator('.session-fullscreen-toggle').click();
+      const fullscreen = await imageFooterGeometry(page);
+      expect(fullscreen.overflow).toBe(false);
+      expect(fullscreen.controls[4]!.right).toBeLessThanOrEqual(fullscreen.footer.right + 1);
+      evidence.push({ viewport: 320, fullscreen: true, ...fullscreen });
+      await page.keyboard.press('Escape');
+      for (const size of [12, 20, 24]) for (const width of [235, 256, 278]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, size);
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await imageFooterGeometry(page);
+        expect(measured.overflow).toBe(false);
+        for (const [index, control] of measured.controls.entries()) {
+          expect(control.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(control.right).toBeLessThanOrEqual(measured.footer.right + 1);
+          for (const other of measured.controls.slice(index + 1)) {
+            const overlapX = Math.min(control.right, other.right) - Math.max(control.left, other.left);
+            const overlapY = Math.min(control.bottom, other.bottom) - Math.max(control.top, other.top);
+            expect(overlapX <= 1 || overlapY <= 1).toBe(true);
+          }
+        }
+        expect(measured.footer.right - measured.controls[4]!.right).toBeLessThanOrEqual(1);
+        evidence.push({ viewport: 320, rootFontSize: size, ...measured });
+      }
+      await page.evaluate(() => { document.documentElement.style.removeProperty('font-size'); });
+      await page.locator('.session-composer-surface').evaluate(node => { node.style.removeProperty('width'); node.style.removeProperty('box-sizing'); });
+      const model = page.locator('.session-model-trigger');
+      const modelParts = await model.evaluate(node => {
+        const label = node.querySelector<HTMLElement>('.session-model-label')!, caret = node.querySelector<HTMLElement>('.session-control-caret')!;
+        const button = node.getBoundingClientRect(), arrow = caret.getBoundingClientRect();
+        return { truncated: label.scrollWidth > label.clientWidth, arrowLeft: arrow.left, arrowRight: arrow.right, buttonLeft: button.left, buttonRight: button.right };
+      });
+      expect(modelParts.truncated).toBe(true);
+      expect(modelParts.arrowLeft).toBeGreaterThanOrEqual(modelParts.buttonLeft);
+      expect(modelParts.arrowRight).toBeLessThanOrEqual(modelParts.buttonRight);
+      await model.click();
+      await expect(page.locator('.session-controls-panel')).toContainText('A long native model name for layout verification');
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.session-controls-panel')).toHaveCount(0);
+      await model.focus(); await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Permissions', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(page.locator('.session-command-trigger')).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(image).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(send).toBeFocused();
+      publishConfirmedModel();
+      await expect(model).toContainText('Native B');
+      const shortModel = await imageFooterGeometry(page);
+      const shortCenters = shortModel.controls.map(rect => rect.top + rect.height / 2);
+      expect(shortModel.overflow).toBe(false);
+      expect(Math.max(...shortCenters) - Math.min(...shortCenters)).toBeLessThanOrEqual(1);
+      evidence.push({ viewport: 320, model: 'Native B', ...shortModel });
+      const chooser = page.waitForEvent('filechooser'); await image.tap();
+      expect((await chooser).isMultiple()).toBe(true);
+      await expect(input).toHaveValue('Draft for the image toolbar');
+      await send.tap();
+      await expect.poll(() => observations.writes.some(write => write.endsWith('/commands'))).toBe(true);
+      expect(observations.pageErrors).toEqual([]);
+      await info.attach('image-footer-geometry', { body: JSON.stringify({ entry, locale, evidence, boundary: 'Production Web page with Session transport fixtures, touch emulation and Chromium; no native provider or physical device.' }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
+}
+
+test('preserves the no-image footer width policy', async ({ browser }, info) => {
+  const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, hasTouch: true });
+  try {
+    const page = await context.newPage(); await open(page, 'en', 'idle', 'test');
+    await page.locator('.session-add-images').waitFor({ state: 'visible' });
+    // The production Session always supplies an image binding; remove its button
+    // only to exercise the CSS policy for a composer without that entry.
+    await page.locator('.session-add-images').evaluate(node => node.remove());
+    const evidence = [];
+    for (const width of [233, 234, 256]) {
+      await page.locator('.session-composer-surface').evaluate((node, width) => {
+        node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+      }, width);
+      const measured = await imageFooterGeometry(page);
+      expect(measured.contentWidth).toBe(width); expect(measured.controls).toHaveLength(4);
+      expect(measured.overflow).toBe(false);
+      const settings = measured.controls.slice(0, 3), send = measured.controls[3]!;
+      if (width < 234) expect(send.top).toBeGreaterThanOrEqual(Math.max(...settings.map(rect => rect.bottom)) - 1);
+      else {
+        const centers = measured.controls.map(rect => rect.top + rect.height / 2);
+        expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+      }
+      evidence.push({ width, ...measured });
+    }
+    await info.attach('no-image-footer-geometry', { body: JSON.stringify({ evidence, boundary: 'Production CSS and markup with the image button removed as a layout fixture; not a product capability state.' }), contentType: 'application/json' });
+  } finally { await context.close(); }
+});
+
+for (const state of ['working', 'waiting_input'] as const) {
+  test(`image footer keeps ${state} groups distinct at desktop breakpoints and larger fonts`, async ({ browser }, info) => {
+    const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, hasTouch: true });
+    try {
+      const page = await context.newPage(); await open(page, 'en', state, 'test');
+      const evidence = [];
+      for (const size of [16, 20, 24]) for (const width of [516, 599, 600]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, size);
+        await page.locator('.session-composer-surface').evaluate((node, width) => {
+          node.style.boxSizing = 'content-box'; node.style.width = `${width}px`;
+        }, width);
+        const measured = await page.locator('.session-composer-footer-default').evaluate(footer => {
+          const nodes = [...footer.querySelectorAll<HTMLElement>(':scope > .session-controls-toolbar, :scope > .session-composer-activity, :scope > .session-primary-actions')];
+          return { footer: footer.getBoundingClientRect().toJSON(), groups: nodes.map(node => node.getBoundingClientRect().toJSON()),
+            buttons: [...footer.querySelectorAll<HTMLElement>('button')].map(node => node.getBoundingClientRect().toJSON()),
+            overflow: footer.scrollWidth > footer.clientWidth };
+        });
+        expect(measured.groups).toHaveLength(3); expect(measured.overflow).toBe(false);
+        for (const [index, control] of measured.groups.entries()) {
+          expect(control.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(control.right).toBeLessThanOrEqual(measured.footer.right + 1);
+          for (const other of measured.groups.slice(index + 1)) {
+            const overlapX = Math.min(control.right, other.right) - Math.max(control.left, other.left);
+            const overlapY = Math.min(control.bottom, other.bottom) - Math.max(control.top, other.top);
+            expect(overlapX <= 1 || overlapY <= 1).toBe(true);
+          }
+        }
+        for (const button of measured.buttons) {
+          expect(button.left).toBeGreaterThanOrEqual(measured.footer.left - 1);
+          expect(button.right).toBeLessThanOrEqual(measured.footer.right + 1);
+        }
+        for (const button of measured.buttons.slice(0, 4)) {
+          expect(button.left).toBeGreaterThanOrEqual(measured.groups[0]!.left - 1);
+          expect(button.right).toBeLessThanOrEqual(measured.groups[0]!.right + 1);
+        }
+        evidence.push({ size, width, ...measured });
+      }
+      await info.attach('image-footer-activity-geometry', { body: JSON.stringify({ state, evidence }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
+}
 
 for (const entry of ['task', 'test', 'assistant'] as const) for (const content of ['short', 'long', 'empty'] as const) {
   test(`${entry} ${content} aligns the production reading and input columns`, async ({ page }, info) => {
