@@ -356,6 +356,35 @@ test('overlapping XY series keep their labels and wrap long text', async ({ page
   expect(result.guides).toBeGreaterThan(0);
 });
 
+test('displaced XY labels paint over their background', async ({ page }) => {
+  await install(page, '# Delivery\n\n```mermaid\nxychart\nx-axis [Only]\ny-axis 0 --> 20\nline [10 "First label"]\nline [10 "Second label"]\n```');
+  await open(page);
+  const image = page.locator('.mermaid-chart').getByRole('img');
+  await expect(image).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  const changed = await image.evaluate(async (element: HTMLImageElement) => {
+    const bytes = await (await fetch(element.src)).text();
+    const xml = new DOMParser().parseFromString(bytes, 'image/svg+xml');
+    const label = xml.querySelector('.plot .line-plot-1 .labels text');
+    if (!label || label.textContent !== 'Second label') throw new Error('Missing displaced series label');
+    label.setAttribute('visibility', 'hidden');
+    const raster = async (svg: string) => {
+      const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+      try {
+        const picture = new Image(); picture.src = url; await picture.decode();
+        const canvas = new OffscreenCanvas(picture.naturalWidth, picture.naturalHeight), context = canvas.getContext('2d')!;
+        context.drawImage(picture, 0, 0);
+        return context.getImageData(0, 0, canvas.width, canvas.height).data;
+      } finally { URL.revokeObjectURL(url); }
+    };
+    const original = await raster(bytes), hidden = await raster(new XMLSerializer().serializeToString(xml));
+    let pixels = 0;
+    for (let i = 0; i < original.length; i += 4) if (Math.abs(original[i]! - hidden[i]!) + Math.abs(original[i + 1]! - hidden[i + 1]!) + Math.abs(original[i + 2]! - hidden[i + 2]!) > 30) pixels++;
+    return pixels;
+  });
+  expect(changed).toBeGreaterThan(20);
+});
+
 test('opening a relative attachment from graph details retains the inspected graph', async ({ page }, info) => {
   const { graph } = await install(page, description, true);
   const expected = expectedDependencyTopology(graph.tasks, taskId);

@@ -112,7 +112,7 @@
    const group = svg.append("g").attr("class", "main");
    const background = group.append("rect").attr("width", chartConfig.width).attr("height", chartConfig.height).attr("class", "background");
    configureSvgSize(svg, chartConfig.height, chartConfig.width, true);
-@@ -2103,6 +2127,111 @@
+@@ -2103,8 +2127,136 @@
    background.attr("fill", themeConfig.backgroundColor);
    db.setTmpSVGG(svg.append("g").attr("class", "mermaid-tmp-group"));
    const shapes = db.getDrawableElem();
@@ -215,16 +215,41 @@
 +      }
 +    }
 +    const firstLabel = shapes.findIndex(shape => shape.type === "text" && shape.groupTexts[0] === "plot" && shape.groupTexts[2] === "labels");
-+    shapes.splice(firstLabel, 0, { groupTexts: ["label-guides"], type: "path", data: guides }, { groupTexts: ["label-backgrounds"], type: "rect", data: backgrounds });
++    shapes.splice(firstLabel, 0, { groupTexts: ["plot", "label-guides"], type: "path", data: guides }, { groupTexts: ["plot", "label-backgrounds"], type: "rect", data: backgrounds });
 +    if (minX < 0 || minY < 0 || maxX > chartConfig.width || maxY > chartConfig.height) {
 +      svg.attr("viewBox", `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
 +      configureSvgSize(svg, maxY - minY, maxX - minX, true);
 +    }
 +  }
    const groups = {};
++  let plotLayers;
    function getGroup(gList) {
++    if ((lineLabel.width || lineLabel.height) && gList[0] === "plot" && gList.length > 1) {
++      if (!plotLayers) {
++        const plot = getGroup(["plot"]);
++        plotLayers = {
++          marks: plot.append("g").attr("class", "plot-marks"),
++          guides: plot.append("g").attr("class", "label-guides"),
++          backgrounds: plot.append("g").attr("class", "label-backgrounds"),
++          labels: plot.append("g").attr("class", "plot-labels"),
++          markGroups: /* @__PURE__ */ new Map(),
++          labelGroups: /* @__PURE__ */ new Map()
++        };
++      }
++      if (gList[1] === "label-guides") return plotLayers.guides;
++      if (gList[1] === "label-backgrounds") return plotLayers.backgrounds;
++      const isLabel = gList[2] === "labels";
++      const cache = isLabel ? plotLayers.labelGroups : plotLayers.markGroups;
++      if (!cache.has(gList[1])) {
++        const parent = (isLabel ? plotLayers.labels : plotLayers.marks).append("g").attr("class", gList[1]);
++        cache.set(gList[1], isLabel ? parent.append("g").attr("class", "labels") : parent);
++      }
++      return cache.get(gList[1]);
++    }
      let elem = group;
-@@ -2196,7 +2325,16 @@
+     let prefix = "";
+     for (const [i] of gList.entries()) {
+@@ -2196,7 +2348,16 @@
          }
          break;
        case "text":
