@@ -267,6 +267,144 @@ test('attachment upload Escape preserves its dialog and fullscreen draft', async
   await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
 });
 
+const treeDirectory = 'docs/architecture/current/reviews/figures/mobile';
+const treePath = `${treeDirectory}/overview.md`;
+const deeperTreePath = `${treeDirectory}/extra/deeper/leaf/overview.md`;
+const treePaths = [treePath, deeperTreePath, `${treeDirectory}/a-long-English-file-name-with-readable-segments.md`, `${treeDirectory}/附件目录中的完整中文文件名称与说明文档.md`, 'overview.md'];
+
+const installDeepTree = async (page: Page, goal: boolean) => {
+  const state = await install(page, false, false, undefined, goal);
+  state.files.push(...treePaths.map(path => ({ path, contentType: 'text/markdown', sizeBytes: longText.length, createdAt: time, updatedAt: time })));
+  await page.route(url => url.pathname.startsWith(`${root}/attachments/files/`) && treePaths.some(path => decodeURIComponent(url.pathname) === `${root}/attachments/files/${path}`), route => route.fulfill({ contentType: 'text/markdown', body: `# Deep tree reading\n\n${longText}`, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  return state;
+};
+
+const treeRow = (attachments: Locator, path: string) => attachments.getByRole('button', { name: `More actions: ${path}`, exact: true }).locator('..');
+
+const openTreePath = async (attachments: Locator, path: string, input: 'tap' | 'keyboard') => {
+  const segments = path.split('/').slice(0, -1);
+  let list = attachments.locator('.attachment-files > .attachment-tree');
+  for (const segment of segments) {
+    const directory = list.locator(':scope > li > details').filter({ has: attachments.page().locator('summary', { hasText: new RegExp(`^▱\\s*${segment}$`) }) });
+    if (await directory.getAttribute('open') === null) {
+      const summary = directory.locator(':scope > summary');
+      if (input === 'tap') await summary.tap();
+      else { await summary.focus(); await attachments.page().keyboard.press('Enter'); }
+    }
+    await expect(directory).toHaveAttribute('open', '');
+    list = directory.locator(':scope > .attachment-tree');
+  }
+};
+
+test.describe('deep attachment tree', () => {
+  test.use({ hasTouch: true });
+  for (const goal of [false, true]) for (const mode of ['standalone', 'dialog'] as const) {
+    test(`${goal ? 'Goal' : 'Task'} ${mode} keeps deep filenames and actions usable through width and fullscreen changes`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 900 });
+      const state = await installDeepTree(page, goal);
+      if (mode === 'standalone') await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${treePath}`);
+      else if (goal) {
+        await page.goto(`/projects/${projectId}`);
+        await page.locator('#project-section-tab-tasks').click();
+        await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+        await page.locator(`#project-goal-detail-${taskId}`).click();
+        await page.locator('.goal-detail-surface').getByRole('tab', { name: 'Attachments', exact: true }).click();
+      } else await openDialog(page);
+      const surface = page.locator(mode === 'standalone' ? '.task-detail-page' : '.task-detail-dialog');
+      const attachments = surface.locator('.task-attachments');
+      await openTreePath(attachments, treePath, 'tap');
+      const row = treeRow(attachments, treePath), file = row.locator('.attachment-file');
+      await file.tap();
+      await expect(attachments.getByRole('heading', { name: 'Deep tree reading', exact: true })).toBeVisible();
+      await openTreePath(attachments, deeperTreePath, 'keyboard');
+      await treeRow(attachments, deeperTreePath).locator('.attachment-file').focus();
+      await page.keyboard.press('Enter');
+      await expect(attachments.locator('.attachment-preview-header h5')).toHaveAttribute('title', deeperTreePath);
+      await file.click();
+
+      const disclosure = attachments.locator('.attachment-upload-disclosure');
+      await disclosure.locator('summary').click();
+      const upload = attachments.locator('input[type=file]');
+      await upload.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('retained draft') });
+      const target = attachments.getByRole('textbox', { name: 'Target relative path' });
+      await target.fill('drafts/unsent.txt');
+      const originalFile = await file.elementHandle(), originalUpload = await upload.elementHandle();
+      await attachments.getByRole('button', { name: 'Back to files', exact: true }).click();
+
+      for (const width of [320, 375, 390, 421, 480, 768, 1360]) {
+        await page.setViewportSize({ width, height: width === 320 ? 640 : width === 375 ? 667 : width < 768 ? 844 : 900 });
+        await row.scrollIntoViewIfNeeded();
+        const geometry = await row.evaluate(element => {
+          const box = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+          const name = box('.attachment-file-name'), size = box('.attachment-file-size'), action = box('.attachment-actions-trigger');
+          const sidebar = element.closest('.attachment-sidebar')!.getBoundingClientRect();
+          return { nameWidth: name.width, nameRight: name.right, sizeTop: size.top, nameBottom: name.bottom, actionWidth: action.width, actionHeight: action.height, actionRight: action.right, sidebarRight: sidebar.right, overflow: element.scrollWidth > element.clientWidth + 1 };
+        });
+        if (width === 320) expect(geometry.nameWidth).toBeGreaterThanOrEqual(44);
+        expect(geometry.actionWidth).toBeGreaterThanOrEqual(28);
+        expect(geometry.actionHeight).toBeGreaterThanOrEqual(28);
+        expect(geometry.actionRight).toBeLessThanOrEqual(geometry.sidebarRight + 1);
+        expect(geometry.nameRight).toBeLessThanOrEqual(geometry.sidebarRight + 1);
+        expect(geometry.overflow).toBe(false);
+        if (width <= 768) expect(geometry.sizeTop).toBeGreaterThanOrEqual(geometry.nameBottom - 1);
+        const cappedStarts = await Promise.all([row, treeRow(attachments, deeperTreePath)].map(entry => entry.evaluate(element => element.getBoundingClientRect().left)));
+        expect(Math.abs(cappedStarts[0]! - cappedStarts[1]!)).toBeLessThanOrEqual(1);
+        const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll(elements => elements.map(element => {
+          const rect = element.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, width: rect.width, height: rect.height, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+        }));
+        expect(panes[0]!.right).toBeLessThanOrEqual(panes[1]!.left + 1);
+        expect(Math.abs(panes[0]!.top - panes[1]!.top)).toBeLessThanOrEqual(1);
+        expect(panes[1]!.width).toBeGreaterThan(0);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        for (const path of treePaths.slice(2, 4)) {
+          const name = treeRow(attachments, path).locator('.attachment-file-name');
+          expect(await name.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+        }
+        await expect(file).toHaveAttribute('aria-pressed', 'true');
+        await expect(target).toHaveValue('drafts/unsent.txt');
+      }
+
+      await page.setViewportSize({ width: 320, height: 640 });
+      const trigger = row.locator('.attachment-actions-trigger');
+      await trigger.tap();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(trigger).toBeFocused();
+      await surface.getByRole('tab', { name: goal ? 'Description' : 'Overview', exact: true }).click();
+      await surface.getByRole('tab', { name: 'Attachments', exact: true }).click();
+      const fullscreen = surface.locator('.task-detail-fullscreen-toggle');
+      await fullscreen.click();
+      await expect(surface).toHaveClass(/task-detail-fullscreen/);
+      await fullscreen.click();
+      await expect(surface).not.toHaveClass(/task-detail-fullscreen/);
+      expect(await originalFile!.evaluate(element => element.isConnected)).toBe(true);
+      expect(await originalUpload!.evaluate(element => element.isConnected)).toBe(true);
+      await expect(file).toHaveAttribute('aria-pressed', 'true');
+      await expect(target).toHaveValue('drafts/unsent.txt');
+      expect(await upload.evaluate((element: HTMLInputElement) => element.files?.[0]?.name)).toBe('unsent.txt');
+      await expect(treeRow(attachments, deeperTreePath).locator('.attachment-file')).toBeVisible();
+
+      const sidebar = attachments.locator('.attachment-sidebar'), body = attachments.locator('.attachment-preview-body');
+      const bodyTop = await body.evaluate(element => { element.scrollTop = 100; return element.scrollTop; });
+      expect(bodyTop).toBeGreaterThan(0);
+      const sidebarTop = await sidebar.evaluate(element => { element.scrollTop = element.scrollHeight; return element.scrollTop; });
+      expect(sidebarTop).toBeGreaterThan(0);
+      expect(await body.evaluate(element => element.scrollTop)).toBe(bodyTop);
+      await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+      expect(await sidebar.evaluate(element => element.scrollTop)).toBe(sidebarTop);
+      await row.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: test.info().outputPath('deep-tree-320.png') });
+      await originalFile!.dispose(); await originalUpload!.dispose();
+      expect(state.writes).toEqual([]);
+    });
+  }
+});
+
 async function install(page: Page, linked = false, claimed = false, description?: string, goal = false) {
   const worker = { claimId: successorId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
   const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(goal ? { type: 'goal' as const, ready: false, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } } : {}), ...(description === undefined ? {} : { description }), ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });

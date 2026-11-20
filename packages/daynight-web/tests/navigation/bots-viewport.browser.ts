@@ -229,14 +229,23 @@ for (const locale of ['en', 'zh-CN'] as const) {
       await page.setViewportSize({ width, height: 1000 });
       evidence.push(await expectPanels(page, true));
       if (width > 740) {
-        await page.locator('.sidebar-toggle').click();
+        const toggle = page.locator('.sidebar-toggle');
+        const expanded = await toggle.getAttribute('aria-expanded');
+        expect(['true', 'false']).toContain(expanded);
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
         evidence.push(await expectPanels(page, true));
-        await page.locator('.sidebar-toggle').click();
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', expanded!);
       } else {
-        await page.locator('.sidebar-toggle').click();
+        const opener = page.getByRole('button', { name: locale === 'en' ? 'Open navigation' : '打开导航', exact: true });
+        await opener.click();
+        await expect(page.locator('#workspace-sidebar')).toBeVisible();
         await expect(page.locator('#workspace-sidebar')).toHaveAttribute('aria-modal', 'true');
         await page.keyboard.press('Escape');
         await expect(page.locator('#workspace-sidebar')).not.toHaveAttribute('aria-modal');
+        await expect(page.locator('#workspace-sidebar')).toBeHidden();
+        await expect(opener).toBeFocused();
         evidence.push(await expectPanels(page, true));
       }
       await closeBotConversation(page);
@@ -249,9 +258,14 @@ for (const locale of ['en', 'zh-CN'] as const) {
     for (const width of [900, 1024, 1280]) {
       await page.setViewportSize({ width, height: 1000 });
       evidence.push(await expectPanels(page, true));
-      await page.locator('.sidebar-toggle').click();
+      const toggle = page.locator('.sidebar-toggle');
+      const expanded = await toggle.getAttribute('aria-expanded');
+      expect(['true', 'false']).toContain(expanded);
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
       evidence.push(await expectPanels(page, true));
-      await page.locator('.sidebar-toggle').click();
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded!);
     }
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
