@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -24,6 +25,7 @@ type personalSessionRowObserver interface {
 type Observations struct {
 	currentAuthorization CurrentReadAuthorization
 	authorization        *model.CredentialAuthorization
+	readRequirements     []scopepolicy.Operation
 	database             store.SnapshotReader
 	observer             SessionObserver
 	operations           observationOperations
@@ -77,7 +79,7 @@ func (s *Observations) authorizeObservation(ctx context.Context, snapshot store.
 	if err != nil {
 		return err
 	}
-	return requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization)
+	return requireCurrentReadScope(ctx, snapshot, principal, s.authorization, s.currentAuthorization, s.readRequirements...)
 }
 func observationAuthorityFailure(err error) bool {
 	var fault *model.Fault

@@ -21,7 +21,12 @@ own disjoint tool sets so enabling writes cannot duplicate the read tools.
 
 Full Graph and Sync require project-read permission. A negotiated REST task-only
 Graph and the MCP Graph fallback contain only the project ID, including dependency
-views. Other task relationships and statistics retain their original meaning.
+views. Full observed Graph carries its project-read requirement in a request-local
+service copy. Initial admission and fresh snapshots after live sampling check the
+current credential for that requirement alongside task-read and sampled
+Session-read permissions. A refusal discards the entire response; a later
+task-only call on the same service retains its independent requirements. Other
+task relationships and statistics retain their original meaning.
 
 Without Session-read permission, services construct unavailable observations from
 task facts before reading Session sources or sampling live state. Execution-owned

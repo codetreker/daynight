@@ -130,6 +130,12 @@ func (s *Observations) ObserveGraphTaskOnly(ctx context.Context, principal model
 	return s.observeGraph(ctx, principal, projectID, taskID, true)
 }
 func (s *Observations) observeGraph(ctx context.Context, principal model.Principal, projectID, taskID string, taskOnly bool) (ObservedGraph, error) {
+	request := *s
+	request.readRequirements = nil
+	if !taskOnly {
+		request.readRequirements = []scopepolicy.Operation{scopepolicy.ProjectRead}
+	}
+	s = &request
 	projectID, err := observationIdentity(principal, projectID)
 	if err != nil {
 		return ObservedGraph{}, err
@@ -144,11 +150,6 @@ func (s *Observations) observeGraph(ctx context.Context, principal model.Princip
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
 			return err
-		}
-		if !taskOnly {
-			if err := requireTaskScope(s.authorization, principal, scopepolicy.ProjectRead); err != nil {
-				return err
-			}
 		}
 		project := model.Project{ID: projectID}
 		var err error
