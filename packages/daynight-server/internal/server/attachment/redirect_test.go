@@ -21,7 +21,7 @@ func TestMainPreviewRedirectAndHead(t *testing.T) {
 	path := "/api/v1/projects/" + project + "/tasks/" + task + "/preview/docs/a%20b.html"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	opens, auths := 0, 0
-	h := &attachmentHandler{logger: logger, attachments: attachmentOperations{Open: func(_ context.Context, _ model.Principal, p, id, name string) (model.Attachment, filestorage.Object, error) {
+	h := &attachmentHandler{logger: logger, principal: principalIdentity, attachments: attachmentOperations{Open: func(_ context.Context, _ model.Principal, p, id, name string) (model.Attachment, filestorage.Object, error) {
 		opens++
 		if p != project || id != task || name != "docs/a b.html" {
 			t.Fatalf("opened %s/%s/%s", p, id, name)
@@ -39,7 +39,9 @@ func TestMainPreviewRedirectAndHead(t *testing.T) {
 		}
 	}
 	mux := http.NewServeMux()
-	h.registerRoutes(mux, require, "https://preview.daynight.test")
+	h.registerRoutes(mux, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
+		return require(httpx.AuthenticatedHandler(next))
+	}, "https://preview.daynight.test")
 	handler := PathGuard(mux, logger)
 	for _, host := range []string{"daynight.test", "alias.daynight.test"} {
 		r := httptest.NewRequest(http.MethodGet, "https://"+host+path+"?v=%2F&x=1", nil)

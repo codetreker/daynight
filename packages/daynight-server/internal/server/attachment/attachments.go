@@ -26,30 +26,46 @@ import (
 	"github.com/google/uuid"
 )
 
-type attachmentHandler struct {
-	attachments     attachmentOperations
+type attachmentHandler = handler[model.Principal]
+
+type attachmentOperations = operations[model.Principal]
+
+type handler[A any] struct {
+	attachments     operations[A]
+	principal       func(A) model.Principal
 	logger          *slog.Logger
 	bodyReadTimeout time.Duration
 }
 
-type attachmentOperations struct {
-	List        func(context.Context, model.Principal, string, string, model.PageRequest) (attachmentcore.Page, error)
-	PutRetained func(context.Context, model.Principal, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
-	Delete      func(context.Context, model.Principal, string, string, string) error
-	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
+type operations[A any] struct {
+	List        func(context.Context, A, string, string, model.PageRequest) (attachmentcore.Page, error)
+	PutRetained func(context.Context, A, string, string, string, string, io.Reader) (model.Attachment, bool, io.Closer, error)
+	Delete      func(context.Context, A, string, string, string) error
+	Open        func(context.Context, A, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
+	RegisterRoutesWithScopeObserver(mux, attachments, auth, logger, previewOrigin, nil)
+}
+
+func RegisterRoutesWithScopeObserver(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string, observe func(ScopeRoute)) {
 	handler := newAttachmentHandler(attachments, logger)
-	handler.registerRoutes(mux, auth.Require, previewOrigin)
+	handler.registerRoutesWithScopeObserver(mux, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
+		return auth.Require(httpx.AuthenticatedHandler(next))
+	}, previewOrigin, observe)
 }
 
 // RegisterPreviewRoutes exposes only attachment reads on a Task preview host.
 func RegisterPreviewRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
+	RegisterPreviewRoutesWithScopeObserver(mux, attachments, require, logger, nil)
+}
+
+func RegisterPreviewRoutesWithScopeObserver(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger, observe func(ScopeRoute)) {
 	handler := newAttachmentHandler(attachments, logger)
+	routes := routeRegistry{mux: mux, observe: observe}
 	const route = "/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}"
-	mux.HandleFunc("GET "+route, require(handler.preview))
-	mux.HandleFunc(route, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("GET "+route, require(handler.preview), routePreviewCookie, true)
+	routes.handle(route, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routePreviewCookieFallback, false)
 }
 
 func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
@@ -58,31 +74,37 @@ func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *sl
 			List: attachments.List, PutRetained: attachments.PutRetained,
 			Delete: attachments.Delete, Open: attachments.Open,
 		},
-		logger: logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
+		principal: principalIdentity,
+		logger:    logger, bodyReadTimeout: transport.AttachmentBodyReadTimeout,
 	}
 }
 
-func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, require func(httpx.AuthenticatedHandler) http.HandlerFunc, previewOrigin string) {
-	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
-	mux.HandleFunc("GET "+base+"/attachments", require(handler.list))
-	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", require(handler.put))
-	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", require(handler.download))
-	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", require(handler.delete))
-	redirect := handler.redirectPreview(previewOrigin)
-	head := require(handler.preview)
-	mux.HandleFunc("GET "+base+"/preview/{path...}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			head(w, r)
-			return
-		}
-		redirect(w, r)
-	})
-	mux.HandleFunc(base+"/attachments", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/attachments/files/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
-	mux.HandleFunc(base+"/preview/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+func principalIdentity(p model.Principal) model.Principal { return p }
+
+func (handler *handler[A]) registerRoutes(mux *http.ServeMux, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string) {
+	handler.registerRoutesWithScopeObserver(mux, require, previewOrigin, nil)
 }
 
-func (h *attachmentHandler) redirectPreview(origin string) http.HandlerFunc {
+func (handler *handler[A]) registerRoutesWithScopeObserver(mux *http.ServeMux, require func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, previewOrigin string, observe func(ScopeRoute)) {
+	routes := routeRegistry{mux: mux, observe: observe}
+	methodNotAllowed := func(allowed string) func(http.ResponseWriter, *http.Request, A) {
+		return func(w http.ResponseWriter, r *http.Request, a A) {
+			httpx.ResourceMethodNotAllowed(handler.logger, allowed)(w, r, handler.principal(a))
+		}
+	}
+	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
+	routes.handle("GET "+base+"/attachments", require(handler.list), routeRead, true)
+	routes.handle("PUT "+base+"/attachments/files/{path...}", require(handler.put), routeUpload, false)
+	routes.handle("GET "+base+"/attachments/files/{path...}", require(handler.download), routeRead, true)
+	routes.handle("DELETE "+base+"/attachments/files/{path...}", require(handler.delete), routeDelete, false)
+	routes.handle("GET "+base+"/preview/{path...}", handler.redirectPreview(previewOrigin), routeNavigation, false)
+	routes.handle("HEAD "+base+"/preview/{path...}", require(handler.preview), routeRead, false)
+	routes.handle(base+"/attachments", require(methodNotAllowed("GET, HEAD")), routeFallback, false)
+	routes.handle(base+"/attachments/files/{path...}", require(methodNotAllowed("GET, HEAD, PUT, DELETE")), routeFallback, false)
+	routes.handle(base+"/preview/{path...}", require(methodNotAllowed("GET, HEAD")), routeFallback, false)
+}
+
+func (h *handler[A]) redirectPreview(origin string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		projectID, err := model.CanonicalID(r.PathValue("projectId"))
@@ -113,15 +135,15 @@ func attachmentResponse(attachment model.Attachment) api.Attachment {
 	return attachmentprotocol.REST(attachment)
 }
 
-func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
-	projectID, taskID, logger, err := taskhttp.TaskResource(request, principal, h.logger)
+func (h *handler[A]) resource(request *http.Request, principal A) (string, string, *slog.Logger, error) {
+	projectID, taskID, logger, err := taskhttp.TaskResource(request, h.principal(principal), h.logger)
 	if err == nil && request.PathValue("path") != "" {
 		logger = logger.With("path", request.PathValue("path"))
 	}
 	return projectID, taskID, logger, err
 }
 
-func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) list(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -145,7 +167,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) put(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -187,7 +209,7 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 	httpx.WriteJSON(w, request, logger, status, attachmentResponse(attachment))
 }
 
-func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) delete(w http.ResponseWriter, request *http.Request, principal A) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err == nil {
@@ -203,15 +225,15 @@ func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request,
 	}
 }
 
-func (h *attachmentHandler) download(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) download(w http.ResponseWriter, request *http.Request, principal A) {
 	h.content(w, request, principal, "attachment", "download")
 }
 
-func (h *attachmentHandler) preview(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+func (h *handler[A]) preview(w http.ResponseWriter, request *http.Request, principal A) {
 	h.content(w, request, principal, "inline", "preview")
 }
 
-func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request, principal model.Principal, disposition, phase string) {
+func (h *handler[A]) content(w http.ResponseWriter, request *http.Request, principal A, disposition, phase string) {
 	w.Header().Set("Cache-Control", "no-store")
 	if disposition == "attachment" {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
