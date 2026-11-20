@@ -14,12 +14,12 @@ const machine = 'Machine-'.repeat(24) + 'complete';
 const description = Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n');
 const content = '# Claim reader\n\n' + 'The attachment remains readable.\n\n'.repeat(60);
 
-async function install(page: Page) {
-  const worker = { claimId: id(2), state: 'active', userId: TEST_VIEWER_ID, workerId: id(4), machine: { id: id(5), name: machine }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
+async function install(page: Page, phase: 'executing' | 'waiting' = 'executing', locale = 'en') {
+  const worker = { claimId: id(2), state: 'active', userId: TEST_VIEWER_ID, workerId: id(4), machine: { id: id(5), name: machine }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase, herdr: null, nativeSessionId: null, claimedAt: time };
   const task = detailFixture(projectId, taskId, { title: 'Claim reading allocation', description, version: 5n, status: 'in_progress', ready: false, startedAt: time, allowAgents: true, assignedTo: TEST_VIEWER_ID, properties: { worker } });
   const graph = graphFixture([task]), access = directAccessFixture(projectId, TEST_VIEWER_ID, 'admin');
   const writes: string[] = [];
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
@@ -27,6 +27,7 @@ async function install(page: Page) {
     const base = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(access);
@@ -48,10 +49,9 @@ async function install(page: Page) {
 
 for (const locale of ['en', 'zh-CN']) for (const width of [1440, 320]) {
   test(`current alias preserves claim hostname and deletion protection ${locale} ${width}`, async ({ page }, info) => {
-    const writes = await install(page);
+    const writes = await install(page, 'executing', locale);
     await page.route(`**/api/v1/projects/${projectId}`, route => route.fulfill({ json: JSON.parse(stringifyWireJson(graphFixture([detailFixture(projectId, taskId)]).project)), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
     await page.route(`**/api/v1/projects/${projectId}/access`, route => route.fulfill({ json: JSON.parse(stringifyWireJson({ ...directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'), teamRole: 'admin', canTransfer: true })), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
-    await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
     let value: string | null = '办公室工作机器'.repeat(10), version = 1;
     await page.route(`**/api/v1/me/workers/${id(4)}/alias`, route => route.fulfill({ json: { workerId: id(4), alias: { value, version: String(version) } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
     await page.route(`**/api/v1/projects/${projectId}/deletion-preview*`, route => route.fulfill({
@@ -83,6 +83,47 @@ for (const locale of ['en', 'zh-CN']) for (const width of [1440, 320]) {
     await page.screenshot({ path: info.outputPath('deletion-alias.png'), fullPage: true });
     expect(writes).toEqual([]);
   });
+}
+
+for (const mode of ['page', 'dialog'] as const) for (const locale of ['en', 'zh-CN'] as const) {
+  for (const width of [1440, 320]) for (const rootSize of [16, 20]) {
+    for (const phase of ['waiting', 'executing'] as const) {
+      test(`claim phase hierarchy ${mode} ${locale} ${width} root ${rootSize} ${phase}`, async ({ page }) => {
+        const writes = await install(page, phase, locale);
+        await page.setViewportSize({ width, height: 900 });
+        if (mode === 'page') await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+        else {
+          await page.goto(`/projects/${projectId}`);
+          await page.locator('#project-section-tab-tasks').click();
+          await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
+          await page.locator(`#standalone-task-${taskId}`).click();
+        }
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+        const root = page.locator(mode === 'page' ? '.task-detail-page' : '.task-detail-dialog');
+        const badge = root.locator('.task-claim-phase');
+        const machineInfo = root.locator('.task-claim-execution > span').first();
+        const expected = locale === 'en' ? { waiting: 'Waiting', executing: 'Executing' } : { waiting: '等待中', executing: '执行中' };
+        await expect(badge).toHaveText(expected[phase]);
+        for (const fullscreen of [false, true]) {
+          if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+          await expect(badge).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+          await expect(machineInfo).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+          await badge.scrollIntoViewIfNeeded();
+          expect(await badge.evaluate(element => {
+            const bounds = element.getBoundingClientRect();
+            const region = element.closest('.task-detail-heading')!.getBoundingClientRect();
+            return element.scrollWidth <= element.clientWidth && bounds.left >= 0 && bounds.right <= innerWidth &&
+              bounds.top >= region.top - 1 && bounds.bottom <= region.bottom + 1;
+          })).toBe(true);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          for (const selector of ['.task-claim-owner strong', '.task-claim-account', '.task-claim-execution > span:first-child']) {
+            expect(await root.locator(selector).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+          }
+        }
+        expect(writes).toEqual([]);
+      });
+    }
+  }
 }
 
 for (const mode of ['dialog', 'page'] as const) {
