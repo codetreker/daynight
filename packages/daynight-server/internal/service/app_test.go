@@ -566,3 +566,19 @@ func TestOpenPersistenceRejectsInvalidDatabaseURL(t *testing.T) {
 		t.Fatalf("database startup error exposed credentials: %v", err)
 	}
 }
+
+func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
+	t.Setenv("DAYNIGHT_S2S_SHARED_KEY", "")
+	t.Setenv("DAYNIGHT_USAGE_CURSOR_KEY", "")
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "false")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	defer func() {
+		if err := app.Close(t.Context()); err != nil {
+			t.Error(err)
+		}
+	}()
+	if app.UsageError != nil || app.Usage == nil || app.Usage.Capabilities()["writeEnabled"] != false {
+		t.Fatalf("usage assembly: service=%v error=%v", app.Usage, app.UsageError)
+	}
+}

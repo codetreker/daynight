@@ -14,12 +14,14 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const revalidationGate = Promise.withResolvers<void>();
+  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
+    if (state.holdRevalidation && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) { state.heldReads++; await revalidationGate.promise; }
     if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
     if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
@@ -60,7 +62,11 @@ test.describe('project settings navigation', () => {
     await install(page, [row(10, 'Task')]);
     await page.setViewportSize({ width: 320, height: 640 });
     await page.goto(`/projects/${projectId}?tab=tasks`);
-    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+    const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+    if (input === 'touch') await trigger.tap();
+    else if (input === 'keyboard') { await trigger.focus(); await page.keyboard.press('Enter'); }
+    else await trigger.click();
+    const settings = page.getByRole('menuitem', { name: 'Project settings', exact: true });
     await expect(settings).toBeVisible();
     if (input === 'touch') await settings.tap();
     else if (input === 'keyboard') { await settings.focus(); await page.keyboard.press('Enter'); }
@@ -69,49 +75,86 @@ test.describe('project settings navigation', () => {
   });
 });
 
-test('reserves the narrow settings position while the project loads', async ({ page }) => {
+for (const input of ['modified', 'middle'] as const) test(`project settings keeps native ${input} navigation`, async ({ page, context }) => {
+  await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+  const settings = page.getByRole('menuitem', { name: 'Project settings', exact: true });
+  const opened = context.waitForEvent('page');
+  if (input === 'modified') await settings.click({ modifiers: ['ControlOrMeta'] });
+  else await settings.click({ button: 'middle' });
+  const destination = await opened;
+  try { await expect(destination).toHaveURL(new RegExp(`/projects/${projectId}/settings$`)); }
+  finally { await destination.close(); }
+  expect(new URL(page.url()).pathname).toBe(`/projects/${projectId}`);
+});
+
+test('omits settings from the narrow menu until the project loads', async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   state.projectMode = 'pending';
   await page.setViewportSize({ width: 320, height: 640 });
   try {
     await page.goto(`/projects/${projectId}?tab=tasks`);
-    const placeholder = page.locator('.project-title-actions-placeholder .project-header-secondary');
-    await expect(placeholder).toHaveCount(1);
-    const before = await placeholder.boundingBox();
-    expect(before?.width).toBe(44); expect(before?.height).toBe(44);
+    const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+    await trigger.click();
+    await expect(page.getByRole('menuitem', { name: 'Project settings', exact: true })).toHaveCount(0);
     state.projectMode = 'normal'; state.releaseProject();
-    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
-    await expect(settings).toBeVisible();
-    const after = await settings.boundingBox();
-    expect(after?.width).toBe(before?.width); expect(after?.height).toBe(before?.height);
+    await expect(page.getByRole('menuitem', { name: 'Project settings', exact: true })).toBeVisible();
   } finally { state.releaseProject(); }
 });
 
-test('withdraws the narrow settings entrance when project access is lost', async ({ page }) => {
+test('keeps the open menu during a background check and withdraws it after access is lost', async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   await page.setViewportSize({ width: 320, height: 640 });
-  await page.goto(`/projects/${projectId}?tab=tasks`);
-  const settings = page.getByRole('link', { name: 'Project settings', exact: true });
-  await expect(settings).toBeVisible();
-  state.revoked = true;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(settings).toBeHidden();
-  expect(state.writes).toEqual([]);
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+    await trigger.click();
+    const settings = page.getByRole('menuitem', { name: 'Project settings', exact: true });
+    await expect(settings).toBeFocused();
+    state.holdRevalidation = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => state.heldReads).toBeGreaterThan(0);
+    await expect(settings).toBeVisible(); await expect(settings).toBeFocused();
+    state.revoked = true; state.releaseRevalidation();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.getByText('https://github.com/example/project', { exact: true })).toHaveCount(0);
+    await trigger.click();
+    await expect(page.getByRole('menuitem', { name: 'Project settings', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: 'New Task', exact: true })).toBeDisabled();
+    expect(state.writes).toEqual([]);
+  } finally { state.releaseRevalidation(); }
 });
 
-for (const locale of ['en', 'zh-CN'] as const) test(`project heading actions fit narrow containers and preserve interactions in ${locale}`, async ({ page }) => {
+for (const locale of ['en', 'zh-CN'] as const) test(`project heading menu fits narrow containers and preserves interactions in ${locale}`, async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   await page.setViewportSize({ width: 320, height: 640 });
   try {
     await page.goto(`/projects/${projectId}?tab=tasks`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
-    const labels = locale === 'en' ? { settings: 'Project settings', refresh: 'Refresh', refreshing: 'Refreshing…', task: 'New Task', goal: 'New Goal' } : { settings: '项目设置', refresh: '刷新', refreshing: '正在刷新…', task: '新建 Task', goal: '新建 Goal' };
-    const settings = page.getByRole('link', { name: labels.settings, exact: true });
-    const refresh = page.getByRole('button', { name: labels.refresh, exact: true });
-    const task = page.getByRole('button', { name: labels.task, exact: true });
-    const goal = page.getByRole('button', { name: labels.goal, exact: true });
+    const labels = locale === 'en' ? { actions: 'Project actions', settings: 'Project settings', refresh: 'Refresh', refreshing: 'Refreshing…', task: 'New Task', goal: 'New Goal' } : { actions: '项目操作', settings: '项目设置', refresh: '刷新', refreshing: '正在刷新…', task: '新建 Task', goal: '新建 Goal' };
+    const trigger = page.getByRole('button', { name: labels.actions, exact: true });
+    const menu = page.getByRole('menu');
+    const item = (name: string) => menu.getByRole('menuitem', { name, exact: true });
+    for (const width of [320, 375, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(trigger).toBeVisible();
+      const box = (await trigger.boundingBox())!;
+      expect(box.width).toBe(44); expect(box.height).toBe(44);
+      await trigger.click();
+      await expect(menu.getByRole('menuitem')).toHaveText([labels.settings, labels.refresh, labels.task, labels.goal]);
+      for (const name of [labels.settings, labels.refresh, labels.task, labels.goal]) {
+        const bounds = (await item(name).boundingBox())!;
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      }
+      await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    await trigger.focus(); await page.keyboard.press('Space');
+    const settings = item(labels.settings);
     await expect(settings).toHaveAttribute('href', `/projects/${projectId}/settings`);
-    await expect(task).toBeEnabled();
     expect(await settings.evaluate(link => {
       let prevented = true;
       const observe = (event: Event) => { prevented = event.defaultPrevented; event.preventDefault(); };
@@ -119,54 +162,176 @@ for (const locale of ['en', 'zh-CN'] as const) test(`project heading actions fit
       link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
       return prevented;
     })).toBe(false);
-    for (const width of [320, 375, 390]) {
-      await page.setViewportSize({ width, height: 844 });
-      const boxes = await Promise.all([settings, refresh, task, goal].map(item => item.boundingBox()));
-      expect(boxes.every(box => box !== null && box.height === 44)).toBe(true);
-      expect(boxes.map(box => Math.round(box!.y))).toEqual(Array(4).fill(Math.round(boxes[0]!.y)));
-      expect(await page.locator('.project-title-actions').evaluate(el => Math.round(el.getBoundingClientRect().height))).toBe(44);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await trigger.click();
+    await page.keyboard.press('End'); await expect(item(labels.goal)).toBeFocused();
+    await page.keyboard.press('Home'); await expect(item(labels.settings)).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await expect(item(labels.refresh)).toBeFocused();
+    await page.keyboard.press('ArrowUp'); await expect(item(labels.settings)).toBeFocused();
+    await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+    await trigger.click(); await page.locator('.project-heading h1').click();
+    await expect(menu).toHaveCount(0);
+    for (const key of ['Tab', 'Shift+Tab']) {
+      await trigger.focus(); await page.keyboard.press(key);
+      const expected = await page.evaluateHandle(() => document.activeElement);
+      await trigger.focus(); await page.keyboard.press('Enter'); await page.keyboard.press(key);
+      await expect(menu).toHaveCount(0);
+      expect(await expected.evaluate(element => element === document.activeElement)).toBe(true);
+      await expected.dispose();
     }
-    await page.setViewportSize({ width: 320, height: 640 });
-    await settings.focus();
-    await expect(settings.locator('.project-header-action-tooltip')).toBeVisible();
-    await refresh.hover(); await expect(refresh.locator('.project-header-action-tooltip')).toBeVisible();
-    for (const button of [task, goal]) {
-      await button.focus(); await page.keyboard.press('Enter');
+    for (const name of [labels.task, labels.goal]) {
+      await trigger.click(); await item(name).click();
       await expect(page.getByRole('dialog')).toBeVisible();
-      await page.keyboard.press('Escape'); await expect(button).toBeFocused();
+      await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
     }
-    const before = await refresh.boundingBox();
-    state.graphMode = 'pending'; await refresh.click();
-    const busy = page.getByRole('button', { name: labels.refreshing, exact: true });
+    state.graphMode = 'pending'; await trigger.click(); await item(labels.refresh).click();
+    await trigger.click();
+    const busy = item(labels.refreshing);
     await expect(busy).toBeDisabled(); await expect(busy).toHaveAttribute('aria-busy', 'true');
-    expect(await busy.boundingBox()).toEqual(before);
-    state.graphMode = 'normal'; state.releaseGraph(); await expect(refresh).toBeEnabled();
+    await expect(item(labels.task)).toBeEnabled(); await expect(item(labels.goal)).toBeEnabled();
+    state.graphMode = 'normal'; state.releaseGraph(); await expect(item(labels.refresh)).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await trigger.click(); await item(labels.task).focus();
     for (const [width, compact] of [[420, true], [421, false]] as const) {
       await page.locator('.project-heading-container').evaluate((el, value) => { (el as HTMLElement).style.width = `${value}px`; }, width);
-      await expect(settings.locator('.project-header-action-icon')).toHaveCSS('display', compact ? 'block' : 'none');
-      if (compact) expect((await settings.boundingBox())!.y).toBeGreaterThanOrEqual((await page.locator('.project-title-line').boundingBox())!.y + (await page.locator('.project-title-line').boundingBox())!.height);
+      if (compact) await expect(trigger).toBeVisible();
+      else {
+        await expect(trigger).toBeHidden(); await expect(menu).toHaveCount(0);
+        await expect(page.getByRole('button', { name: labels.task, exact: true })).toBeFocused();
+        for (const name of [labels.settings, labels.refresh, labels.task, labels.goal]) await expect(page.getByRole(name === labels.settings ? 'link' : 'button', { name, exact: true })).toBeVisible();
+      }
     }
-    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = '230px'; });
-    const narrow = await Promise.all([settings, task, goal].map(item => item.boundingBox()));
-    expect(narrow[1]!.y).toBeGreaterThan(narrow[0]!.y);
-    expect(narrow[1]!.y).toBe(narrow[2]!.y);
+    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = '420px'; });
+    await expect(trigger).toBeFocused();
     await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = ''; });
     for (const width of [768, 1360]) {
       await page.setViewportSize({ width, height: 900 });
-      await expect(settings.locator('.project-header-action-label')).toBeVisible();
-      await expect(refresh.locator('.project-header-action-label')).toBeVisible();
+      await expect(trigger).toBeHidden();
+      await expect(page.getByRole('link', { name: labels.settings, exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: labels.refresh, exact: true })).toBeVisible();
     }
     await page.setViewportSize({ width: 320, height: 640 });
     await page.locator('.project-heading h1').evaluate(el => { el.textContent = 'A very long project name '.repeat(5); });
     await page.locator('.project-repository-value').evaluate(el => { el.textContent = 'https://example.com/' + 'long-repository-name-'.repeat(10); });
     await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
-    expect(await page.locator('.project-heading').evaluate(el => {
-      const bounds = el.getBoundingClientRect();
-      return [...el.querySelectorAll<HTMLElement>('.project-title-line, .project-title-actions, .project-creation-actions, .project-creation-actions button')].every(item => item.getBoundingClientRect().right <= bounds.right + 1);
-    })).toBe(true);
+    await trigger.click();
+    for (const name of [labels.settings, labels.refresh, labels.task, labels.goal]) {
+      const bounds = (await item(name).boundingBox())!;
+      expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
+      expect(await item(name).evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(state.writes).toEqual([]);
   } finally { state.releaseGraph(); }
+});
+
+test('keyboard navigation keeps focused menu items visible in a short viewport without scrolling the page', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 160 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+  await trigger.scrollIntoViewIfNeeded(); await trigger.focus();
+  const before = await position(page);
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'Project actions' });
+  const settings = menu.getByRole('menuitem', { name: 'Project settings', exact: true });
+  const goal = menu.getByRole('menuitem', { name: 'New Goal', exact: true });
+  await expect(settings).toBeFocused();
+  expect(await position(page)).toBe(before);
+  expect(await menu.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  const fits = async () => menu.evaluate(element => {
+    const item = document.activeElement!.getBoundingClientRect(), panel = element.getBoundingClientRect();
+    return item.top >= panel.top - 1 && item.bottom <= panel.bottom + 1 && item.top >= 0 && item.bottom <= innerHeight;
+  });
+  await page.keyboard.press('End'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await position(page)).toBe(before);
+  await page.keyboard.press('Home'); await expect(settings).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('ArrowUp'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('ArrowDown'); await expect(settings).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  await page.keyboard.press('ArrowUp'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  expect(state.writes).toEqual([]);
+});
+
+test('shrinking an open menu keeps its focused item visible without moving the page', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 600 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+  await trigger.evaluate(element => window.scrollTo(0, window.scrollY + element.getBoundingClientRect().top - 40));
+  await trigger.focus(); await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'Project actions' });
+  const goal = menu.getByRole('menuitem', { name: 'New Goal', exact: true });
+  await page.keyboard.press('End'); await expect(goal).toBeFocused();
+  const before = await position(page);
+  await page.setViewportSize({ width: 320, height: 160 });
+  await expect(goal).toBeFocused();
+  await expect.poll(() => menu.evaluate(element => {
+    const item = document.activeElement!.getBoundingClientRect(), panel = element.getBoundingClientRect();
+    return item.top >= panel.top - 1 && item.bottom <= panel.bottom + 1 && item.top >= 0 && item.bottom <= innerHeight;
+  })).toBe(true);
+  expect(await menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await position(page)).toBe(before);
+  await menu.evaluate(element => { element.scrollTop = 0; });
+  await position(page);
+  expect(await menu.evaluate(element => element.scrollTop)).toBe(0);
+  await page.evaluate(() => window.scrollBy(0, 30));
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(before + 30);
+  await position(page);
+  expect(await menu.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(goal).toBeFocused();
+  await page.locator('.project-heading h1').click();
+  await expect(menu).toHaveCount(0);
+  const focused = await page.evaluateHandle(() => document.activeElement);
+  await page.setViewportSize({ width: 320, height: 300 });
+  expect(await focused.evaluate(element => element === document.activeElement)).toBe(true);
+  await focused.dispose();
+  expect(state.writes).toEqual([]);
+});
+
+for (const kind of ['Task', 'Goal'] as const) test(`keeps the ${kind} draft across the heading breakpoint`, async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}`);
+  const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+  await trigger.click(); await page.getByRole('menuitem', { name: `New ${kind}`, exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const field = dialog.getByRole('textbox', { name: kind === 'Task' ? 'Title' : 'Name', exact: true }).first();
+  await field.fill('A retained draft'); await field.focus();
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await expect(field).toHaveValue('A retained draft'); await expect(field).toBeFocused();
+  await page.setViewportSize({ width: 320, height: 640 });
+  await expect(field).toHaveValue('A retained draft'); await expect(field).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  expect(state.writes).toEqual([]);
+});
+
+test('menu refresh exposes a failure and retry restores the graph', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByRole('button', { name: 'Project actions', exact: true })).toBeVisible();
+  const snapshot = page.locator('.snapshot-time time');
+  await expect(snapshot).toBeVisible();
+  const receivedAt = await snapshot.getAttribute('datetime');
+  state.graphMode = 'error';
+  await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Refresh', exact: true }).click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText('graph-failure');
+  await expect(alert).toContainText('Showing the last successfully loaded data.');
+  await expect(snapshot).toHaveAttribute('datetime', receivedAt!);
+  state.graphMode = 'normal';
+  await alert.getByRole('button', { name: 'Retry refresh', exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  expect(state.writes).toEqual([]);
 });
 
 for (const locale of ['en', 'zh-CN'] as const) {
@@ -322,7 +487,10 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await page.goto(`/projects/${projectId}`);
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
     await expect(page.getByText('https://github.com/example/project', { exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
+    if (width === 390) await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+    await expect(page.getByRole(width === 390 ? 'menuitem' : 'link', { name: 'Project settings', exact: true })).toBeVisible();
+    await expect(page.getByRole(width === 390 ? 'menuitem' : 'button', { name: 'New Task', exact: true })).toBeDisabled();
+    if (width === 390) await page.keyboard.press('Escape');
     const overview = page.getByRole('tab', { name: 'Overview', exact: true });
     const tasks = page.getByRole('tab', { name: 'Task list', exact: true });
     await expect(page.locator('.project-section-tabs [role="tab"]')).toHaveCount(5);
@@ -333,7 +501,9 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     state.graphMode = 'error'; state.releaseGraph();
     await expect(page.getByRole('alert')).toContainText('graph-failure');
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
+    if (width === 390) await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+    await expect(page.getByRole(width === 390 ? 'menuitem' : 'link', { name: 'Project settings', exact: true })).toBeVisible();
+    if (width === 390) await page.keyboard.press('Escape');
     await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
     await page.goBack();
     await expect(overview).toHaveAttribute('aria-selected', 'true');
@@ -847,3 +1017,25 @@ for (const locale of ['en', 'zh-CN'] as const) {
     await graphHandle!.dispose(); await viewportHandle!.dispose(); expect(state.writes).toEqual([]);
   });
 }
+
+test('refreshing from the narrow heading updates project statistics', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  let statisticsReads = 0, graphReads = 0;
+  await page.route('**/pull-request-repositories*', route => route.fulfill({ json: { currentRepositoryId: '10', items: [{ repositoryId: '10', fullName: 'codetreker/daynight' }], nextCursor: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/pull-request-statistics?*', route => {
+    statisticsReads++;
+    return route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: new URL(route.request().url()).searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  page.on('request', request => { if (new URL(request.url()).pathname === `/api/v1/projects/${projectId}/task-sync`) graphReads++; });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}`);
+  await select(page, 'Statistics');
+  await expect.poll(() => statisticsReads).toBeGreaterThan(0);
+  await expect(page.getByText('PRs created daily')).toBeVisible();
+  const previousStatistics = statisticsReads, previousGraph = graphReads;
+  await page.getByRole('button', { name: 'Project actions' }).click();
+  await page.getByRole('menuitem', { name: 'Refresh', exact: true }).click();
+  await expect.poll(() => statisticsReads).toBeGreaterThan(previousStatistics);
+  await expect.poll(() => graphReads).toBeGreaterThan(previousGraph);
+  expect(state.writes).toEqual([]);
+});
