@@ -28,8 +28,10 @@ type readOnlyOperations interface {
 }
 
 type ReadOnlyRoutes struct {
-	broker            readOnlyOperations
-	auth              *authhttp.Authentication
+	broker readOnlyOperations
+	auth   interface {
+		Require(httpx.AuthenticatedHandler) http.HandlerFunc
+	}
 	logger            *slog.Logger
 	mu                sync.Mutex
 	closing           bool
@@ -49,12 +51,28 @@ func NewReadOnlyRoutes(broker *ro.Broker, auth *authhttp.Authentication, logger 
 	return &ReadOnlyRoutes{broker: broker, auth: auth, logger: logger, connections: map[*websocket.Conn]context.CancelFunc{}, drained: make(chan struct{}), requestTargets: map[string]int{}, bodyTimeout: 5 * time.Second, operationTimeout: ro.OperationTimeout, heartbeatInterval: 5 * time.Second}
 }
 func (h *ReadOnlyRoutes) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterRoutesWithScopeObserver(mux, nil)
+}
+
+// NewScopedReadOnlyRoutes preserves the protocol while using scoped authentication
+// and a broker assembled by service.NewScopedReadOnly for live policy checks.
+func NewScopedReadOnlyRoutes(broker *ro.Broker, auth ScopedAuthentication, logger *slog.Logger) *ReadOnlyRoutes {
+	if broker == nil || auth == nil {
+		panic("scoped Worker read-only dependencies are required")
+	}
+	routes := NewReadOnlyRoutes(broker, nil, logger)
+	routes.auth = scopedAuthentication{auth}
+	return routes
+}
+
+func (h *ReadOnlyRoutes) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
+	routes := routeRegistry{mux: mux, observe: observe}
 	const base = "/api/v1/me/workers/{workerId}/readonly"
-	mux.HandleFunc("POST "+base+"/requests", h.auth.Require(h.request))
-	mux.HandleFunc(base+"/requests", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "POST")))
-	mux.HandleFunc("GET "+base+"/channel", h.auth.Require(h.channel))
-	mux.HandleFunc("HEAD "+base+"/channel", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET")))
-	mux.HandleFunc(base+"/channel", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET")))
+	routes.handle("POST "+base+"/requests", h.auth.Require(h.request), routeInspect)
+	routes.handle(base+"/requests", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "POST")), routeFallback)
+	routes.handle("GET "+base+"/channel", h.auth.Require(h.channel), routeProduceNoHead)
+	routes.handle("HEAD "+base+"/channel", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET")), routeFallback)
+	routes.handle(base+"/channel", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET")), routeFallback)
 }
 func (h *ReadOnlyRoutes) failure(w http.ResponseWriter, r *http.Request, err error) {
 	status := 0
