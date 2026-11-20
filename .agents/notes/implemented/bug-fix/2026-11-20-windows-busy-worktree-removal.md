@@ -42,9 +42,11 @@ Every removal site supplies one. Inside `removeWorktreeContents`, entry removal
 reproves the parent directory and the entry's own inode and type, and nested
 directory removal reproves the directory. Outside the content walk,
 `removeEmptyDirectory` in `worktrees.ts` removes the task worktree root, the
-directory the agent's own working directory holds; it passes the surrounding
-`verifyOwnership`, which already proves the worktree is still empty with
-unchanged Git metadata. `removeEmptyReservation` verifies its reservation through a
+directory the agent's own working directory holds. It passes `verifyOwnedRoot`,
+which runs `verifyOwnership` and then rechecks the captured directory
+identities: `verifyOwnership` establishes those identities before it reads the
+pointer, metadata and lock, and those reads are asynchronous, so the root can be
+replaced while they run. `removeEmptyReservation` verifies its reservation through a
 single function that the first attempt and every retry both call, so the two
 cannot diverge. That function checks its captured directory identities,
 including the reservation leaf, confirms no Git registration appeared, and
@@ -90,6 +92,13 @@ out the worktree root, which `visit(target, root, true)` deliberately preserves
 and `removeEmptyDirectory` removes afterwards. The root is the agent's own
 working directory and therefore the single path most likely to be busy, so
 omitting it would have left the original failure in place.
+
+**Add the missing check to each retry callback as it is found.** Three separate
+findings had the same shape: a first attempt verified ownership around an
+asynchronous read, and the retry path repeated only part of it. Patching each
+callback in turn leaves the two paths free to drift again. Each caller now
+verifies through one function that its first attempt and every retry both call,
+so a future check added to one is necessarily applied to the other.
 
 **Default `reprove` to a no-op for callers without evidence.** This keeps the
 signature smaller, but it converts an omission into a silent weakening: the

@@ -673,6 +673,16 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   if (await ordinaryFile(path.join(registration.directory, "locked")) !== null) throw new Error("The worktree acquired a Git lock during cleanup.");
                   operation.check();
                 };
+                // `verifyOwnership` checks the directory identities before it
+                // reads the pointer, metadata and lock, and those reads are
+                // asynchronous, so the root can be replaced while they run.
+                // Repeating the identities afterwards binds that evidence to
+                // the directory actually removed. The first attempt and every
+                // retry share this verifier so they cannot diverge.
+                const verifyOwnedRoot = async (): Promise<void> => {
+                  await verifyOwnership();
+                  for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+                };
                 const confirmed = await inspectWorktree(project, owner, repository, operation, true);
                 if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
                 await verifyOwnership();
@@ -686,8 +696,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   }
                   pointerRemoved = true;
                   operation.check();
-                  for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-                  try { await removeEmptyDirectory(binding.worktreePath, operation, verifyOwnership); }
+                  await verifyOwnedRoot();
+                  try { await removeEmptyDirectory(binding.worktreePath, operation, verifyOwnedRoot); }
                   catch (error) {
                     if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree directory removal was denied.", { cause: error });
                     throw error;

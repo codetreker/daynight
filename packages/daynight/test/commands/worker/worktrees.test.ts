@@ -22,7 +22,7 @@ import * as files from "../../../src/platform/files.js";
 // real implementation.
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, rmdir: vi.fn(actual.rmdir) };
+  return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir) };
 });
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
@@ -197,6 +197,7 @@ afterAll(async () => {
 afterEach(async () => {
   controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
   vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
+  vi.mocked(readdir).mockImplementation(actualFs.readdir);
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -1261,6 +1262,40 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(attempts).toBe(3);
     expect(worktreePaths(f.repository)).not.toContain(root);
     expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it("rejects a worktree root replaced during the metadata read of a busy retry", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    let attempts = 0;
+    let armed = false;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the swap lands inside the retry's metadata read
+      // rather than before its identity checks have run.
+      armed = true;
+      throw busyError();
+    });
+    vi.mocked(readdir).mockImplementation((async (entry: Parameters<typeof actualFs.readdir>[0], options: Parameters<typeof actualFs.readdir>[1]) => {
+      const result = await actualFs.readdir(entry, options);
+      if (armed && !swapped && path.normalize(String(entry)) === root) {
+        swapped = true;
+        rmdirSync(root);
+        renameSync(replacement, root);
+      }
+      return result;
+    }) as typeof actualFs.readdir);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("changed during cleanup");
+    expect(swapped).toBe(true);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(root, "keep"), "utf8")).toBe("retained\n");
   });
 
   it("retains the task worktree root and its registration when it stays busy", async () => {
