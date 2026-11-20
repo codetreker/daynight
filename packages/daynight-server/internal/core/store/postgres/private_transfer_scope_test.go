@@ -52,6 +52,26 @@ func TestPrivateTransferReadsPolicyAfterAuthorityLock(t *testing.T) {
 				editSQL = `UPDATE oauth_grants SET business_scopes=ARRAY['attachment:upload'],scope_version=2 WHERE id=$1`
 			}
 			p := model.Principal{Kind: model.CredentialKind(kind), UserID: user, CredentialID: credential}
+			completion, err := db.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+				_, err := scope.(store.TransferAttachmentCredentialScope).CurrentTransferAttachmentAuthorization(ctx, p, kind, uuid.NewString(), projectID, taskID)
+				return err
+			})
+			if err == nil || completion.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("attachment mutation admitted a different authority: %+v %v", completion, err)
+			}
+			completion, err = db.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+				auth, err := scope.(store.TransferAttachmentCredentialScope).CurrentTransferAttachmentAuthorization(ctx, p, kind, authority, projectID, taskID)
+				if err != nil {
+					return err
+				}
+				if auth.Principal != p || auth.Policy == nil || auth.Policy.Version() != 1 || auth.Policy.Require("attachment:read") != nil {
+					return errors.New("attachment mutation did not return the bound authority")
+				}
+				return auth.Validate()
+			})
+			if err != nil || completion.Outcome != store.TransactionCommitted {
+				t.Fatalf("attachment mutation authority: %+v %v", completion, err)
+			}
 			editor, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -145,7 +165,7 @@ func TestPrivateTransferReadsPolicyAfterAuthorityLock(t *testing.T) {
 				}
 				p.CredentialID = replacement
 			}
-			completion, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			completion, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 				capability := d.(store.PrivateTransferCredentialScope)
 				if _, err := capability.CurrentTransferAuthorization(ctx, p); err == nil {
 					return errors.New("policy read before admission succeeded")

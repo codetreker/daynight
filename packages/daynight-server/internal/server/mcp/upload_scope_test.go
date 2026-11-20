@@ -65,3 +65,22 @@ func TestScopedUploadToolPreservesDiscoveryAndDenialEnvelope(t *testing.T) {
 		t.Fatalf("calls=%d", ops.calls)
 	}
 }
+
+func TestScopedUploadToolRequiresDependenciesAndAuthorization(t *testing.T) {
+	fixture := newEntryFixture(t)
+	ops := &scopedUploadFixture{t: t}
+	if err := RegisterScopedUploadTools(nil, ops); err == nil {
+		t.Fatal("nil entry was accepted")
+	}
+	if err := RegisterScopedUploadTools(fixture.entry, nil); err == nil {
+		t.Fatal("nil upload service was registered")
+	}
+	if err := RegisterScopedUploadTools(fixture.entry, ops); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "action": "chunk", "transferId": testProjectID, "chunkId": testTargetID, "offset": "0", "contentBase64": "YQ=="}
+	scopedToolCall(t, fixture.client(t, "2026-07-28", "alice"), "task_attachment_put", args, "internal_error", "not_committed")
+	if ops.calls != 0 {
+		t.Fatalf("missing authorization reached upload: %d calls", ops.calls)
+	}
+}

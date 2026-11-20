@@ -18,6 +18,10 @@ type scopedDownloadFixture struct {
 	calls int
 }
 
+type unscopedDownloadFixture struct{ scopedDownloadFixture }
+
+func (*unscopedDownloadFixture) Scoped() bool { return false }
+
 func (s *scopedDownloadFixture) Scoped() bool { return true }
 func (s *scopedDownloadFixture) Read(_ context.Context, actor mcptransfer.Actor, _ mcpdownload.Input) (map[string]any, error) {
 	s.calls++
@@ -69,5 +73,28 @@ func TestScopedDownloadToolPreservesDiscoveryAndRefusal(t *testing.T) {
 	env := structured(t, result)
 	if !result.IsError || object(t, env["error"])["code"] != "insufficient_scope" || env["data"] != nil {
 		t.Fatal(env)
+	}
+}
+
+func TestScopedDownloadToolRequiresScopedServiceAndAuthorization(t *testing.T) {
+	fixture := newEntryFixture(t)
+	if err := RegisterScopedDownloadTool(fixture.entry, nil); err == nil {
+		t.Fatal("nil download service was registered")
+	}
+	if err := RegisterScopedDownloadTool(fixture.entry, &unscopedDownloadFixture{}); err == nil {
+		t.Fatal("legacy download service was registered as scoped")
+	}
+	if err := RegisterScopedDownloadTool(nil, &scopedDownloadFixture{}); err == nil {
+		t.Fatal("nil entry was accepted")
+	}
+	ops := &scopedDownloadFixture{auth: scopedTestAuthorization(t, "attachment:read")}
+	if err := RegisterScopedDownloadTool(fixture.entry, ops); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy authentication supplies no policy snapshot to the scoped tool.
+	result := tagTestCall(t, fixture.client(t, "2026-07-28", "alice"), "task_attachment_read", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "path": "file", "action": "inspect"})
+	env := structured(t, result)
+	if !result.IsError || object(t, env["error"])["code"] != "internal_error" || env["data"] != nil || ops.calls != 0 {
+		t.Fatalf("missing authorization reached download: %v calls=%d", env, ops.calls)
 	}
 }

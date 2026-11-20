@@ -82,3 +82,33 @@ func TestTransferAuthorizationPrecedesBothConflictReads(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitAttachmentAdmissionRequiresCallback(t *testing.T) {
+	a, _, _, task, principal := attachmentUnit(t)
+	if _, err := a.AdmitTransferAuthorized(t.Context(), principal, task.ProjectID, task.ID, "file", "text/plain", transferNamespace(t), nil); err == nil {
+		t.Fatal("transfer admission accepted a missing authorization callback")
+	}
+	if _, _, err := a.OpenAdmitted(t.Context(), principal, task.ProjectID, task.ID, "file", nil); err == nil {
+		t.Fatal("open accepted a missing authorization callback")
+	}
+	var missing *Attachments
+	if _, _, err := missing.OpenAdmitted(t.Context(), principal, task.ProjectID, task.ID, "file", func(context.Context) error { return nil }); err == nil {
+		t.Fatal("nil attachment service accepted")
+	}
+}
+
+func TestOpenAdmittedRefusesBeforeMetadataLookup(t *testing.T) {
+	a, _, _, task, principal := attachmentUnit(t)
+	denied := errors.New("current credential refused")
+	calls := 0
+	_, object, err := a.OpenAdmitted(t.Context(), principal, task.ProjectID, task.ID, "file", func(ctx context.Context) error {
+		calls++
+		if ctx.Err() != nil {
+			t.Error("admission context cancelled")
+		}
+		return denied
+	})
+	if !errors.Is(err, denied) || calls != 1 || object.Body != nil {
+		t.Fatalf("open denial=%v calls=%d", err, calls)
+	}
+}
