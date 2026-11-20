@@ -16,6 +16,9 @@ import * as configurationSource from "../../../src/commands/worker/configuration
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
+import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
+import * as webStores from "../../../src/commands/worker/backends/web-store.js";
+import * as monitoringObservers from "../../../src/commands/worker/monitoring/observer.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -146,7 +149,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.nextUUID = null;
   mocks.emit.mockReset();
-  mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
+  mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
@@ -168,6 +171,101 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {
+    const f = await fixture();
+    const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    const createBrowser = directoryBrowsing.createWorkerDirectoryBrowser;
+    const browser = createBrowser(), joinDirectory = browser.join;
+    vi.spyOn(browser, "join").mockImplementation(async () => { entered.resolve(); await gate.promise; await joinDirectory(); });
+    const browsing = vi.spyOn(directoryBrowsing, "createWorkerDirectoryBrowser").mockReturnValue(browser);
+    const openWeb = webStores.openWebExecutionStore;
+    let closeWeb: ReturnType<typeof vi.fn<() => void>> | undefined;
+    const webStorage = vi.spyOn(webStores, "openWebExecutionStore").mockImplementation((...args) => {
+      const store = openWeb(...args), close = store.close;
+      closeWeb = vi.fn(close); store.close = closeWeb;
+      return store;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const tasks = coordinator(async () => {}); mocks.coordinator.mockReturnValue(tasks);
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => { expect(control).toBeDefined(); expect(mocks.coordinator).toHaveBeenCalled(); });
+      const stopping = control!.stop();
+      await entered.promise;
+      await vi.waitFor(() => expect(tasks.shutdown).toHaveBeenCalledOnce());
+      expect(closeWeb).toBeDefined(); expect(closeWeb).not.toHaveBeenCalled();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store.listTasks()).toEqual([]);
+      gate.resolve();
+      expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
+      expect(closeWeb).toHaveBeenCalledOnce();
+      cancellation.abort(); await running;
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { gate.resolve(); cancellation.abort(); await running; browsing.mockRestore(); webStorage.mockRestore(); }
+  });
+
+  it("keeps management reporting and the original lock while a stopped scope is blocked", async () => {
+    const f = await fixture(false, false);
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    let known = false;
+    const createObserver = monitoringObservers.createMonitoringObserver;
+    const lifecycle = vi.fn();
+    const observation = vi.spyOn(monitoringObservers, "createMonitoringObserver").mockImplementation((...args) => {
+      const observer = createObserver(...args), setLifecycle = observer.setLifecycle;
+      observer.setLifecycle = state => { lifecycle(state); setLifecycle(state); };
+      return observer;
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: async (signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw new Error("Bot run joined after a failed stop observation.");
+    }, shutdown: async () => { if (!known) throw new Error("Original Bot boundary is unknown."); } });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(control).toBeDefined());
+      expect((await control!.stop()).some(result => result.stop === "unknown")).toBe(true);
+      expect(lifecycle).not.toHaveBeenCalledWith("stopped");
+      const reportOptions = mocks.reporter.mock.calls[0]![0] as ReporterOptions;
+      expect(reportOptions.signal.aborted).toBe(false);
+      expect(reportOptions.executionActive!()).toBe(false);
+      expect(mocks.reporter.mock.results[0]!.value.stop).not.toHaveBeenCalled();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(() => control!.rebuild()).toThrow("original resources");
+      known = true;
+      expect((await control!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      control!.rebuild();
+      await vi.waitFor(() => expect(control!.generation).toBe("2"));
+    } finally { known = true; cancellation.abort(); try { await running; } finally { observation.mockRestore(); } }
+  });
+
+  it("rebuilds two execution scopes under the original management lock and database", async () => {
+    const f = await fixture();
+    const cancellation = new AbortController(); cancellations.add(cancellation);
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { running } = start(f, { signal: cancellation.signal, onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls).toHaveLength(1));
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
+      const firstOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(firstOptions.signal!.aborted).toBe(true);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      const lockBefore = await readFile(f.paths.lockFile, "utf8");
+      controls[0]!.rebuild();
+      await vi.waitFor(() => expect(controls).toHaveLength(2));
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledTimes(2));
+      const secondOptions = mocks.coordinator.mock.calls[1]![0] as WorkerCoordinatorOptions;
+      expect(secondOptions.signal).not.toBe(firstOptions.signal);
+      expect(secondOptions.signal!.aborted).toBe(false);
+      expect(secondOptions.store).toBe(firstOptions.store);
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockBefore);
+      expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(cancellation.signal.aborted).toBe(false);
+    } finally { cancellation.abort(); await running; }
+  });
+
   it.each(["configuration", "telemetry"] as const)("keeps Bot recovery closed until a matching machine %s report is confirmed", async channel => {
     const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
     let options: ReporterOptions | undefined, canSubmit: (() => boolean) | undefined;
@@ -1100,7 +1198,7 @@ it("blocks Bot and Task admission while Web adoption is pending despite ready na
   let botOptions: { canAdmitNewExecution(): boolean } | undefined;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) };
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) };
   });
   let manager: cloudConfiguration.WorkerConfigurationManager | undefined;
   const create = cloudConfiguration.createWorkerConfigurationManager;
@@ -1139,7 +1237,7 @@ it("starts Bot management with no projects and preserves the Worker lock through
   let botOptions: any;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: vi.fn(async (signal: AbortSignal) => {
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async (signal: AbortSignal) => {
       if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     }), shutdown: vi.fn(async () => {
       expect(await readFile(f.paths.lockFile, "utf8")).toContain(String(process.pid));
@@ -1170,21 +1268,20 @@ it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdow
   mocks.bots.mockImplementation(options => {
     botOptions = options;
     options.store.observe(options.owner, retained, 1);
-    return { run: async () => {}, shutdown };
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, shutdown };
   });
   const tasks = coordinator(async () => cancellation.abort()); mocks.coordinator.mockReturnValue(tasks);
   try {
-    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toMatchObject({
-      errors: [failure, expect.objectContaining({ message: expect.stringContaining("storage locks are retained") })],
-    });
+    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toBe(failure);
     expect(tasks.shutdown).toHaveBeenCalledOnce();
     expect(shutdown).toHaveBeenCalledOnce();
     expect(botOptions.store.get(botOptions.owner, retained.id)?.observed).toEqual(retained);
     expect(await readFile(path.join(f.paths.stateDirectory, "bots", retained.id, "instance.lock"), "utf8")).toContain(String(process.pid));
-    expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+    expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
   } finally {
     // The controlled runtime never started a writer; release its retained test handle.
     botOptions?.store.close();
+    (mocks.coordinator.mock.calls[0]?.[0] as WorkerCoordinatorOptions | undefined)?.store.close();
   }
 });
 

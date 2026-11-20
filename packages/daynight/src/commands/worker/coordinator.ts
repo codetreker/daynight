@@ -41,7 +41,7 @@ export type WorkerRepositoryAssignment = { project: WorkerProject; configuration
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" | "task_paused" | "claim_invalid" | "native_input" };
 export type WorkerCoordinatorOptions = {
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
-  webBackend: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "confirmUpgrade" | "setMonitoringObserver" | "probeArchive">>;
+  webBackend: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "requestExecutionStop" | "observeStartupReport" | "advanceResult" | "confirmUpgrade" | "setMonitoringObserver" | "probeArchive">>;
   webStore: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   archiveMaintenance?: Pick<ReturnType<typeof createWebArchiveMaintenance>, "recordLegacyFailure"> & Partial<Pick<ReturnType<typeof createWebArchiveMaintenance>, "discardLocal" | "discardOne">>;
   archiveSessions?: () => boolean | null;
@@ -164,7 +164,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     } catch { /* Optional context must not suppress the failure. */ }
     return {};
   };
-  const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
+  const executionCancellation = new AbortController();
+  const normalSignal = options.signal === undefined ? executionCancellation.signal : AbortSignal.any([options.signal, executionCancellation.signal]);
   const tails = new Map<string, Promise<void>>();
   const jobs = new Map<string, Promise<void>>();
   const monitoringJobs = new Map<string, string>();
@@ -267,6 +268,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
+  let tickJoined: Promise<void> = Promise.resolve();
+  let shutdownWork: Promise<boolean> | undefined;
   let cycleCoverage: "unknown" | "complete" | "partial" = "unknown";
   let reconciliationPhase: "reconciliation" | "inventory" | "project-preparation" | "resource-observation" | "claim-search" | "claim-request" = "reconciliation";
   let projectSearchFailure = false;
@@ -330,6 +333,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const cancel = (): void => {
     shuttingDown = true;
     const reason = normalSignal.aborted ? normalSignal.reason : new Error("Worker shutdown requested.");
+    executionCancellation.abort(reason);
     for (const running of controllers.values()) running.controller.abort(reason);
   };
   normalSignal.addEventListener("abort", cancel, { once: true });
@@ -1562,6 +1566,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           requireImplementedWorkerBackend(currentRepository.configuration);
           if (currentRepository.configuration.agentControlMode === "web") await options.verifyWebServer?.(currentRepository.configuration.agent, normalSignal);
           const frozenConfiguration = options.freezeConfiguration === undefined ? currentRepository.configuration : await options.freezeConfiguration(currentRepository.configuration, normalSignal);
+          normalSignal.throwIfAborted();
           if (configuration !== claimConfiguration || !coveredProjects.has(candidate.projectId) || !allMappingsObserved()) continue;
           const claimId = randomUUID(), worktreeId = randomUUID();
           reconciliationPhase = "claim-request";
@@ -1611,6 +1616,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    normalSignal.throwIfAborted();
     if (options.store.listClaimToolReservations().some(reservation => reservation.projectId === target.projectId && reservation.taskId === target.taskId)) throw new Error("The original claim request remains unconfirmed; its frozen selection is reserved.");
     // A Git mutation may have removed its visible worktree before its owned
     // process joins. Consult persisted responsibilities too, including before
@@ -1649,9 +1655,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     stopProject,
     assertCanAcquire,
     registerClaim,
+    closeAdmission: (reason: unknown = new Error("Worker execution admission is closed.")): void => { executionCancellation.abort(reason); },
+    executionSnapshot: () => ({
+      admissionClosed: shuttingDown,
+      jobs: [...jobs.keys()], preparationJobs: [...preparationJobs.keys()], projectStops: [...projectStops.keys()],
+      taskWriters: [...tails.keys()],
+      reconciling: ticking,
+      claims: options.store.listUnfinishedTasks().map(({ projectId, taskId, claimId, status }) => ({ projectId, taskId, claimId, status })),
+      claimReservations: options.store.listClaimToolReservations().map(reservation => ({ ...reservation, version: reservation.version.toString() })),
+      webExecutions: options.webStore.listUnfinishedTasks().map(({ projectId, taskId, claimId, worktreeId, webExecution }) => ({
+        projectId, taskId, claimId, worktreeId, executionId: webExecution?.executionId ?? null,
+        sessionId: webExecution?.sessionId ?? null, executionGeneration: webExecution?.executionGeneration ?? null,
+      })),
+      ending: [...ending.values()].map(owner => ({ ...owner })),
+    }),
     tick: async (): Promise<void> => {
       if (shuttingDown || ticking) return;
       ticking = true;
+      let joined!: () => void;
+      tickJoined = new Promise<void>(resolve => { joined = resolve; });
       cycleCoverage = "unknown";
       projectSearchFailure = false;
       projectInventoryFailure = false;
@@ -1677,6 +1699,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           activeCoverage = undefined; ticking = false;
           for (const [identity, settled] of retiredMetadata) if (settledMetadata.get(identity) === settled) settledMetadata.delete(identity);
           retiredMetadata.clear();
+          joined();
         }
       }
     },
@@ -1737,47 +1760,83 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (web.cleanup?.discardRecording && options.archiveMaintenance?.discardOne !== undefined) await options.archiveMaintenance.discardOne(web, settled, normalSignal, originalUserId);
       }
     },
-    shutdown: async (): Promise<boolean> => {
-      cancel();
-      normalSignal.removeEventListener("abort", cancel);
-      await Promise.all(jobs.values());
-      await Promise.allSettled(preparationJobs.values());
-      await Promise.allSettled(projectStops.values());
-      await webDiscardJob;
-      let complete = true;
-      for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && webOwner(task) === undefined) {
-        if (options.webStore.getTask(task) != null) {
-          complete = false;
-          options.emit({ kind: "shutdown-error", task, message: "The original Web execution identity conflicts with this worker." });
-          continue;
-        }
-        if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {
-          try { await options.verifyWebUnregistered(task, new AbortController().signal, CLEANUP_OPERATION_MS); continue; }
-          catch { /* Missing launch evidence must not be interpreted as a confirmed native stop. */ }
-        }
-        complete = false;
-        options.emit({ kind: "shutdown-error", task, message: "The original Web execution evidence is missing; complete native stop cannot be confirmed." });
-      }
-      const owners = new Map<string, ResourceOwner>([...ending].filter((entry): entry is [string, ResourceOwner] => hasWorktreeIdentity(entry[1])));
-      // Git inventory cannot prove whether an agent stopped. Terminal deletion stays pending.
-      for (const record of unfinishedWeb()) owners.set(key(record), record);
-      await Promise.all([...owners.values()].map(async (owner) => {
+    shutdown: (settings: { deadline?: number } = {}): Promise<boolean> => {
+      if (shutdownWork !== undefined) return shutdownWork;
+      const deadline = settings.deadline ?? Date.now() + 20_000;
+      const bounded = async (work: Promise<unknown>, until = deadline): Promise<boolean> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await serialize(owner, async () => {
-            const webRecord = options.webStore.getTask(owner);
-            if (webRecord != null) {
-              if (webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web cleanup claim has conflicting worktree identities.");
-              const stopped = await options.webBackend.cleanup(webRecord, { kind: "shutdown", deadline: now(), immediateStop: true });
-              if (!stopped.complete) throw new Error("The original Web resources remain during shutdown.");
+          return await Promise.race([
+            work.then(() => true, error => { options.emit({ kind: "shutdown-error", message: "Task resource closure failed; original responsibility is retained.", error }); return false; }),
+            new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, until - Date.now())); }),
+          ]);
+        } finally { clearTimeout(timer); }
+      };
+      const work = (async (): Promise<boolean> => {
+        cancel();
+        normalSignal.removeEventListener("abort", cancel);
+        // Reserve half the remaining budget for observing known native owners,
+        // even when a producer does not acknowledge cancellation.
+        const joins = Promise.allSettled([tickJoined, ...jobs.values(), ...tails.values(), ...preparationJobs.values(), ...projectStops.values(), webDiscardJob]).then(results => {
+          const failures = results.flatMap(result => result.status === "rejected" && !isWorkerCancellation(result.reason, normalSignal) ? [result.reason] : []);
+          if (failures.length) throw new AggregateError(failures, "Task execution producers failed to join cleanly.");
+        });
+        const joined = await bounded(joins,
+          Math.min(deadline, Date.now() + Math.max(0, (deadline - Date.now()) / 2)));
+        let complete = joined;
+        if (options.store.listClaimToolReservations().length > 0) {
+          complete = false;
+          options.emit({ kind: "shutdown-error", message: "Original claim request outcomes remain unconfirmed; frozen selections and claim responsibility are retained." });
+        }
+        const unregistered = Promise.all(options.store.listUnfinishedTasks().filter(task => task.agentControlMode === "web" && webOwner(task) === undefined).map(async task => {
+          if (options.webStore.getTask(task) != null) {
+            complete = false;
+            options.emit({ kind: "shutdown-error", task, message: "The original Web execution identity conflicts with this worker." });
+            return;
+          }
+          if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered && Date.now() < deadline) {
+            try {
+              if (await bounded(options.verifyWebUnregistered(task, AbortSignal.timeout(Math.max(1, deadline - Date.now())), Math.max(1, deadline - Date.now())))) return;
+            }
+            catch { /* Missing launch evidence must not be interpreted as a confirmed native stop. */ }
+          }
+          complete = false;
+          options.emit({ kind: "shutdown-error", task, message: "The original Web execution evidence is missing; complete native stop cannot be confirmed." });
+        }));
+        const owners = new Map<string, ResourceOwner>([...ending].filter((entry): entry is [string, ResourceOwner] => hasWorktreeIdentity(entry[1])));
+        // Git inventory cannot prove whether an agent stopped. Terminal deletion stays pending.
+        for (const record of unfinishedWeb()) owners.set(key(record), record);
+        const stopOwners = Promise.all([...owners.values()].map(async (owner) => {
+          try {
+            if (tails.has(taskKey(owner))) {
+              // A cancelled producer can retain the Task writer. Stop only its
+              // proven native boundary; cleanup mutations must wait for that writer.
+              complete = false;
+              const record = options.webStore.getTask(owner);
+              if (record === null || record.worktreeId !== owner.worktreeId || options.webBackend.requestExecutionStop === undefined) throw new Error("The retained Task writer has no independent native stop boundary.");
+              await options.webBackend.requestExecutionStop(record, deadline);
               return;
             }
-            if (options.store.getTask(owner)?.agentControlMode === "web") return;
-            throw new Error("The original Web execution identity is missing.");
-          });
-        }
-        catch (error) { complete = false; options.emit({ kind: "shutdown-error", ...(options.store.getTask(owner) === null ? {} : { task: options.store.getTask(owner)! }), message: error instanceof WorkerCleanupError && error.stage === "backend-close" ? "The original Agent is stopped, but backend resource closure is unconfirmed." : "Could not confirm the original task resources stopped and closed.", error }); }
-      }));
-      return complete;
+            await serialize(owner, async () => {
+              const webRecord = options.webStore.getTask(owner);
+              if (webRecord != null) {
+                if (webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web cleanup claim has conflicting worktree identities.");
+                const stopped = await options.webBackend.cleanup(webRecord, { kind: "shutdown", deadline: now(), immediateStop: true, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) });
+                if (!stopped.complete) throw new Error("The original Web resources remain during shutdown.");
+                return;
+              }
+              if (options.store.getTask(owner)?.agentControlMode === "web") return;
+              throw new Error("The original Web execution identity is missing.");
+            });
+          }
+          catch (error) { complete = false; options.emit({ kind: "shutdown-error", ...(options.store.getTask(owner) === null ? {} : { task: options.store.getTask(owner)! }), message: error instanceof WorkerCleanupError && error.stage === "backend-close" ? "The original Agent is stopped, but backend resource closure is unconfirmed." : "Could not confirm the original task resources stopped and closed.", error }); }
+        }));
+        const stopped = await bounded(Promise.all([unregistered, stopOwners]));
+        if (!joined || !stopped) options.emit({ kind: "shutdown-error", message: "Task resources did not close within the stop deadline; original claims and resource responsibility are retained." });
+        return complete && stopped;
+      })();
+      shutdownWork = work.finally(() => { shutdownWork = undefined; });
+      return shutdownWork;
     },
   };
 };

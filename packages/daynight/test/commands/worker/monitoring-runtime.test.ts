@@ -23,7 +23,7 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
+  closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
 }) }));
 
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), persist: vi.fn(), configuration: vi.fn() }));
@@ -619,7 +619,6 @@ describe("worker runtime monitoring isolation", () => {
     await eventuallyWithoutAdvancingTime(() => { expect(mocks.coordinator).toHaveBeenCalledOnce(); expect(writeMonitoring).toHaveBeenCalledOnce(); });
     f.signal.abort();
     await eventuallyWithoutAdvancingTime(() => expect(shutdown).toHaveBeenCalledOnce());
-    await vi.advanceTimersByTimeAsync(30_000);
     await eventuallyWithoutAdvancingTime(() => expect(writes).toContain("stopping"));
     expect(order).not.toContain("shutdown-complete");
     stopping.resolve(); await running;

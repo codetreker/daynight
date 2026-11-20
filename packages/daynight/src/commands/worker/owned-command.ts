@@ -4,6 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import crossSpawn from "cross-spawn";
 import type { Operation } from "../../api/operation.js";
+import { currentOwnedCommandLifecycle, runLifecycleOwnedCommand } from "./owned-command-lifecycle.js";
 
 export type OwnedSpawn = (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 export const spawnOwnedProcess: OwnedSpawn = (file, args, options) => crossSpawn(file, [...args], options);
@@ -67,6 +68,11 @@ export const runOwnedCommand = async (
 ): Promise<OwnedCommandResult> => {
   operation.check();
   if (command.cwd !== undefined && (!path.isAbsolute(command.cwd) || /[\0\r\n]/.test(command.cwd))) throw new TypeError("A Owned prerequisite command working directory must be absolute and contain no control separators.");
+  const lifecycle = currentOwnedCommandLifecycle();
+  if (lifecycle !== undefined && start === spawnOwnedProcess) {
+    const { stdout, stderr } = await runLifecycleOwnedCommand(command, operation, lifecycle, options);
+    return { stdout, stderr };
+  }
   const available = operation.remainingMs();
   const cleanupDeadline = options.cleanupWithinDeadline === true ? performance.now() + available : null;
   // Short metadata probes reserve time to terminate and join inside their caller's total budget.

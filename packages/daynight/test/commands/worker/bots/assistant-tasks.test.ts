@@ -83,6 +83,22 @@ const application = (runtime: AssistantTaskRuntime) => {
 };
 
 describe("assistant-task managed loops", () => {
+  it("retains an application which outlives the stop budget and allows a later join", async () => {
+    const f = await fixture(), runtime = f.create(), started = deferred(), finish = deferred();
+    f.task.application = "watchdog";
+    let applicationSignal: AbortSignal | undefined;
+    runtime.registerApplication("watchdog", async context => { applicationSignal = context.signal; started.resolve(); await finish.promise; });
+    await runtime.tick("renew", signal()); await started.promise;
+    await expect(runtime.shutdown({ deadline: Date.now() })).rejects.toThrow("resource responsibility is retained");
+    expect(applicationSignal?.aborted).toBe(true);
+    expect(runtime.snapshot()).toMatchObject({ closed: true, applications: [{ taskId: f.task.id, botId: f.bot.botId, generation: "1" }] });
+    const previousCalls = f.listTasks.mock.calls.length;
+    await runtime.tick("renew", signal());
+    expect(f.listTasks).toHaveBeenCalledTimes(previousCalls);
+    finish.resolve(); await runtime.shutdown();
+    expect(runtime.snapshot().applications).toEqual([]);
+  });
+
   it("renews at 60-second boundaries and stops renewing when the Controller becomes unhealthy", async () => {
     const f = await fixture(), runtime = f.create(), abort = new AbortController();
     const running = runtime.run(abort.signal);

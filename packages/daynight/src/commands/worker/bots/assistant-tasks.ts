@@ -13,6 +13,7 @@ import { relatedExperience } from "./assistant-task-experience.js";
 import { createNotificationBatch } from "./assistant-task-notification.js";
 import { assistantTriggerId, assistantTriggerOccurrence } from "./assistant-task-trigger.js";
 import type { BotOwner, BotRecord } from "./types.js";
+import { botStopDeadline, joinBotWork, type BotStopOptions } from "./stop-budget.js";
 
 export const ASSISTANT_TASK_INTERVAL_MS = 60_000;
 export type AssistantTaskClock = { now(): number; wait(ms: number, signal: AbortSignal): Promise<void> };
@@ -49,6 +50,11 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
   const claimWork = new Map<string, Promise<unknown>>();
   const stoppedBots = new Set<string>(), botCancellation = new Map<string, AbortController>(), botWork = new Map<string, Set<Promise<void>>>();
   let running: Promise<void> | null = null, closed = false;
+  const closeAdmission = (reason?: unknown): void => {
+    closed = true; cancellation.abort(reason);
+    for (const app of applications.values()) { app.cancellation.abort(reason); app.expiry.abort(reason); }
+    for (const cancel of botCancellation.values()) cancel.abort(reason);
+  };
   const report = (error: unknown, botId: string | null) => options.onError(error instanceof Error ? error.message : "Assistant task maintenance failed.", botId);
   const stopApplication = async (taskId: string, current: Application | null = applications.get(taskId) ?? null): Promise<void> => {
     if (!current) return;
@@ -62,7 +68,10 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     let cancel = botCancellation.get(bot.botId);
     if (!cancel) { cancel = new AbortController(); botCancellation.set(bot.botId, cancel); }
     const jobs = botWork.get(bot.botId) ?? new Set<Promise<void>>(); botWork.set(bot.botId, jobs);
-    const work = Promise.resolve().then(() => action(AbortSignal.any([signal, cancellation.signal, cancel.signal]))).finally(() => jobs.delete(work));
+    const work = Promise.resolve().then(() => {
+      const combined = AbortSignal.any([signal, cancellation.signal, cancel.signal]);
+      combined.throwIfAborted(); return action(combined);
+    }).finally(() => jobs.delete(work));
     jobs.add(work); await work;
   };
   const scope = async (bot: BotRecord, taskId: string, api: AssistantTaskClient) => ({ serverOrigin: options.owner.serverOrigin, ownerUserId: options.owner.ownerUserId, botId: bot.botId, stateDirectory: await options.stateDirectory(bot.botId), taskId, api });
@@ -312,6 +321,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     const previous = lanes.get(lane); if (previous) return previous;
     const combined = AbortSignal.any([signal, cancellation.signal]);
     const work = (async () => {
+      combined.throwIfAborted();
       if (lane === "takeover") { await takeover(combined); return; }
       await Promise.all(localBots().map(async bot => {
         try { await withBot(bot, combined, botSignal => ({ renew: renewBot, delivery: deliveryBot, trigger: triggerBot })[lane](bot, botSignal)); }
@@ -321,6 +331,8 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     inFlight.add(work); lanes.set(lane, work); return work;
   };
   return {
+    closeAdmission,
+    snapshot: () => ({ closed, lanes: [...lanes.keys()], applications: [...applications].map(([taskId, app]) => ({ taskId, botId: app.botId, generation: app.generation })), inFlight: inFlight.size, claims: claimWork.size }),
     registerApplication: (name: string, factory: AssistantApplicationFactory): void => {
       if (!name || factories.has(name) || running || closed) throw new Error("Assistant application must be registered once before runtime start.");
       factories.set(name, factory);
@@ -344,10 +356,10 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       })).then(() => undefined);
       return running;
     },
-    shutdown: async (): Promise<void> => {
-      closed = true; cancellation.abort();
-      await Promise.allSettled([...inFlight, ...(running ? [running] : [])]);
-      await Promise.all([...applications.keys()].map(taskId => stopApplication(taskId)));
+    shutdown: async (settings?: BotStopOptions): Promise<void> => {
+      const deadline = botStopDeadline(settings);
+      closeAdmission();
+      await joinBotWork(Promise.allSettled([...inFlight, ...claimWork.values(), ...(running ? [running] : []), ...[...applications.keys()].map(taskId => stopApplication(taskId))]), deadline, "Assistant task loops and applications");
     },
   };
 };
