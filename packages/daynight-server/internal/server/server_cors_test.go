@@ -152,7 +152,7 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("POST", worker+"/report")
 	add("POST", worker+"/readonly/requests")
 	add("GET", worker+"/readonly/channel")
-	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/" + id + "/worker-prompt", worker + "/prompt"} {
+	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/" + id + "/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/" + id + "/reviewer-prompt", worker + "/reviewer-prompt"} {
 		add("GET HEAD PUT", path)
 	}
 	add("GET HEAD POST", p+"/tasks")

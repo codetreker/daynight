@@ -190,6 +190,11 @@ func create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 			return model.Bot{}, err
 		}
 	}
+	if admit != nil && errors.Is(err, model.ErrNotFound) && input.Overrides.WorkerID != nil {
+		if workerErr := botWorkerError(tx.Worker(ctx, principal.UserID, *input.Overrides.WorkerID)); workerErr != nil {
+			return model.Bot{}, workerErr
+		}
+	}
 	if admit != nil {
 		if admissionErr := admit(); admissionErr != nil {
 			return model.Bot{}, admissionErr

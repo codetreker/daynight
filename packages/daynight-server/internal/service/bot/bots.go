@@ -57,6 +57,11 @@ func (s *Bots) create(ctx context.Context, principal model.Principal, input botc
 				if !errors.As(err, &fault) || fault.Code != "not_found" {
 					return err
 				}
+				if input.Overrides.WorkerID != nil {
+					if err := botcore.RequireWorker(ctx, scope.BotDAO(), principal, *input.Overrides.WorkerID); err != nil {
+						return err
+					}
+				}
 			}
 			return s.readAdmission(ctx, scope, principal, definitionProjection(ctx, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)...)
 		})

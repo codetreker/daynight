@@ -155,6 +155,7 @@ func (d *projectRetirement) SaveSwitch(ctx context.Context, w store.GitHubReposi
 		args = append(args, w.ExpectedVersion, w.ExpectedGeneration, w.ExpectedRevision)
 		result, err = d.tx.Exec(ctx, `UPDATE project_github SET version=$2,generation=$3,revision=$4,enabled=$5,sync_enabled=$6,
             app_id=$7,installation_id=$8,repository_id=$9,legacy_repository_id=$10,installation_account_login=$11,
+			repository_default_branch=CASE WHEN repository_id IS DISTINCT FROM $9 THEN NULL ELSE repository_default_branch END,
             repository_full_name=$12,repository_private=$13,poll_interval_minutes=$14,access_state=$15,access_reason=$16,
             access_checked_at=$17,next_access_check_at=$18,access_hint_id=$19,access_delivery_id=$20,next_poll_at=$21,
             not_before=$22,last_poll_attempt_at=$23,last_full_success_at=$24,last_full_generation=$25,poll_error_code=$26,

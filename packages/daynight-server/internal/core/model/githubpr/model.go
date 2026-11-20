@@ -71,9 +71,10 @@ type PullRequest struct {
 // RepositoryObservation and InstallationObservation are remote identity
 // facts, independent of the transport used to obtain them.
 type RepositoryObservation struct {
-	ID       int64
-	FullName string
-	Private  bool
+	ID            int64
+	FullName      string
+	Private       bool
+	DefaultBranch *string
 }
 
 type InstallationObservation struct {

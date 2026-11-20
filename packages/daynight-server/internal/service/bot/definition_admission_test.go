@@ -255,12 +255,100 @@ type definitionReader struct {
 	store.BotReader
 	workerError error
 	queried     bool
+	workerCalls int
+	workerOwner string
+	workerID    string
 }
 
-func (r *definitionReader) BotWorker(context.Context, string, string) error { return r.workerError }
+func (r *definitionReader) BotWorker(_ context.Context, owner, id string) error {
+	r.workerCalls++
+	r.workerOwner, r.workerID = owner, id
+	return r.workerError
+}
 func (r *definitionReader) Bots(context.Context, string, *string, store.Page) (store.BotPage, error) {
 	r.queried = true
 	return store.BotPage{}, nil
+}
+
+func TestScopedCreationChecksExplicitWorkerBeforeScopeOnlyForNewBot(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		existing   bool
+		workerErr  error
+		workerWant int
+		wantCode   string
+	}{
+		{"missing worker", false, model.ErrNotFound, 1, "forbidden"},
+		{"foreign worker", false, model.ErrNotFound, 1, "forbidden"},
+		{"visible worker", false, nil, 1, "insufficient_scope"},
+		{"replay", true, model.ErrNotFound, 0, "insufficient_scope"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testPrincipal()
+			worker := uuid.NewString()
+			input := botInput(worker)
+			input.Overrides.WorkerID = &worker
+			reader := &definitionReader{workerError: tc.workerErr}
+			snapshot := &snapshotToken{reader: reader}
+			db := &definitionStore{snapshot: snapshot}
+			source := &definitionSource{read: scopedAuthorization(t, "bot:read")}
+			s, err := NewScoped(db, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.operations.get = func(context.Context, store.SnapshotScope, model.Principal, string) (model.Bot, error) {
+				if tc.existing {
+					return model.Bot{ID: input.ID, OwnerUserID: p.UserID}, nil
+				}
+				return model.Bot{}, &model.Fault{Code: "not_found", Message: "missing"}
+			}
+			_, err = s.CreateResolved(t.Context(), p, input)
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Code != tc.wantCode || db.writes != 0 || reader.workerCalls != tc.workerWant {
+				t.Fatalf("result=%v writes=%d worker calls=%d", err, db.writes, reader.workerCalls)
+			}
+			if tc.workerWant != 0 && (reader.workerOwner != p.UserID || reader.workerID != worker) {
+				t.Fatalf("worker identity: %q %q", reader.workerOwner, reader.workerID)
+			}
+			if tc.wantCode == "forbidden" && source.readScope != nil {
+				t.Fatal("scope checked before worker visibility")
+			}
+		})
+	}
+}
+
+type changedWorkerDAO struct{ *oauthBotWriteDAO }
+
+func (d *changedWorkerDAO) Worker(_ context.Context, user, worker string) error {
+	d.plan.call("worker")
+	same(d.t, user, d.principal.UserID)
+	same(d.t, worker, d.bot.WorkerID)
+	return model.ErrNotFound
+}
+
+func TestScopedCreationRechecksExplicitWorkerInWriteTransaction(t *testing.T) {
+	p := testPrincipal()
+	worker := uuid.NewString()
+	input := botInput(worker)
+	input.Overrides.WorkerID = &worker
+	plan := newPlan(t, "credential", "lock", "read", "worker")
+	dao := &changedWorkerDAO{&oauthBotWriteDAO{t: t, plan: plan, principal: p, bot: model.Bot{ID: input.ID, WorkerID: worker}}}
+	reader := &definitionReader{}
+	snapshot := &snapshotToken{reader: reader}
+	db := &definitionStore{snapshot: snapshot, write: &writeToken{dao: dao}}
+	source := &definitionSource{read: scopedAuthorization(t, "bot:read", "bot:write", "session:read"), write: scopedAuthorization(t, "bot:read")}
+	s, err := NewScoped(db, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.operations.get = func(context.Context, store.SnapshotScope, model.Principal, string) (model.Bot, error) {
+		return model.Bot{}, &model.Fault{Code: "not_found", Message: "missing"}
+	}
+	_, err = s.Create(t.Context(), p, input)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "forbidden" || reader.workerCalls != 1 || db.writes != 1 || source.writeScope != db.write {
+		t.Fatalf("changed Worker must precede scope and insert: %v", err)
+	}
 }
 func TestScopedWorkerListChecksVisibilityBeforeScopeAndQuery(t *testing.T) {
 	for _, denied := range []bool{false, true} {

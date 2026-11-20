@@ -111,6 +111,71 @@ func TestScopedListAdmissionPrecedesPageReadAndFollowsWorkerVisibility(t *testin
 	}
 }
 
+type scopedCreationWorkerDAO struct {
+	*creationHistoryDAO
+	workerErrors []error
+	workerCalls  int
+}
+
+func (d *scopedCreationWorkerDAO) Worker(ctx context.Context, owner, id string) error {
+	d.record(ctx, "worker")
+	if owner != d.principal.UserID || id != workerID || d.workerCalls >= len(d.workerErrors) {
+		d.t.Fatalf("unexpected Worker check: owner=%q id=%q calls=%d", owner, id, d.workerCalls)
+	}
+	err := d.workerErrors[d.workerCalls]
+	d.workerCalls++
+	return err
+}
+
+func TestScopedCreationChecksExplicitWorkerBeforeAdmissionAndAgainBeforeInsert(t *testing.T) {
+	ctx := context.Background()
+	principal := model.Principal{UserID: "owner"}
+	in := input()
+	in.Overrides.WorkerID = ptr(workerID)
+	in, fingerprint, err := NormalizeBotRequest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := errors.New("scope denied")
+	for _, tc := range []struct {
+		name         string
+		reads        []creationHistoryRead
+		workers      []error
+		calls        []string
+		admissionErr error
+		wantCode     string
+		wantDenied   bool
+	}{
+		{"invisible Worker", []creationHistoryRead{{err: model.ErrNotFound}}, []error{model.ErrNotFound}, []string{"credential", "lock", "bot", "worker"}, denied, "forbidden", false},
+		{"visible Worker, denied", []creationHistoryRead{{err: model.ErrNotFound}}, []error{nil}, []string{"credential", "lock", "bot", "worker", "admit"}, denied, "", true},
+		{"Worker changes before insert", []creationHistoryRead{{err: model.ErrNotFound}}, []error{nil, model.ErrNotFound}, []string{"credential", "lock", "bot", "worker", "admit", "worker"}, nil, "forbidden", false},
+		{"existing Bot replay", []creationHistoryRead{{bot: model.Bot{ID: botID, OwnerUserID: principal.UserID, RequestFingerprint: fingerprint}}}, nil, []string{"credential", "lock", "bot", "admit", "credential"}, nil, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			history := &creationHistoryDAO{t: t, ctx: ctx, principal: principal, id: in.ID, reads: tc.reads, wantCalls: tc.calls}
+			dao := &scopedCreationWorkerDAO{creationHistoryDAO: history, workerErrors: tc.workers}
+			result, err := CreateScoped(ctx, dao, principal, in, fingerprint, false, func() error {
+				history.record(ctx, "admit")
+				return tc.admissionErr
+			})
+			switch {
+			case tc.wantCode != "":
+				assertFault(t, err, tc.wantCode)
+			case tc.wantDenied:
+				if !errors.Is(err, denied) {
+					t.Fatalf("expected scope refusal, got %v", err)
+				}
+			case err != nil || result.ID != botID:
+				t.Fatalf("replay: %+v %v", result, err)
+			}
+			if dao.workerCalls != len(tc.workers) {
+				t.Fatalf("Worker checks=%d, want %d", dao.workerCalls, len(tc.workers))
+			}
+			history.verify()
+		})
+	}
+}
+
 func TestDefinitionScopeAdmission(t *testing.T) {
 	for _, kind := range []scopepolicy.CredentialType{scopepolicy.PAT, scopepolicy.MCP} {
 		t.Run(string(kind), func(t *testing.T) {

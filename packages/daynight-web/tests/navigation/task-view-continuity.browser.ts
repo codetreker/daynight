@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { TaskDetail } from '../../src/api/types';
+import type { TaskDetail, TaskGraph } from '../../src/api/types';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -15,17 +15,25 @@ async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
   const revalidationGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, project: graphFixture([row(0, 'Project fixture')]).project, tasks: initial, writes: [] as string[], revoked: false, holdRevalidation: false, heldReads: 0, releaseRevalidation: revalidationGate.resolve, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending' | 'error', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
-    const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
+    const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId;
+    const fixtureGraph: TaskGraph = state.tasks.length === 0
+      ? { observedAt: state.project.updatedAt, project: state.project, tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } }
+      : graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
+    const graph = { ...fixtureGraph, project: { ...state.project, id: targetProject } };
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
     if (state.holdRevalidation && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) { state.heldReads++; await revalidationGate.promise; }
     if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
     if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
-    if (path === `/api/v1/projects/${targetProject}`) { if (state.projectMode === 'pending') await projectGate.promise; return send(graph.project); }
+    if (path === `/api/v1/projects/${targetProject}`) {
+      if (state.projectMode === 'pending') await projectGate.promise;
+      if (state.projectMode === 'error') return send({ error: { code: 'internal_error', message: 'Project unavailable', requestId: 'project-failure' } }, 500);
+      return send(graph.project);
+    }
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: state.viewer, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${targetProject}/access`) return send(directAccessFixture(targetProject, state.viewer));
@@ -55,6 +63,81 @@ const select = async (page: Page, name: string) => {
   await page.keyboard.press('Enter');
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
+const headingGap = (page: Page) => page.evaluate(() => document.querySelector('.project-layout')!.getBoundingClientRect().top - document.querySelector('.project-heading')!.getBoundingClientRect().bottom);
+const expectCompactHeading = async (page: Page) => {
+  await expect.poll(async () => Math.abs(await headingGap(page) - 26), 'project heading to section layout gap is 26 CSS px').toBeLessThanOrEqual(1);
+};
+
+for (const width of [1280, 390]) for (const empty of [false, true]) test(`project heading has one gap above overview and tasks at ${width}px with ${empty ? 'no tasks' : 'tasks'}`, async ({ page }) => {
+  const state = await install(page, empty ? [] : [row(10, 'Task')]);
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto(`/projects/${projectId}?tab=overview`);
+  await expect(page.getByRole('heading', { name: state.project.name, exact: true })).toBeVisible();
+  await expect(page.locator('.project-overview .stats')).toBeVisible();
+  await expectCompactHeading(page);
+  if (width === 390) {
+    const tabs = page.locator('.project-section-tabs');
+    expect(await tabs.evaluate(element => getComputedStyle(element).flexDirection)).toBe('row');
+    const tabsTop = (await tabs.boundingBox())!.y, layoutTop = (await page.locator('.project-layout').boundingBox())!.y;
+    expect(Math.abs(tabsTop - layoutTop)).toBeLessThanOrEqual(1);
+  }
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
+  await expectCompactHeading(page);
+  expect(state.writes).toEqual([]);
+});
+
+test('long project details keep the compact heading and actions usable at 320px', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.project = { ...state.project, name: 'A very long project name '.repeat(5).trimEnd(), repoUrl: 'https://github.com/example/' + 'long-repository-name-'.repeat(10) };
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}?tab=overview`);
+  await expect(page.getByRole('heading', { name: state.project.name, exact: true })).toBeVisible();
+  await expect(page.locator('.project-repository-value')).toHaveText(state.project.repoUrl);
+  await expect(page.locator('.project-overview .stats')).toBeVisible();
+  await expectCompactHeading(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+  const menu = page.getByRole('menu', { name: 'Project actions', exact: true });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Project settings', 'Refresh', 'New Task', 'New Goal']);
+  await menu.getByRole('menuitem', { name: 'New Task', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await expectCompactHeading(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.writes).toEqual([]);
+});
+
+test('project information failure keeps its own space and retry preserves navigation and actions', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.projectMode = 'error';
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/projects/${projectId}?tab=overview`);
+  await expect(page.locator('.project-overview .stats')).toBeVisible();
+  const alert = page.getByRole('alert').filter({ hasText: 'Could not read project information.' });
+  await expect(alert).toBeVisible();
+  const errorBounds = (await alert.boundingBox())!, headingBounds = (await page.locator('.project-heading').boundingBox())!, layoutBounds = (await page.locator('.project-layout').boundingBox())!;
+  expect(errorBounds.y).toBeGreaterThanOrEqual(headingBounds.y + headingBounds.height);
+  expect(errorBounds.y + errorBounds.height).toBeLessThanOrEqual(layoutBounds.y);
+  expect(await headingGap(page)).toBeGreaterThan(26);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
+  await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Project settings', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'New Task', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  state.projectMode = 'normal';
+  await alert.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: state.project.name, exact: true })).toBeVisible();
+  await expectCompactHeading(page);
+  await page.getByRole('button', { name: 'Project actions', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Project settings', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  expect(state.writes).toEqual([]);
+});
 
 test.describe('project settings navigation', () => {
   test.use({ hasTouch: true });
@@ -320,6 +403,8 @@ test('menu refresh exposes a failure and retry restores the graph', async ({ pag
   await expect(page.getByRole('button', { name: 'Project actions', exact: true })).toBeVisible();
   const snapshot = page.locator('.snapshot-time time');
   await expect(snapshot).toBeVisible();
+  await expect(page.locator('.project-overview .stats')).toBeVisible();
+  await expectCompactHeading(page);
   const receivedAt = await snapshot.getAttribute('datetime');
   state.graphMode = 'error';
   await page.getByRole('button', { name: 'Project actions', exact: true }).click();
@@ -328,9 +413,16 @@ test('menu refresh exposes a failure and retry restores the graph', async ({ pag
   await expect(alert).toContainText('graph-failure');
   await expect(alert).toContainText('Showing the last successfully loaded data.');
   await expect(snapshot).toHaveAttribute('datetime', receivedAt!);
+  await expect(page.locator('.project-overview .stats')).toBeVisible();
+  await expectCompactHeading(page);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
+  await expect(alert).toContainText('Showing the last successfully loaded data.');
+  await expectCompactHeading(page);
   state.graphMode = 'normal';
   await alert.getByRole('button', { name: 'Retry refresh', exact: true }).click();
   await expect(alert).toHaveCount(0);
+  await expectCompactHeading(page);
   expect(state.writes).toEqual([]);
 });
 
@@ -487,6 +579,7 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await page.goto(`/projects/${projectId}`);
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
     await expect(page.getByText('https://github.com/example/project', { exact: true })).toBeVisible();
+    await expectCompactHeading(page);
     if (width === 390) await page.getByRole('button', { name: 'Project actions', exact: true }).click();
     await expect(page.getByRole(width === 390 ? 'menuitem' : 'link', { name: 'Project settings', exact: true })).toBeVisible();
     await expect(page.getByRole(width === 390 ? 'menuitem' : 'button', { name: 'New Task', exact: true })).toBeDisabled();
@@ -501,6 +594,7 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     state.graphMode = 'error'; state.releaseGraph();
     await expect(page.getByRole('alert')).toContainText('graph-failure');
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
+    await expectCompactHeading(page);
     if (width === 390) await page.getByRole('button', { name: 'Project actions', exact: true }).click();
     await expect(page.getByRole(width === 390 ? 'menuitem' : 'link', { name: 'Project settings', exact: true })).toBeVisible();
     if (width === 390) await page.keyboard.press('Escape');

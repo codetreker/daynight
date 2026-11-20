@@ -36,7 +36,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, worker: store.ReviewWorker{ReviewWorkerKey: store.ReviewWorkerKey{UserID: account, WorkerID: workerID}, LastSeenAt: now, ReviewEnabled: true, DesiredConfiguration: target}, completion: store.Completion{Outcome: store.TransactionCommitted}}
-	f.tx = &transaction{t: t, current: f.worker, repo: 42, now: now, pr: store.ReviewPR{Number: 1, GitHubID: 11, State: "open"}}
+	f.tx = &transaction{t: t, current: f.worker, repo: 42, branch: "main", now: now, pr: store.ReviewPR{Number: 1, GitHubID: 11, State: "open", BaseRef: "main"}}
 	return f
 }
 func (f *fixture) ReviewScanStart(context.Context) (time.Time, *store.ReviewWorkerKey, error) {
@@ -90,6 +90,8 @@ type transaction struct {
 	calls                                                   []string
 	current                                                 store.ReviewWorker
 	repo                                                    int64
+	branch                                                  string
+	unknownBranch                                           bool
 	now                                                     time.Time
 	pr                                                      store.ReviewPR
 	authErr, connErr, workerErr, clockErr, prErr, insertErr error
@@ -103,12 +105,15 @@ func (x *transaction) LockAuthorization(_ context.Context, user string) (model.P
 	}
 	return model.ProjectAccess{}, x.authErr
 }
-func (x *transaction) LockConnection(context.Context) (*int64, error) {
+func (x *transaction) LockConnection(context.Context) (*store.ReviewConnection, error) {
 	x.calls = append(x.calls, "connection")
 	if x.connErr != nil {
 		return nil, x.connErr
 	}
-	return &x.repo, nil
+	if x.unknownBranch {
+		return &store.ReviewConnection{RepositoryID: &x.repo}, nil
+	}
+	return &store.ReviewConnection{RepositoryID: &x.repo, DefaultBranch: &x.branch}, nil
 }
 func (x *transaction) LockWorker(_ context.Context, user, id string) (store.ReviewWorker, error) {
 	x.calls = append(x.calls, "worker")
@@ -154,6 +159,9 @@ func TestAssignmentRevalidatesLockedFacts(t *testing.T) {
 		{"auth error", func(x *transaction) { x.authErr = cause }, []string{"auth"}, false, cause},
 		{"connection error", func(x *transaction) { x.connErr = cause }, []string{"auth", "connection"}, false, cause},
 		{"repository changed", func(x *transaction) { x.repo = 99 }, []string{"auth", "connection"}, false, nil},
+		{"unknown branch", func(x *transaction) { x.unknownBranch = true }, []string{"auth", "connection"}, false, nil},
+		{"changed default branch", func(x *transaction) { x.branch = "trunk" }, []string{"auth", "connection", "worker", "clock", "pr"}, false, nil},
+		{"changed base", func(x *transaction) { x.pr.BaseRef = "release" }, []string{"auth", "connection", "worker", "clock", "pr"}, false, nil},
 		{"worker missing", func(x *transaction) { x.workerErr = model.ErrNotFound }, []string{"auth", "connection", "worker"}, false, nil},
 		{"worker error", func(x *transaction) { x.workerErr = cause }, []string{"auth", "connection", "worker"}, false, cause},
 		{"clock error", func(x *transaction) { x.clockErr = cause }, []string{"auth", "connection", "worker", "clock"}, false, cause},
@@ -196,7 +204,7 @@ func TestBatchContinuesInsidePageAndAfterUnknown(t *testing.T) {
 	f.failNumber = 2
 	f.tx.pr.Number = 2
 	r.Batch(t.Context(), 1)
-	f.tx.pr = store.ReviewPR{Number: 1, GitHubID: 11, State: "open"}
+	f.tx.pr = store.ReviewPR{Number: 1, GitHubID: 11, State: "open", BaseRef: "main"}
 	r.Batch(t.Context(), 1)
 	if !f.tx.inserted || !strings.Contains(logs.String(), `"outcome":"unknown"`) || !strings.Contains(logs.String(), `"number":2`) {
 		t.Fatalf("insert %v logs %s", f.tx.inserted, logs.String())
