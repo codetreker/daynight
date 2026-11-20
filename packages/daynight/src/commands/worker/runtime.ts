@@ -1,3 +1,4 @@
+import { runReviewerHost } from "./reviewer-host.js";
 import { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 import { replayStoppedControllerUsage } from "../controller/usage/stopped.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
@@ -287,6 +288,7 @@ export const runWorker = async (options: {
   let promptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
+  let reviewerRun: Promise<void> | undefined;
   let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
   let modelDiscovery: ReturnType<typeof createWorkerModelDiscovery> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
@@ -764,6 +766,8 @@ export const runWorker = async (options: {
       if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
       return receipt;
     }, emit, configuration: exchange });
+    reviewerRun = runReviewerHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, serverOrigin: serverUrl,
+      serverToken, userId, workerId, signal, emit }).catch(error => { emit({ kind: "reviewer-error", component: "reviewer", phase: "host", message: "Reviewer host failed.", error }); failures.push(error); });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
     scheduleInitialRemovals();
     signal.throwIfAborted();
@@ -934,6 +938,7 @@ export const runWorker = async (options: {
       } catch (error) { if (!failures.includes(error)) failures.push(error); }
     }
     await botRun;
+    await reviewerRun;
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await bots?.close(); } catch (error) { failures.push(error); }
     try { await web?.jobLeases.close(); } catch (error) { failures.push(error); }

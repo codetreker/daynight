@@ -16,6 +16,8 @@ import type { AttemptIdentity, ProcessesExcluded, ReviewState } from "../model.j
 import { validateReviewSkillDiscovery } from "../skill.js";
 import type { PreparedReviewSkill } from "../skill.js";
 import { spawnWindowsReviewPhase } from "../windows-phase.js";
+import { appendWorkerPrompts } from "../../worker/prompts.js";
+import type { WorkerPromptTuple } from "../../worker/prompt-source.js";
 import type { WindowsReviewPhase } from "../windows-phase.js";
 
 export type PreviousReview = Pick<ReviewState, "id" | "revision" | "headSha" | "baseRef">;
@@ -60,6 +62,8 @@ export type CopilotRunOptions = {
   previousReview?: PreviousReview;
   onProcess?: (child: ChildProcess, attempt: AttemptIdentity) => void;
   stopProcess?: (child: ChildProcess, attempt: AttemptIdentity) => Promise<void>;
+  promptValues?: WorkerPromptTuple;
+  assertAdmission?: () => void;
 };
 
 const asError = (value: unknown): Error => value instanceof Error ? value : new Error(String(value));
@@ -190,6 +194,7 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
     let launched: ReviewState;
     try {
       input.signal?.throwIfAborted();
+      input.assertAdmission?.();
       launched = store.startAttempt(review.id, { processOwner: options.processOwner, stdoutLogPath, stderrLogPath }, now());
     } catch (error) { await Promise.all([stdoutFile.close(), stderrFile.close()]); throw error; }
     const deadline = performance.now() + options.timeoutMs;
@@ -237,7 +242,7 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
           void stopping.catch((error: unknown) => { errors.push(asError(error)); }).finally(() => {
             if (!outcome.directProcessClosed) {
               errors.push(new Error("Copilot termination could not confirm its direct process and streams closed; retained state requires operator recovery."));
-              child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); resolveClose();
+              child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); child.unref(); resolveClose();
             }
           });
           return;
@@ -247,7 +252,7 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
           child.kill("SIGKILL");
           abandon = setTimeout(() => {
             errors.push(new Error("Copilot did not close its process and streams within the termination grace period; descendant processes must be excluded before reuse."));
-            child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); resolveClose();
+            child.stdin!.destroy(); child.stdout!.destroy(); child.stderr!.destroy(); child.unref(); resolveClose();
           }, grace);
         }, grace);
       };
@@ -334,12 +339,16 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
       try { await validateReviewSkillDiscovery(discovery.text(), options.skill); }
       catch (error) { errors.push(asError(error)); return outcome; }
       if (interrupted()) return outcome;
+      input.assertAdmission?.();
       const parser = new LastLine(lineLimit);
       mainStarted = true;
       await runPhase("review", [...prefix, `--${mode === "resume" ? "resume" : "session-id"}=${pr.sessionId}`, "-s", "--output-format", "text", "--stream", "on", "--no-color",
         "--no-ask-user", "--no-auto-update", "--allow-all-tools", "--log-dir", attemptDirectory,
         ...(options.model === undefined ? [] : ["--model", options.model]),
-        ...(options.reasoningEffort === undefined ? [] : ["--reasoning-effort", options.reasoningEffort])], parser, [stdoutFile, stderrFile], reviewPrompt(launched, worktree, coordinate, options.skill, input.publisherId, input.publicationIdentityFormat, input.previousReview));
+        ...(options.reasoningEffort === undefined ? [] : ["--reasoning-effort", options.reasoningEffort])], parser, [stdoutFile, stderrFile], (() => {
+          const builtin = reviewPrompt(launched, worktree, coordinate, options.skill, input.publisherId, input.publicationIdentityFormat, input.previousReview);
+          return input.promptValues === undefined ? builtin : appendWorkerPrompts(builtin, input.promptValues);
+        })());
       outcome.lastNonemptyLine = parser.lastNonempty;
       try {
         if (await sessionExists(sessionDirectory)) store.markSessionEstablished(pr);

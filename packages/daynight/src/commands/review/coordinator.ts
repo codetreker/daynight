@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { ReviewConfiguration, RepositoryConfiguration } from "./config.js";
 import type { CopilotAttemptOutcome, CopilotProcessOutcome, CopilotRunOptions, createCopilotRunner } from "./adapters/copilot.js";
@@ -11,6 +12,8 @@ import { pollRepository } from "./polling.js";
 import type { GitHubClient } from "./adapters/github.js";
 import type { Store } from "./store.js";
 import type { AttemptIdentity, OperationsStopped, ProcessesExcluded, PullRequestIdentity, PullRequestState, ReviewCandidate, ReviewState, PullRequestReviewSnapshot } from "./model.js";
+import { remoteIdentity } from "./config.js";
+import type { AssignedPullRequest, AssignmentSource, PromptCapture } from "./assignment.js";
 
 export type CoordinatorEvent = {
   level: "info" | "error";
@@ -40,9 +43,10 @@ export type CoordinatorOptions = {
   signal: AbortSignal;
   log: (event: CoordinatorEvent) => void;
   now?: () => number;
+  assignment?: { source: AssignmentSource; repositoryDirectory: string };
 };
 
-type RepositoryWork = { configuration: RepositoryConfiguration; local: LocalRepository | null; polling: boolean; nextPollAt: number; blocked: boolean };
+type RepositoryWork = { configuration: RepositoryConfiguration; local: LocalRepository | null; polling: boolean; nextPollAt: number; blocked: boolean; expectedId?: string; pendingConfiguration?: RepositoryConfiguration };
 type Reservation = { kind: "review" | "cleanup" | "verification"; controller: AbortController; reviewId?: string };
 type CheckAdmission = { target: string; checking: boolean; ready: boolean; nextCheckAt: number; reported: boolean };
 const key = (identity: PullRequestIdentity): string => JSON.stringify([identity.host, identity.githubId, identity.number]);
@@ -74,11 +78,47 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
   const verificationRetryAt = new Map<string, number>();
   const waiting = new Map<string, ReviewCandidate>();
   const checkAdmissions = new Map<string, CheckAdmission>();
+  const promptAdmissions = new Map<string, { target: string; projectId: string; checking: boolean; capture?: PromptCapture; nextCheckAt: number }>();
   const pending = new Set<Promise<void>>();
   let workers = 0;
   let safeToReleaseLock = true;
   let wake: (() => void) | undefined;
   const notify = (): void => { wake?.(); };
+  const selectedAssignment = (pr: PullRequestIdentity): AssignedPullRequest | undefined => {
+    const observation = options.assignment?.source.snapshot();
+    if (observation?.kind !== "enabled") return undefined;
+    return observation.pullRequests.filter(item => item.repositoryId === pr.githubId && item.number === pr.number &&
+      remoteIdentity(item.repositoryUrl, "Assigned repository").host === pr.host).sort((a, b) => a.projectId.localeCompare(b.projectId))[0];
+  };
+  const currentCapture = (pr: PullRequestIdentity, projectId: string, capture: PromptCapture): boolean =>
+    selectedAssignment(pr)?.projectId === projectId && capture.isCurrent();
+  const synchronizeAssignments = (): void => {
+    const assignment = options.assignment;
+    if (assignment === undefined) return;
+    const observation = assignment.source.snapshot();
+    if (observation.kind !== "unavailable") {
+      for (const [prKey, reservation] of reservations) if (reservation.kind === "review" && reservation.reviewId !== undefined) {
+        const review = store.getReview(reservation.reviewId);
+        if (review !== null && selectedAssignment(review) === undefined) reservation.controller.abort(new Error("Reviewer assignment was withdrawn."));
+      }
+    }
+    if (observation.kind === "enabled") for (const item of observation.pullRequests) {
+      const identity = remoteIdentity(item.repositoryUrl, "Assigned repository");
+      const existing = repositories.find(repository => repository.expectedId === item.repositoryId && repository.configuration.host === identity.host);
+      if (existing === undefined) repositories.push({ configuration: { ...identity, remote: item.repositoryUrl, path: path.join(assignment.repositoryDirectory, item.repositoryId) }, expectedId: item.repositoryId, local: null, polling: false, nextPollAt: 0, blocked: false });
+      else if (existing.configuration.coordinate !== identity.coordinate) existing.pendingConfiguration = { ...identity, remote: item.repositoryUrl, path: existing.configuration.path };
+    }
+    for (const repository of repositories) if (!repository.polling) repository.nextPollAt = 0;
+    notify();
+  };
+  if (options.assignment !== undefined) {
+    for (const stored of store.listRepositories()) {
+      const identity = remoteIdentity(stored.remote, "Retained repository");
+      repositories.push({ configuration: { ...identity, remote: stored.remote, path: stored.localPath }, expectedId: stored.githubId, local: null, polling: false, nextPollAt: 0, blocked: false });
+    }
+    synchronizeAssignments();
+  }
+  const unsubscribe = options.assignment?.source.subscribe(synchronizeAssignments);
   const context = (review: ReviewState): Pick<CoordinatorEvent, "repository" | "number" | "reviewId" | "revision" | "attempt"> => {
     const repository = store.getRepository(review);
     return { repository: repository === null ? `${review.host}/${review.githubId}` : repository.remote, number: review.number,
@@ -198,20 +238,50 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
 
   // Persist uncertainty before requesting the runtime's explicit startup recovery proof.
   for (const review of store.listActiveReviews()) {
-    if (review.status === "retry_wait" || store.getReviewPublication(review.id)?.phase === "pending") continue;
-    const interrupted = store.markInterrupted(review.id, "A previous coordinator stopped before this operation was resolved.", now());
+    if (review.status === "retry_wait") continue;
+    if (options.assignment === undefined && store.getReviewPublication(review.id)?.phase === "pending") continue;
+    const publication = store.getReviewPublication(review.id);
+    const interrupted = options.assignment !== undefined && (review.status === "running" || publication?.phase === "pending" || review.status === "interrupted" && review.attemptCount > 0 && publication?.publisherId != null)
+      ? store.retainPossiblePublication(review.id, "A previous coordinator stopped before this attempt was resolved.", now())
+      : store.markInterrupted(review.id, "A previous coordinator stopped before this operation was resolved.", now());
     try {
       const proof = await processes.recover(interrupted);
       const recoveredAt = now();
-      const recovered = store.resolveInterrupted(interrupted.id, proof, recoveredAt, recoveredAt);
+      const recovered = options.assignment !== undefined && store.getReviewPublication(interrupted.id)?.phase === "pending"
+        ? store.recoverPossiblePublication(interrupted.id, proof, recoveredAt)
+        : store.resolveInterrupted(interrupted.id, proof, recoveredAt, recoveredAt);
       report(recovered, "recovery", "Previous processes and operations were excluded; the persisted target may be reconciled.");
     } catch (error) { interrupt(interrupted, error); }
   }
 
   const poll = async (repository: RepositoryWork): Promise<void> => {
     try {
+      const reserved = (): boolean => [...reservations.keys()].some(prKey => {
+        const [host, githubId] = JSON.parse(prKey) as [string, string, number];
+        return host === repository.configuration.host && githubId === repository.expectedId;
+      });
+      if (repository.pendingConfiguration !== undefined && !reserved()) {
+        repository.configuration = repository.pendingConfiguration; delete repository.pendingConfiguration; repository.local = null;
+      }
+      if (options.assignment !== undefined && repository.expectedId !== undefined && !reserved()) {
+        const registration = store.getRepository({ host: repository.configuration.host, githubId: repository.expectedId });
+        const observation = options.assignment.source.snapshot();
+        const assigned = observation.kind === "enabled" && observation.pullRequests.some(item => item.repositoryId === repository.expectedId && remoteIdentity(item.repositoryUrl, "Assigned repository").host === repository.configuration.host);
+        if (registration !== null && !assigned) {
+          const current = await client.resolveRepositoryById({ host: registration.host, githubId: registration.githubId }, signal);
+          if (current.host !== registration.host || current.githubId !== registration.githubId) throw new Error("GitHub returned a different retained repository identity.");
+          const remote = `https://${current.host}/${current.owner}/${current.name}.git`;
+          const identity = remoteIdentity(remote, "Retained GitHub repository");
+          if (identity.coordinate !== repository.configuration.coordinate) {
+            const next = { ...identity, remote, path: repository.configuration.path };
+            if (reserved()) repository.pendingConfiguration = next;
+            else { repository.configuration = next; repository.local = null; }
+          }
+        }
+      }
       if (repository.local === null) {
-        repository.local = await git.ensureRepository(repository.configuration, signal);
+        const registration = repository.expectedId === undefined ? undefined : store.getRepository({ host: repository.configuration.host, githubId: repository.expectedId });
+        repository.local = await git.ensureRepository(repository.configuration, signal, repository.expectedId, registration);
         const existing = localRepositories.get(repositoryKey(repository.local.repository));
         if (existing !== undefined && existing !== repository) {
           repository.blocked = true;
@@ -229,9 +299,23 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
         }
         return resolved;
       } };
-      const observed = await pollRepository(store, repository.configuration, pollingClient, { now, signal });
-      if (previous === null || previous.startPrNumber === null) log({ level: "info", phase: "initialize", repository: repository.configuration.coordinate,
-        message: `Permanently excluding PR numbers through ${observed.startPrNumber}.` });
+      if (options.assignment === undefined) {
+        const observed = await pollRepository(store, repository.configuration, pollingClient, { now, signal });
+        if (previous === null || previous.startPrNumber === null) log({ level: "info", phase: "initialize", repository: repository.configuration.coordinate,
+          message: `Permanently excluding PR numbers through ${observed.startPrNumber}.` });
+      } else {
+        const local = repository.local;
+        const registered = store.registerRepository({ ...local.repository, remote: repository.configuration.remote, localPath: repository.configuration.path });
+        if (registered.startPrNumber === null) store.initializeRepository(local.repository, 0, now());
+        const observation = options.assignment.source.snapshot();
+        const candidates = observation.kind === "enabled" ? observation.pullRequests.filter(item => item.repositoryId === local.repository.githubId && remoteIdentity(item.repositoryUrl, "Assigned repository").host === local.repository.host).map(item => item.number) : [];
+        const tracked = store.listPullRequests(local.repository).map(pr => pr.number);
+        for (const number of new Set([...candidates, ...tracked])) {
+          const pr = await client.getPullRequest(local.repository, number, signal);
+          if (tracked.includes(number) || selectedAssignment({ ...local.repository, number }) !== undefined) store.observePullRequest(local.repository, pr, now());
+        }
+        store.recordPollSuccess(local.repository, now());
+      }
       for (const pr of store.listPullRequests(repository.local.repository)) {
         if (pr.state !== "open" || pr.draft) continue;
         const completed = store.listReviews(pr).findLast((review) => review.status === "completed" && isCurrent(review, pr));
@@ -272,10 +356,10 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
     }
     verificationRetryAt.delete(review.id);
     if (publication === null) {
-      store.rejectPublicationVerification(review.id);
       const time = now();
-      const ended = store.retryReview({ reviewId: review.id, attempt: review.attemptCount }, excluded,
-        { error: "The completed agent did not publish an authenticated approval or resolvable review conversation for the captured review identity.", retryAt: time + retryDelay(configuration, review.attemptCount) }, time);
+      const input = { error: "The completed agent did not publish an authenticated approval or resolvable review conversation for the captured review identity.", retryAt: time + retryDelay(configuration, review.attemptCount) };
+      const ended = options.assignment === undefined ? (store.rejectPublicationVerification(review.id), store.retryReview({ reviewId: review.id, attempt: review.attemptCount }, excluded, input, time))
+        : store.rejectAndRetryPublication({ reviewId: review.id, attempt: review.attemptCount }, excluded, input, time);
       report(ended, ended.status, "The completion marker had no valid remote publication; the captured round remains incomplete.");
       return;
     }
@@ -284,6 +368,16 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
     report(completed, "completed", "The exact completion marker and authenticated remote review publication were confirmed after all managed processes stopped.");
   };
   const endAttempt = async (review: ReviewState, outcome: CopilotAttemptOutcome | undefined, error: unknown, aborted: boolean): Promise<void> => {
+    if (options.assignment !== undefined) {
+      const interrupted = store.retainPossiblePublication(review.id, "The attempt may have published; the original result must be checked.", now());
+      let proof: ProcessesExcluded & OperationsStopped;
+      try { proof = { ...await processes.exclude(interrupted, outcome), ...stopped }; }
+      catch (exclusionError) { interrupt(interrupted, exclusionError); return; }
+      const recovered = store.recoverPossiblePublication(review.id, proof, now());
+      const repository = localRepositories.get(repositoryKey(review));
+      if (repository !== undefined) await verifyPublication(repository, recovered);
+      return;
+    }
     let proof: ProcessesExcluded;
     try { proof = await processes.exclude(review, outcome); } catch (exclusionError) { interrupt(review, new AggregateError(error === undefined ? [exclusionError] : [error, exclusionError], "Agent processes could not be excluded.")); return; }
     const time = now();
@@ -303,7 +397,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
     report(ended, ended.status, ended.status === "failed" ? "The captured revision exhausted its attempt budget and remains suppressed." : "The incomplete attempt was retained for reconciliation or superseded by the latest target.", reason,
       ended.retryAt === null ? undefined : ended.retryAt);
   };
-  const reviewPullRequest = async (repository: RepositoryWork, review: ReviewState, reservation: Reservation): Promise<void> => {
+  const reviewPullRequest = async (repository: RepositoryWork, review: ReviewState, reservation: Reservation, prompt?: { projectId: string; capture: PromptCapture }): Promise<void> => {
     try {
       const local = repository.local!;
       const worktree = await git.prepareWorktree(store, local, review.id, excluded, reservation.controller.signal);
@@ -362,6 +456,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
       if (captured === null || captured.publisherId === null) store.captureReviewPublisher(review.id, publisherId);
       const previous = store.listReviews(review).filter((item) => item.id !== review.id && item.status !== "completed").at(-1);
       const input: CopilotRunOptions = { publisherId, publicationIdentityFormat: identityFormat, signal: reservation.controller.signal, onProcess: processes.onProcess, stopProcess: processes.stop, excludeProcess: processes.exclude,
+        ...(prompt === undefined ? {} : { promptValues: prompt.capture.values, assertAdmission: () => { if (!currentCapture(review, prompt.projectId, prompt.capture)) throw new Error("The reviewer assignment or prompt authorization changed before launch."); } }),
         ...(previous === undefined ? {} : { previousReview: previous }) };
       report(review, "launch", "Launching the PR's persisted Copilot session.");
       const outcome = await runner.run(store, review.id, worktree, input);
@@ -415,7 +510,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
         track(() => cleanup(repository, pr, reservation), () => { reservations.delete(prKey); });
       }
       for (const review of store.listActiveReviews()) {
-        if (store.getReviewPublication(review.id)?.phase !== "pending") continue;
+        if (review.status !== "running" || store.getReviewPublication(review.id)?.phase !== "pending") continue;
         const prKey = key(review);
         const repository = localRepositories.get(repositoryKey(review));
         if (repository === undefined || repository.blocked || reservations.has(prKey) || blocked.has(prKey) || (verificationRetryAt.get(review.id) ?? 0) > time) continue;
@@ -428,7 +523,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
         const pr = candidate.pullRequest;
         const prKey = key(pr);
         const repository = localRepositories.get(repositoryKey(pr));
-        if (repository === undefined || repository.blocked || reservations.has(prKey) || blocked.has(prKey)) continue;
+        if (repository === undefined || repository.blocked || reservations.has(prKey) || blocked.has(prKey) || options.assignment !== undefined && selectedAssignment(pr) === undefined) continue;
         eligible.add(prKey);
         // Updating a waiting target keeps its queue position; successors rejoin after admission.
         waiting.set(prKey, candidate);
@@ -436,6 +531,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
       for (const prKey of waiting.keys()) if (!eligible.has(prKey)) {
         waiting.delete(prKey);
         checkAdmissions.delete(prKey);
+        promptAdmissions.delete(prKey);
       }
       for (const [prKey, candidate] of waiting) {
         if (signal.aborted || workers >= configuration.maxConcurrentWorker) break;
@@ -453,15 +549,41 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
           track(() => checkCandidate(repository, pr, checking), () => { checking.checking = false; });
         }
         if (admission.checking || !admission.ready) continue;
+        let captured: { projectId: string; capture: PromptCapture } | undefined;
+        if (options.assignment !== undefined) {
+          const assigned = selectedAssignment(pr);
+          if (assigned === undefined) continue;
+          let prompt = promptAdmissions.get(prKey);
+          if (prompt === undefined || prompt.target !== target(pr) || prompt.projectId !== assigned.projectId) {
+            prompt = { target: target(pr), projectId: assigned.projectId, checking: false, nextCheckAt: 0 };
+            promptAdmissions.set(prKey, prompt);
+          }
+          if (prompt.capture !== undefined && !currentCapture(pr, assigned.projectId, prompt.capture)) { delete prompt.capture; prompt.nextCheckAt = time + configuration.pollIntervalMs; }
+          if (prompt.capture === undefined && !prompt.checking && prompt.nextCheckAt <= time) {
+            const pendingPrompt = prompt;
+            pendingPrompt.checking = true;
+            track(async () => {
+              try {
+                const result = await options.assignment!.source.capturePrompt(assigned.projectId, signal);
+                if (promptAdmissions.get(prKey) === pendingPrompt && currentCapture(pr, assigned.projectId, result)) pendingPrompt.capture = result;
+              } catch (error) {
+                if (!signal.aborted) log({ level: "error", phase: "prompt", repository: repository.configuration.coordinate, number: pr.number, message: "Reviewer prompt is unavailable; admission remains closed.", error });
+              } finally { pendingPrompt.nextCheckAt = now() + configuration.pollIntervalMs; }
+            }, () => { pendingPrompt.checking = false; });
+          }
+          if (prompt.checking || prompt.capture === undefined || !currentCapture(pr, assigned.projectId, prompt.capture)) continue;
+          captured = { projectId: assigned.projectId, capture: prompt.capture };
+        }
         waiting.delete(prKey);
         checkAdmissions.delete(prKey);
+        promptAdmissions.delete(prKey);
         const review = store.reserveReview(pr, { reviewId: randomUUID(), sessionId: randomUUID(), maxAttempts: configuration.maxAttempts }, time);
         if (review === null) continue;
         const reservation: Reservation = { kind: "review", controller: new AbortController(), reviewId: review.id };
         reservations.set(prKey, reservation);
         workers++;
         report(review, "reserved", "Reserved this PR across worktree preparation and agent execution.");
-        track(() => reviewPullRequest(repository, review, reservation), () => { reservations.delete(prKey); workers--; });
+        track(() => reviewPullRequest(repository, review, reservation, captured), () => { reservations.delete(prKey); workers--; });
       }
       const deadlines = [...verificationRetryAt.values()].filter((deadline) => deadline > now());
       deadlines.push(...repositories.filter((repository) => !repository.polling && !repository.blocked).map((repository) => repository.nextPollAt));
@@ -469,8 +591,9 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
         if (review.status === "retry_wait" && review.retryAt !== null && review.retryAt > now() && !blocked.has(key(review))) deadlines.push(review.retryAt);
       }
       if (workers < configuration.maxConcurrentWorker) for (const admission of checkAdmissions.values()) {
-        if (!admission.checking) deadlines.push(admission.nextCheckAt);
+        if (!admission.checking && !admission.ready) deadlines.push(admission.nextCheckAt);
       }
+      if (workers < configuration.maxConcurrentWorker) for (const prompt of promptAdmissions.values()) if (!prompt.checking && prompt.capture === undefined) deadlines.push(prompt.nextCheckAt);
       for (const [prKey, deadline] of cleanupRetryAt) if (!blocked.has(prKey) && deadline > now()) deadlines.push(deadline);
       const delay = deadlines.length === 0 ? 2_147_483_647 : Math.min(2_147_483_647, Math.max(0, Math.min(...deadlines) - now()));
       await new Promise<void>((resolve) => {
@@ -485,6 +608,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
     lifetime.abort(new Error("The coordinator is stopping."));
     abort();
     signal.removeEventListener("abort", abort);
+    unsubscribe?.();
     await Promise.all(pending);
   }
   return { safeToReleaseLock };

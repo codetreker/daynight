@@ -125,6 +125,26 @@ afterEach(() => {
 });
 
 describe("Copilot persisted sessions and direct attempts", () => {
+  it("delivers all three 32 KiB reviewer prompts in order over stdin", async () => {
+    const f = fixture();
+    const value = (scope: "user" | "project" | "worker", text: string) => ({ scope, scopeId: uuid(1), revision: "1", text, updatedAt: null });
+    const values = { user: value("user", "u".repeat(32768)), project: value("project", "p".repeat(32768)), worker: value("worker", "w".repeat(32768)) };
+    expect(await f.run("success", {}, { promptValues: values, assertAdmission: () => {} })).toMatchObject({ completed: true });
+    const report = JSON.parse(readFileSync(f.report, "utf8")) as { prompt: string; args: string[] };
+    expect(report.prompt).toContain("explicitly invoke /daynight-review");
+    expect(report.prompt.endsWith(`----- begin user prompt -----\n${values.user.text}\n----- end user prompt -----\n\n----- begin project prompt -----\n${values.project.text}\n----- end project prompt -----\n\n----- begin worker prompt -----\n${values.worker.text}\n----- end worker prompt -----`)).toBe(true);
+    expect(report.args.join(" ")).not.toContain(values.user.text);
+  });
+
+  it("checks assignment immediately before intent and again after skill discovery", async () => {
+    const f = fixture();
+    let checks = 0;
+    await expect(f.run("success", {}, { assertAdmission: () => { if (++checks === 2) throw new Error("revoked"); } })).rejects.toThrow("revoked");
+    expect(checks).toBe(2);
+    expect(f.store.getReview(f.review.id)).toMatchObject({ status: "running", attemptCount: 1, processId: null });
+    expect(existsSync(`${f.report}.discovery`)).toBe(true);
+    expect(existsSync(f.report)).toBe(false);
+  });
   it("launches the platform's copilot PATH wrapper with the prompt confined to stdin", async () => {
     const f = fixture();
     const tools = path.join(f.directory, "tools with spaces");
