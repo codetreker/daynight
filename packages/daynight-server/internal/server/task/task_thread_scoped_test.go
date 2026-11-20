@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,104 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
+
+type threadForwardProbe struct {
+	auth  model.CredentialAuthorization
+	read  bool
+	write bool
+	cause error
+}
+
+func (s *threadForwardProbe) List(_ context.Context, a model.CredentialAuthorization, project, task string, input service.ThreadListRequest) (service.ThreadPageDocument, error) {
+	if a != s.auth || project != "project" || task != "task" || input.Count != 3 {
+		panic("read arguments changed")
+	}
+	s.read = true
+	return service.ThreadPageDocument{JSON: []byte("page")}, s.cause
+}
+func (s *threadForwardProbe) Post(_ context.Context, a model.CredentialAuthorization, project, task string, input service.CreateThreadMessage) (service.ThreadMessageDocument, error) {
+	if a != s.auth || project != "project" || task != "task" || input.Body != "body" {
+		panic("write arguments changed")
+	}
+	s.write = true
+	return service.ThreadMessageDocument{JSON: []byte("message")}, s.cause
+}
+
+func TestThreadHTTPAdapterPropagatesAuthorizationAndErrors(t *testing.T) {
+	cause := errors.New("underlying refusal")
+	auth := model.CredentialAuthorization{Principal: model.Principal{UserID: "caller"}}
+	probe := &threadForwardProbe{auth: auth, cause: cause}
+	adapter := authorizedThreadService{service: probe, auth: auth}
+	page, err := adapter.List(t.Context(), auth.Principal, "project", "task", service.ThreadListRequest{Count: 3})
+	if !probe.read || !errors.Is(err, cause) || string(page.JSON) != "page" {
+		t.Fatalf("read: %+v %v", page, err)
+	}
+	message, err := adapter.Post(t.Context(), auth.Principal, "project", "task", service.CreateThreadMessage{Body: "body"})
+	if !probe.write || !errors.Is(err, cause) || string(message.JSON) != "message" {
+		t.Fatalf("post: %+v %v", message, err)
+	}
+	probe.read, probe.write = false, false
+	foreign := model.Principal{UserID: "foreign"}
+	_, readErr := adapter.List(t.Context(), foreign, "project", "task", service.ThreadListRequest{})
+	_, postErr := adapter.Post(t.Context(), foreign, "project", "task", service.CreateThreadMessage{})
+	if probe.read || probe.write || readErr == nil || postErr == nil {
+		t.Fatalf("foreign identity reached service: %v %v", readErr, postErr)
+	}
+}
+
+func TestScopedThreadHTTPReadAndFallback(t *testing.T) {
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"thread:read"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := model.CredentialAuthorization{Principal: model.Principal{Kind: model.PATCredential, UserID: "44444444-4444-4444-8444-444444444444", CredentialID: "55555555-5555-4555-8555-555555555555"}, Profile: model.ScopedPATProfile, Policy: &policy}
+	probe := &httpThreadReadProbe{auth: auth}
+	mux := http.NewServeMux()
+	ScopedTaskThreadRoutes(mux, probe, threadScopedTestAuth{auth}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	path := "/api/v1/projects/11111111-1111-4111-8111-111111111111/tasks/22222222-2222-4222-8222-222222222222/thread/messages"
+	for _, method := range []string{"GET", "HEAD"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, path+"?count=3&details=true", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", method, w.Code, w.Body.String())
+		}
+	}
+	if probe.calls != 2 {
+		t.Fatalf("read calls %d", probe.calls)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("DELETE", path, nil))
+	if w.Code != http.StatusMethodNotAllowed || probe.calls != 2 {
+		t.Fatalf("fallback: %d", w.Code)
+	}
+}
+
+func TestScopedThreadHTTPRejectsInvalidAuthorization(t *testing.T) {
+	probe := &httpThreadReadProbe{}
+	mux := http.NewServeMux()
+	ScopedTaskThreadRoutes(mux, probe, threadScopedTestAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/projects/11111111-1111-4111-8111-111111111111/tasks/22222222-2222-4222-8222-222222222222/thread/messages", nil))
+	if w.Code != http.StatusUnauthorized || probe.calls != 0 {
+		t.Fatalf("invalid authorization: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type httpThreadReadProbe struct {
+	auth  model.CredentialAuthorization
+	calls int
+}
+
+func (s *httpThreadReadProbe) List(_ context.Context, a model.CredentialAuthorization, project, task string, input service.ThreadListRequest) (service.ThreadPageDocument, error) {
+	if a != s.auth || project != "11111111-1111-4111-8111-111111111111" || task != "22222222-2222-4222-8222-222222222222" || input.Count != 3 || !input.Details {
+		panic("read arguments changed")
+	}
+	s.calls++
+	return service.ThreadPageDocument{JSON: []byte(`{"items":[]}`)}, nil
+}
+func (*httpThreadReadProbe) Post(context.Context, model.CredentialAuthorization, string, string, service.CreateThreadMessage) (service.ThreadMessageDocument, error) {
+	panic("unexpected write")
+}
 
 type threadScopedTestAuth struct{ auth model.CredentialAuthorization }
 

@@ -131,3 +131,86 @@ func TestScopedStepRouteInventoryMatchesMountedPatterns(t *testing.T) {
 		}
 	}
 }
+
+func (s *stepScopeHTTPProbe) Get(_ context.Context, a model.CredentialAuthorization, project, task, step string) (taskservice.StepDocument, error) {
+	if step != "abcdef12" {
+		s.t.Fatal("step identity changed")
+	}
+	err := s.check(a, "get")
+	return taskservice.StepDocument{JSON: []byte(`{"id":"abcdef12"}`)}, err
+}
+func (s *stepScopeHTTPProbe) Update(_ context.Context, a model.CredentialAuthorization, project, task, step string, in taskservice.UpdateTaskStep) (taskservice.StepsWriteResult, error) {
+	if step != "abcdef12" || in.Version != 7 || in.Title == nil || *in.Title != "new" {
+		s.t.Fatalf("update: %+v", in)
+	}
+	err := s.check(a, "update")
+	return taskservice.StepsWriteResult{StepsDocument: taskservice.StepsDocument{JSON: []byte(`{"version":8}`)}, TransactionOutcome: store.TransactionCommitted}, err
+}
+func (s *stepScopeHTTPProbe) SetStatus(_ context.Context, a model.CredentialAuthorization, project, task, step string, in taskservice.SetTaskStepStatus) (taskservice.StepsWriteResult, error) {
+	if step != "abcdef12" || in.Version != 7 || in.Status != model.TaskStepDone {
+		s.t.Fatalf("status: %+v", in)
+	}
+	err := s.check(a, "status")
+	return taskservice.StepsWriteResult{StepsDocument: taskservice.StepsDocument{JSON: []byte(`{"version":8}`)}, TransactionOutcome: store.TransactionCommitted}, err
+}
+func (s *stepScopeHTTPProbe) Move(_ context.Context, a model.CredentialAuthorization, project, task, step string, in taskservice.MoveTaskStep) (taskservice.StepsWriteResult, error) {
+	if step != "abcdef12" || in.Version != 7 || in.Position == nil || *in.Position != "last" {
+		s.t.Fatalf("move: %+v", in)
+	}
+	err := s.check(a, "move")
+	return taskservice.StepsWriteResult{StepsDocument: taskservice.StepsDocument{JSON: []byte(`{"version":8}`)}, TransactionOutcome: store.TransactionCommitted}, err
+}
+func (s *stepScopeHTTPProbe) Delete(_ context.Context, a model.CredentialAuthorization, project, task, step string, in taskservice.DeleteTaskStep) (taskservice.StepsWriteResult, error) {
+	if step != "abcdef12" || in.Version != 7 {
+		s.t.Fatalf("delete: %+v", in)
+	}
+	err := s.check(a, "delete")
+	return taskservice.StepsWriteResult{StepsDocument: taskservice.StepsDocument{JSON: []byte(`{"version":8}`)}, TransactionOutcome: store.TransactionCommitted}, err
+}
+func TestScopedStepHTTPAdapterOperationsAndMissingAuthorization(t *testing.T) {
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"step:read", "step:write"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := model.CredentialAuthorization{Principal: model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}, Profile: model.ScopedPATProfile, Policy: &policy}
+	probe := &stepScopeHTTPProbe{t: t, a: a}
+	mux := http.NewServeMux()
+	TaskStepsScopedRoutes(mux, probe, stepScopeHTTPAuth{a}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	path := "/api/v1/projects/33333333-3333-4333-8333-333333333333/tasks/44444444-4444-4444-8444-444444444444/steps/abcdef12"
+	for _, tc := range []struct{ name, method, path, body string }{{"get", "GET", path, ""}, {"update", "PATCH", path, `{"version":7,"title":"new"}`}, {"status", "PUT", path + "/status", `{"version":7,"status":"done"}`}, {"move", "PUT", path + "/position", `{"version":7,"position":"last"}`}, {"delete", "DELETE", path, `{"version":7}`}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != 200 || probe.seen != tc.name || !strings.Contains(w.Body.String(), map[bool]string{true: "abcdef12", false: "8"}[tc.name == "get"]) {
+				t.Fatalf("response %d %s seen %s", w.Code, w.Body, probe.seen)
+			}
+		})
+	}
+	adapter := scopedStepAdapter{steps: probe}
+	ctx := context.Background()
+	p := a.Principal
+	for _, call := range []func() error{
+		func() error { _, e := adapter.List(ctx, p, "p", "t"); return e }, func() error { _, e := adapter.Get(ctx, p, "p", "t", "s"); return e }, func() error { _, e := adapter.Add(ctx, p, "p", "t", taskservice.AddTaskStep{}); return e }, func() error { _, e := adapter.Update(ctx, p, "p", "t", "s", taskservice.UpdateTaskStep{}); return e }, func() error {
+			_, e := adapter.SetStatus(ctx, p, "p", "t", "s", taskservice.SetTaskStepStatus{})
+			return e
+		}, func() error { _, e := adapter.Move(ctx, p, "p", "t", "s", taskservice.MoveTaskStep{}); return e }, func() error { _, e := adapter.Delete(ctx, p, "p", "t", "s", taskservice.DeleteTaskStep{}); return e },
+	} {
+		if call() == nil {
+			t.Fatal("missing authorization accepted")
+		}
+	}
+	bad := a
+	bad.Policy = nil
+	if _, err := stepAuthorization(context.WithValue(ctx, stepAuthorizationKey{}, bad), p); err == nil {
+		t.Fatal("missing policy accepted")
+	}
+	for _, ctx := range []context.Context{context.WithValue(ctx, stepAuthorizationKey{}, bad), context.WithValue(ctx, stepAuthorizationKey{}, a)} {
+		other := p
+		other.CredentialID = "another"
+		if _, err := stepAuthorization(ctx, other); err == nil {
+			t.Fatal("invalid or mismatched authorization accepted")
+		}
+	}
+}

@@ -12,7 +12,6 @@ import (
 )
 
 type ScopedStepOperations interface {
-	List(_ context.Context, _ model.CredentialAuthorization, project, task string) (taskservice.StepsDocument, error)
 	Get(_ context.Context, _ model.CredentialAuthorization, project, task, step string) (taskservice.StepDocument, error)
 	ListPage(_ context.Context, _ model.CredentialAuthorization, project, task string, after int64, limit int, version *int64, summary bool) (taskservice.StepsPage, error)
 	GetSummary(_ context.Context, _ model.CredentialAuthorization, project, task, step string) (taskservice.StepSummary, error)
@@ -25,13 +24,6 @@ type ScopedStepOperations interface {
 
 type scopedStepAdapter struct{ steps ScopedStepOperations }
 
-func (s scopedStepAdapter) List(ctx context.Context, p model.Principal, project, task string) (taskservice.StepsDocument, error) {
-	a, err := scopedAuthorization(ctx, p)
-	if err != nil {
-		return taskservice.StepsDocument{}, err
-	}
-	return s.steps.List(ctx, a, project, task)
-}
 func (s scopedStepAdapter) Get(ctx context.Context, p model.Principal, project, task, step string) (taskservice.StepDocument, error) {
 	a, err := scopedAuthorization(ctx, p)
 	if err != nil {

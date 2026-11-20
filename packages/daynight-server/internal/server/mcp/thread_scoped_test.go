@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -19,7 +20,7 @@ type scopedThreadTestOps struct {
 
 func (s *scopedThreadTestOps) List(ctx context.Context, a model.CredentialAuthorization, project, task string, _ service.ThreadListRequest) (service.ThreadPageDocument, error) {
 	s.reads++
-	return service.ThreadPageDocument{}, scopeadmission.Require(a, scopepolicy.ThreadRead)
+	return service.ThreadPageDocument{JSON: []byte(`{"items":[]}`)}, scopeadmission.Require(a, scopepolicy.ThreadRead)
 }
 func (s *scopedThreadTestOps) Post(ctx context.Context, a model.CredentialAuthorization, project, task string, input service.CreateThreadMessage) (service.ThreadMessageDocument, error) {
 	s.posts++
@@ -74,8 +75,64 @@ func TestScopedThreadMCPWriteOnlyReceipt(t *testing.T) {
 		t.Fatalf("read: %#v", v)
 	}
 	both := &structClient{t: t, client: f.client(t, "2026-07-28", "both")}
+	v = both.call("task_thread_read", map[string]any{"projectId": testProjectID, "taskId": testTargetID}, false)
+	if _, ok := object(t, v["data"])["items"]; !ok {
+		t.Fatalf("read response: %#v", v)
+	}
 	v = both.call("task_thread_post", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "body": "new"}, false)
 	if data := object(t, v["data"]); data["id"] != testUserID || data["body"] != "new" {
 		t.Fatalf("legacy post response: %#v", v)
+	}
+}
+
+type threadAdapterProbe struct {
+	auth  model.CredentialAuthorization
+	calls int
+	cause error
+}
+
+func (s *threadAdapterProbe) List(_ context.Context, a model.CredentialAuthorization, project, task string, input service.ThreadListRequest) (service.ThreadPageDocument, error) {
+	if a != s.auth || project != "project" || task != "task" || input.Count != 3 {
+		panic("read arguments changed")
+	}
+	s.calls++
+	return service.ThreadPageDocument{JSON: []byte("page")}, s.cause
+}
+func (s *threadAdapterProbe) Post(_ context.Context, a model.CredentialAuthorization, project, task string, input service.CreateThreadMessage) (service.ThreadMessageDocument, error) {
+	if a != s.auth || project != "project" || task != "task" || input.Body != "body" || !input.AutoReceipt {
+		panic("post arguments changed")
+	}
+	s.calls++
+	return service.ThreadMessageDocument{JSON: []byte("message")}, s.cause
+}
+
+func TestScopedThreadMCPAdapterIdentityAndErrors(t *testing.T) {
+	cause := errors.New("underlying refusal")
+	auth := model.CredentialAuthorization{Principal: model.Principal{UserID: "caller"}}
+	probe := &threadAdapterProbe{auth: auth, cause: cause}
+	adapter := scopedThreadAdapter{threads: probe, auth: auth}
+	page, err := adapter.List(t.Context(), auth.Principal, "project", "task", service.ThreadListRequest{Count: 3})
+	if !errors.Is(err, cause) || string(page.JSON) != "page" {
+		t.Fatalf("read: %+v %v", page, err)
+	}
+	message, err := adapter.Post(t.Context(), auth.Principal, "project", "task", service.CreateThreadMessage{Body: "body"})
+	if !errors.Is(err, cause) || string(message.JSON) != "message" || probe.calls != 2 {
+		t.Fatalf("post: %+v %v", message, err)
+	}
+	foreign := model.Principal{UserID: "foreign"}
+	_, readErr := adapter.List(t.Context(), foreign, "project", "task", service.ThreadListRequest{})
+	_, postErr := adapter.Post(t.Context(), foreign, "project", "task", service.CreateThreadMessage{})
+	if readErr == nil || postErr == nil || probe.calls != 2 {
+		t.Fatalf("foreign identity reached service: %v %v", readErr, postErr)
+	}
+}
+
+func TestScopedThreadMCPRegistrationRejectsMissingDependencies(t *testing.T) {
+	fixture := newEntryFixture(t)
+	if err := RegisterScopedThreadTools(nil, &scopedThreadTestOps{t: t}); err == nil {
+		t.Fatal("missing entry accepted")
+	}
+	if err := RegisterScopedThreadTools(fixture.entry, nil); err == nil {
+		t.Fatal("missing operations accepted")
 	}
 }
