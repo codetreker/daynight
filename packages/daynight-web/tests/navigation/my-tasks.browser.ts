@@ -189,19 +189,21 @@ for (const width of [320, 390, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await page.clock.install({ time: new Date('2026-11-13T10:00:00Z') });
     const warning = { ...observation, registration: 'registered', indicator: 'warning', reason: 'disconnected', connectionState: 'disconnected', needsAttention: true };
-    const rows = [row(1), row(2)].map((item, index) => ({
-      ...item, project: { ...item.project, matchedTaskCount: 2 },
+    const rows = [row(1), row(2), row(3)].map((item, index) => ({
+      ...item, project: { ...item.project, matchedTaskCount: 3 },
       task: { ...item.task, worker: row(1).task.worker, startedAt: '2026-11-13T09:58:01Z' },
-      session: { ...warning, indicator: index === 0 ? 'warning' : null }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true },
+      session: { ...warning, indicator: index === 0 ? 'warning' : null, lifecycle: index === 2 ? 'archived' : 'active' }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true },
     }));
-    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: { ...payload, totalTaskCount: 2, totalProjectCount: 1, items: rows }, headers: { 'Daynight-User-ID': userId } }));
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: { ...payload, totalTaskCount: 3, totalProjectCount: 1, items: rows }, headers: { 'Daynight-User-ID': userId } }));
     await page.goto('/tests/navigation/my-tasks-browser.html');
     const task = page.getByRole('link', { name: longTask });
     const taskRow = task.locator('xpath=ancestor::li');
     const fallbackRow = page.getByRole('link', { name: 'Task 2' }).locator('xpath=ancestor::li');
+    const archivedRow = page.getByRole('link', { name: 'Task 3' }).locator('xpath=ancestor::li');
     await expect(task).toBeVisible();
     await expect(taskRow.locator('[data-session-state]')).toHaveCount(0);
     await expect(fallbackRow.locator('[data-session-state]')).toHaveCount(0);
+    await expect(archivedRow.locator('[data-session-state]')).toHaveCount(0);
     await page.getByLabel('Language').selectOption('zh-CN');
     await expect(taskRow.locator('[data-session-state]')).toHaveCount(0);
     await expect(fallbackRow.locator('[data-session-state]')).toHaveCount(0);
@@ -209,14 +211,16 @@ for (const width of [320, 390, 1280]) {
     await task.focus();
     const originalRow = await taskRow.elementHandle();
     await page.clock.fastForward(2_000);
-    await expect(taskRow.getByText('Session needs checking · Needs attention')).toBeVisible();
-    await expect(fallbackRow.getByText('Session needs checking · Needs attention')).toBeVisible();
+    await expect(taskRow.getByText('Session needs attention', { exact: true })).toBeVisible();
+    await expect(fallbackRow.getByText('Session needs attention', { exact: true })).toBeVisible();
+    await expect(archivedRow.getByText('Session needs attention', { exact: true })).toBeVisible();
     await expect(task).toBeFocused();
     expect(await originalRow!.evaluate(row => row === document.activeElement?.closest('li'))).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByLabel('Language').selectOption('zh-CN');
-    await expect(taskRow.getByText('Session 需要检查 · 需要关注')).toBeVisible();
-    await expect(fallbackRow.getByText('Session 需要检查 · 需要关注')).toBeVisible();
+    await expect(taskRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
+    await expect(fallbackRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
+    await expect(archivedRow.getByText('Session 需要关注', { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
@@ -294,7 +298,7 @@ for (const width of [320, 1280]) {
     await page.route('**/api/v1/**', async route => {
       const url = new URL(route.request().url()), path = url.pathname;
       const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId, ...extra } });
-      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, session: registered, sessionRow: { ...sessionRow, state: 'working', canOpen: true } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
+      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, session: { ...registered, indicator: 'warning', needsAttention: true }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true, canOpen: true } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
       if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId, userId));
       if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId, name: 'Owner', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
       if (path === `/api/v1/projects/${projectId}/task-sync`) {
@@ -327,7 +331,8 @@ for (const width of [320, 1280]) {
     await page.keyboard.press('Escape');
     await expect(taskDialog).toHaveCount(0);
     await expect(task).toBeFocused();
-    const session = task.locator('xpath=ancestor::li').getByRole('button', { name: /Open Session/ });
+    const session = task.locator('xpath=ancestor::li').getByRole('button', { name: /Session needs attention.*Open Session/ });
+    await expect(session).toHaveText('Session needs attention');
     await session.focus(); await page.keyboard.press('Enter');
     await expect(taskDialog.getByRole('tab', { name: 'Session', exact: true })).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Escape'); await expect(session).toBeFocused();
