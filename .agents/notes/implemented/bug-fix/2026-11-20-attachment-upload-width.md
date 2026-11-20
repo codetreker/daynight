@@ -16,7 +16,10 @@ width. Below 560 CSS px, opening upload temporarily fills that panel with the
 upload editor. At wider widths it retains the sidebar disclosure. One mounted
 form and native file input own the draft in both layouts and while closed.
 Background browsing retains its geometry and state while unavailable for focus
-in the narrow editor. Back and Escape return to browsing; successful upload
+in the narrow editor. Its file menus close with focus transferred into upload
+controls, because their original triggers become inert; independent delete
+confirmations retain their own focus ownership and return focus into upload when
+their original trigger becomes inert. Back and Escape return to browsing; successful upload
 reveals and focuses the uploaded file. The [attachment design](../../../../docs/design/daynight-task-attachments.md#web-文件树与预览)
 owns layout, draft lifetime, focus and error behavior.
 

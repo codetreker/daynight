@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
@@ -107,6 +107,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
   const previousFullscreen = useRef(uploadFullscreen);
   const [uploadedPath, setUploadedPath] = useState<string | null>(null);
   const previewPane = useRef<HTMLDivElement>(null);
+  const actionMenu = useRef<HTMLDivElement>(null);
   const [action, setAction] = useState<(AttachmentActionTarget & { readonly kind: 'menu' | 'confirm'; readonly scope: string }) | null>(null);
   const scope = `${projectId}/${taskId}`;
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(ancestorDirectories(reveal === undefined ? null : reveal.path)));
@@ -132,9 +133,9 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
   const previews = selected === undefined ? (retained === null ? [] : [retained])
     : retained !== null && retained.attachment.path !== selected.path ? [retained, { attachment: selected, preview: attachments.preview }]
     : [{ attachment: selected, preview: retained?.preview ?? attachments.preview }];
-  useEffect(() => {
-    if (action !== null && (action.scope !== scope || !active && !busy || busy && action.kind === 'menu')) setAction(null);
-  }, [active, busy, scope, action]);
+  useLayoutEffect(() => {
+    if (action !== null && (action.scope !== scope || !active && !busy || (busy || uploadFullscreen) && action.kind === 'menu')) setAction(null);
+  }, [active, busy, scope, action, uploadFullscreen]);
   const dismissMenu = (restoreFocus: boolean) => {
     if (restoreFocus) action!.trigger.focus();
     setAction(null);
@@ -163,7 +164,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
       if ((width < 560) !== prior.compact && prior.open) {
         const focused = document.activeElement;
         transferUploadFocus.current = focused instanceof Element && (width < 560
-          ? sidebar.current!.querySelector('.attachment-sidebar-browser')!.contains(focused) || previewPane.current!.contains(focused) || focused.matches('.attachment-upload-disclosure>summary')
+          ? sidebar.current!.querySelector('.attachment-sidebar-browser')!.contains(focused) || previewPane.current!.contains(focused) || focused.matches('.attachment-upload-disclosure>summary') || actionMenu.current !== null && actionMenu.current.contains(focused)
           : focused.closest('.attachment-upload-heading') !== null);
       }
       setCompact(width < 560);
@@ -178,6 +179,16 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
     if (open) setAction(null);
     setUploadOpenState(open);
   };
+  const uploadFocusTarget = () => {
+    const fileInput = split.current!.querySelector<HTMLInputElement>('.attachment-upload input[type=file]')!;
+    return fileInput.disabled ? split.current!.querySelector<HTMLElement>(uploadFullscreen ? '.attachment-upload-heading button' : '.attachment-upload-disclosure>summary')! : fileInput;
+  };
+  const restoreDeleteFocus = (target: AttachmentActionTarget) => {
+    if (!active || split.current === null || split.current.closest('[hidden], [inert]') !== null) return;
+    const destination = uploadFullscreen ? uploadFocusTarget() : target.trigger.isConnected && target.trigger.closest('[hidden], [inert]') === null ? target.trigger : previewPane.current!;
+    destination.focus({ preventScroll: true });
+    destination.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
   useLayoutEffect(() => {
     const leavingFullscreen = previousFullscreen.current && !uploadFullscreen;
     previousFullscreen.current = uploadFullscreen;
@@ -188,8 +199,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
     }
     if (transferUploadFocus.current) {
       transferUploadFocus.current = false;
-      const fileInput = split.current!.querySelector<HTMLInputElement>('.attachment-upload input[type=file]')!;
-      const target = fileInput.disabled ? split.current!.querySelector<HTMLElement>(uploadFullscreen ? '.attachment-upload-heading button' : '.attachment-upload-disclosure>summary')! : fileInput;
+      const target = uploadFocusTarget();
       if (active && uploadOpen) {
         target.focus({ preventScroll: true });
         target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -268,8 +278,8 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
           {records?.preview != null ? <div className="attachment-record-preview">{records.preview}</div> : null}
         </div>
       </div>
-      {active && action?.scope === scope && action.kind === 'menu' && !busy && <AttachmentActionMenu target={action} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
-      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} fallback={previewPane} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
+      {active && action?.scope === scope && action.kind === 'menu' && !busy && !uploadFullscreen && <AttachmentActionMenu target={action} menu={actionMenu} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
+      {action?.scope === scope && action.kind === 'confirm' && <AttachmentDeleteDialog target={action} busy={busy} paused={paused} error={attachments.write.error} onRestoreFocus={() => restoreDeleteFocus(action)} onConfirm={() => { void confirmDelete(); }} onDismiss={() => setAction(null)} />}
     </section>
   );
 };
