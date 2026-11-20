@@ -44,6 +44,33 @@ it("keeps the same Linux process running and stoppable when only ps wall-clock b
   expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
 });
 
+it("retires an otherwise empty command guardian without waiting through the graceful interval", async () => {
+  vi.useFakeTimers();
+  const proof = await captureProcessProof(pid);
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => {
+    if (!present) throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    if (signal === "SIGKILL") present = false;
+    return true;
+  });
+  // No timer advancement: a command with only its guardian must settle before
+  // needing either the normal grace timer or a later escalation deadline.
+  await stopControllerProcesses(proof, [], Date.now() + 1000, undefined, { guardian: true });
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGKILL");
+  expect(await confirmControllerProcessesStopped(proof, [])).toBe(true);
+});
+
+it("still authenticates the original guardian before an early final kill", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.mocked(process.kill).mockImplementation((_pid, signal) => {
+    if (signal === "SIGTERM") ticks = "26140756";
+    return true;
+  });
+  await expect(stopControllerProcesses(proof, [], Date.now() + 1000, undefined, { guardian: true })).rejects.toThrow(/no original/);
+  expect(process.kill).toHaveBeenCalledWith(-pid, "SIGTERM");
+  expect(vi.mocked(process.kill).mock.calls.some(([, signal]) => signal === "SIGKILL")).toBe(false);
+});
+
 it.each(["ticks", "boot"] as const)("does not signal a reused PID with a different %s identity", async difference => {
   const proof = await captureProcessProof(pid);
   if (difference === "ticks") ticks = "26140756";

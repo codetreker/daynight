@@ -44,8 +44,16 @@ A controlled Node launcher establishes and reports its native boundary before
 receiving permission to execute a command. POSIX uses a private IPC gate in the
 original process group. Windows creates the primary thread suspended, assigns its
 Job and persists the original birth proof before resuming the launcher. Git and
-short commands share this mechanism inside a Worker scope. Controller bootstrap
-also waits for its original launch record and birth proof; Windows Job and process
+short commands share this mechanism inside a Worker scope. A POSIX launcher
+remains a live original process after returning its command result and through
+SIGTERM escalation. Stop still rechecks its birth proof before signaling the
+group; only a group containing solely that guardian can skip the remaining
+grace period. A command result or closed output pipe cannot prove that a descendant
+which closed its inherited streams has exited. Loss of parent IPC makes the verified group leader
+close its own group instead of abandoning its descendants.
+
+Controller bootstrap also waits for its original launch record and birth proof;
+Windows Job and process
 handles transfer explicitly to that execution owner before its thread resumes.
 Failed pre-dispatch cleanup also remains in that owner, so a failed birth-record
 write cannot discard the only handles capable of closing the original child. Durable per-resource events
@@ -73,6 +81,11 @@ after restart. The durable journal retains native boundary identities independen
 **Launch the command and attach ownership afterward.** This leaves a window in
 which user code runs before its boundary is saved. The controlled launcher adds
 a process and IPC handshake, but makes persistence failure prevent command release.
+
+**Let the launcher exit with its direct child or on SIGTERM.** This can leave
+signal-resistant or closed-stdio descendants without a live original proof for
+forced-stop escalation. Retaining the launcher preserves that proof. Killing a
+group solely by its numeric PGID would discard the existing identity guarantee.
 
 ## Consequences
 

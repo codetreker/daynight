@@ -35,7 +35,7 @@ export const reconcileOwnedCommandBoundary = async (resourceId: string, sink: Ow
   const original = retained.get(resourceId);
   if (original === undefined || original.proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
   const { proof, lease } = original;
-  if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease);
+  if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
   if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
   if (original.joinOutput !== undefined) await withinExecutionDeadline(original.joinOutput(), deadline);
   original.sequence++;
@@ -176,15 +176,15 @@ export const runLifecycleOwnedCommand = async (command: OwnedCommand, operation:
     }
   } catch (error) { failure ??= error; }
   try {
-    while (!closed && failure === undefined && !operation.signal.aborted && Date.now() < timeout) await new Promise(resolve => setTimeout(resolve, 10));
+    while (!closed && result === undefined && failure === undefined && !operation.signal.aborted && Date.now() < timeout) await new Promise(resolve => setTimeout(resolve, 10));
     if (operation.signal.aborted) failure ??= operation.signal.reason;
-    if (!closed && failure === undefined) failure = new Error("The owned prerequisite command deadline elapsed.");
+    if (!closed && result === undefined && failure === undefined) failure = new Error("The owned prerequisite command deadline elapsed.");
     dispatchClosed = true;
     // Never release a boundary while the proof commit or dispatch continuation is pending.
     await messages;
     const deadline = cleanupDeadline === undefined ? Date.now() + 10_000 : Math.ceil(cleanupDeadline);
     if (proof !== null && (suspended === undefined || lease !== undefined)) {
-      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease);
+      if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
       if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Owned command boundary remains occupied.");
     } else {
       // Before the handshake no user command was released. Kill only the direct
