@@ -66,6 +66,9 @@
     .task-detail-fullscreen .attachment-preview-actions .button,.task-detail-has-claim .attachment-preview-actions .button,.attachment-preview-actions .button{padding:2px 3px}
     .attachment-text{padding:2px 4px;line-height:1.6}
   }
+  @container attachment-preview (min-width:300px) and (max-width:600px){
+    .attachment-timestamps{grid-template-columns:max-content minmax(0,1fr);column-gap:3px}
+  }
 }
 
 .attachment-error-actions { display: flex; flex-wrap: wrap; gap: 6px; }

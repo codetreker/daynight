@@ -760,12 +760,21 @@ for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt'
   test(`compact claim header keeps timestamps and actions separate at 320x240 in ${locale}, ${path === longPath ? 'long' : 'short'} metadata`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 240 });
     const state = await install(page, false, true);
-    state.files = state.files.map(file => file.path === longPath ? { ...file, contentType: `text/plain; ${'long-mime-'.repeat(30)}` } : file);
+    const created = '2026-10-19T10:20:30Z', modified = '2026-10-21T11:22:33Z';
+    state.files = state.files.map(file => file.path === path ? { ...file, createdAt: created, updatedAt: modified, ...(path === longPath ? { contentType: `text/plain; ${'long-mime-'.repeat(30)}` } : {}) } : file);
     await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${path.split('/').map(encodeURIComponent).join('/')}`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const surface = page.locator('.task-detail-page'), header = surface.locator('.attachment-preview-header');
     await expect(surface).toHaveClass(/task-detail-has-claim/);
-    await expect(header.locator('.attachment-timestamps time')).toHaveCount(2);
+    const labels = header.locator('.attachment-timestamps dt'), times = header.locator('.attachment-timestamps time');
+    await expect(labels).toHaveText(locale === 'en' ? ['Created', 'Last modified'] : ['创建时间', '最后修改时间']);
+    await expect(times).toHaveCount(2);
+    await expect(times.nth(0)).toHaveAttribute('datetime', created);
+    await expect(times.nth(1)).toHaveAttribute('datetime', modified);
+    expect(await header.locator('.attachment-timestamps').evaluate(element => {
+      const terms = [...element.querySelectorAll('dt')], values = [...element.querySelectorAll('time')];
+      return terms.every((term, index) => term.nextElementSibling === values[index]?.parentElement);
+    })).toBe(true);
     for (const fullscreen of [false, true]) {
       if (fullscreen) await surface.locator('.task-detail-fullscreen-toggle').click();
       const rects = await header.evaluate(element => {
@@ -779,13 +788,18 @@ for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt'
       for (const item of [...rects.labels, ...rects.times, ...rects.actions]) {
         expect(item.left).toBeGreaterThanOrEqual(rects.header.left - 1);
         expect(item.right).toBeLessThanOrEqual(rects.header.right + 1);
-        expect(item.top).toBeGreaterThanOrEqual(rects.header.top - 1);
-        expect(item.bottom).toBeLessThanOrEqual(rects.header.bottom + 1);
       }
+      // Vertical reachability is exercised by the keyboard scrolling matrix below.
       expect(Math.abs(rects.times[0]!.left - rects.times[1]!.left)).toBeLessThanOrEqual(1);
+      for (let index = 0; index < 2; index++) expect(rects.labels[index]!.bottom).toBeLessThanOrEqual(rects.times[index]!.top + 1);
+      expect(rects.times[0]!.bottom).toBeLessThanOrEqual(rects.labels[1]!.top + 1);
       for (const timeRect of [...rects.labels, ...rects.times]) for (const action of rects.actions) {
         expect(timeRect.right <= action.left + 1 || action.right <= timeRect.left + 1 || timeRect.bottom <= action.top + 1 || action.bottom <= timeRect.top + 1).toBe(true);
       }
+      const download = header.getByRole('link', { name: locale === 'en' ? 'Download' : '下载', exact: true });
+      const open = header.getByRole('link', { name: locale === 'en' ? 'Open in new tab' : '在新标签页打开' });
+      await expect(download).toHaveAttribute('download', '');
+      await expect(open).toHaveAttribute('target', '_blank');
       const body = surface.locator('.attachment-preview-body');
       await expect(body.locator('pre')).toHaveText(longText);
       const reading = await body.evaluate(element => { element.scrollTop = element.scrollHeight; return { height: element.clientHeight, atEnd: element.scrollTop + element.clientHeight >= element.scrollHeight - 1 }; });
@@ -793,6 +807,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt'
       expect(reading.atEnd).toBe(true);
       await page.screenshot({ path: test.info().outputPath(fullscreen ? 'compact-fullscreen.png' : 'compact-claim.png') });
     }
+    expect(state.writes).toEqual([]);
   });
 }
 
@@ -892,7 +907,7 @@ for (const goal of [false, true]) for (const locale of ['en', 'zh-CN'] as const)
             if (contents.every((item, index) => seen.get(index)?.size === item.text.length)) break;
             const top = await outer.evaluate(element => element.scrollTop);
             if (top <= 1) break;
-            await page.keyboard.press('PageUp');
+            await page.keyboard.press('ArrowUp');
             await expect.poll(() => outer.evaluate(element => element.scrollTop)).toBeLessThan(top);
             await page.waitForTimeout(250);
           }
