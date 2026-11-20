@@ -436,7 +436,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await expect(row.locator('.task-platform')).toHaveCSS('font-size', '12px');
       await expect(row.locator('.task-platform')).toHaveText(['Windows', 'Linux', 'macOS', locale === 'en' ? 'Any platform' : '不限平台', locale === 'en' ? 'Any platform' : '不限平台'][index]!);
       await expect(row.locator('.task-row-title')).toHaveCSS('font-size', '14px');
-      if (status === 'todo') await expect(row.locator('.task-ready')).toHaveCSS('font-size', '14px');
+      if (status === 'todo') {
+        await expect(row.locator('.task-ready')).toHaveText(locale === 'en' ? 'Ready' : '可开始');
+        await expect(row.locator('.task-ready')).toHaveCSS('font-size', '12px');
+      } else await expect(row.locator('.task-ready')).toHaveCount(0);
       await page.mouse.move(0, 0);
       await expect(row).toHaveCSS('background-color', roleColors[status][0]);
       await expect(row).toHaveCSS('border-top-color', roleColors[status][2]);
@@ -469,6 +472,27 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', '14px');
+    await expect(blocked.locator('.task-ready')).toHaveCount(0);
+    const ready = taskRow(page.locator(`#standalone-task-${ids[1]}`));
+    for (const [rootSize, smallSize, titleSize] of [['16px', '12px', '14px'], ['24px', '18px', '21px']] as const) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = size; }, rootSize);
+      await expect(ready.locator('.task-ready')).toHaveCSS('font-size', smallSize);
+      await expect(ready.locator('.task-row-primary-status')).toHaveCSS('font-size', smallSize);
+      await expect(ready.locator('.task-row-title')).toHaveCSS('font-size', titleSize);
+      await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('font-size', titleSize);
+      for (const row of [ready, blocked]) {
+        expect(await row.evaluate(element => {
+          const bounds = element.getBoundingClientRect();
+          const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
+          const status = element.querySelector('.task-row-status')!.getBoundingClientRect();
+          const badges = [...element.querySelectorAll('.task-row-primary-status, .task-ready, .graph-blocked-badge')].map(badge => badge.getBoundingClientRect());
+          const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+          return element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth &&
+            separate(title, status) && badges.every((badge, index) => badge.left >= bounds.left && badge.right <= bounds.right && badge.top >= bounds.top && badge.bottom <= bounds.bottom && badges.slice(index + 1).every(other => separate(badge, other)));
+        })).toBe(true);
+      }
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     const paused = taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge');
     await expect(paused).toHaveCSS('color', roleColors.attention[3]);
     await expect(paused).toHaveCSS('font-size', '12px');
