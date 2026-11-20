@@ -77,9 +77,9 @@ func (d *DAO) PendingInboundEvents(ctx context.Context, owner, task, bot string,
 	return count, pg.AuthQueryError("count pending assistant inbound", err)
 }
 
-func (d *DAO) ReceivedInbound(ctx context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+func (d *DAO) ReceivedInbound(ctx context.Context, owner, bot, subject string, since, until time.Time) (bool, error) {
 	var found bool
-	err := d.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM assistant_task_inbox_receipts WHERE target_bot_id=$2 AND subject_task_id=$3 AND received_at>=$4 AND owner_user_id=$1 AND NOT suppressed)`, owner, bot, subject, since).Scan(&found)
+	err := d.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM assistant_task_inbox_receipts WHERE target_bot_id=$2 AND subject_task_id=$3 AND received_at BETWEEN $4 AND $5 AND owner_user_id=$1 AND NOT suppressed)`, owner, bot, subject, since, until).Scan(&found)
 	return found, pg.AuthQueryError("read assistant inbound wake", err)
 }
 
