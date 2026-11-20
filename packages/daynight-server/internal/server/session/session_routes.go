@@ -72,10 +72,20 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 // RegisterRoutesWithProducerObserver records the producer routes as they are
 // registered. Other Session operations have their own admission owners.
 func (h *Routes) RegisterRoutesWithProducerObserver(mux *http.ServeMux, observe func(ProducerRoute)) {
+	h.registerRoutes(mux, observe, nil)
+}
+
+// RegisterRoutesWithImageOccurrenceObserver records occurrence admission on
+// the actual registrations, including the implicit HEAD route.
+func (h *Routes) RegisterRoutesWithImageOccurrenceObserver(mux *http.ServeMux, observe func(ImageOccurrenceRoute)) {
+	h.registerRoutes(mux, nil, observe)
+}
+
+func (h *Routes) registerRoutes(mux *http.ServeMux, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux, observe)
 	h.registerArchiveRoutes(mux, observe)
-	h.registerImageRoutes(mux, observe)
+	h.registerImageRoutes(mux, observe, observeOccurrence)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		if _, err := httpx.QueryValues(r); err != nil {
 			h.Failure(w, r, err)

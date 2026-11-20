@@ -10,11 +10,20 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-func (h *Routes) registerImageRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
+// ImageOccurrenceRoute records the required operations and the additional
+// control permission used to project a retry action on status reads.
+type ImageOccurrenceRoute struct {
+	Pattern         string
+	Operations      []scopepolicy.Operation
+	RetryProjection scopepolicy.Operation
+}
+
+func (h *Routes) registerImageRoutes(mux *http.ServeMux, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
 		for method, handler := range map[string]func(http.ResponseWriter, *http.Request, model.Principal){"PUT " + base + "/image-uploads/{uploadId}": h.prepareImage, "PUT " + base + "/image-uploads/{uploadId}/content": h.directImageUpload, "GET " + base + "/image-uploads/{uploadId}": h.getImageUpload, "DELETE " + base + "/image-uploads/{uploadId}": h.releaseImageUpload, "PUT " + base + "/image-uploads/{uploadId}/chunks": h.writeImageChunk, "POST " + base + "/image-uploads/{uploadId}/complete": h.completeImageUpload, "GET " + base + "/image-capabilities": h.imageCapabilities, "GET " + base + "/image-occurrences/{imageId}": h.imageOccurrence, "POST " + base + "/image-occurrences/{imageId}/retry": h.retryImageOccurrence} {
 			next := h.auth.Require(h.imageParameters(handler))
@@ -22,6 +31,17 @@ func (h *Routes) registerImageRoutes(mux *http.ServeMux, observe func(ProducerRo
 				registerProducerRoute(mux, method, next, producerCredential, observe)
 			} else {
 				mux.HandleFunc(method, next)
+				if observeOccurrence != nil {
+					switch method {
+					case "GET " + base + "/image-occurrences/{imageId}":
+						entry := ImageOccurrenceRoute{Pattern: method, Operations: []scopepolicy.Operation{scopepolicy.SessionRead}, RetryProjection: scopepolicy.SessionControl}
+						observeOccurrence(entry)
+						entry.Pattern = "HEAD " + strings.TrimPrefix(method, "GET ")
+						observeOccurrence(entry)
+					case "POST " + base + "/image-occurrences/{imageId}/retry":
+						observeOccurrence(ImageOccurrenceRoute{Pattern: method, Operations: []scopepolicy.Operation{scopepolicy.SessionControl, scopepolicy.SessionRead}})
+					}
+				}
 			}
 		}
 	}
