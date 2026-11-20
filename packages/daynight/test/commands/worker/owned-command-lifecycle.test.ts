@@ -32,9 +32,9 @@ describe("owned command birth handshake", () => {
   }, 35_000);
 
   it.skipIf(process.platform !== "win32")("rounds the absolute Job lease deadline when the operation has fractional milliseconds", async () => {
-    const operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const operation = createOperation({ limits: { totalMs: 5000, requestMs: 5000 } });
     const original = operation.remainingMs;
-    vi.spyOn(operation, "remainingMs").mockImplementation(() => Math.min(original(), 14_999.25));
+    vi.spyOn(operation, "remainingMs").mockImplementation(() => Math.min(original(), 4999.25));
     const acquire = vi.spyOn(windowsJob, "createControllerJobLease");
     try {
       const output = await runLifecycleOwnedCommand(command("process.stdout.write('fractional budget');"), operation, async () => {});
