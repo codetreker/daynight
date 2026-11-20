@@ -20,9 +20,18 @@ fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly. PAT storage supports explicit
 policies with an independent version and rejects absent or malformed policies
 on scoped reads. The preparation migration leaves historical and legacy-writer
-rows unscoped until the coordinated backfill and cutover. The opt-in device flow records the approved selection with the decision and
-uses that exact selection when redemption creates the PAT. Device decisions and
-redemptions check expiry using database time after locking the device record.
+rows unscoped until the coordinated backfill and cutover. The opt-in device flow
+records the approved selection with the decision and uses that exact selection
+when redemption creates the PAT. Device decisions and redemptions check expiry
+using database time after locking the device record.
+
+Account, prompt, user-visible usage and GitHub admission paths apply the shared
+guard alongside their existing resource and profile checks. Their route
+registrations declare operation classifications for scoped assembly, including
+automatic HEAD and fallback paths. Account and usage operations that already
+recheck credentials in a transaction also require a current scoped policy at that
+boundary. GitHub operations resumed after external proof obtain current authority
+for the original credential before returning a result or continuing a write.
 
 Team operations apply that contract at their business admission points, after
 visibility checks and before protected output or mutation. Existing role checks
@@ -68,13 +77,15 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
-the policy through opt-in service and transport entry points. Production
-activation and historical backfill remain independent work. The original
-production device assembly remains in place until the coordinated cutover. Scope updates compare the owner and observed version and only advance it for
-a changed selection; usage timestamps remain independent. PAT management
-rechecks expiry against database time after acquiring the target lock. Bot
+itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) also
+consumes the policy through opt-in service and transport entry points. Scope
+updates compare the owner and observed version and only advance it for a changed
+selection; usage timestamps remain independent. PAT management rechecks expiry
+against database time after acquiring the target lock. Bot
 definition permission does not confer Session or runtime control. A scoped
 authorization source must read current authority at each supplied boundary and
 preserve the principal; it cannot substitute a stale request snapshot for an
-existing transactional recheck.
+existing transactional recheck. The current production assembly retains the
+existing credential paths; scoped assembly requires authenticated policy
+snapshots and transaction-bound policy readers. MCP persistence, historical backfill and production activation remain independent
+work; the original production device assembly remains in place until cutover.

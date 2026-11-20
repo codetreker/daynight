@@ -163,6 +163,16 @@ func TestQueryAndPageRequest(t *testing.T) {
 	}
 }
 
+func TestInsufficientScopeUsesLegacyForbiddenEnvelope(t *testing.T) {
+	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	WriteError(w, request, quietLogger(), "test", "read", &model.Fault{Code: "insufficient_scope", Message: "The credential has insufficient scope."})
+	assertHTTPError(t, w, http.StatusForbidden, "forbidden")
+	if got := w.Header().Get("Daynight-Scope-Status"); got != "insufficient_scope" {
+		t.Fatalf("scope status: %q", got)
+	}
+}
+
 func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	for _, tc := range []struct {
 		code   string

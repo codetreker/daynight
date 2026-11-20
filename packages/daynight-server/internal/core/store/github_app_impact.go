@@ -50,3 +50,8 @@ type GitHubAppImpactDAO interface {
 type GitHubAppImpactStore interface {
 	ReadGitHubAppImpact(context.Context, func(GitHubAppImpactDAO) error) error
 }
+
+// GitHubAppImpactVisibilityDAO returns only authorization and cursor facts.
+type GitHubAppImpactVisibilityDAO interface {
+	ImpactVisibility(context.Context, GitHubAppImpactQuery) (GitHubAppImpact, error)
+}

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -54,7 +55,20 @@ func adminInvitationAvailable(i githubpr.AppInvitation, issuer *int64, now time.
 }
 
 func CreateAdminInvitation(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID string) (MintedAdminInvitation, error) {
-	member, err := RequireAppAdmin(ctx, dao, p, appID)
+	return CreateAdminInvitationWithAdmission(ctx, dao, p, appID, nil)
+}
+
+func CreateAdminInvitationWithAdmission(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID string, admit func() error) (MintedAdminInvitation, error) {
+	var member githubpr.AdminMembership
+	var err error
+	if admit == nil {
+		member, err = RequireAppAdmin(ctx, dao, p, appID)
+	} else {
+		if err = adminVisibility(ctx, dao, p, appID, admit, "", ""); err == nil {
+			member, err = dao.Membership(ctx, appID, p.UserID)
+			err = appAdminReadError(err)
+		}
+	}
 	if err != nil {
 		return MintedAdminInvitation{}, err
 	}
@@ -71,11 +85,15 @@ func CreateAdminInvitation(ctx context.Context, dao store.GitHubAppAdminWriter, 
 }
 
 func ListAdminInvitations(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, appID string, in ListAppsInput) (AdminInvitationPage, error) {
+	return ListAdminInvitationsWithAdmission(ctx, dao, p, appID, in, nil)
+}
+
+func ListAdminInvitationsWithAdmission(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, appID string, in ListAppsInput, admit func() error) (AdminInvitationPage, error) {
 	page, scope, err := adminListPage(p, appID, "github_app_admin_invitations", in)
 	if err != nil {
 		return AdminInvitationPage{}, err
 	}
-	if _, err = RequireAppAdmin(ctx, dao, p, appID); err != nil {
+	if err := adminVisibility(ctx, dao, p, appID, admit, "", ""); err != nil {
 		return AdminInvitationPage{}, err
 	}
 	now, err := dao.ObservedAt(ctx)
@@ -104,7 +122,11 @@ func ListAdminInvitations(ctx context.Context, dao store.GitHubAppAdminReader, p
 }
 
 func RevokeAdminInvitation(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID, invitationID string) (AdminInvitationRevocation, error) {
-	if _, err := RequireAppAdmin(ctx, dao, p, appID); err != nil {
+	return RevokeAdminInvitationWithAdmission(ctx, dao, p, appID, invitationID, nil)
+}
+
+func RevokeAdminInvitationWithAdmission(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID, invitationID string, admit func() error) (AdminInvitationRevocation, error) {
+	if err := adminVisibility(ctx, dao, p, appID, admit, "", invitationID); err != nil {
 		return AdminInvitationRevocation{}, err
 	}
 	i, err := dao.Invitation(ctx, appID, invitationID)
@@ -149,6 +171,15 @@ func availableAdminInvitation(ctx context.Context, dao store.GitHubAppAdminReade
 	return i, app, nil
 }
 
+func scopedAvailableAdminInvitation(ctx context.Context, dao store.GitHubAppAdminReader, token string) (store.GitHubAdminInvitationRef, error) {
+	v, ok := dao.(store.GitHubAppAdminVisibilityDAO)
+	if !ok {
+		return store.GitHubAdminInvitationRef{}, fmt.Errorf("GitHub administrator snapshot cannot check invitation availability")
+	}
+	ref, err := v.AvailableAdminInvitation(ctx, secretutil.Hash(token))
+	return ref, invitationReadError(err)
+}
+
 func invitationReadError(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
 		return model.InvitationUnavailable(err)
@@ -157,7 +188,27 @@ func invitationReadError(err error) error {
 }
 
 func InspectAdminInvitation(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, token string) (AdminInvitationInspection, error) {
-	i, app, err := availableAdminInvitation(ctx, dao, token)
+	return InspectAdminInvitationWithAdmission(ctx, dao, p, token, nil)
+}
+
+func InspectAdminInvitationWithAdmission(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, token string, admit func() error) (AdminInvitationInspection, error) {
+	var i githubpr.AppInvitation
+	var app githubpr.AppIdentity
+	var err error
+	if admit == nil {
+		i, app, err = availableAdminInvitation(ctx, dao, token)
+	} else {
+		var ref store.GitHubAdminInvitationRef
+		ref, err = scopedAvailableAdminInvitation(ctx, dao, token)
+		if err == nil {
+			err = admit()
+		}
+		if err == nil {
+			app, err = dao.App(ctx, ref.AppID)
+			err = invitationReadError(err)
+		}
+		i = githubpr.AppInvitation{ID: ref.ID, AppID: ref.AppID, ExpiresAt: ref.ExpiresAt}
+	}
 	if err != nil {
 		return AdminInvitationInspection{}, err
 	}
@@ -174,7 +225,22 @@ func InspectAdminInvitation(ctx context.Context, dao store.GitHubAppAdminReader,
 }
 
 func AcceptAdminInvitation(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, token string) (AdminInvitationAcceptance, error) {
-	i, _, err := availableAdminInvitation(ctx, dao, token)
+	return AcceptAdminInvitationWithAdmission(ctx, dao, p, token, nil)
+}
+
+func AcceptAdminInvitationWithAdmission(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, token string, admit func() error) (AdminInvitationAcceptance, error) {
+	var i githubpr.AppInvitation
+	var err error
+	if admit == nil {
+		i, _, err = availableAdminInvitation(ctx, dao, token)
+	} else {
+		var ref store.GitHubAdminInvitationRef
+		ref, err = scopedAvailableAdminInvitation(ctx, dao, token)
+		if err == nil {
+			err = admit()
+		}
+		i = githubpr.AppInvitation{ID: ref.ID, AppID: ref.AppID, ExpiresAt: ref.ExpiresAt}
+	}
 	if err != nil {
 		return AdminInvitationAcceptance{}, err
 	}

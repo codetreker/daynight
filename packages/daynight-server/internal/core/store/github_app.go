@@ -42,6 +42,13 @@ type GitHubAppReadDAO interface {
 	List(context.Context, GitHubAppQuery) (GitHubAppPage, error)
 }
 
+// GitHubAppVisibilityReader checks only whether the actor administers a live
+// App. It returns model.ErrNotFound for an absent, deleted, or hidden App.
+// A caller must use it and the subsequent metadata read in the same snapshot.
+type GitHubAppVisibilityReader interface {
+	RequireAppVisible(context.Context, string, string) error
+}
+
 type GitHubAppStore interface {
 	WriteGitHubApp(context.Context, func(GitHubAppWriteDAO) error) (Completion, error)
 	ReadGitHubApps(context.Context, func(GitHubAppReadDAO) error) error

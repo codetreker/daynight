@@ -22,6 +22,17 @@ func NewAppConfigReader(tx pgx.Tx, appID string) store.GitHubAppConfigReader {
 func NewAppConfigWriter(tx pgx.Tx, appID string) store.GitHubAppConfigWriter {
 	return &appConfigDAO{tx, appID}
 }
+func (d *appConfigDAO) ConfigAccess(ctx context.Context, actor string) (store.GitHubAppConfigAccess, error) {
+	var access store.GitHubAppConfigAccess
+	err := d.tx.QueryRow(ctx, `SELECT a.version,a.impact_version,m.version
+ FROM github_apps a JOIN github_app_admins m ON m.app_resource_id=a.id AND m.user_id=$2
+ WHERE a.id=$1 AND a.deleted_at IS NULL`, d.appID, actor).Scan(&access.AppVersion, &access.ImpactVersion, &access.MembershipVersion)
+	if err != nil {
+		return store.GitHubAppConfigAccess{}, pg.QueryError("read github app configuration access", err)
+	}
+	return access, nil
+}
+
 func (d *appConfigDAO) Facts(ctx context.Context, actor string) (store.GitHubAppConfigFacts, error) {
 	var f store.GitHubAppConfigFacts
 	var hasSecrets bool

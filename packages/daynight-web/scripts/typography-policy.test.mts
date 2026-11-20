@@ -283,7 +283,9 @@ test('production tree and direct CLI enforce the same migration policy', async (
   const result = await checkTypographyPolicy(root);
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.roles.length, 6);
-  assert.ok(result.files > 100 && result.legacy > 100);
+  assert.ok(result.files > 100);
+  const baseline = readTypographyBaseline(await readFile(join(root, 'scripts/typography-policy-baseline.json'), 'utf8'));
+  assert.equal(result.legacy, baseline.reduce((total, entry) => total + entry.count, 0));
   const command = spawnSync(process.execPath, ['scripts/typography-policy.mts'], { cwd: root, encoding: 'utf8', timeout: 60_000 });
   assert.equal(command.status, 0, command.stderr);
   assert.match(command.stdout, /Typography ownership passed/);
