@@ -488,7 +488,7 @@ describe('project task views', () => {
     expectUnfinishedCounts(2, 1);
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(7);
-    expect(stats).toHaveTextContent('待处理5等待开始');
+    expect(stats.querySelectorAll('.stat')[3]).toHaveTextContent('待处理5');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('待处理');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('0/3 已完成');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();

@@ -39,7 +39,8 @@ assigns the read-only execution phase badge in Task details to metadata. The
 [machine record decision](../bug-fix/2026-11-20-task-row-machine-size.md) assigns
 ordinary row Worker records to metadata. Shared forms, Portal dialogs, account
 notices, attachment controls, Goal details and Bot management follow the same
-scale. The checker inspects declarations even when later rules supersede them.
+scale. The [attachment sidebar decision](../bug-fix/2026-11-20-attachment-sidebar-typography.md)
+sets the shared Task and Goal sidebar hierarchy. The checker inspects declarations even when later rules supersede them.
 Narrow layouts wrap and rearrange controls, while dense panels retain local
 scrolling where needed. Webhook detail tabs use a locally scrollable single row
 with selected-item visibility, as defined by the [detail-tab decision](../bug-fix/2026-11-20-webhook-detail-tabs.md),
