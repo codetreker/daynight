@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
@@ -66,19 +68,42 @@ type Execution struct {
 	taskRun                  TaskRunner
 	credentialRun            CredentialRunner
 	authorizationRun         AuthorizationRunner
-	commandAdmission         func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error
+	commandAdmission         *commandAdmissionState
 	botRun                   BotRunner
 	producerRun              ProducerRunner
 }
 
-func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, authorization AuthorizationRunner) *Execution {
-	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization}
+type commandAdmissionState struct {
+	mutex sync.RWMutex
+	check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error
 }
 
-// SetCommandAdmission installs transaction-bound command authorization before
-// the Execution is published. A nil check retains the legacy assembly.
-func (s *Execution) SetCommandAdmission(check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) {
-	s.commandAdmission = check
+func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, authorization AuthorizationRunner) *Execution {
+	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization, commandAdmission: &commandAdmissionState{}}
+}
+
+// SetCommandAdmission installs transaction-bound command authorization. Once
+// installed it cannot be replaced or removed, including after publication.
+func (s *Execution) SetCommandAdmission(check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) error {
+	if s.commandAdmission == nil {
+		return errors.New("Session execution was not constructed for command admission")
+	}
+	s.commandAdmission.mutex.Lock()
+	defer s.commandAdmission.mutex.Unlock()
+	if s.commandAdmission.check != nil {
+		return errors.New("Session command admission is already installed")
+	}
+	s.commandAdmission.check = check
+	return nil
+}
+
+func (s *Execution) commandAdmissionCheck() func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
+	if s.commandAdmission == nil {
+		return nil
+	}
+	s.commandAdmission.mutex.RLock()
+	defer s.commandAdmission.mutex.RUnlock()
+	return s.commandAdmission.check
 }
 
 // BeginOperation admits work without taking a live-cell lock. Database locks

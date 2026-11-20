@@ -24,13 +24,19 @@ func (s *GroupDirectory) Read(ctx context.Context, p model.Principal, project st
 		return out, err
 	}
 	err := s.database.ReadHistoryDirectory(ctx, func(scope store.HistoryDirectoryScope) error {
+		check, err := snapshotReadCheck(ctx, scope, p)
+		if err != nil {
+			return err
+		}
 		if err := core.AuthorizeTaskObservation(ctx, scope.CredentialDAO(), p); err != nil {
 			return err
 		}
 		if _, err := projectcore.RequireProjectRead(ctx, scope.ProjectDAO(), p, project); err != nil {
 			return err
 		}
-		var err error
+		if err := check(); err != nil {
+			return err
+		}
 		out, err = core.ReadHistoryDirectory(ctx, scope, project, p.UserID, q)
 		return err
 	})

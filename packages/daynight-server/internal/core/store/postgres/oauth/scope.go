@@ -89,6 +89,18 @@ func (d *DAO) LockScopedAccess(ctx context.Context, p model.Principal, bindings 
 	return d.scopedAccess(ctx, `a.id=$1`, p.CredentialID, bindings, now)
 }
 
+// ReadScopedAccess reads the active grant policy without acquiring row locks.
+func (d *DAO) ReadScopedAccess(ctx context.Context, p model.Principal, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
+	identity, err := d.scopedAccess(ctx, `a.id=$1`, p.CredentialID, bindings, now)
+	if err != nil {
+		return store.OAuthAccessIdentity{}, err
+	}
+	if identity.Principal != p {
+		return store.OAuthAccessIdentity{}, model.ErrNotFound
+	}
+	return identity, nil
+}
+
 func (d *DAO) scopedAccess(ctx context.Context, condition string, key any, bindings []store.OAuthBinding, now time.Time) (store.OAuthAccessIdentity, error) {
 	out := store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential}}
 	resources, scopes, clients := bindingValues(bindings)

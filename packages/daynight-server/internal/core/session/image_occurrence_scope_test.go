@@ -13,6 +13,14 @@ import (
 	"github.com/google/uuid"
 )
 
+func setImageScopeAdmission(t *testing.T, f imageRuleFixture, check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) {
+	t.Helper()
+	f.s.commandAdmission = &commandAdmissionState{}
+	if err := f.s.SetCommandAdmission(check); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImageRetryScopePrecedesAnyMutation(t *testing.T) {
 	for _, missing := range []scopepolicy.Operation{scopepolicy.SessionControl, scopepolicy.SessionRead} {
 		t.Run(string(missing), func(t *testing.T) {
@@ -21,7 +29,7 @@ func TestImageRetryScopePrecedesAnyMutation(t *testing.T) {
 			f.d.rateCalls = nil
 			denied := &model.Fault{Code: "insufficient_scope", Message: "denied"}
 			var calls []scopepolicy.Operation
-			f.s.SetCommandAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal, op scopepolicy.Operation) error {
+			setImageScopeAdmission(t, f, func(_ context.Context, _ store.SessionScope, p model.Principal, op scopepolicy.Operation) error {
 				if p != f.p {
 					t.Fatal("wrong actor")
 				}
@@ -60,7 +68,7 @@ func TestImageStatusScopeAndRetryProjection(t *testing.T) {
 			f := newImageRuleFixture(t, []byte("original"))
 			c := failOccurrenceFixture(f, registerOccurrenceFixture(t, f), "invalid_image")
 			f.d.rateCalls = nil
-			f.s.SetCommandAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal, op scopepolicy.Operation) error {
+			setImageScopeAdmission(t, f, func(_ context.Context, _ store.SessionScope, p model.Principal, op scopepolicy.Operation) error {
 				if p != f.p {
 					t.Fatal("wrong actor")
 				}
@@ -111,7 +119,7 @@ func TestImageReadSettlesPriorGenerationAttemptWithoutControl(t *testing.T) {
 				}
 				return work(&Access{tx: &operationTx{dao: f.d, op: op}, record: f.r, write: true})
 			}
-			f.s.SetCommandAdmission(func(_ context.Context, _ store.SessionScope, _ model.Principal, op scopepolicy.Operation) error {
+			setImageScopeAdmission(t, f, func(_ context.Context, _ store.SessionScope, _ model.Principal, op scopepolicy.Operation) error {
 				if op == scopepolicy.SessionControl {
 					return &model.Fault{Code: "insufficient_scope"}
 				}

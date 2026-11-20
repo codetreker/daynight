@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -26,7 +27,8 @@ type ImageOccurrenceRoute struct {
 func (h *Routes) registerImageRoutes(mux *http.ServeMux, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
 		for method, handler := range map[string]func(http.ResponseWriter, *http.Request, model.Principal){"PUT " + base + "/image-uploads/{uploadId}": h.prepareImage, "PUT " + base + "/image-uploads/{uploadId}/content": h.directImageUpload, "GET " + base + "/image-uploads/{uploadId}": h.getImageUpload, "DELETE " + base + "/image-uploads/{uploadId}": h.releaseImageUpload, "PUT " + base + "/image-uploads/{uploadId}/chunks": h.writeImageChunk, "POST " + base + "/image-uploads/{uploadId}/complete": h.completeImageUpload, "GET " + base + "/image-capabilities": h.imageCapabilities, "GET " + base + "/image-occurrences/{imageId}": h.imageOccurrence, "POST " + base + "/image-occurrences/{imageId}/retry": h.retryImageOccurrence} {
-			next := h.auth.Require(h.imageParameters(handler))
+			read := method == "GET "+base+"/image-occurrences/{imageId}"
+			next := h.auth.Require(h.imageParameters(handler, read))
 			if method == "PUT "+base+"/image-uploads/{uploadId}" || method == "PUT "+base+"/image-uploads/{uploadId}/content" || method == "PUT "+base+"/image-uploads/{uploadId}/chunks" || method == "POST "+base+"/image-uploads/{uploadId}/complete" {
 				registerProducerRoute(mux, method, next, producerCredential, observe)
 			} else {
@@ -70,7 +72,7 @@ func (h *Routes) directImageUpload(w http.ResponseWriter, r *http.Request, p mod
 
 // Image media is an extension of the existing v1 Session protocol. Its route
 // selection must not dispatch the request to the independent terminal protocol.
-func (h *Routes) imageParameters(next httpx.AuthenticatedHandler) httpx.AuthenticatedHandler {
+func (h *Routes) imageParameters(next httpx.AuthenticatedHandler, scopedRead bool) httpx.AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 		protocol, err := selectedSessionProtocol(r)
 		if err != nil || protocol != sp.Protocol {
@@ -86,7 +88,7 @@ func (h *Routes) imageParameters(next httpx.AuthenticatedHandler) httpx.Authenti
 				}
 			}
 		}
-		h.Parameters(next)(w, r, p)
+		h.Parameters(next, scopedRead)(w, r, p)
 	}
 }
 func imageRevision(r *http.Request) error {
@@ -228,15 +230,30 @@ func (h *Routes) imageResource(w http.ResponseWriter, r *http.Request, p model.P
 
 func imageJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
+func (h *Routes) imageOccurrenceAllowed(w http.ResponseWriter, r *http.Request, p model.Principal) bool {
+	h.mutex.Lock()
+	scoped := h.readContext != nil && !h.scopedImageOccurrence
+	h.mutex.Unlock()
+	if scoped {
+		// A read-only assembly cannot authorize the retry action or its receipt.
+		bearer := strings.Fields(r.Header.Get("Authorization"))
+		fixedAPI := p.Kind == model.OAuthCredential && len(bearer) == 2 && strings.EqualFold(bearer[0], "Bearer") && strings.HasPrefix(bearer[1], oauth.APIAccessPrefix)
+		if p.Kind != model.SessionCredential && !fixedAPI {
+			h.Failure(w, r, &model.Fault{Code: "forbidden", Message: "Image occurrence status is unavailable for this credential."})
+			return false
+		}
+	}
+	return true
+}
 func (h *Routes) imageOccurrence(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	if !h.imageRequest(w, r) {
+	if !h.imageRequest(w, r) || !h.imageOccurrenceAllowed(w, r, p) {
 		return
 	}
 	out, e := h.service.GetImageOccurrence(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("imageId"))
 	h.Result(w, r, http.StatusOK, out, e)
 }
 func (h *Routes) retryImageOccurrence(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	if !h.imageRequest(w, r) {
+	if !h.imageRequest(w, r) || !h.imageOccurrenceAllowed(w, r, p) {
 		return
 	}
 	raw, e := ReadBody(w, r)

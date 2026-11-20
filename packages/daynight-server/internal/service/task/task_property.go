@@ -14,6 +14,8 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 		return model.Task{}, err
 	}
 	name = properties.CanonicalName(name)
+	ctx = withTaskWriteOperations(ctx, taskcore.PropertyOperation(name))
+	ctx = withTaskWriteTarget(ctx, id, false)
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskcore.Mutation, error) {
 		if err := taskcore.CheckPropertyForType(current.Type, name); err != nil {
 			return taskcore.Mutation{}, err
@@ -32,6 +34,8 @@ func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, p
 		return model.Task{}, err
 	}
 	name = properties.CanonicalName(name)
+	ctx = withTaskWriteOperations(ctx, taskcore.PropertyOperation(name))
+	ctx = withTaskWriteTarget(ctx, id, false)
 	if err := taskcore.CheckPropertyWritable(name); err != nil {
 		return model.Task{}, err
 	}

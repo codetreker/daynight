@@ -64,6 +64,14 @@
 
 .project-tasks .root-list .goal-header :is(.root-title, .task-pause-count, .task-paused-badge),
 .project-tasks .root-list .goal-detail-link { font-size: var(--text-sm); }
+.project-tasks .root-list .goal-children-actions .goal-detail-link { font-size: var(--text-xs); line-height: calc(var(--text-sm) * 1.55); }
+/* Reserve the previous label size so the smaller text retains its button target. */
+.project-tasks .root-list .goal-children-actions .goal-detail-label { font-size: var(--text-sm); }
+.project-tasks .root-list .goal-children-actions .goal-detail-word { display: inline-grid; vertical-align: baseline; }
+.project-tasks .root-list .goal-children-actions .goal-detail-word::before { content: attr(data-label); visibility: hidden; }
+.project-tasks .root-list .goal-children-actions .goal-detail-word::before,
+.project-tasks .root-list .goal-children-actions .goal-detail-word > span { grid-area: 1 / 1; }
+.project-tasks .root-list .goal-children-actions .goal-detail-word > span { font-size: var(--text-xs); }
 .project-tasks .root-list .goal-header :is(.root-meta, .root-progress-label, .goal-in-progress, .completion-time-label,
   .task-assignee-identity, .assignee-former, .chain-worker-active, .session-status-label, .session-status-annotation) { font-size: var(--text-xs); }
 .project-tasks .root-list .goal-header :is(.root-meta, .root-progress-label, .goal-in-progress, .completion-time-label,

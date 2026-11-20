@@ -28,9 +28,12 @@ func NewScopedCommands(writer store.SessionWriter, engine *sessioncore.Engine, s
 		return nil, errors.New("session command authorization source is required")
 	}
 	s := New(writer, engine)
-	s.Execution.SetCommandAdmission(func(ctx context.Context, scope store.SessionScope, principal model.Principal, operation scopepolicy.Operation) error {
+	if err := s.Execution.SetCommandAdmission(func(ctx context.Context, scope store.SessionScope, principal model.Principal, operation scopepolicy.Operation) error {
 		return requireCommandAuthorization(ctx, source, scope, principal, operation)
-	})
+	}); err != nil {
+		return nil, err
+	}
+	s.scopedCommandExecution = s.Execution
 	return s, nil
 }
 

@@ -19,7 +19,9 @@ authorization failures remain errors. The existing capture, retry identity,
 copy continuation and Controller producer checks retain their responsibilities.
 Task and Test Session registrations classify occurrence routes and implicit
 HEAD alongside the dynamic action projection. Production assembly remains on
-the existing profile until scoped activation.
+the existing profile until scoped activation. Scoped routes bind the execution
+whose command admission was installed at construction; a read-only scoped
+assembly continues to fail closed for restricted credentials.
 
 ## Alternatives
 
