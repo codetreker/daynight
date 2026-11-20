@@ -44,6 +44,18 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   readonly historyReady?: boolean; readonly historyRevision?: number; readonly connectionGeneration?: number;
 }) {
   const m = useSessionMessages();
+  const shell = useRef<HTMLDivElement>(null);
+  const [compactNavigation, setCompactNavigation] = useState(false);
+  useLayoutEffect(() => {
+    const node = shell.current;
+    if (!node) return;
+    const measure = () => setCompactNavigation(node.getBoundingClientRect().height <= 120);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener('resize', measure);
+    measure();
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, []);
   const preview = matchingSessionHistoryPreview(state, historyPreview);
   const rows = useMemo(() => selectSessionHistoryRows(state, preview, historyLoaded, historyCoverage), [state, preview, historyLoaded, historyCoverage]);
   const renderedEntries = useMemo(() => rows.map(row => row.entry), [rows]);
@@ -93,7 +105,7 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
   const history = useSessionHistoryPagination({ scroll, identity: historyIdentity, mode: displayMode, active, ready: historyReady, generation: connectionGeneration, revision: historyRevision, hasOlder, loading: loadingOlder, error: historyError, load: onLoadOlder });
   const pendingInteractions = useMemo(() => state.snapshot?.activity === 'waiting_input' ? entries.flatMap(entry => !previewIds.has(entry.entryId) && entry.kind === 'interaction' && entry.interaction.state === 'pending' && sessionRespondGate(state, canRespond, entry.interaction) ? [{ entryId: entry.entryId, title: entry.interaction.title }] : []) : [], [entries, state, canRespond, previewIds]);
   const pending = usePendingInteractionLocator(scroll, active, pendingInteractions);
-  return <div className="session-timeline-shell">
+  return <div ref={shell} className={`session-timeline-shell${compactNavigation ? ' session-timeline-shell-compact' : ''}`}>
     <div className="session-timeline" ref={scroll.viewport} tabIndex={0} aria-label={m.title} onScroll={history.onScroll} onWheel={history.onWheel} onTouchStart={history.onTouchStart} onTouchMove={history.onTouchMove} onPointerDown={history.onPointerDown} onKeyDown={history.onKeyDown} onFocus={scroll.onFocus} onClick={(event) => { if (event.target instanceof Element && event.target.closest('a[data-footnote-ref], a[data-footnote-backref]')) scroll.pause(); }}>
       <div ref={scroll.content} className="session-timeline-content">
         {previewIds.size > 0 ? <p className="session-history-preview-label">{m.historyPreview}</p> : null}
