@@ -15,7 +15,14 @@ daynight assistant-task manual show <task-id> --json
 daynight assistant-task record list <task-id> --limit 200 --json
 daynight assistant-task item list <task-id> --json
 daynight assistant-task item show <task-id> <item-id> --json
+daynight assistant-task metrics <task-id> --json
 ```
+
+`metrics` reports the last 30 days from one database snapshot: action records,
+outcome records by value, `escalation` and `result_unknown` events, item
+closures, recurring items, and `averageResolutionMs`. That average covers only
+closures with a known open time; `untimedClosureCount` counts the rest, and the
+average is `null` when no closure is timed.
 
 All commands support `--json`. Lists return one page with `items`, `nextCursor`
 and `observedAt`; follow `--cursor` explicitly. Versions and generations are exact

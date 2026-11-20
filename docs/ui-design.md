@@ -23,20 +23,45 @@ provide semantic sizes relative to the browser's default root font size. At a
 | Detail heading | `--text-detail-heading` | 22px | Detail titles |
 | Page heading | `--text-page-heading` | 28px | Page titles |
 
+The [ordinary Task row](spec/daynight-web.md#项目普通-task-行) uses metadata for its secondary status labels.
+
 Use a shared role or inherit it; do not override the variables locally or add
 numeric fallbacks. The browser controls the root size, and the body uses the
 interface role as its baseline. Reading text should use a 1.75 line height;
 controls and lists should use 1.5. Keep roles consistent across viewport widths:
 wrap, rearrange, or scroll content instead of shrinking text. Preserve existing
 touch target dimensions and the 16 CSS px minimum on touch fields and task
-filters. Terminal text retains independent scaling; external diagrams retain
+filters through the shared `--text-touch-field` size (`max(1rem, 16px)`).
+Terminal text uses `--text-terminal` (12px at a 16px root) as its base and retains independent scaling; external diagrams retain
 their own rendering boundary. Any necessary first-party special size belongs
 in the shared definitions with its reason.
 
-The shared definitions are loaded by the Web entry stylesheet. Existing feature
-styles are migrated separately; until migrated they retain their existing sizes.
-Verify consumers with browser font preferences, desktop and 320px layouts,
-long content and applicable interaction states.
+The Web entry stylesheet loads the shared definitions. All first-party production
+styles, including public landing demonstrations, Setup, authentication, workspace,
+Bot and attachment interfaces, use these roles. The Web harness runs the
+[typography ownership checker](../packages/daynight-web/scripts/typography-policy.mts)
+over every production CSS, TS and TSX source, including unreferenced files. Run it
+independently with `pnpm --filter @codetreker/daynight-web test:typography-policy`.
+It rejects fixed sizes, numeric fallbacks, unregistered size aliases and local
+role definitions, including obsolete declarations hidden by later overrides.
+`font` shorthands must inherit or contain a registered role as their size.
+
+Selection and native-select styles own their registered font-size parameters;
+those parameters resolve to shared roles. Terminal size may multiply
+`--text-terminal` by `--terminal-text-scale` with a unitless scale fallback of
+`1`. Mermaid's typed `MermaidConfig.themeVariables` controls external diagram
+rendering. These rendering mechanisms do not exempt other declarations in their
+files. First-party surrounding controls and character icons still use shared
+roles.
+
+The TypeScript inspection covers statically readable inline font properties,
+constant aliases and strings, JSX, DOM style assignments, `setProperty`,
+`cssText` and `setAttribute`. Dynamic font values at recognized declarations
+fail. CSS strings that cannot be resolved statically, arbitrary runtime functions
+and dynamically computed property names are outside static evaluation. Static
+ownership does not prove rendered geometry.
+Verify consumers with browser font preferences, desktop and 320px layouts, long
+content and applicable interaction states.
 
 ## Brand mark
 

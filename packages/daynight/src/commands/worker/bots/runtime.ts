@@ -21,6 +21,7 @@ export const createManagedAssistantRuntime = (options: {
   canAdmitNewExecution(): boolean;
   inventory?: Pick<ReturnType<typeof createBotInventory>, "reconcile">;
   assistantTasks?: AssistantTaskRuntime;
+  scanLocal?(): { errors: { botId: string; message: string }[] };
 }) => {
   const owner = parseBotOwner(options.owner), now = options.now ?? Date.now;
   const interval = (): number => {
@@ -29,31 +30,39 @@ export const createManagedAssistantRuntime = (options: {
     return Math.min(value, 5000);
   };
   interval();
-  const inventory = options.inventory ?? createBotInventory({ owner, store: options.store, remote: options.remote, now });
+  const inventory = options.inventory ?? createBotInventory({ owner, store: options.store, remote: options.remote, now, onError: options.onError });
   const jobs = new Map<string, Promise<void>>(), errors = new Map<string, string>();
   let running = false, closing = false;
   const shutdownCancellation = new AbortController();
   const ticks = new Set<Promise<void>>();
   let runWork: Promise<void> | null = null, stopping: Promise<void> | null = null;
-  const stopAll = (): Promise<void> => stopping ??= (async () => {
-    const failures: unknown[] = [];
-    try { await options.assistantTasks?.shutdown(); } catch (cause) { failures.push(cause); }
-    const results = await Promise.allSettled(options.store.list(owner).map(async record => {
-      try { await options.process.shutdown(record, AbortSignal.timeout(30_000)); }
-      catch (cause) { error(record.botId, cause); throw cause; }
-    }));
-    failures.push(...results.filter(result => result.status === "rejected").map(result => result.reason));
-    if (failures.length) throw new AggregateError(failures, "Bot shutdown could not confirm every original writer stopped; evidence is retained.");
-  })();
+  let stopState: "none" | "running" | "succeeded" | "failed" = "none";
+  const stopAll = (reobserve = false): Promise<void> => {
+    if (reobserve && stopState === "failed") stopping = null;
+    if (stopping !== null) return stopping;
+    stopState = "running";
+    stopping = (async () => {
+      const failures: unknown[] = [];
+      try { await options.assistantTasks?.shutdown(); } catch (cause) { failures.push(cause); }
+      for (const failure of options.scanLocal?.().errors ?? []) failures.push(new Error(`Bot ${failure.botId}: ${failure.message}`));
+      const results = await Promise.allSettled(options.store.list(owner).map(async record => {
+        try { await options.process.shutdown(record, AbortSignal.timeout(30_000)); }
+        catch (cause) { error(record.botId, cause); throw cause; }
+      }));
+      failures.push(...results.filter(result => result.status === "rejected").map(result => result.reason));
+      if (failures.length) throw new AggregateError(failures, "Bot shutdown could not confirm every original writer stopped; evidence is retained.");
+    })().then(() => { stopState = "succeeded"; }, cause => { stopState = "failed"; throw cause; });
+    return stopping;
+  };
   const error = (botId: string | null, cause: unknown): void => {
     const message = cause instanceof Error ? cause.message : "Bot execution is unavailable.";
     if (errors.get(botId ?? "inventory") !== message) options.onError(message, botId);
     errors.set(botId ?? "inventory", message);
   };
   const refresh = async (input: BotRecord, signal: AbortSignal): Promise<BotRecord | null> => {
-    const bot = await options.remote.read(input.botId, signal);
+    const bot = await options.remote.read(input.botId, signal, input.owner);
     if (bot === null) throw new Error("Bot is missing from its authoritative service; original local execution is retained.");
-    const record = options.store.observe(owner, bot, now());
+    const record = options.store.observe(input.owner, bot, now());
     return record.observed.deletion === null ? record : null;
   };
   const report = async (input: BotRecord, result: BotStartupResult, signal: AbortSignal): Promise<void> => {
@@ -62,7 +71,7 @@ export const createManagedAssistantRuntime = (options: {
     if (record === null || record.observed.deletion !== null) return;
     if (record.observed.startupResult.state === result.state && record.observed.startupResult.code === (result.code ?? null)) return;
     const bot = await options.sessionApi.report(record, result, signal);
-    options.store.observe(owner, bot, now());
+    options.store.observe(record.owner, bot, now());
   };
   const advance = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
     let record: BotRecord | null = input;
@@ -91,17 +100,22 @@ export const createManagedAssistantRuntime = (options: {
     }
   };
   const discover = async (signal: AbortSignal): Promise<Promise<void>[]> => {
+    for (const failure of options.scanLocal?.().errors ?? []) error(failure.botId, new Error(failure.message));
     const result = await inventory.reconcile(signal);
     const scheduled: Promise<void>[] = [];
     for (const botId of result.observed) {
       signal.throwIfAborted();
       const record = options.store.get(owner, botId);
       if (record === null) continue;
-      if (record.migration !== undefined) { error(botId, new Error("Bot migration is committed; recovery identity registration and Provider verification are pending.")); continue; }
       const previous = jobs.get(botId);
       if (previous !== undefined) { scheduled.push(previous); continue; }
       if (record.observed.deletion === null && record.intent === null && !options.canAdmitNewExecution()) continue;
-      const work = record.observed.deletion === null ? advance(record, signal)
+      const work = record.migration !== undefined ? (async () => {
+        try {
+          await options.sessionApi.registerRecovery(record, signal);
+          error(botId, new Error("recovery_material_missing: Bot migration registration is confirmed, but no verified Provider recovery point and executable dedicated generation are available."));
+        } catch (cause) { if (!signal.aborted) error(botId, cause); }
+      })() : record.observed.deletion === null ? advance(record, signal)
         : (async () => { await options.assistantTasks?.stopBot(botId); await options.deletion.advance(record, signal); })().then(() => { errors.delete(botId); }, cause => { if (!signal.aborted) error(botId, cause); });
       const job = work.finally(() => { if (jobs.get(botId) === job) jobs.delete(botId); });
       jobs.set(botId, job); scheduled.push(job);
@@ -119,9 +133,12 @@ export const createManagedAssistantRuntime = (options: {
     },
     /** Stop scheduling, join submitted work, then prove each writer stopped. */
     shutdown: async (): Promise<void> => {
+      // Only an explicit call made after a failed stop can re-observe it. Calls
+      // joining an in-flight stop share that result rather than retrying it.
+      const reobserve = stopState === "failed";
       closing = true; shutdownCancellation.abort();
-      if (runWork !== null) await runWork;
-      else { await Promise.allSettled([...ticks, ...jobs.values()]); await stopAll(); }
+      await Promise.allSettled([...(runWork === null ? [] : [runWork]), ...ticks, ...jobs.values()]);
+      await stopAll(reobserve);
     },
     run: async (signal: AbortSignal): Promise<void> => {
       if (closing) throw new Error("Bot runtime is closing.");

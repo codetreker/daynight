@@ -159,17 +159,16 @@ func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor A
 	return result, nil
 }
 
-// expireInquiries processes a bounded, prefiltered batch. Taking task barriers in
-// ID order prevents two target-event reads from reversing multi-task lock order.
 func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string) error {
-	return m.settleTasks(ctx, dao, actor, taskID, targetBotID, false)
+	return m.maintain(ctx, dao, actor, taskID, targetBotID, false, false)
 }
 
-// settleTasks expires due inquiries and, when reclaim is set, also reclaims
-// settled inbound material of a bounded set of the owner's tasks. Every task
-// both steps touch is locked once in ascending ID order, so concurrent pulls
-// cannot deadlock on each other's task rows.
-func (m *Module) settleTasks(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, reclaim bool) error {
+// maintain processes a bounded, prefiltered batch of inquiry timeouts and, for
+// event pulls, periodic retrospectives. When reclaim is set it also reclaims
+// settled inbound material of a bounded set of the owner's tasks. Taking every
+// task barrier once in ID order prevents two reads from reversing multi-task
+// lock order.
+func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, retrospectives, reclaim bool) error {
 	if err := authorize(ctx, dao, actor); err != nil {
 		return err
 	}
@@ -187,9 +186,19 @@ func (m *Module) settleTasks(ctx context.Context, dao store.AssistantTaskDAO, ac
 	if len(due) > 200 {
 		due = due[:200]
 	}
+	var reviews []string
+	if retrospectives {
+		reviews, err = dao.RetrospectiveTasks(ctx, store.AssistantTaskQuery{OwnerUserID: actor.Principal.UserID, TaskID: taskID, TargetBotID: targetBotID, Limit: 200}, now.Add(-retrospectivePeriod))
+		if err != nil {
+			return err
+		}
+	}
 	ids := map[string]bool{}
 	for _, inquiry := range due {
 		ids[inquiry.TaskID] = true
+	}
+	for _, id := range reviews {
+		ids[id] = true
 	}
 	var reclaimable []string
 	if reclaim {
@@ -246,6 +255,13 @@ func (m *Module) settleTasks(ctx context.Context, dao store.AssistantTaskDAO, ac
 			return err
 		}
 		tasks[task.ID] = task
+	}
+	for _, id := range reviews {
+		if task, ok := tasks[id]; ok {
+			if err = m.periodicRetrospective(ctx, dao, task); err != nil {
+				return err
+			}
+		}
 	}
 	for _, id := range reclaimable {
 		if _, ok := tasks[id]; !ok {

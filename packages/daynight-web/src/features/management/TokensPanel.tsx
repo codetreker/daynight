@@ -127,7 +127,7 @@ const TokensContent = ({ user, onIdentityMismatch, transport = api, visible = tr
   return <>
     {error !== null && recovery === null && <ManagementError error={error} retry={refresh} />}
     {dialog?.kind !== "expiry" && expiryNotice}
-    <section className="panel" aria-labelledby="tokens-title"><div className="panel-heading"><div><h2 id="tokens-title">{m.tokensTitle}</h2><p>{m.tokensDescription}</p></div><button className="button primary" type="button" disabled={blocked || tokens === null} onClick={() => open({ kind: "create" })}>{m.createToken}</button></div>
+    <section className="panel" aria-labelledby="tokens-title"><div className="panel-heading panel-heading-description"><div><h2 id="tokens-title">{m.tokensTitle}</h2><p>{m.tokensDescription}</p></div><button className="button primary" type="button" disabled={blocked || tokens === null} onClick={() => open({ kind: "create" })}>{m.createToken}</button></div>
       {loading && <div className="empty-inline" role="status">{m.loading}</div>}
       {tokens !== null && (tokens.length === 0 ? !loading && <div className="empty-inline">{m.empty}</div> : tokens.map((token) => {
         const expired = token.expiresAt !== null && Date.parse(token.expiresAt) <= Date.now();

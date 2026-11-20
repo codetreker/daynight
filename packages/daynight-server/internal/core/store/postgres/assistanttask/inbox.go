@@ -114,9 +114,3 @@ func (d *DAO) deleted(ctx context.Context, phase, query string, args ...any) (in
 func (d *DAO) tombstoneInbox(ctx context.Context, owner, task string) error {
 	return d.execute(ctx, "tombstone assistant inbox", `UPDATE assistant_task_inboxes SET state=$3,token_digest=NULL,overlap_token_digest=NULL,overlap_until=NULL,version=version+1 WHERE owner_user_id=$1 AND task_id=$2 AND state=$4`, owner, task, model.AssistantTaskInboxTombstone, model.AssistantTaskInboxEnabled)
 }
-
-func scanID(row pgx.Row) (string, error) {
-	var id string
-	err := row.Scan(&id)
-	return id, err
-}

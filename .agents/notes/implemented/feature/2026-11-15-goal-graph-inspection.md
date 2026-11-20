@@ -12,7 +12,7 @@ chains also makes the same visual control behave differently across graphs.
 ## Decision
 
 Goal and chain cards share native body inspection and an independent sibling
-Details button. Goal cards retain their 220×96 geometry, existing status and
+Details button. Goal cards use shared compact geometry, scaling with larger root fonts, and retain status and
 execution presentation, and separate room for Details. They retain the complete
 Parent projection and provide no progressive expansion or external navigation.
 
@@ -53,6 +53,6 @@ resource. Shared inspection and Details do not require either policy change.
 Readers can inspect visible prerequisites before opening a Task, with the same
 keyboard and selection semantics in both graph types. Complete ancestry can
 extend beyond the Goal projection, so the hidden count describes Tasks that the
-view deliberately does not add. Reusing the 96px card requires explicit space
+view deliberately does not add. The card reserves explicit space
 for Details beside existing metadata. Selection must stay independent of layout
 and details so that inspection cannot move the reader's graph position.

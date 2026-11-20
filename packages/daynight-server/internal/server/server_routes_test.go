@@ -1259,6 +1259,11 @@ type mcpBotReader struct {
 	s *mcpBotCallScript
 }
 
+func (d *mcpBotReader) BotObservation(ctx context.Context, owner, id string) (store.BotObservationSource, error) {
+	r := d.s.call("BotObservation", owner, id)
+	return r[0].(store.BotObservationSource), mcpBotErr(r[1])
+}
+
 func (d *mcpBotReader) Bot(ctx context.Context, id string) (model.Bot, error) {
 	r := d.s.call("Bot", id)
 	return r[0].(model.Bot), mcpBotErr(r[1])
@@ -1345,6 +1350,30 @@ func (d *mcpBotWriteDAO) SetBotStartup(ctx context.Context, id string, version i
 }
 func (d *mcpBotWriteDAO) CommitBotPreferences(ctx context.Context, id string) error {
 	return mcpBotErr(d.s.call("CommitBotPreferences", id)[0])
+}
+
+func (d *mcpBotWriteDAO) RecoveryWorker(ctx context.Context, owner, worker string) (model.WorkerMachine, error) {
+	r := d.s.call("RecoveryWorker", owner, worker)
+	return r[0].(model.WorkerMachine), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) RegisterBotRecovery(ctx context.Context, id string, version int64, recovery model.BotRecovery) (model.Bot, error) {
+	r := d.s.call("RegisterBotRecovery", id, version, recovery)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) AdvanceBotRecovery(ctx context.Context, id string, version, generation int64, worker string, machine model.WorkerMachine) (model.Bot, error) {
+	r := d.s.call("AdvanceBotRecovery", id, version, generation, worker, machine)
+	return r[0].(model.Bot), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) BotRecoveryOperation(ctx context.Context, id, operation string) (store.BotRecoveryOperation, error) {
+	r := d.s.call("BotRecoveryOperation", id, operation)
+	return r[0].(store.BotRecoveryOperation), mcpBotErr(r[1])
+}
+func (d *mcpBotWriteDAO) SaveBotRecoveryOperation(ctx context.Context, id string, operation store.BotRecoveryOperation) error {
+	return mcpBotErr(d.s.call("SaveBotRecoveryOperation", id, operation)[0])
+}
+func (d *mcpBotWriteDAO) BotRecoveryTokenUsed(ctx context.Context, id, hash string) (bool, error) {
+	r := d.s.call("BotRecoveryTokenUsed", id, hash)
+	return r[0].(bool), mcpBotErr(r[1])
 }
 
 type mcpBotCredentialReader struct{ s *mcpBotCallScript }
@@ -2519,6 +2548,7 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		"sessionhttp.NewRoutes":                    1,
 		"bothttp.RegisterRoutes":                   3,
 		"bothttp.RegisterRuntimeRoutes":            3,
+		"bothttp.RegisterRecoveryRoutes":           2,
 	}
 	seen := make(map[string]int)
 	constructors, authRoutes, authBindings := 0, 0, 0

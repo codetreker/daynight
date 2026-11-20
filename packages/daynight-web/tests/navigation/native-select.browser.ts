@@ -271,7 +271,7 @@ test('scales shared roles with root preference and preserves the touch floor', a
     if (geometry.countHeight !== undefined) expect(geometry.countHeight).toBeGreaterThanOrEqual(geometry.countLine);
   }
   await page.setViewportSize({ width: 800, height: 900 });
-  await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '17.5px');
+  await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '20px');
   await page.evaluate(() => { document.documentElement.style.fontSize = '12px'; });
   await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '16px');
 });

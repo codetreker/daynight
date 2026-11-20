@@ -115,6 +115,14 @@ Cleanup restores the original OIDs, removes temporary objects and compares the
 recovered snapshot with its baseline. Assignee cases retain both the catalogue
 and explicit-user reads for the same fault.
 
+The [Task Assignee snapshot matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_read_snapshot_test.go)
+share one Store per parent and give each read mode its own Project, Task,
+and user records. Each case establishes a repeatable-read snapshot before
+the intervening changes commit through another connection. Reads in the
+original and fresh snapshots distinguish the old and current access,
+profile, and assignment facts. The parent checks that the pool is reusable
+between cases.
+
 [Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_app_scope_test.go)
 share one Store for missing ownership or Team rows and the three catalog
 faults. The write scope sees each committed fault. After restoring the
@@ -129,11 +137,21 @@ rename is reversed and the original relation OID is verified. A new
 transaction reads the original PAT and Personal Team facts before the next
 case. The fixture shares the reversible catalog helper with Backup Inventory.
 
-The [Identity initialization rollback matrix](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
-shares an initially empty Store. Each case commits its own login consumption,
-then exercises a different real insert fault. The global empty-state check
-detects partial identity or replayable login rows. The fault trigger and
-function are removed and checked in the catalog before reuse.
+The [Identity rollback matrices](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
+share one Store per parent. The initialization cases commit their own login
+consumption, then exercise different real insert faults. The global
+empty-state check detects partial identity or replayable login rows. Each
+fault trigger and function is removed and checked in the catalog before reuse.
+The Personal Team facts cases give each actor independent identity, Session,
+and Team records. Each case corrupts only its own Team membership, performs a
+profile write, and refuses the transaction after observing the corrupted
+membership facts. A fresh read confirms that the saved profile is unchanged.
+
+The [Profile Patch validation matrix](../../../../packages/daynight-server/internal/core/store/postgres/user_profile_mechanism_test.go)
+shares one Store across independent users, Sessions, and Personal Teams.
+Each case seeds its own missing owner or stored profile limit violation,
+calls the real Profile Patch operation, and verifies that the entire saved
+user row matches its original state after the refusal.
 
 The [Webhook management fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/webhook/management_contract_test.go)
 shares one fixture with distinct case identifiers. Real WriteWebhook
@@ -156,11 +174,14 @@ The malformed ready archive has its own schema because it removes the archive
 body constraint. Failed restoration stops fixture reuse.
 
 [Identity profile contention](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_contract_test.go)
-uses one Store per matrix with a distinct identity per case. The tests verify
-that the intended SQL waits on the exact holder before committing or rolling
-back. Each contender exits before the durable result is read and the next
-case starts. Failure cancels the contender, releases the holder and stops
-reuse.
+and [credential mutation](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go)
+share one Store per matrix with distinct case identities. The tests verify
+the SQL waits on the exact holder before committing or rolling back. The
+credential cases admit a compatible second reader while the holder is active,
+then verify the committed revocation or expiry through a fresh transaction.
+Each contender completes its database work before the durable read and exits
+before the next case starts. Failure cancels the contender, releases the
+holder, and stops reuse.
 
 The [first image-chunk inventory matrix](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
 shares one parent-owned Store across its sequential cases. Each case retains its
@@ -230,12 +251,39 @@ trigger and function are removed and their absence is checked. Case-specific
 records preserve independent committed-state checks. A failed case stops
 reuse.
 
+The [Project Thread authorization matrices](../../../../packages/daynight-server/internal/core/store/postgres/project/authorization_contract_test.go)
+and [authorization source matrices](../../../../packages/daynight-server/internal/core/store/postgres/internal/project_access_contract_test.go)
+share one Store per parent and give each case its own actor, Project, and
+Team records. Readers observe committed authorization facts after waiting
+on the exact grant, ownership, or Team membership writer. The source fences
+also hold authorization stable while a conflicting change waits. Readers
+and writers finish before schema cleanup, and the parent checks pool reuse
+between cases.
+
 The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_concurrency_witnesses_test.go)
 shares a Store with distinct Project, Task and Tag identities. The actual
 Project row holder blocks the second write until the first commits. The test
 checks both completion receipts and the committed deletion, attachment and
 Task version facts. Each case joins its writer and verifies pool reuse before
 the next case; failure stops reuse.
+
+The [Task mutation matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
+share one Store per parent across separate Project and Task identities.
+The deletion cases queue both competing writes behind the real Project
+transaction and drain both writers before checking durable deletion, edge,
+and version outcomes. The dependency decision cases observe the waiter
+before the holder commits a local or external edge and updates the Task.
+The waiter checks post-lock status, prerequisite state, active dependents,
+and reachability. Each case drains its waiter before the parent reuses the
+pool.
+
+The [Worker Claim configuration admission matrices](../../../../packages/daynight-server/internal/core/store/postgres/worker/claim_admission_test.go)
+share one Store per parent. Each case owns a distinct Worker and owner
+because first-report admission locks the owner across the database.
+The cases observe the exact Worker row or owner advisory lock and keep
+the original commit, rollback, and cancellation results. A waiter exits
+before its transaction is cleaned up, and the parent checks pool reuse
+before starting another case.
 
 The [Thread expiry and exact-message matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_thread_witnesses_test.go)
 use one Store per parent with independent Project, Task, author, and
@@ -354,12 +402,16 @@ observes a queued revocation and commits a compatible Session credential read
 within the window. The eligibility and Profile Patch cases join the worker
 before checking that the membership or profile changes were rolled back.
 
-[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go)
-uses the same PostgreSQL clock and connection preparation. The expiry update
-commits before taking the Session row lock because the holder locks the same
-row that stores the credential. The holder leaves that row unchanged. The
-contender waits on the exact holder while the Session is still valid, and
-its fresh read after natural expiry must reject the transaction.
+[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go),
+[Profile credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go),
+and [Session OAuth expiry](../../../../packages/daynight-server/internal/core/store/postgres/session/oauth_test.go)
+use the same PostgreSQL clock and connection preparation. The expiry update
+commits before taking the credential row lock. The holder leaves that row
+unchanged. The contender waits on the exact holder while the credential is
+still valid, then the post-lock expiry check must reject it. The Profile
+test covers both Session and PAT and distinguishes the post-lock rejection
+from an empty result in the initial credential lookup. The OAuth case
+locks the access token itself and retains the caller time from before expiry.
 
 The [Bot runtime write fixture](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/bot.go)
 uses the persisted native credential expiry and explicit caller times on

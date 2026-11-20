@@ -83,6 +83,7 @@ describe("assistant-task command grammar and identity", () => {
   });
   it.each([
     ["show", "INVALID"],
+    ["metrics", "INVALID"],
     ["list", "--limit", "201"],
     ["list", "--limit", "01"],
     ["pause", task, "--if-version", "01"],
@@ -125,6 +126,7 @@ describe("assistant-task command reads and user writes", () => {
     { args: ["appendix", "list", task], method: "listAppendix", expected: [task, {}] },
     { args: ["proposal", "list", task], method: "listProposals", expected: [task, {}] },
     { args: ["item", "show", task, resource], method: "getItem", expected: [task, resource] },
+    { args: ["metrics", task], method: "getMetrics", expected: [task] },
     { args: ["record", "list", task, "--item", resource], method: "listRecords", expected: [task, { itemId: resource }] },
     { args: ["inquiry", "list", task, "--state", "open"], method: "listInquiries", expected: [task, { state: "open" }] },
     { args: ["events", "pull", "--target-bot", bot], method: "listEvents", expected: [undefined, { targetBotId: bot }] },

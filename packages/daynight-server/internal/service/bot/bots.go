@@ -18,6 +18,7 @@ type Bots struct {
 	store      botStore
 	models     modelRequester
 	operations botOperations
+	observer   sessionObserver
 }
 
 func New(database botStore) *Bots { return &Bots{store: database, operations: defaultBotOperations()} }

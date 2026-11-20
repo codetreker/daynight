@@ -58,6 +58,13 @@ beforeEach(() => {
   cleaningStorage = false;
   mockSidebarMediaQuery();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  // JSDOM has no scrolling geometry; browser suites verify actual reveal behavior.
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, writable: true, value: vi.fn() });
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   if (globalThis.structuredClone === undefined) vi.stubGlobal("structuredClone", runInThisContext("structuredClone"));
   const indexedDB = new IDBFactory();
   for (const [name, value] of Object.entries({ indexedDB, IDBFactory, IDBDatabase, IDBRequest, IDBOpenDBRequest, IDBTransaction, IDBObjectStore, IDBCursor, IDBCursorWithValue, IDBIndex, IDBKeyRange, IDBVersionChangeEvent })) vi.stubGlobal(name, value);

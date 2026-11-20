@@ -152,8 +152,8 @@ describe('task dependency canvas', () => {
     expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(2);
     expect(view.container.querySelector('.task-node-expand[data-direction]')).toBeNull();
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      expect(node.style.width).toBe('220px');
-      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
+      expect(node.style.width).toBe('320px');
+      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '144px' : '204px');
     }
   });
 
@@ -513,7 +513,7 @@ describe('task dependency canvas', () => {
     const expected = layoutModule.layoutGraph({ mainIds: new Set(['A', 'C', 'D']), externalIds: new Set(['B', 'F']), edges: [
       { source: 'A', target: 'C', external: false }, { source: 'B', target: 'C', external: true },
       { source: 'C', target: 'D', external: false }, { source: 'F', target: 'D', external: true },
-    ] }, new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96], ['F', 136]]));
+    ] }, new Map([['A', layoutModule.TASK_NODE_COMPACT_HEIGHT], ['B', layoutModule.TASK_NODE_EXPANDABLE_HEIGHT], ['C', layoutModule.TASK_NODE_COMPACT_HEIGHT], ['D', layoutModule.TASK_NODE_COMPACT_HEIGHT], ['F', layoutModule.TASK_NODE_EXPANDABLE_HEIGHT]]));
     const { container } = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(container.querySelectorAll('.react-flow__edge-path')).toHaveLength(expected.edges.length); });
     const actualPaths = [...container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
@@ -629,7 +629,7 @@ describe('task dependency canvas', () => {
       ...graph,
       tasks: graph.tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['C'], externalDependsOn: [], blockedBy: ['C'] } : task),
     });
-    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'), new Map([['A', 96], ['B', 136], ['C', 96], ['D', 96]]));
+    const expected = layoutModule.layoutGraph(projectChain(updated, 'A'), new Map([['A', layoutModule.TASK_NODE_COMPACT_HEIGHT], ['B', layoutModule.TASK_NODE_EXPANDABLE_HEIGHT], ['C', layoutModule.TASK_NODE_COMPACT_HEIGHT], ['D', layoutModule.TASK_NODE_COMPACT_HEIGHT]]));
     const retainedPath = svg.querySelector('[data-id="A->C"] path');
     view.rerender(<TaskGraph index={updated} rootId="A" onOpenTask={noop} />);
     await waitFor(() => { expect(svg.querySelectorAll('.react-flow__edge-path')).toHaveLength(3); });
@@ -791,8 +791,8 @@ describe('task dependency canvas', () => {
     expect(zoom(view.container)).toBe(beforeZoom);
     const nodePosition = /translate\(([^,]+)px,\s*([^)]+)px\)/.exec(button.closest<HTMLElement>('.react-flow__node')!.style.transform)!;
     const currentViewport = /translate\(([^,]+)px,\s*([^)]+)px\)/.exec(viewport(view.container).style.transform)!;
-    expect(Number(currentViewport[1]) + (Number(nodePosition[1]) + 110) * beforeZoom).toBeCloseTo(400);
-    expect(Number(currentViewport[2]) + (Number(nodePosition[2]) + 48) * beforeZoom).toBeCloseTo(222.5);
+    expect(Number(currentViewport[1]) + (Number(nodePosition[1]) + layoutModule.TASK_NODE_WIDTH / 2) * beforeZoom).toBeCloseTo(400);
+    expect(Number(currentViewport[2]) + (Number(nodePosition[2]) + layoutModule.TASK_NODE_COMPACT_HEIGHT / 2) * beforeZoom).toBeCloseTo(222.5);
   });
 
   it.each(['body', 'details'])('keeps the intended viewport stable for an already visible keyboard-focused %s', async (control) => {
@@ -906,7 +906,7 @@ describe('progressive task visibility', () => {
     const initialRoutes = [...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
     const initialViewport = viewport(view.container).style.transform;
     const upstream = expansion('合流任务 · 40 个外部前置', 'prerequisites');
-    expect(upstream.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('136px');
+    expect(upstream.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('204px');
     expect(joinCard.querySelector('.task-node-expansions')?.children).toHaveLength(2);
     expect(joinCard.querySelectorAll('.task-node-expand')).toHaveLength(1);
     expect(upstream).toHaveAttribute('data-added-tasks', '20');
@@ -928,20 +928,20 @@ describe('progressive task visibility', () => {
     await rendered(view.container, 81, 80);
     await waitFor(() => { expect(rootBody).toHaveFocus(); });
     expect(rootCard.querySelector('.task-node-expansions')).toBeNull();
-    expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('96px');
+    expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('144px');
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 101, 100);
     expect(view.container.querySelectorAll('.task-node-expand[data-direction]')).toHaveLength(0);
     expect(view.container.querySelectorAll('.task-node-navigate')).toHaveLength(40);
     expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(40);
     await waitFor(() => { expect(joinBody).toHaveFocus(); });
-    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '96px' : '136px');
+    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '144px' : '204px');
     expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, cancelled: 0, ended: 0, status: 'todo' });
     signal.throwIfAborted();
     await user.click(reset);
     await rendered(view.container, 50, 49);
     expect(reset).toHaveFocus();
-    expect(expansion('合流任务 · 40 个外部前置', 'prerequisites').closest<HTMLElement>('.react-flow__node')!.style.height).toBe('136px');
+    expect(expansion('合流任务 · 40 个外部前置', 'prerequisites').closest<HTMLElement>('.react-flow__node')!.style.height).toBe('204px');
     expect(visibleIds(view.container)).toEqual(initialIds);
     expect([...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'))).toEqual(initialRoutes);
     expect(viewport(view.container).style.transform).toBe(initialViewport);
@@ -1103,7 +1103,7 @@ describe('initial task viewport policy', () => {
     expect(actual.zoom).toBe(0.8);
     expect(32 * actual.zoom + actual.x).toBe(32);
     expect(2000 * actual.zoom + actual.y).toBe(32);
-    expect((32 + layoutModule.TASK_NODE_WIDTH) * actual.zoom + actual.x).toBeLessThan(width);
+    expect((32 + geometry.nodes.find((node) => node.id === 'first-upstream')!.width) * actual.zoom + actual.x).toBeLessThanOrEqual(width);
     expect((2000 + geometry.nodes.find((node) => node.id === 'first-upstream')!.height) * actual.zoom + actual.y).toBeLessThan(445);
   });
 
@@ -1120,7 +1120,7 @@ describe('initial task viewport policy', () => {
     const actual = getInitialTaskViewport(geometry, 'root', 800, 445);
     expect(actual.zoom).toBe(0.8);
     expect(32 * actual.zoom + actual.x).toBe(32);
-    expect((6000 + layoutModule.TASK_NODE_COMPACT_HEIGHT / 2) * actual.zoom + actual.y).toBeCloseTo(222.5);
+    expect((6000 + geometry.nodes[0]!.height / 2) * actual.zoom + actual.y).toBeCloseTo(222.5);
   });
   it('anchors a folded overview to its root even when visible prerequisites are far to the left', () => {
     const geometry: layoutModule.CanvasLayout = {
@@ -1134,8 +1134,8 @@ describe('initial task viewport policy', () => {
       const actual = getInitialTaskViewport(geometry, 'root', width, 445, true);
       expect(actual.zoom).toBe(0.8);
       expect(actual.x + 20000 * actual.zoom).toBe(32);
-      expect(actual.y + (4000 + layoutModule.TASK_NODE_EXPANDABLE_HEIGHT / 2) * actual.zoom).toBe(445 / 2);
-      expect(32 + layoutModule.TASK_NODE_WIDTH * actual.zoom).toBeLessThan(width);
+      expect(actual.y + (4000 + geometry.nodes[1]!.height / 2) * actual.zoom).toBe(445 / 2);
+      expect(32 + geometry.nodes[1]!.width * actual.zoom).toBeLessThanOrEqual(width);
     }
   });
 });

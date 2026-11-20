@@ -3,9 +3,9 @@ import type { GraphProjection } from './model';
 import { planDependencyRoutes } from './routing';
 import type { TaskExpansions } from './visibility';
 
-export const TASK_NODE_WIDTH = 220;
-export const TASK_NODE_COMPACT_HEIGHT = 96;
-export const TASK_NODE_EXPANDABLE_HEIGHT = 136;
+export const TASK_NODE_WIDTH = 320;
+export const TASK_NODE_COMPACT_HEIGHT = 144;
+export const TASK_NODE_EXPANDABLE_HEIGHT = 204;
 export const getTaskNodeHeight = (expansions: TaskExpansions, external = false): number =>
   external || expansions.prerequisites.ids.length > 0 || expansions.successors.ids.length > 0
     ? TASK_NODE_EXPANDABLE_HEIGHT : TASK_NODE_COMPACT_HEIGHT;

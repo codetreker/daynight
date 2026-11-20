@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Locator } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { botObservation } from '../helpers/bot-observation';
 import type {} from './bots-viewport-session';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
 import { botConversationBack, botDetails, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading, focusBotControl } from '../helpers/bot-heading';
@@ -23,6 +24,15 @@ const install = async (page: Page, options: { items?: readonly BotDefinition[]; 
     if (options.alias && path === `/api/v1/me/workers/${botId(20)}/alias`) return send({ workerId: botId(20), alias: { value: options.alias, version: '1' } });
     if (path === '/api/v1/me/bots/defaults') return send(options.defaults ?? botDefaults());
     if (path === '/api/v1/me/bots') return send({ items: definitions, nextCursor: null });
+    const observed = definitions.find(value => path === `/api/v1/me/bots/${value.id}/observation`);
+    if (observed) return send(botObservation(1, {
+      botId: observed.id, botVersion: observed.version, workerId: observed.workerId,
+      machine: (options.defaults ?? botDefaults()).workers.find(value => value.workerId === observed.workerId)?.machine ?? null,
+      sessionId: observed.sessionId, testExecutionId: observed.testExecutionId, nativeSessionId: observed.sessionId ? 'viewport-fixture' : null,
+      state: observed.startupResult.state === 'failed' ? 'abnormal' : observed.sessionId ? 'idle' : 'connecting',
+      reason: observed.startupResult.code ?? (observed.sessionId ? 'idle' : 'session_unregistered'),
+      observedAt: new Date().toISOString(), freshUntil: new Date(Date.now() + 30_000).toISOString(),
+    }));
     const bot = definitions.find(value => path === `/api/v1/me/bots/${value.id}`);
     return bot ? send(bot) : send({ error: { code: 'not_found', message: 'Not found', requestId: 'viewport-fixture' } }, 404);
   });
@@ -219,14 +229,23 @@ for (const locale of ['en', 'zh-CN'] as const) {
       await page.setViewportSize({ width, height: 1000 });
       evidence.push(await expectPanels(page, true));
       if (width > 740) {
-        await page.locator('.sidebar-toggle').click();
+        const toggle = page.locator('.sidebar-toggle');
+        const expanded = await toggle.getAttribute('aria-expanded');
+        expect(['true', 'false']).toContain(expanded);
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
         evidence.push(await expectPanels(page, true));
-        await page.locator('.sidebar-toggle').click();
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', expanded!);
       } else {
-        await page.locator('.sidebar-toggle').click();
+        const opener = page.getByRole('button', { name: locale === 'en' ? 'Open navigation' : '打开导航', exact: true });
+        await opener.click();
+        await expect(page.locator('#workspace-sidebar')).toBeVisible();
         await expect(page.locator('#workspace-sidebar')).toHaveAttribute('aria-modal', 'true');
         await page.keyboard.press('Escape');
         await expect(page.locator('#workspace-sidebar')).not.toHaveAttribute('aria-modal');
+        await expect(page.locator('#workspace-sidebar')).toBeHidden();
+        await expect(opener).toBeFocused();
         evidence.push(await expectPanels(page, true));
       }
       await closeBotConversation(page);
@@ -239,9 +258,14 @@ for (const locale of ['en', 'zh-CN'] as const) {
     for (const width of [900, 1024, 1280]) {
       await page.setViewportSize({ width, height: 1000 });
       evidence.push(await expectPanels(page, true));
-      await page.locator('.sidebar-toggle').click();
+      const toggle = page.locator('.sidebar-toggle');
+      const expanded = await toggle.getAttribute('aria-expanded');
+      expect(['true', 'false']).toContain(expanded);
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
       evidence.push(await expectPanels(page, true));
-      await page.locator('.sidebar-toggle').click();
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded!);
     }
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
@@ -330,19 +354,19 @@ for (const locale of ['en', 'zh-CN'] as const) {
     await closeBotConversation(page);
     await page.locator(`.bot-list a[href="/bots/${failed.id}"]`).click();
     await botDetailsOpener(page, failed.name).click();
-    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Startup failed' : '启动失败');
+    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Abnormal' : '异常');
     await page.keyboard.press('Escape');
     await expect(page.locator('.bot-conversation')).toContainText('provider_unavailable');
     await expectPanels(page, true);
     await expect(page.locator(`${visiblePane} textarea`)).toHaveCount(0);
-    // An offline Worker remains offline even when the persisted startup result is ready.
-    await page.route('**/api/v1/me/bots/defaults', route => route.fulfill({ json: { ...defaults, workerId: null, configuration: null, reason: 'no_available_worker', workers: [{ ...worker, state: 'offline', reason: 'offline', configuration: null }] }, headers: { 'Daynight-User-ID': BOT_USER } }));
+    // The Bot observation owns availability even when creation remains ready.
+    await page.route(`**/api/v1/me/bots/${ready.id}/observation`, route => route.fulfill({ json: botObservation(1, { botId: ready.id, machine: { ...worker.machine, name: hostName }, sessionId: ready.sessionId, testExecutionId: ready.testExecutionId, state: 'offline', reason: 'worker_heartbeat_expired', freshUntil: null, observedAt: new Date().toISOString() }), headers: { 'Daynight-User-ID': BOT_USER } }));
     await closeBotConversation(page);
     await page.locator('.bot-refresh').click();
     await page.locator(`.bot-list a[href="/bots/${ready.id}"]`).click();
     await botDetailsOpener(page, ready.name).click();
-    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Worker offline' : 'Worker 离线');
-    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Started' : '已启动');
+    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Offline' : '离线');
+    await expectBotDetailText(botDetails(page), 'daynight worker run');
     await page.keyboard.press('Escape');
     await expectPanels(page, true);
     expect(writes).toEqual([]);

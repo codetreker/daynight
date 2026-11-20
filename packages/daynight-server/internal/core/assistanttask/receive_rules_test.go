@@ -137,6 +137,7 @@ func TestTaskEventPullReclaimsUnderTaskLock(t *testing.T) {
 				return 1, nil
 			}
 			d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
+			d.retrospectiveTasks = noRetrospectives
 			d.events = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) { return nil, nil }
 			_, err := m.ListEvents(context.Background(), d, userActor(), taskID, PageInput{})
 			if failure != "" {
@@ -196,6 +197,7 @@ func TestCrossTaskEventPullReclaimsIdleInboxes(t *testing.T) {
 				return 1, nil
 			}
 			d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
+			d.retrospectiveTasks = noRetrospectives
 			d.events = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) { return nil, nil }
 			_, err := m.ListEvents(context.Background(), d, userActor(), "", PageInput{})
 			want := []string{"list", "lock", "reclaim"}

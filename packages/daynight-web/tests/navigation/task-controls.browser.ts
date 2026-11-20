@@ -16,6 +16,7 @@ const step = { id: '00000001', title: 'Review', description: 'Read this', status
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
 type FixtureOptions = {
+  readonly locale?: 'en' | 'zh-CN';
   readonly workerAlias?: string;
   readonly steps?: readonly TaskStep[];
   readonly outcome?: 'conflict' | 'lost' | 'malformed';
@@ -42,7 +43,7 @@ async function install(page: Page, running = false, linked = false, large = fals
   options.exposeDeleteTask?.(() => { taskRemoved = true; epoch = '00000000-0000-4000-8000-000000000901'; });
   let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), options.locale ?? 'en');
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
@@ -216,6 +217,9 @@ test('ID search keeps long results readable and opens the correct task on narrow
   const result = page.getByRole('button', { name: `Open task: ${title}` });
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 700 });
+    await expect(result.locator('.task-search-title')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.root-status')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.task-search-meta')).toHaveCSS('font-size', '12px');
     await expect(result).toContainText(taskId);
     await expect(result).toContainText('ID match · Description match');
     await expect(result).toContainText('A long matching description');
@@ -1225,3 +1229,128 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (cons
     await page.screenshot({ path: info.outputPath(`${kind}-worker-alias.png`), fullPage: true });
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`search loading, failure and empty states remain usable at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    let release!: () => void;
+    let calls = 0;
+    await page.route(`**/api/v1/projects/${projectId}/tasks/search`, async route => {
+      calls++;
+      if (calls === 1) { await new Promise<void>(resolve => { release = resolve; }); return route.fulfill({ status: 500, json: { error: { code: 'unavailable', message: 'Unavailable', requestId: 'fixture' } } }); }
+      return route.fulfill({ json: { projectId, total: 0, items: [], nextCursor: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const input = page.locator('.task-search-form input');
+    await input.fill('missing'); await input.press('Enter');
+    await expect(page.locator('.task-search-results [role=status]')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    release();
+    const error = page.locator('.task-search-error'); await expect(error).toBeVisible();
+    await error.getByRole('button').click();
+    await expect(page.locator('.task-search-results .state-box')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390] as const) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) {
+  test(`Step touch editors retain readable drafts in ${presentation} at ${width}px (${locale})`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 800 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    try {
+      const writes = await install(page, false, false, false, false, false, undefined, {}, { locale });
+      let root;
+      if (presentation === 'direct') {
+        await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+        root = page.locator('.task-detail-page');
+      } else {
+        root = await openDialog(page);
+        if (presentation === 'fullscreen') await root.getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
+        await root.getByRole('tab', { name: /^(Steps|步骤)$/ }).click();
+      }
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      const add = root.getByRole('button', { name: /^(Add step|添加步骤)$/ });
+      await expect(add).toHaveText(locale === 'en' ? 'Add step' : '添加步骤');
+      await add.tap();
+      const form = root.locator('.step-add-form');
+      const title = form.locator('input');
+      const description = form.locator('textarea');
+      for (const field of [title, description]) await expect(field).toHaveCSS('font-size', '16px');
+      await form.locator('button[type=submit]').click();
+      await expect(title).toHaveAttribute('aria-invalid', 'true');
+      const text = 'Long Markdown description with wrapping. '.repeat(30);
+      await title.fill('Long title '.repeat(20)); await description.fill(text);
+      const geometry = await description.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth, height: element.clientHeight, scrollHeight: element.scrollHeight }));
+      expect(geometry.scroll).toBeLessThanOrEqual(geometry.client);
+      expect(geometry.scrollHeight).toBeGreaterThan(geometry.height);
+      expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      const bounds = await form.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      await description.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(5, 15); });
+      await form.getByRole('button', { name: /^(Preview|预览)$/ }).tap();
+      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '16px');
+      await form.getByRole('button', { name: /^(Edit|编辑)$/ }).tap();
+      await expect(description).toHaveValue(text);
+      expect(await description.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 15]);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      for (const field of [title, description]) await expect(field).toHaveCSS('font-size', '20px');
+      await title.focus(); await page.keyboard.press('Escape');
+      await page.getByRole('alertdialog').getByRole('button', { name: /^(Discard|放弃)$/ }).click();
+      await expect(add).toBeFocused();
+      const row = root.locator('.step-row[data-step-id="00000001"]');
+      await row.locator('.step-disclosure').tap();
+      await row.getByRole('button', { name: /^(Edit step|编辑步骤)$/ }).tap();
+      const edit = root.locator('.step-edit-form');
+      await expect(edit.locator('textarea')).toHaveCount(2);
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      for (const field of await edit.locator('textarea').all()) await expect(field).toHaveCSS('font-size', '16px');
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      for (const field of await edit.locator('textarea').all()) await expect(field).toHaveCSS('font-size', '20px');
+      expect(writes).toEqual([]);
+    } finally { await context.close(); }
+  });
+}
+
+for (const [width, touch] of [[768, false], [1360, false], [1360, true]] as const) {
+  test(`Step input typography follows pointer at ${width}px (touch=${touch})`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 900 }, hasTouch: touch, isMobile: touch });
+    const page = await context.newPage();
+    try {
+      await install(page); await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(touch);
+      await page.getByRole('button', { name: 'Add step', exact: true }).click();
+      const form = page.locator('.step-add-form');
+      await expect(form.locator('input, textarea')).toHaveCount(2);
+      for (const field of await form.locator('input, textarea').all()) await expect(field).toHaveCSS('font-size', touch ? '16px' : '14px');
+    } finally { await context.close(); }
+  });
+}
+
+test('Step touch fields retain their size while a save is pending', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL: baseURL!, viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await install(page);
+    await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}/steps`, async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      started.resolve(); await release.promise;
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: { code: 'forbidden', message: 'Refused', requestId: 'fixture' } }) });
+    });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+    await page.getByRole('button', { name: 'Add step', exact: true }).tap();
+    const form = page.locator('.step-add-form'), title = form.locator('input'), description = form.locator('textarea');
+    await title.fill('Pending'); await description.fill('Draft');
+    await title.focus(); await page.keyboard.press('Tab');
+    await expect(form.getByRole('combobox', { name: 'Initial status' })).toBeFocused();
+    await form.locator('button[type=submit]').tap(); await started.promise;
+    for (const field of [title, description]) { await expect(field).toBeDisabled(); await expect(field).toHaveCSS('font-size', '16px'); }
+    expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    release.resolve();
+    await expect(title).toBeEnabled(); await expect(title).toHaveValue('Pending'); await expect(description).toHaveValue('Draft');
+  } finally { release.resolve(); await context.close(); }
+});

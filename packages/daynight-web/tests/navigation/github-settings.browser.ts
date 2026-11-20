@@ -188,12 +188,21 @@ for (const locale of ['en', 'zh-CN'] as const) {
         await cancelConnectionDialog(page, opener, false);
         if (connection !== 'not_connected') await cancelConnectionDialog(page, actions.last(), false);
       }
-      const toggle = page.locator('.sidebar-toggle');
-      await toggle.click();
       if (width <= 740) {
+        const opener = page.getByRole('button', { name: locale === 'en' ? 'Open navigation' : '打开导航', exact: true });
+        await opener.click();
+        await expect(page.locator('#workspace-sidebar')).toBeVisible();
         await expect(page.locator('#workspace-sidebar')).toHaveAttribute('role', 'dialog');
+        await expect(page.locator('#workspace-sidebar')).toHaveAttribute('aria-modal', 'true');
         await page.keyboard.press('Escape');
-        await expect(toggle).toBeFocused();
+        await expect(page.locator('#workspace-sidebar')).toBeHidden();
+        await expect(opener).toBeFocused();
+      } else {
+        const toggle = page.locator('.sidebar-toggle');
+        const expanded = await toggle.getAttribute('aria-expanded');
+        expect(['true', 'false']).toContain(expanded);
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
       }
       observations.push({ sidebarToggled: true, ...await expectRepositoryActionsInsidePanel(page) });
       await cancelConnectionDialog(page, page.locator('#github-connection-action'), true);

@@ -149,6 +149,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     listItems: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/items`, query, v => P.parseAssistantTaskItem(v, taskId)),
     getItem: (taskId: string, id: string) => request(entryPath(taskId, "items", id), "GET", undefined, v => P.parseAssistantTaskItem(v, taskId, id)),
     saveItem: (taskId: string, input: T.SaveAssistantTaskItemInput, id?: string) => request(id === undefined ? `${taskPath(taskId)}/items` : entryPath(taskId, "items", id), id === undefined ? "POST" : "PATCH", input, v => P.parseAssistantTaskItem(v, taskId, id ?? input.id)),
+    getMetrics: (taskId: string) => request(`${taskPath(taskId)}/metrics`, "GET", undefined, P.parseAssistantTaskMetrics),
     listRecords: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/records`, query, v => P.parseAssistantTaskRecord(v, taskId)),
     addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => { const result = P.parseAssistantTaskRecord(v, taskId, input.id); if (result.kind !== input.kind || result.outcome !== input.outcome || result.actionRecordId !== input.actionRecordId) return malformed(); return result; }),
     listEvents: (taskId?: string, query?: T.AssistantTaskEventQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),

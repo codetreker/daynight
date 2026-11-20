@@ -237,7 +237,7 @@ func (m *Module) ListEvents(ctx context.Context, dao store.AssistantTaskDAO, act
 	// A cross-task pull, such as the Worker delivery loop, also reclaims inbound
 	// material of a bounded set of the owner's tasks, so an inbox that stops
 	// receiving requests is still cleaned up without a per-task pull.
-	if err := m.settleTasks(ctx, dao, actor, taskID, input.TargetBotID, taskID == ""); err != nil {
+	if err := m.maintain(ctx, dao, actor, taskID, input.TargetBotID, true, taskID == ""); err != nil {
 		return result, err
 	}
 	if taskID != "" {

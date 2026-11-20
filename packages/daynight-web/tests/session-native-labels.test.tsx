@@ -72,10 +72,10 @@ it('keeps unknown operation receipts localized independently of the activity lab
   const s = snapshot({ activity: 'unknown' }), op = operation(s);
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Outcome unknown');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('无法确认此操作是否完成，请核对原操作。')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('投递结果未知。请核对此操作，不要重复发送。')).toBeVisible();
   expect(screen.getByRole('button', { name: '核对原操作' })).toBeVisible();
   view.setLocale('en');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Unable to confirm whether this operation completed. Check the original operation.')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toBeVisible();
 });
 it('keeps Permissions trigger English while the panel, errors, and draft remain localized', async () => {
   const props = composer(); props.onUpdateSetting.mockRejectedValue(null);

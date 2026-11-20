@@ -6,6 +6,7 @@ import { BotsPage } from '../src/features/bots/BotsPage';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_USER, botDefinition, botDefaults, botId, botResponse, botError } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
 import { parseAuthRoute } from '../src/app/router';
 import * as router from '../src/app/router';
 import { pauseAuthRequests } from '../src/api/client';
@@ -27,6 +28,10 @@ function fixture() {
  const bots = [botDefinition(1),botDefinition(2)];
  const fetch = vi.fn(async (url: string|URL|Request, _options?: RequestInit) => {
   const path = String(url);
+  if(path.endsWith('/observation')) {
+    const bot = bots.find(bot => path.includes(bot.id))!;
+    return botResponse(botObservation(1, { botId: bot.id, botVersion: bot.version, machine: { id: 'machine-20', name: 'Machine 20' } }));
+  }
   if(path.includes('/defaults')) return botResponse(botDefaults());
   if(path.includes('?')) return botResponse({items:bots,nextCursor:null});
   return botResponse(bots.find(bot=>path.endsWith(bot.id))!);

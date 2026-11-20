@@ -18,7 +18,7 @@ const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for 
 type State = keyof typeof states;
 type Provider = keyof typeof providers;
 
-async function open(page: Page, locale: string, provider: Provider, state: State, entry: 'task' | 'test' = 'task', withTools = false) {
+async function open(page: Page, locale: string, provider: Provider, state: State, entry: 'task' | 'test' = 'task', withTools: boolean | TimelineEntry[] = false) {
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: withTools ? '4' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
@@ -29,7 +29,8 @@ async function open(page: Page, locale: string, provider: Provider, state: State
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'header-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
   const entries: TimelineEntry[] = [{ entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Header layout acceptance conversation' }] }];
-  if (withTools) entries.push(...(['running', 'completed', 'failed'] as const).map((status, index) => ({ kind: 'tool_call' as const, entryId: `00000009-1111-4111-8111-${String(111111111112 + index)}`, entrySeq: String(index + 2), revision: '1', callId: `color-${status}`, name: `Color ${status}`, input: '{}', output: [], status, truncated: false })));
+  if (Array.isArray(withTools)) entries.push(...withTools);
+  else if (withTools) entries.push(...(['running', 'completed', 'failed'] as const).map((status, index) => ({ kind: 'tool_call' as const, entryId: `00000009-1111-4111-8111-${String(111111111112 + index)}`, entrySeq: String(index + 2), revision: '1', callId: `color-${status}`, name: `Color ${status}`, input: '{}', output: [], status, truncated: false })));
   const worker = { claimId: source.claimId, state: archived ? 'completed' : 'active', userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
     machine: { id: source.identity.controllerId, name: 'Header fixture' }, platform: 'macos', agent: provider, agentControlMode: 'web',
     worktreeId: source.identity.worktreeId, phase: archived ? 'completing' : 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: time };
@@ -272,13 +273,111 @@ for (const locale of ['en', 'zh-CN']) for (const width of [1280, 320]) for (cons
     for (const [status, role] of Object.entries(statuses)) {
       const tool = page.locator(`.session-tool-${status}`);
       await expect(tool.locator('.session-tool-status')).toHaveCSS('color', roleColors[role][3]);
+      await expect(tool.locator('.session-tool-name')).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-summary')).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-status')).toHaveCSS('font-size', '14px');
       await expectTextContrast(tool.locator('.session-tool-status'));
       await expectTextContrast(tool.locator('.session-tool-summary'));
       await tool.locator('summary').click();
       await expect(tool.locator('.session-tool-input')).toHaveText('{}');
+      await expect(tool.locator('h5').first()).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-input')).toHaveCSS('font-size', '14px');
     }
     await expectTextContrast(health);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(observations.writes).toEqual([]);
   });
 }
+
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const provider of ['codex', 'claude', 'copilot'] as const) {
+  test(`${entry} ${locale} ${provider} keeps tool names readable across timeline widths`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const names = ['mcp__workspace_repository__find_release_notes', 'mcp__workspace_repository__find_release_tags'];
+    const tools: TimelineEntry[] = names.map((name, index) => ({ kind: 'tool_call', entryId: `00000009-1111-4111-8111-${String(111111111112 + index)}`, entrySeq: String(index + 2), revision: '1', callId: `tool-${index}`, name, input: '{"query":"version 2.4"}', output: [], status: index ? 'failed' : 'completed', truncated: false }));
+    const { header, observations } = await open(page, locale, provider, 'archived', entry, tools);
+    await header.locator('.session-display-trigger').click();
+    await page.getByRole('menuitemradio', { name: locale === 'en' ? 'Standard' : '标准', exact: true }).click();
+    const rows = page.locator('.session-tool');
+    await expect(rows).toHaveCount(2);
+    for (const width of [320, 375, 390]) {
+      await page.setViewportSize({ width, height: 700 });
+      for (let index = 0; index < 2; index++) {
+        const row = rows.nth(index), name = row.locator('.session-tool-name');
+        await expect(name.locator('.session-tool-name-compact')).toBeVisible();
+        expect(await name.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+        await expect(name.locator('.session-tool-name-compact')).toHaveText(index ? '…find_release_tags' : '…find_release_notes');
+        await expect(row.locator('summary')).toContainText(locale === 'en' ? (index ? 'Failed' : 'Completed') : (index ? '失败' : '已完成'));
+        expect(await row.locator('summary').evaluate(node => {
+          const box = (selector: string) => node.querySelector(selector)!.getBoundingClientRect();
+          const name = box('.session-tool-name'), input = box('.session-tool-summary'), status = box('.session-tool-status');
+          return input.top >= name.bottom - 1 && status.top < input.top && name.right <= status.left + 1 && node.scrollWidth <= node.clientWidth;
+        })).toBe(true);
+        await expect(row.locator('summary')).toHaveAccessibleName(new RegExp(names[index]!));
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    const first = rows.nth(0).locator('summary'), second = rows.nth(1).locator('summary');
+    await first.click();
+    await second.focus(); await page.keyboard.press('Enter');
+    for (let index = 0; index < 2; index++) {
+      const row = rows.nth(index);
+      await expect(row.locator('.session-tool-exact-name code')).toHaveText(names[index]!);
+      await expect(row.locator('.session-tool-input')).toHaveText('{"query":"version 2.4"}');
+      await expect(row.getByText(locale === 'en' ? 'No output.' : '没有输出。')).toBeVisible();
+      expect(await row.locator('.session-tool-exact-name code').evaluate(node => { const selection = getSelection()!; const range = document.createRange(); range.selectNodeContents(node); selection.removeAllRanges(); selection.addRange(range); return selection.toString(); })).toBe(names[index]);
+    }
+    await second.focus(); await page.keyboard.press('Space');
+    await expect(rows.nth(1)).not.toHaveAttribute('open', '');
+    await expect(second).toBeFocused();
+    const content = page.locator('.session-timeline-content');
+    for (const width of [479, 480, 481]) {
+      await content.evaluate((node, value) => { (node as HTMLElement).style.width = `${value}px`; (node as HTMLElement).style.maxWidth = 'none'; }, width);
+      await expect.poll(() => content.evaluate(node => node.clientWidth)).toBe(width);
+      if (width < 480) await expect(rows.nth(0).locator('.session-tool-name-compact')).toBeVisible();
+      else await expect(rows.nth(0).locator('.session-tool-name-compact')).toBeHidden();
+      expect(await rows.nth(0).locator('summary').evaluate(node => getComputedStyle(node).display)).toBe(width < 480 ? 'grid' : 'flex');
+      await expect(rows.nth(0)).toHaveAttribute('open', '');
+    }
+    await content.evaluate(node => { (node as HTMLElement).style.width = ''; (node as HTMLElement).style.maxWidth = ''; });
+    for (const width of [768, 1360]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await content.evaluate(node => node.clientWidth)).toBeGreaterThanOrEqual(480);
+      expect(await rows.nth(0).locator('summary').evaluate(node => getComputedStyle(node).display)).toBe('flex');
+      await expect(rows.nth(0).locator('.session-tool-name-wide')).toBeVisible();
+      await expect(rows.nth(0)).toHaveAttribute('open', '');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    expect(observations.writes).toEqual([]);
+  });
+}
+
+test.describe('touch tool records', () => {
+  test.use({ hasTouch: true });
+  test('retains running status, empty summaries and long commands in an active Test Session', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const tools: TimelineEntry[] = [
+      { kind: 'tool_call', entryId: '00000009-1111-4111-8111-111111111112', entrySeq: '2', revision: '1', callId: 'empty', name: 'mcp__workspace_repository__find_release_notes', input: '', output: [], status: 'running', truncated: false },
+      { kind: 'tool_call', entryId: '00000009-1111-4111-8111-111111111113', entrySeq: '3', revision: '1', callId: 'command', name: 'commandExecution', input: `echo ${'long-command-'.repeat(30)}`, output: [], status: 'completed', truncated: false },
+    ];
+    const { header, observations } = await open(page, 'en', 'codex', 'working', 'test', tools);
+    await header.locator('.session-display-trigger').tap();
+    await page.getByRole('menuitemradio', { name: 'Standard', exact: true }).tap();
+    const rows = page.locator('.session-tool');
+    await expect(rows).toHaveCount(2);
+    const first = rows.nth(0).locator('summary'), second = rows.nth(1).locator('summary');
+    await expect(first.locator('.session-tool-summary')).toBeHidden();
+    await expect(first.locator('.session-tool-status')).toHaveText('Running');
+    expect(await first.evaluate(node => node.getBoundingClientRect().height)).toBeLessThan(45);
+    await expect(second.locator('.session-tool-name')).toHaveText('Command');
+    expect(await second.locator('.session-tool-summary').evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+    await first.tap(); await second.tap();
+    await expect(rows.nth(0).locator('.session-tool-exact-name')).toHaveText('mcp__workspace_repository__find_release_notes');
+    await expect(rows.nth(1).locator('.session-tool-exact-name')).toHaveText('commandExecution');
+    await expect(rows.nth(1).locator('.session-tool-input')).toHaveText(`echo ${'long-command-'.repeat(30)}`);
+    await first.tap(); await second.tap();
+    await expect(rows.nth(0)).not.toHaveAttribute('open', '');
+    await expect(rows.nth(1)).not.toHaveAttribute('open', '');
+    expect(observations.writes).toEqual([]);
+  });
+});
