@@ -96,7 +96,7 @@ export const WorkerAliasEditor = ({ workerId, resource, readEnabled, onSaved, he
       if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); close(); }
     }}>
       <label htmlFor={`${id}-input`}>{m.label}</label>
-      <input id={`${id}-input`} ref={input} value={draft.value} disabled={pending} aria-describedby={`${id}-hint`} aria-invalid={normalized === null} autoComplete="off"
+      <input data-touch-text="responsive" id={`${id}-input`} ref={input} value={draft.value} disabled={pending} aria-describedby={`${id}-hint`} aria-invalid={normalized === null} autoComplete="off"
         onChange={event => setDraft({ ...draft, value: event.target.value })} />
       <p className="worker-alias-hint" id={`${id}-hint`}>{m.hint}</p>
       <p className="worker-alias-current">{m.current}: <bdi>{resource.value ?? m.none}</bdi></p>

@@ -19,11 +19,14 @@ The Web entry stylesheet loads six shared size values and transitional roles def
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size. The body and migrated shell and selection
 controls use the `sm` size directly; remaining consumers use transitional roles.
+Worker pages and configuration, shared Worker Prompt editors and project settings
+select the public sizes directly, preserving the corresponding computed values.
+Their responsive text inputs use the shared touch adjustment; affected Task
+metadata explicitly selects `xs`, and project-transfer impact copy inherits `sm`.
 Task filters and rows, personal
 task groups, Goal summaries, task search, dependency
-graphs, project overview, statistics, Worker pages and configuration, Worker
-Prompt editors, usage panels, project settings, pull requests, and Session controls
-and timeline details use semantic roles
+graphs, project overview, statistics, usage panels, pull requests, and Session
+controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);

@@ -34,16 +34,22 @@ CSS geometry and statically readable TypeScript strings and style operations.
 Mermaid font configuration uses the measured-size adapter under a restricted
 source contract; other font configuration values are rejected. The workspace shell,
 public landing and setup pages, authentication styles, shared selection controls,
-Team member search, GitHub management, Webhook consumers, Project and personal
-Task lists, Goal cards, tags and search use public sizes directly. The shared
-selection CSS owns touch text adjustments and sizes controls from their actual
-text instead of private font aliases. Management dialog fields and invitation
-secret text use the shared responsive adjustment, while ordinary account tokens
-retain their inherited size. Its marked field rule overrides form typography so
-responsive inputs retain the minimum size. Project and Task search inputs use the
-shared coarse-pointer adjustment; the tag input derives its height from its line
-box and padding with a 44px minimum. The zero-legacy mode refuses the bridge and
-all remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+Worker pages and configuration, Worker Prompt editors, project settings, Team
+member search, GitHub management, Webhook consumers, Project and personal Task
+lists, Goal cards, tags and search use public sizes directly.
+
+The shared selection CSS owns touch text adjustments and sizes controls from
+their actual text instead of private font aliases. Responsive input attributes use
+two attribute selectors so the shared adjustment outranks generic field fonts
+without changing their normal size. Marked responsive fields also take precedence
+over transitional form typography. Consumers select the ordinary size on their
+field container and retain local control geometry, including the Prompt editor's
+196px minimum height. Management dialog fields and invitation secret text use the
+shared responsive adjustment, while ordinary account tokens retain their inherited
+size. Project and Task search inputs use the shared coarse-pointer adjustment;
+the tag input derives its height from its line box and padding with a 44px minimum.
+The zero-legacy mode refuses the bridge and all remaining baseline uses, supplying
+the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 The [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md)
 records the independent SVG measurement boundary.
