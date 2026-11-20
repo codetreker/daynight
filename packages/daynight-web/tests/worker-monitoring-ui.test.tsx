@@ -7,7 +7,7 @@ import { MonitoringCard, WorkerMonitoring, WorkerMonitoringTime } from '../src/f
 import type { WorkerReadState } from '../src/features/workers/useWorkerObservation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
-const id = (n: number) => `0000000${n}-1111-4111-8111-111111111111`;
+const id = (n: number) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const receivedAt = '2026-11-09T12:00:00Z';
 const time = Date.parse(receivedAt);
 const scope = { kind: 'claim' as const, projectId: id(1), taskId: id(2), claimId: id(3) };
@@ -22,6 +22,55 @@ const detail: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'availab
   lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: receivedAt, lastFailure: null },
 } };
 const state = (snapshot: WorkerMonitoringDetail | null = detail, now: number | null = time): WorkerReadState<WorkerMonitoringDetail> => ({ snapshot, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh: vi.fn() });
+
+describe.each(['en', 'zh-CN'] as const)('tasks in cleanup in %s', locale => {
+  const heading = locale === 'en' ? 'Tasks in cleanup' : '清理中的任务';
+  const cleanup = detail.data.activities[0]!;
+  const nonCleanup = [
+    { ...cleanup, operationId: id(10), kind: 'execution' as const, phase: 'waiting' as const, association: { ...association, title: 'Execution waiting' } },
+    { ...cleanup, operationId: id(11), kind: 'maintenance' as const, phase: 'reconciliation' as const, scope: { kind: 'worker' as const }, association: null },
+    { ...cleanup, operationId: id(12), scope: { kind: 'worker' as const }, association: null },
+    { ...cleanup, operationId: id(13), scope: { kind: 'project' as const, projectId: scope.projectId }, association: { kind: 'project' as const, projectName: 'Project cleanup' } },
+  ];
+  const panel = () => screen.getByRole('heading', { name: heading }).closest('section')!;
+
+  it('retains task cleanup order, statuses, times and fallback links in mixed and retained observations', () => {
+    const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, activities: [
+      nonCleanup[0]!,
+      { ...cleanup, phase: 'observation', association: { ...association, title: 'Cleanup observation' } },
+      ...nonCleanup.slice(1),
+      { ...cleanup, operationId: id(14), status: 'running', waitReason: null, association: { ...association, title: 'Cleanup running' } },
+      { ...cleanup, operationId: id(15), status: 'queued', association: { ...association, title: 'Cleanup queued' } },
+      { ...cleanup, operationId: id(16), status: 'paused', association: { kind: 'labels-omitted' } },
+    ] } };
+    const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale });
+    const rows = within(panel()).getAllByRole('listitem');
+    expect(rows.map(row => within(row).getByRole('link').textContent)).toEqual(['Cleanup observation', 'Cleanup running', 'Cleanup queued', `${locale === 'en' ? 'Task' : '任务'} · ${scope.taskId}`]);
+    for (const [index, status] of (locale === 'en' ? ['Waiting', 'Running', 'Queued', 'Paused'] : ['等待中', '运行中', '排队', '已暂停']).entries()) {
+      expect(rows[index]!.querySelector('.monitoring-chip')).toHaveTextContent(status);
+      expect(within(rows[index]!).getByRole('link')).toHaveAttribute('href', taskDetailUrl(scope.projectId, scope.taskId, { tab: 'overview', path: null }));
+      expect(rows[index]!.querySelectorAll('time').length).toBeGreaterThan(0);
+    }
+    expect(rows[0]).toHaveTextContent(locale === 'en' ? 'Cleanup · Observation' : '清理 · 观测');
+    expect(rows[0]).toHaveTextContent(locale === 'en' ? 'Retry backoff' : '重试退避');
+    expect(rows[3]).toHaveTextContent(locale === 'en' ? 'Labels omitted' : '标签已省略');
+    expect(panel()).not.toHaveTextContent('Execution waiting'); expect(panel()).not.toHaveTextContent('Project cleanup');
+    expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getAllByRole('heading')).toHaveLength(4);
+    view.rerender(<WorkerMonitoring state={{ ...state(snapshot), status: 'error', error: new ApiError('network') }} readEnabled />);
+    expect(within(panel()).getAllByRole('listitem')).toHaveLength(4);
+    expect(screen.getByRole('alert')).toHaveTextContent(locale === 'en' ? 'The last confirmed observation remains visible.' : '保留上次确认的观测。');
+  });
+
+  it.each([
+    ['complete', 'current'], ['partial', 'current'], ['complete', 'restricted'], ['partial', 'restricted'],
+  ] as const)('shows a %s/%s empty state when only other activities exist', (detailCoverage, permissionProjection) => {
+    renderWithLocale(<WorkerMonitoring state={state({ ...detail, detailCoverage, permissionProjection, data: { ...detail.data, activities: nonCleanup } })} readEnabled />, { locale });
+    const incomplete = detailCoverage === 'partial' || permissionProjection === 'restricted';
+    expect(panel()).toHaveTextContent(locale === 'en' ? incomplete ? 'No visible cleanup tasks in this observation.' : 'No tasks in cleanup.' : incomplete ? '本次观测没有可见的清理任务。' : '没有清理中的任务。');
+    expect(within(panel()).queryByRole('list')).toBeNull();
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+  });
+});
 
 it.each(['en', 'zh-CN'] as const)('omits diagnostic panels and their data in %s', locale => {
   const hiddenScope = { ...scope, claimId: id(8) };

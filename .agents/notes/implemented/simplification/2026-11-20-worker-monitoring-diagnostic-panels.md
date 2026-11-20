@@ -13,7 +13,7 @@ scan when examining active work and available capacity.
 
 The Web runtime monitoring view omits all three diagnostic panels, including
 their details, empty states, links and recovery instructions. The task panel,
-monitoring time, scheduling, capacity breakdown, admission and activities remain;
+monitoring time, scheduling, capacity breakdown, admission and tasks in cleanup remain;
 monitoring read errors, retry and freshness states remain distinct from report
 delivery diagnostics. Other tabs do not acquire replacement panels.
 
@@ -24,7 +24,7 @@ The [Web requirements](../../../../docs/spec/daynight-web.md#我的-worker) and
 the resulting behavior and field guarantees. This narrows the presentation in the
 [Web monitoring decision](../architecture/2026-11-09-web-worker-monitoring.md),
 [system monitoring tab decision](../architecture/2026-11-18-worker-system-monitoring-tab.md),
-[capacity responsibility decision](2026-11-18-worker-capacity-responsibilities.md)
+[capacity responsibility decision](2026-11-18-worker-capacity-responsibilities.md),
 [failure worktree decision](../architecture/2026-11-11-worker-failure-worktree.md),
 and [card summary decision](2026-11-11-worker-card-monitoring-summary.md).
 
