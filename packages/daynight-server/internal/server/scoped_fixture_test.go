@@ -180,3 +180,13 @@ func (s settingsHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, 
 func (s teamHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, p model.Principal, _ string, _ bool) (model.CredentialAuthorization, error) {
 	return assemblyAuthorization(p)
 }
+
+func (s mcpBotSessionScope) SessionPATScopeDAO() store.PATScopeDAO {
+	return assemblySessionPAT{t: s.bot.(*mcpBotWriteDAO).s.t, principal: defaultHTTPPrincipal()}
+}
+func (s mcpBotSessionScope) SessionPATManagementDAO() store.PATManagementDAO {
+	return assemblySessionPAT{t: s.bot.(*mcpBotWriteDAO).s.t, principal: defaultHTTPPrincipal()}
+}
+func (s mcpBotSessionScope) SessionOAuthScopeDAO() store.OAuthScopeDAO {
+	panic("unexpected OAuth Bot Session fixture")
+}

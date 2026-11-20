@@ -33,7 +33,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -1872,8 +1871,8 @@ func configureMCPPrincipals(t *testing.T, tx *httpTestStore, supplied map[string
 			panic("unreachable")
 		}
 		err := callback(httpAuthenticationScope{t: t, dao: dao})
-		if dao.calls != 1 {
-			t.Errorf("MCP authentication calls = %d, want 1", dao.calls)
+		if dao.calls > 1 || dao.calls == 0 && err == nil {
+			t.Errorf("MCP authentication calls = %d with error %v", dao.calls, err)
 		}
 		if err != nil {
 			return store.Completion{Outcome: store.TransactionNotCommitted}, err
@@ -2004,17 +2003,36 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
 
-	// A separate production router with an explicitly test-only tool exposes the
-	// authenticated request actor without adding a discoverable production tool.
+	// Exercise concurrent actor isolation at the production tool's project boundary.
 	instrumented := newApp()
-	entry := instrumented.mcp
-	input := map[string]any{"type": "object"}
-	output := map[string]any{"type": "object"}
-	err = entry.RegisterTool(&sdk.Tool{Name: "test_actor", InputSchema: input, OutputSchema: output}, mcphttp.BudgetControl, func(_ context.Context, actor mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
-		return mcphttp.ToolResult{Data: map[string]any{"user": actor.Principal.UserID, "credential": actor.AuthorityRef.ID, "kind": actor.AuthorityRef.Kind}}, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	database.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
+		scope := newHTTPTestSnapshot(t)
+		var actor model.Principal
+		scope.Projects = projectHTTPReader{ProjectAccessCall: func(_ context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
+			if (p != principals[0] && p != principals[1]) || id != project.ID {
+				return model.ProjectAccess{}, fmt.Errorf("unexpected actor or project: %#v %s", p, id)
+			}
+			actor = p
+			return projectHTTPAccess(p, project), nil
+		}}
+		marker := func() (model.Task, error) {
+			if actor.UserID == "" {
+				return model.Task{}, fmt.Errorf("task read without project authorization")
+			}
+			result := mcpCloneFixture(created)
+			result.Title = actor.UserID + "|" + actor.CredentialID
+			return result, nil
+		}
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "concurrent MCP actor")}
+		reader.TaskPriorityListFn = func(_ context.Context, id string, _ store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
+			item, err := marker()
+			if id != project.ID {
+				return store.TaskPriorityPage{}, fmt.Errorf("unexpected project %s", id)
+			}
+			return store.TaskPriorityPage{Items: []store.TaskPriorityItem{{Task: item}}}, err
+		}
+		scope.Tasks = reader
+		return run(scope)
 	}
 	server := httptest.NewServer(httpx.RequestLogging(logger, instrumented))
 	t.Cleanup(server.Close)
@@ -2025,10 +2043,10 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		wg.Go(func() {
 			for range 12 {
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				result, err := sessions[i].CallTool(ctx, &sdk.CallToolParams{Name: "test_actor", Arguments: map[string]any{}})
+				result, err := sessions[i].CallTool(ctx, &sdk.CallToolParams{Name: "task_ready", Arguments: map[string]any{"projectId": project.ID, "view": "summary"}})
 				cancel()
 				if err != nil || result.IsError {
-					failures <- fmt.Errorf("tool call %d: %v", i, err)
+					failures <- fmt.Errorf("tool call %d: %#v %v", i, result, err)
 					return
 				}
 				encoded, err := json.Marshal(result.StructuredContent)
@@ -2037,9 +2055,11 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 					return
 				}
 				var envelope struct {
-					Data struct{ User, Credential, Kind string }
+					Data struct {
+						Items []struct{ TitlePreview string }
+					}
 				}
-				if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Data.User != principals[i].UserID || envelope.Data.Credential != principals[i].CredentialID || envelope.Data.Kind != "pat" {
+				if err := json.Unmarshal(encoded, &envelope); err != nil || len(envelope.Data.Items) != 1 || envelope.Data.Items[0].TitlePreview != principals[i].UserID+"|"+principals[i].CredentialID {
 					failures <- fmt.Errorf("unexpected actor for client %d: %s (%v)", i, encoded, err)
 					return
 				}
@@ -2308,12 +2328,12 @@ func TestStepsHTTPEditPreservesReferencedAttachment(t *testing.T) {
 	if changed.Version != added.Version+1 || len(changed.Steps) != 1 || changed.Steps[0].ID != original.ID || changed.Steps[0].Title != "Updated evidence" || changed.Steps[0].Description != "" || changed.Steps[0].Status != original.Status || changed.Steps[0].CreatedAt != original.CreatedAt {
 		t.Fatalf("edited Step: %+v", changed)
 	}
-	f.expectAttachmentRead(metadata)
+	f.expectAttachmentRead(metadata, 3)
 	response := attachmentRequest(handler, http.MethodGet, file, "", nil)
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), content) {
 		t.Fatalf("editing changed attachment bytes: %d %x", response.Code, response.Body.Bytes())
 	}
-	f.expectAttachmentRead(metadata)
+	f.expectAttachmentRead(metadata, 2)
 	page := decodeResponse[api.AttachmentPage](t, projectRequest(handler, http.MethodGet, taskPath(task)+"/attachments", ""), http.StatusOK)
 	want := api.Attachment{Path: metadata.Path, ContentType: metadata.ContentType, SizeBytes: metadata.SizeBytes, CreatedAt: metadata.CreatedAt, UpdatedAt: metadata.UpdatedAt}
 	if len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], want) {
@@ -2364,7 +2384,7 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 	deletedAt := current.UpdatedAt.Add(time.Minute)
 	prepareWrite := func(success bool, readError error) {
 		base := newTaskHTTPMockBase(t, "Task deletion")
-		want := map[string]int{"write": 1, "access": 1, "task": 1}
+		want := map[string]int{"write": 1, "access": 1, "header": 1, "task": 1}
 		if success {
 			for _, name := range []string{"dependents", "delete", "drain", "receipts", "invalidate", "capture"} {
 				want[name] = 1
@@ -2381,6 +2401,13 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		}
 		projects.InvalidateTaskCacheFn = func(ctx context.Context) error { plan.Called("invalidate"); return ctx.Err() }
 		writer := &taskHTTPWriterMock{taskHTTPMockBase: base}
+		writer.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
+			plan.Called("header")
+			if id != current.ID || ctx.Err() != nil {
+				unexpectedHTTPCall(t, "delete Task header")
+			}
+			return model.TaskHeader{ProjectID: current.ProjectID, ID: current.ID, Type: current.Type, Version: current.Version}, nil
+		}
 		writer.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
 			plan.Called("task")
 			if id != current.ID || ctx.Err() != nil {
@@ -2530,32 +2557,38 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		t.Fatal("server.New not found")
 	}
 	want := map[string]int{
-		"oauthauthorization.NewAuthorizationHTTP":  1,
-		"granthttp.RegisterRoutes":                 2,
-		"projecthttp.NewMembershipRoutes":          1,
-		"projecthttp.RegisterRoutes":               2,
-		"taghttp.RegisterRoutes":                   2,
-		"teamhttp.RegisterRoutes":                  2,
-		"workerhttp.RegisterRoutes":                2,
-		"prompthttp.RegisterRoutes":                2,
-		"workerhttp.NewReadOnlyRoutes":             1,
-		"taskhttp.TaskRoutes":                      3,
-		"sessionhttp.RegisterInspectionRoutes":     2,
-		"sessionhttp.RegisterHistoryRoutes":        2,
-		"sessionhttp.RegisterGroupDirectoryRoutes": 2,
-		"taskhttp.TaskSearchRoutes":                2,
-		"taskhttp.TaskStepsRoutes":                 2,
-		"taskhttp.TaskThreadRoutes":                2,
-		"taskhttp.TaskSyncRoutes":                  2,
-		"attachmenthttp.RegisterRoutes":            2,
-		"webhookhttp.NewRoutes":                    1,
-		"sessionhttp.NewRoutes":                    1,
-		"bothttp.RegisterRoutes":                   3,
-		"bothttp.RegisterRuntimeRoutes":            3,
-		"bothttp.RegisterRecoveryRoutes":           2,
+		"oauthauthorization.NewAuthorizationHTTP":         1,
+		"granthttp.RegisterScopedRoutesWithScopeObserver": 3,
+		"teamhttp.RegisterRoutes":                         2,
+		"teamhttp.RegisterDirectMemberRoutes":             2,
+		"sessionhttp.RegisterScopedInspectionRoutes":      2,
+		"sessionhttp.RegisterScopedHistoryRoutes":         2,
+		"sessionhttp.RegisterScopedGroupDirectoryRoutes":  2,
+		"sessionhttp.NewRoutes":                           1,
+		"bothttp.RegisterRoutes":                          3,
+		"bothttp.RegisterRuntimeRoutesWithScopeObserver":  3,
+		"bothttp.RegisterRecoveryRoutesWithScopeObserver": 2,
+	}
+	scoped := map[string]int{
+		"projecthttp.RegisterScopedRoutes":                     4,
+		"taghttp.RegisterScopedRoutes":                         2,
+		"workerhttp.RegisterScopedRoutes":                      2,
+		"prompthttp.RegisterScopedRoutes":                      2,
+		"workerhttp.NewScopedReadOnlyRoutes":                   1,
+		"taskhttp.ScopedReadRoutes":                            4,
+		"taskhttp.RegisterScopedWriteRoutes":                   3,
+		"taskhttp.RegisterScopedWorkerClaimRoutes":             2,
+		"taskhttp.ScopedTaskSearchRoutes":                      2,
+		"taskhttp.TaskStepsScopedRoutes":                       2,
+		"taskhttp.ScopedTaskThreadRoutesObserved":              2,
+		"attachmenthttp.RegisterScopedRoutesWithScopeObserver": 2,
+		"webhookhttp.RegisterScopedRoutes":                     2,
+	}
+	for name, index := range scoped {
+		want[name] = index
 	}
 	seen := make(map[string]int)
-	constructors, authRoutes, authBindings := 0, 0, 0
+	constructors, authRoutes, authBindings, policyBindings := 0, 0, 0, 0
 	ast.Inspect(constructor.Body, func(node ast.Node) bool {
 		if assignment, ok := node.(*ast.AssignStmt); ok {
 			for i, expression := range assignment.Lhs {
@@ -2587,21 +2620,35 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		if name == "authhttp.NewAuthentication" {
 			constructors++
 		}
-		if name == "auth.RegisterRoutes" {
+		if name == "authhttp.WithCredentialPolicy" {
+			policyBindings++
+			if len(call.Args) != 2 {
+				t.Error("policy authentication requires shared auth and current policy")
+			} else if id, ok := call.Args[0].(*ast.Ident); !ok || id.Name != "auth" {
+				t.Error("policy authentication does not wrap shared auth")
+			}
+		}
+		if name == "auth.RegisterScopedAccountRoutes" || name == "auth.RegisterScopedDeviceRoutesWithScopeObserver" {
 			authRoutes++
 		}
 		if index, exists := want[name]; exists {
 			seen[name]++
 			if len(call.Args) <= index {
 				t.Errorf("%s has no authentication argument", name)
-			} else if id, ok := call.Args[index].(*ast.Ident); !ok || id.Name != "auth" {
-				t.Errorf("%s does not use the shared authentication", name)
+			} else {
+				expected := "auth"
+				if _, ok := scoped[name]; ok {
+					expected = "scopedAuth"
+				}
+				if id, ok := call.Args[index].(*ast.Ident); !ok || id.Name != expected {
+					t.Errorf("%s does not use shared %s", name, expected)
+				}
 			}
 		}
 		return true
 	})
-	if constructors != 1 || authRoutes != 1 || authBindings != 1 {
-		t.Errorf("Authentication constructors = %d, bindings = %d, auth route registrations = %d; want one each", constructors, authBindings, authRoutes)
+	if constructors != 1 || authRoutes != 2 || authBindings != 1 || policyBindings != 1 {
+		t.Errorf("Authentication constructors=%d bindings=%d account/device registrations=%d policy wrappers=%d; want 1,1,2,1", constructors, authBindings, authRoutes, policyBindings)
 	}
 	for name := range want {
 		if seen[name] != 1 {

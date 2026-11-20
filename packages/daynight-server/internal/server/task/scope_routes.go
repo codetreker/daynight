@@ -83,7 +83,14 @@ func ScopedReadRoutes(mux httpx.RouteRegistrar, tasks *service.Tasks, observatio
 				httpx.ResourceMethodNotAllowed(logger, "POST")(w, r, p)
 				return
 			}
-			httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")(w, r, p)
+			allow := "GET, HEAD"
+			switch route.path {
+			case "/api/v1/projects/{projectId}/tasks":
+				allow = "GET, HEAD, POST"
+			case "/api/v1/projects/{projectId}/tasks/{taskId}":
+				allow = "GET, HEAD, PATCH, DELETE"
+			}
+			httpx.ResourceMethodNotAllowed(logger, allow)(w, r, p)
 		}))
 	}
 	const goalPath = "/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies"
@@ -91,7 +98,7 @@ func ScopedReadRoutes(mux httpx.RouteRegistrar, tasks *service.Tasks, observatio
 		(&goalDependencyHandler{service: h.tasks.(*service.Tasks), logger: logger}).show(w, r, p)
 	}))
 	mux.HandleFunc(goalPath, bind(func(_ *taskHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
-		httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")(w, r, p)
+		httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH")(w, r, p)
 	}))
 	return nil
 }

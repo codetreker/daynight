@@ -371,3 +371,20 @@ func TestScopedTaskReadSearchAndWriteRoutesComposeInAnyOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedReadMethodFallbacksIncludeMountedMutations(t *testing.T) {
+	h := scopedReadFixture(t, "task:read")
+	for _, tc := range []struct{ path, allow string }{
+		{"/tasks", "GET, HEAD, POST"},
+		{"/tasks/" + testTaskID, "GET, HEAD, PATCH, DELETE"},
+		{"/tasks/" + testTaskID + "/goal-dependencies", "GET, HEAD, PATCH"},
+		{"/tasks/search", "POST"},
+	} {
+		r := httptest.NewRequest("TRACE", "/api/v1/projects/"+testProjectID+tc.path, nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != tc.allow {
+			t.Fatalf("%s: %d Allow=%q %s", tc.path, w.Code, w.Header().Get("Allow"), w.Body)
+		}
+	}
+}

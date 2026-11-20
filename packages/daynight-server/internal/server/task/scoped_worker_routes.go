@@ -36,5 +36,8 @@ func RegisterScopedWorkerClaimRoutes(mux httpx.RouteRegistrar, tasks TaskService
 	register("PATCH "+path, "update", h.updateWorker)
 	register("POST "+path+"/release", "release", h.releaseWorker)
 	register("POST "+path+"/withdraw", "withdraw", h.withdrawWorker)
+	registerScopedMethodFallback(mux, auth, logger, path, "POST, PATCH")
+	registerScopedMethodFallback(mux, auth, logger, path+"/release", "POST")
+	registerScopedMethodFallback(mux, auth, logger, path+"/withdraw", "POST")
 	return nil
 }
