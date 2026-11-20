@@ -94,9 +94,8 @@
 .assistant-task-subscription-project > .assistant-task-subscription-checks { padding-inline-start: 24px; }
 .assistant-task-subscription-checks { display: grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap: 6px 12px; max-height: 220px; overflow: auto; }
 .assistant-task-subscription-checks label { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
-.assistant-task-subscription-endpoints { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.assistant-task-subscription-endpoints li { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
-.assistant-task-subscription-endpoints li > span:first-child { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.assistant-task-subscription-endpoint { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.assistant-task-subscription-endpoint > span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 @container bots-workspace (max-width: 650px) {
   .assistant-task-subscription-checks label, .assistant-task-subscription-project > label { min-height: 44px; }
 }

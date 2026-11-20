@@ -8,9 +8,8 @@ import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-ca
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
 
-vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: [], nextCursor: null })) }));
-vi.mock('../src/api/webhooks', async original => ({ ...await original<typeof import('../src/api/webhooks')>(), getWebhookCatalog: vi.fn(async () => ({ items: [], service: { configurationExpansionAvailable: true, dispatchEnabled: true } })) }));
-vi.mock('../src/api/teams', async original => ({ ...await original<typeof import('../src/api/teams')>(), listTeams: vi.fn(async () => ({ items: [], nextCursor: null })) }));
+const directories = vi.hoisted(() => ({ projects: [] as unknown[] }));
+vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: directories.projects, nextCursor: null })) }));
 
 const taskId = botId(90), inboxId = botId(91), operationId = botId(92);
 const token = `dnib_${'A'.repeat(43)}`, rotated = `dnib_${'B'.repeat(43)}`;
@@ -18,7 +17,7 @@ const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Inbox ta
 const off: Inbox = { inboxId: null, enabled: false, createdAt: null, rotatedAt: null, overlapUntil: null, suppressedCount: '0' };
 const on: Inbox = { inboxId, enabled: true, createdAt: BOT_TIME, rotatedAt: null, overlapUntil: null, suppressedCount: '3' };
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
-afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); });
+afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); directories.projects = []; });
 
 const receipt = (kind: string, inbox: Inbox, id: string, issued?: string | null) => ({
   operation: { operationId: id, kind, taskId, requestFingerprint: 'a'.repeat(64), admittedAt: BOT_TIME, resultingVersion: '8' }, inbox, ...(issued === undefined ? {} : { token: issued }),
@@ -35,6 +34,7 @@ function server(initial: Inbox) {
       state.inbox = off; return botResponse(receipt('inbox_disable', off, id));
     }
     if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(state.inbox);
+    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [], nextCursor: null });
     return botError(404, 'not_found');
   });
   vi.stubGlobal('fetch', fetch);
@@ -109,26 +109,6 @@ it('requires confirmation before disabling and offers enabling again', async () 
   await waitFor(() => expect(s.writes).toEqual([{ path: `/api/v1/assistant-tasks/${taskId}/inbox/disable`, input: { operationId: expect.any(String), ifVersion: '7' } }]));
   expect(await screen.findByRole('button', { name: 'Enable inbox' })).toBeVisible();
   expect(screen.queryByText(/assistant-task-inbox/)).toBeNull();
-});
-
-it('lists endpoints of an inbox that was disabled before this panel mounted for cleanup on their configuration page', async () => {
-  const origin = 'https://daynight.example', target = `${origin}/api/v1/assistant-task-inbox/${inboxId}`, endpointId = botId(93);
-  const endpoint = { id: endpointId, owner: { kind: 'personal', id: BOT_USER }, lifecycle: 'active', configVersion: '4', deletedAt: null, name: 'Assistant inbox', enabled: true, destinationRevision: '2',
-    destination: { kind: 'http', adapterVersion: '1', url: target, displayUrl: target }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(94), overlapUntil: null },
-    subscriptions: [], capabilities: { manage: true, readSecret: true, redeliver: true }, createdAt: BOT_TIME, updatedAt: BOT_TIME };
-  vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
-    const path = String(url);
-    if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(off);
-    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [{ id: endpointId, owner: endpoint.owner, name: endpoint.name, enabled: true, configVersion: '4', destination: endpoint.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: null, lastResult: null }], nextCursor: null });
-    if (path === `/api/v1/me/webhooks/${endpointId}`) return botResponse(endpoint);
-    return botError(404, 'not_found');
-  }));
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled disabled={false} onChanged={vi.fn(async () => undefined)} serviceOrigin={origin} /></TaskCacheProvider>, { locale: 'en' });
-  expect(await screen.findByRole('alert')).toHaveTextContent('The inbox is disabled.');
-  // The id of an inbox disabled elsewhere is unknown, so the endpoint is opened on its configuration page instead of acted on.
-  expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', `/webhooks?owner=personal&endpointId=${endpointId}`);
-  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
 });
 
 it('keeps the inbox state on refused writes and reports read failures', async () => {
@@ -252,4 +232,23 @@ it('retires the token once a later snapshot shows its credential rotated, replac
   mounted.rerender({ task: { ...task, version: '9' }, enabled: true });
   await waitFor(() => expect(screen.queryByRole('group', { name: 'New token' })).toBeNull());
   expect(screen.queryByText(token)).toBeNull();
+});
+
+it('remounts the subscription panel with a fresh form when the inbox id changes', async () => {
+  directories.projects = [{ id: botId(95), name: 'Alpha' }];
+  const s = server(on); mount();
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Alpha' }));
+  expect(screen.getByRole('group', { name: 'Event types for Alpha' })).toBeVisible();
+  const replacement = botId(93), serve = vi.mocked(fetch).getMockImplementation()!;
+  let release = () => undefined as void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(fetch).mockImplementation(async (url, options) => { if (String(url) === '/api/v1/me/webhooks?limit=100') await held; return serve(url, options); });
+  s.state.inbox = { ...on, inboxId: replacement };
+  mounted.rerender({ task: { ...task, version: '9' }, enabled: true });
+  expect(await screen.findByText(assistantTaskInboxUrl(replacement))).toBeVisible();
+  // The form for the previous inbox is gone before the new inbox's subscription is read.
+  expect(screen.queryByRole('checkbox', { name: 'Alpha' })).toBeNull();
+  release();
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
+  expect(screen.queryByRole('group', { name: 'Event types for Alpha' })).toBeNull();
 });

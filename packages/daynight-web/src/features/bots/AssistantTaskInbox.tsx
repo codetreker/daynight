@@ -121,7 +121,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged, service
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog({ kind: 'rotate', version: snapshotVersion }); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog({ kind: 'disable', version: snapshotVersion })} /></div>
     </> : null}
-    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.inboxId} inboxEnabled={inbox.enabled} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
+    {inbox?.enabled && inbox.inboxId !== null ? <AssistantTaskSubscriptions key={inbox.inboxId} task={task} inboxId={inbox.inboxId} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); if (changed) return; void (async () => {
       const operationId = crypto.randomUUID(), ifVersion = dialog.version;
       const ok = dialog.kind === 'rotate'
