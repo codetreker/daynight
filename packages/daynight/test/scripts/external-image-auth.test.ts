@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer, connect, type Server, type Socket } from "node:net";
-import { X509Certificate } from "node:crypto";
+import { createPrivateKey, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,18 +22,18 @@ const listen = async (server: Server): Promise<number> => {
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing fixture port."); return address.port;
 };
-const certificate = async (directory: string, name: string, hostname: string) => {
-  const names = hostname === "app.daynight.localhost" ? `${hostname},DNS:preview.daynight.localhost` : hostname;
-  // OpenSSL 1.1's default CA section already adds basicConstraints. Define
-  // each extension once instead of merging -addext with a host configuration.
-  const config = path.join(directory, `${name}-openssl.cnf`);
-  await writeFile(config, `[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=extensions\n[dn]\nCN=${hostname}\n[extensions]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:${names}\n`, { mode: 0o600 });
-  await runFile("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-sha256", "-days", "1", "-config", config, "-keyout", path.join(directory, `${name}-key.pem`), "-out", path.join(directory, `${name}-ca.pem`)], { timeout: 15_000 });
-  const cert = await readFile(path.join(directory, `${name}-ca.pem`)), parsed = new X509Certificate(cert);
+const certificate = async (directory: string, name: "daynight" | "provider" | "untrusted") => {
+  // These public test keys belong only to loopback fixtures, never deployments.
+  const source = path.resolve(import.meta.dirname, "../fixtures/external-image-auth");
+  const [key, cert] = await Promise.all([readFile(path.join(source, `${name}-key.pem`)), readFile(path.join(source, `${name}-ca.pem`))]);
+  const parsed = new X509Certificate(cert), hostname = name === "provider" ? "github.com" : "app.daynight.localhost";
   expect(parsed.ca).toBe(true); expect(parsed.subject).toBe(parsed.issuer); expect(parsed.verify(parsed.publicKey)).toBe(true);
+  expect(parsed.checkPrivateKey(createPrivateKey(key))).toBe(true);
+  expect(Date.parse(parsed.validFrom)).toBeLessThan(Date.now()); expect(Date.parse(parsed.validTo)).toBeGreaterThan(Date.now());
   expect(parsed.checkHost(hostname)).toBe(hostname);
   if (hostname === "app.daynight.localhost") expect(parsed.checkHost("preview.daynight.localhost")).toBe("preview.daynight.localhost");
-  return { key: await readFile(path.join(directory, `${name}-key.pem`)), cert };
+  await Promise.all([writeFile(path.join(directory, `${name}-key.pem`), key, { mode: 0o600 }), writeFile(path.join(directory, `${name}-ca.pem`), cert, { mode: 0o600 })]);
+  return { key, cert };
 };
 const run: RunCommand = async (command, args, options) => {
   const result = await runFile(command, [...args], { cwd: options.cwd, signal: options.signal, timeout: options.timeoutMs });
@@ -43,8 +43,9 @@ const run: RunCommand = async (command, args, options) => {
 const fixture = async (wrongAppCertificate = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../.tmp/external-image-auth-tests"); await mkdir(base, { recursive: true });
   const directory = await mkdtemp(path.join(base, "auth-")); roots.push(directory);
-  const appCert = await certificate(directory, "daynight", "app.daynight.localhost"), providerCert = await certificate(directory, "provider", "github.com");
-  const actualCert = wrongAppCertificate ? await certificate(directory, "untrusted", "app.daynight.localhost") : appCert;
+  const appCert = await certificate(directory, "daynight"), providerCert = await certificate(directory, "provider");
+  const actualCert = wrongAppCertificate ? await certificate(directory, "untrusted") : appCert;
+  if (wrongAppCertificate) expect(new X509Certificate(actualCert.cert).verify(new X509Certificate(appCert.cert).publicKey)).toBe(false);
   let authOrigin = "", appOrigin = "", previewOrigin = "", loginRequests = 0, tokenRequests = 0;
   const sso: string[] = [];
   const auth = createHttpServer((request, response) => {
