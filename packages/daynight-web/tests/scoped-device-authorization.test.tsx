@@ -23,14 +23,14 @@ describe('scoped CLI authorization', () => {
     expect(approve).toBeDisabled(); await match(); expect(approve).toBeEnabled();
     fireEvent.click(approve);
     await screen.findByRole('heading', { name: 'CLI authorized' });
-    expect(transport.decide).toHaveBeenCalledExactlyOnceWith(code, 'approve', user.id, { catalogRevision: revision, scopes: ['team:read'] }, expect.any(AbortSignal), mismatch, expect.any(Function));
+    expect(transport.decide).toHaveBeenCalledExactlyOnceWith(code, 'approve', user.id, { catalogRevision: revision, scopes: ['team:read'] }, expect.any(AbortSignal), mismatch, expect.any(Function), expect.any(Function));
   });
   it('allows denial without a catalog and never sends scope fields', async () => {
     const transport = fixture(); transport.catalog.mockRejectedValue(new ApiError('network')); render(page(transport));
     expect(await screen.findByText('The current permission catalog could not be read. Read it again.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Deny request' }));
     await screen.findByRole('heading', { name: 'Request denied' });
-    expect(transport.decide).toHaveBeenCalledExactlyOnceWith(code, 'deny', user.id, undefined, expect.any(AbortSignal), mismatch, expect.any(Function));
+    expect(transport.decide).toHaveBeenCalledExactlyOnceWith(code, 'deny', user.id, undefined, expect.any(AbortSignal), mismatch, expect.any(Function), expect.any(Function));
   });
   it('blocks approval when the catalog and inspection differ or labels are missing', async () => {
     const transport = fixture(); transport.catalog.mockResolvedValue({ pat: catalog(revision2), mcp: catalog() }); render(page(transport));
@@ -59,6 +59,19 @@ describe('scoped CLI authorization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Authorize CLI' }));
     await screen.findByRole('heading', { name: 'CLI authorized' });
     expect(transport.decide).toHaveBeenCalledTimes(2);
+  });
+  it('recovers the pending original request after a confirmed expired session and same-account sign-in', async () => {
+    const transport = fixture();
+    transport.decide.mockImplementationOnce(async (_code, _decision, _user, _selection, _signal, _mismatch, onDispatch, onUnauthorized) => {
+      onDispatch?.(); onUnauthorized?.(); throw new ApiError('server', 401, 'unauthenticated');
+    });
+    const view = render(page(transport)); await match(); fireEvent.click(screen.getByRole('button', { name: 'Authorize CLI' }));
+    await screen.findByText('Your decision could not be confirmed'); view.unmount();
+    render(page(transport)); await match();
+    expect(screen.getByRole('button', { name: 'Authorize CLI' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Authorize CLI' }));
+    await screen.findByRole('heading', { name: 'CLI authorized' });
+    expect(transport.inspect).toHaveBeenCalledTimes(2); expect(transport.decide).toHaveBeenCalledTimes(2);
   });
   it('does not replay an unknown result after refresh, and reads the original request', async () => {
     const transport = fixture(); transport.decide.mockRejectedValue(new ApiError('network')); const view = render(page(transport));

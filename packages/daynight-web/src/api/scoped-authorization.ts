@@ -31,10 +31,10 @@ export const inspectScopedDeviceAuthorization = (code: string, userId: string, s
   });
 });
 
-export const decideScopedDeviceAuthorization = (code: string, decision: 'approve' | 'deny', userId: string, selection: ScopeSelection | undefined, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<void> => credentialOperation(signal, async () => {
+export const decideScopedDeviceAuthorization = (code: string, decision: 'approve' | 'deny', userId: string, selection: ScopeSelection | undefined, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void, onUnauthorized?: () => void): Promise<void> => credentialOperation(signal, async () => {
   const userCode = deviceCode(code), expectedUserId = requestId(userId);
   const body = JSON.stringify({ userCode, decision, expectedUserId, ...scopedDecisionFields(decision, selection) });
-  const response = await request('/api/v2/auth/device/decision', signal, { method: 'POST', headers, body }, onDispatch);
+  const response = await request('/api/v2/auth/device/decision', signal, { method: 'POST', headers, body }, onDispatch, onUnauthorized);
   assertResponsePrincipal(response, expectedUserId, onIdentityMismatch);
   responseSignal(response, signal).throwIfAborted();
   if (!response.ok) return json(response, signal, () => malformed());

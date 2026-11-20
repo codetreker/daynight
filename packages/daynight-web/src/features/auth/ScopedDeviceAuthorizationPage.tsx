@@ -106,7 +106,7 @@ export const ScopedDeviceAuthorizationPage = ({ user, initialCode, onSwitchAccou
     const controller = new AbortController(); active.current = controller;
     dispatch.current = { code: inspection.userCode, sent: false };
     setState({ kind: 'sending', inspection, catalog });
-    void transport.decide(inspection.userCode, decision, user.id, decision === 'approve' && catalog ? { catalogRevision: catalog.catalogRevision, scopes: selected } : undefined, controller.signal, onIdentityMismatch, () => { if (dispatch.current) dispatch.current.sent = true; }).then(() => {
+    void transport.decide(inspection.userCode, decision, user.id, decision === 'approve' && catalog ? { catalogRevision: catalog.catalogRevision, scopes: selected } : undefined, controller.signal, onIdentityMismatch, () => { if (dispatch.current) dispatch.current.sent = true; }, () => clearMarker(inspection.userCode)).then(() => {
       if (!controller.signal.aborted) { clearMarker(inspection.userCode); setState({ kind: 'ready', inspection: { ...inspection, status: decision === 'approve' ? 'approved' : 'denied' }, catalog: null, catalogError: false, reconciled: false }); }
     }).catch((error: unknown) => {
       if (controller.signal.aborted || isAbortError(error)) { if (dispatch.current && !dispatch.current.sent) clearMarker(inspection.userCode); return; }

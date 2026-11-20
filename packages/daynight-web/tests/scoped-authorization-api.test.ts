@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readCredentialScopeCatalog, parseScopeCatalog } from '../src/api/credential-scope';
+import { pauseAuthRequests, subscribeUnauthorized } from '../src/api/client';
 import { decideScopedConsent, decideScopedDeviceAuthorization, inspectScopedConsent, inspectScopedDeviceAuthorization } from '../src/api/scoped-authorization';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -57,6 +58,29 @@ describe('scoped authorization API', () => {
     await expect(decideScopedDeviceAuthorization(device.userCode, 'approve', user, { ...selection, scopes: [] }, signal(), vi.fn())).rejects.toThrow();
     await expect(decideScopedDeviceAuthorization(device.userCode, 'deny', user, selection, signal(), vi.fn())).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it('reports a definite device 401 and withholds its callback when an identity pause begins', async () => {
+    const refusal = () => new Response(JSON.stringify({ error: { code: 'unauthenticated', message: 'Session expired', requestId: 'req-1' } }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    const gate = Promise.withResolvers<Response>();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(refusal()).mockReturnValueOnce(gate.promise);
+    const unauthorized = vi.fn(), mismatch = vi.fn(), notified = vi.fn();
+    const unsubscribe = subscribeUnauthorized(notified);
+    try {
+      await expect(decideScopedDeviceAuthorization(device.userCode, 'deny', user, undefined, signal(), mismatch, undefined, unauthorized)).rejects.toMatchObject({ kind: 'server', status: 401, code: 'unauthenticated' });
+      expect(unauthorized).toHaveBeenCalledOnce();
+      expect(notified).toHaveBeenCalledOnce();
+      expect(mismatch).not.toHaveBeenCalled();
+      const pending = decideScopedDeviceAuthorization(device.userCode, 'deny', user, undefined, signal(), mismatch, undefined, unauthorized);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      const resume = pauseAuthRequests();
+      try {
+        gate.resolve(refusal());
+        await expect(pending).rejects.toMatchObject({ kind: 'server', status: 401, code: 'unauthenticated' });
+        expect(notified).toHaveBeenCalledTimes(2);
+        expect(unauthorized).toHaveBeenCalledOnce();
+        expect(mismatch).not.toHaveBeenCalled();
+      } finally { resume(); }
+    } finally { unsubscribe(); }
   });
   it('binds OAuth inspection and decision to the original request, account and callback', async () => {
     const callback = 'http://127.0.0.1:1234/callback?code=secret&iss=https%3A%2F%2Fdaynight.example';
