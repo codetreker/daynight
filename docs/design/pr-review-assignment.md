@@ -20,7 +20,7 @@ App 启动一个有界周期对账循环，关闭时取消并等待循环退出�
 
 ## Worker 轮询
 
-`GET`、`HEAD` `/api/v1/me/workers/{workerId}/review-pull-requests` 以当前账号和已注册 Worker 定位名单。响应包含 `reviewEnabled`、`pullRequests` 和 `nextCursor`；每项的 `projectId` 为规范 UUID，`repositoryId` 和 `number` 为规范正十进制字符串，`repositoryUrl` 使用当前已验证的 GitHub 仓库名称。未知或其他账号的 Worker 返回 404；参与开关关闭时返回空名单和 null 游标。响应禁止缓存。
+`GET`、`HEAD` `/api/v1/me/workers/{workerId}/review-pull-requests` 以当前账号和已注册 Worker 定位名单。响应包含 `reviewEnabled`、`pullRequests` 和 `nextCursor`；每项的 `projectId` 为规范 UUID，`repositoryId` 和 `number` 为规范正十进制字符串，`repositoryUrl` 使用当前已验证的 GitHub 仓库名称。未知或其他账号的 Worker 返回 404；参与开关关闭时返回空名单和 null 游标。响应禁止缓存。 Worker 对完整名单的消费与本地审查恢复见 [Worker Reviewer 设计](worker-reviewer.md)。
 
 每页在同一只读快照中读取 Worker 开关和目标项目选择，再按当前 Project 读取权限、当前仓库、Open 状态及已同步默认分支过滤长期归属。Draft 保留；改向、终态、权限撤销或换仓使候选退出名单，但不删除归属。默认 20 条、最多 100 条，以 `(project_id, repository_id, github_pr_id)` 升序 keyset 查询多一条判断后页。游标绑定账号、Worker 和页大小，每页重新核对资格；跨页变化可在下一轮才被观察。调用方须成功遍历所有页后才应用本轮名单。
 

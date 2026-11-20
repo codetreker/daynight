@@ -77,6 +77,9 @@ func userREST(path string, nativePaths []string) bool {
 		return false
 	}
 	// Account credential management is available only to main-site sessions.
+	if path == "/api/v1/me/credential-scope-catalog" || path == "/api/v2/auth/device/inspect" || path == "/api/v2/auth/device/decision" {
+		return false
+	}
 	const tokens = "/api/v2/me/tokens"
 	if path == tokens {
 		return false

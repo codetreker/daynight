@@ -198,6 +198,27 @@ export const openStore = (databaseFile: SqliteDatabaseSource, options: { busyTim
       db.prepare("UPDATE review_publications SET phase = 'pending' WHERE review_id = ?").run(review.id);
       db.prepare("UPDATE reviews SET process_id = NULL, process_identity = NULL, updated_at = ? WHERE id = ?").run(now, review.id);
     }),
+    retainPossiblePublication: (reviewId: string, error: string, now: number): ReviewState => atomic(() => {
+      const review = needReview(reviewId);
+      const publication = getReviewPublication(reviewId);
+      if ((review.status !== "running" && review.status !== "interrupted") || publication?.publisherId == null || !["prepared", "pending"].includes(publication.phase)) throw new Error("A running attempt with a captured publisher is required.");
+      requireText(error, "Interruption error");
+      requireInteger(now, "Interruption time");
+      db.prepare("UPDATE review_publications SET phase = 'pending' WHERE review_id = ?").run(reviewId);
+      return setStatus(review, "interrupted", now, error);
+    }),
+    recoverPossiblePublication: (reviewId: string, proof: ProcessesExcluded & OperationsStopped, now: number): ReviewState => atomic(() => {
+      requireExcluded(proof); requireStopped(proof); requireInteger(now, "Recovery time");
+      const review = needReview(reviewId);
+      if (review.status !== "interrupted" || getReviewPublication(reviewId)?.phase !== "pending") throw new Error("An interrupted pending publication is required.");
+      db.prepare("UPDATE reviews SET status = 'running', process_id = NULL, process_identity = NULL, retry_at = NULL, updated_at = ? WHERE id = ?").run(now, reviewId);
+      return needReview(reviewId);
+    }),
+    rejectAndRetryPublication: (identity: AttemptIdentity, proof: ProcessesExcluded, input: { error: string; retryAt: number }, now: number): ReviewState => atomic(() => {
+      if (getReviewPublication(identity.reviewId)?.phase !== "pending") throw new Error("Publication verification is not pending.");
+      db.prepare("UPDATE review_publications SET phase = 'prepared' WHERE review_id = ?").run(identity.reviewId);
+      return store.retryReview(identity, proof, input, now);
+    }),
     rejectPublicationVerification: (reviewId: string): void => atomic(() => {
       if (getReviewPublication(reviewId)?.phase !== "pending") throw new Error("Publication verification is not pending.");
       db.prepare("UPDATE review_publications SET phase = 'prepared' WHERE review_id = ?").run(reviewId);

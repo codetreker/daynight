@@ -1,3 +1,4 @@
+import { runReviewerHost } from "./reviewer-host.js";
 import { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 import { replayStoppedControllerUsage } from "../controller/usage/stopped.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
@@ -269,8 +270,8 @@ const webToolSelections = (homeDirectory: string, web: Awaited<ReturnType<typeof
 export type WorkerExecutionControl = {
   readonly generation: string;
   snapshot: ExecutionScope["snapshot"];
-  stop(): Promise<OwnerStopResult[]>;
-  reconcile(): Promise<OwnerStopResult[]>;
+  stop(options?: { deadline: number }): Promise<OwnerStopResult[]>;
+  reconcile(options?: { deadline: number }): Promise<OwnerStopResult[]>;
   rebuild(): void;
 };
 type WorkerRunOptions = {
@@ -333,6 +334,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let promptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
+  let reviewerRun: Promise<void> | undefined;
+  let reviewerSettled = false;
   let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
   let modelDiscovery: ReturnType<typeof createWorkerModelDiscovery> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
@@ -370,8 +373,8 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     if (controlPublished) return;
     controlPublished = true;
     options.onExecutionScope?.({ generation: scope.generation, snapshot: scope.snapshot,
-      stop: async () => ownerResults = await scope.stop(),
-      reconcile: async () => ownerResults = await scope.reconcile(),
+      stop: async options => ownerResults = await scope.stop(options),
+      reconcile: async options => ownerResults = await scope.reconcile(options),
       rebuild: () => {
         if (!scope.snapshot().stopped) throw new Error("Execution scope cannot rebuild before all original resources are confirmed stopped.");
         rebuildRequested = true; requestRebuild!();
@@ -429,13 +432,16 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   scope.register({ resourceId: "bots", ownerKind: "bot",
     closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
     stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
+  scope.register({ resourceId: "reviewer", ownerKind: "assistant",
+    snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
+    stop: async () => { await reviewerRun; } });
   scope.register({ resourceId: "probes", ownerKind: "probe",
     stop: stopProbes });
   scope.register({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
   scope.register({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
     // Producer owners cancel concurrently; drain their final resource events before observing closure.
     await drainReport();
-    await join([stopRepository(), stopProbes()]);
+    await join([stopRepository(), stopProbes(), reviewerRun]);
     await root.journal?.drain();
     await root.journal?.assertClosed();
     if (retainedOwnedCommandBoundaries().length) throw new Error("Original native command boundaries remain unconfirmed.");
@@ -925,6 +931,9 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
       return receipt;
     }, emit, configuration: exchange });
+    reviewerRun = runReviewerHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, serverOrigin: serverUrl,
+      serverToken, userId, workerId, signal, emit }).finally(() => { reviewerSettled = true; });
+    void reviewerRun.catch(executionFailure);
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
     scheduleInitialRemovals();
     signal.throwIfAborted();
@@ -1089,6 +1098,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     }
     try { await withinExecutionDeadline(reportDrain ?? reporter?.stop() ?? Promise.resolve(), Date.now() + 10_000); } catch (error) { failures.push(error); }
     observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
+
     try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     failures.push(...configurationDiagnostics?.errors() ?? []);

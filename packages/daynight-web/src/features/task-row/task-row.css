@@ -31,9 +31,9 @@
   .task-row .task-row-status { justify-content: flex-start; }
 }
 
-.task-row .task-assignee-identity, .task-row .assignee-former,
 .task-row .task-ready, .task-row .graph-blocked-badge,
-.task-row-goal, .task-row-tag-state { font-size: var(--text-sm); }
+.task-row-tag-state { font-size: var(--text-sm); }
+.task-row-meta :is(.task-assignee-identity, .assignee-former) { font-size: var(--text-xs); }
 .task-row .task-platform, .task-row .task-agent-permission,
 .task-row.task-status-surface .task-row-status :is(.task-paused-badge, .root-status, .project-session-control, .project-session-text) { font-size: var(--text-xs); }
 .task-row .task-duration, .task-row .completion-time-label, .task-row .task-stuck-label { font-size: var(--text-xs); }

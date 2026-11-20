@@ -237,14 +237,16 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 func TestScopeRefusalPreservesHTTPEnvelopeAndSuppressesUncertainResults(t *testing.T) {
 	fault := &model.Fault{Code: "insufficient_scope", Message: "Credential scope is insufficient."}
 	for _, tc := range []struct {
-		name         string
-		err          error
-		status       int
-		code, header string
+		name   string
+		err    error
+		status int
+		code   string
+		header string
 	}{
-		{"refusal", fault, http.StatusForbidden, "forbidden", "insufficient_scope"},
+		{"refused", fault, http.StatusForbidden, "forbidden", "insufficient_scope"},
 		{"not committed", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, http.StatusForbidden, "forbidden", "insufficient_scope"},
 		{"unknown commit", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}, http.StatusInternalServerError, "internal_error", ""},
+		{"mixed failure", errors.Join(fault, errors.New("independent failure")), http.StatusInternalServerError, "internal_error", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()

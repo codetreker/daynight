@@ -28,7 +28,7 @@ type reviewAssignmentResponse struct {
 
 // Exercise a saved PR and an independently enabled Worker through the real
 // background reconciliation loop and public APIs.
-func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, retargetSecond func(), retargetFirst, setSecondState func(string), switchRepository func(bool)) {
+func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, commits reviewerFixtureCommits, retargetSecond func(), retargetFirst, setSecondState func(string), switchRepository func(bool)) {
 	t.Helper()
 	path := "/api/v1/projects/" + projectID + "/pull-requests/"
 	read := func(number string) reviewAssignmentResponse {
@@ -162,6 +162,7 @@ func serverAPIReviewAssignmentFlow(t *testing.T, f *fixture, projectID string, r
 		t.Fatalf("assignment differs: %+v", assigned)
 	}
 	assertCandidates(workerID, true, "1")
+	serverAPIReviewerWorkerFlow(t, f, projectID, workerID, commits)
 
 	reviewassignment.New(db, nil).Batch(f.context, 64)
 	var firstCount, secondCount int

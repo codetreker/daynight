@@ -20,7 +20,7 @@ func TestRequireCredentialProfilesAndAllOperations(t *testing.T) {
 	}
 	err = Require(auth, scopepolicy.PromptRead, scopepolicy.PromptWrite)
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "insufficient_scope" {
+	if !errors.As(err, &fault) || fault.Code != "insufficient_scope" || !errors.Is(err, scopepolicy.ErrInsufficientScope) {
 		t.Fatalf("missing write: %v", err)
 	}
 	auth.Policy = nil
