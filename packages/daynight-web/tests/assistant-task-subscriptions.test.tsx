@@ -21,7 +21,7 @@ const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Release 
 const project = (id: string, name: string) => ({ id, name } as Project);
 const team = { id: teamId, kind: 'ordinary', name: 'Ops' } as Team;
 const personal = { kind: 'personal', id: BOT_USER };
-type Subscription = { id: string; projectId: string; projectName: string | null; eventTypes: string[]; eligibility: 'eligible' };
+type Subscription = { id: string; projectId: string; projectName: string | null; eventTypes: string[]; eligibility: 'eligible' | 'confirmation_required' };
 const endpoint = (id: string, url: string, subscriptions: Subscription[], enabled = true, version = '4') => ({
   id, owner: personal, lifecycle: 'active', configVersion: version, deletedAt: null, name: `Endpoint ${id.slice(-2)}`, enabled, destinationRevision: '2',
   destination: { kind: 'http', adapterVersion: '1', url, displayUrl: url }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(79), overlapUntil: null },
@@ -77,6 +77,13 @@ it('only offers self-subscription on public HTTPS origins and matches targets by
   expect(targetsInbox(`${origin}/api/v1/assistant-task-inbox/${botId(1)}`, inboxUrl)).toBe(false);
   expect(targetsInbox(null, inboxUrl)).toBe(false);
   expect(targetsInbox('::', inboxUrl)).toBe(false);
+});
+
+it('does not offer self-subscription on IP literals the outbound sender rejects', () => {
+  for (const value of ['https://192.168.1.10', 'https://10.0.0.1', 'https://172.16.4.2', 'https://100.64.0.1', 'https://169.254.1.1', 'https://0.0.0.0', 'https://224.0.0.1', 'https://198.51.100.7', 'https://[fd00::1]', 'https://[fe80::1]', 'https://[::ffff:192.168.1.10]', 'https://[2001:db8::1]', 'https://[2002::1]', 'https://[::]'])
+    expect(canSelfSubscribe(value), value).toBe(false);
+  for (const value of ['https://8.8.8.8', 'https://[2606:4700::1111]', 'https://[::ffff:8.8.8.8]', 'https://app.example:8443'])
+    expect(canSelfSubscribe(value), value).toBe(true);
 });
 
 it('explains that a localhost deployment cannot subscribe its own inbox', () => {
@@ -502,4 +509,120 @@ it('retries a failed subscription read', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Webhook subscriptions.');
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
+});
+
+it('keeps a conflicted draft when a failed refresh is retried', async () => {
+  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
+  const s = server({ personal: [linked] }); mount();
+  await screen.findByRole('checkbox', { name: 'Alpha' });
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
+  s.fetch.mockImplementationOnce(async () => botError(409, 'version_conflict')).mockImplementationOnce(async () => botError(500, 'internal'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(screen.queryByText('Could not load Webhook subscriptions.')).toBeNull());
+  expect(screen.getByText(/This subscription changed elsewhere/)).toBeVisible();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeDisabled();
+});
+
+it('locks the selection while a save is pending', async () => {
+  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
+  const s = server({ personal: [linked] }); mount();
+  await screen.findByRole('checkbox', { name: 'Alpha' });
+  const serve = s.fetch.getMockImplementation()!;
+  let release = () => undefined as void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  s.fetch.mockImplementation(async (url, options) => { if ((options?.method ?? 'GET') === 'PATCH') await held; return serve(url, options); });
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' })).toBeDisabled());
+  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeDisabled();
+  release();
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeEnabled());
+});
+
+it('does not carry a create draft to a new inbox of the same task', async () => {
+  const s = server();
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (id: string) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={id} inboxEnabled active serviceOrigin={origin} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(inboxId), { locale: 'en' });
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
+  rerender(view(botId(85)));
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  expect(screen.getByRole('alert')).toHaveTextContent('Select at least one project');
+  expect(s.writes).toHaveLength(0);
+});
+
+it('keeps a paused endpoint paused on save and resumes it only on request', async () => {
+  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created', 'task.deleted'], eligibility: 'eligible' }], false);
+  const s = server({ personal: [linked] }); mount();
+  expect(await screen.findByText(/This endpoint is paused/)).toBeVisible();
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' }));
+  // Resuming would discard the unsaved edit, so it waits until the edit is saved.
+  expect(screen.getByRole('button', { name: 'Resume deliveries' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body).not.toHaveProperty('enabled');
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Resume deliveries' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Resume deliveries' }));
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]).toMatchObject({ method: 'PATCH', body: { ifVersion: '5', enabled: true } });
+  expect(s.writes[1]!.body).not.toHaveProperty('subscriptions');
+  await waitFor(() => expect(screen.queryByText(/This endpoint is paused/)).toBeNull());
+});
+
+it('keeps a draft project that is no longer accessible visible and removable', async () => {
+  const s = server();
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  for (const name of ['Alpha', 'Beta']) {
+    fireEvent.click(screen.getByRole('checkbox', { name }));
+    fireEvent.click(eventsOf(name).getByRole('checkbox', { name: 'Task created' }));
+  }
+  rerender(view(false));
+  directories.projects = [project(beta, 'Beta')];
+  rerender(view(true));
+  const revoked = `Unavailable project (${alpha})`;
+  await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Alpha' })).toBeNull());
+  expect(screen.getByRole('checkbox', { name: revoked })).toBeChecked();
+  fireEvent.click(screen.getByRole('checkbox', { name: revoked }));
+  expect(screen.queryByRole('checkbox', { name: revoked })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body.subscriptions).toEqual([{ id: null, projectId: beta, eventTypes: ['task.created'] }]);
+});
+
+it('directs the user to confirm a project scope before adding events to it', async () => {
+  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created', 'task.deleted'], eligibility: 'confirmation_required' }]);
+  const s = server({ personal: [linked] }); mount();
+  expect(await screen.findByText(/suspended until you confirm its scope/)).toBeVisible();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeDisabled();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm scope' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]).toMatchObject({ method: 'PATCH', body: { ifVersion: '4', confirmProjectIds: [alpha] } });
+  expect(s.writes[0]!.body).not.toHaveProperty('subscriptions');
+});
+
+it('truncates the generated endpoint name on code point boundaries', async () => {
+  const s = server();
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const named = { ...task, name: `${'a'.repeat(81)}\u{1F680}` };
+  renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={named} inboxId={inboxId} inboxEnabled active serviceOrigin={origin} /></TaskCacheProvider>, { locale: 'en' });
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  const name = String(s.writes[0]!.body.name);
+  expect(name).toBe(`Assistant inbox · ${'a'.repeat(81)}\u{1F680}`);
+  expect([...name]).toHaveLength(100);
+  expect(name.isWellFormed()).toBe(true);
 });

@@ -28,6 +28,10 @@ const en = {
   eventsFor: (project: string) => `Event types for ${project}`,
   duplicate: 'Several personal endpoints target this inbox, so each matching event is delivered once per endpoint. Open the extra endpoints and delete them.',
   maintenance: 'Webhook changes that add deliveries are temporarily unavailable. Removing event types, pausing and deleting endpoints remain available.',
+  pausedNotice: 'This endpoint is paused, so no events are delivered to the inbox. Saving the subscription keeps it paused.', resume: 'Resume deliveries',
+  unavailableProject: (id: string) => `Unavailable project (${id})`,
+  confirmNotice: 'Deliveries for this project are suspended until you confirm its scope. New event types are not delivered before that; removing event types remains available.', confirmScope: 'Confirm scope',
+  ineligible: 'Deliveries for this project are suspended. Removing event types remains available.',
 };
 const zh: typeof en = {
   title: 'Daynight 事件订阅',
@@ -46,6 +50,10 @@ const zh: typeof en = {
   eventsFor: (project: string) => `${project} 的事件类型`,
   duplicate: '有多个个人端点指向这个收件箱，每个匹配事件会按端点各投递一次。请打开多余的端点并删除。',
   maintenance: '会新增投递的 Webhook 修改暂不可用；移除事件类型、暂停和删除端点仍可进行。',
+  pausedNotice: '这个端点已暂停，事件不会投递到收件箱。保存订阅不会恢复投递。', resume: '恢复投递',
+  unavailableProject: (id: string) => `不可用的项目（${id}）`,
+  confirmNotice: '这个项目的投递已暂停，需要先确认范围。确认前新增的事件类型不会投递；移除事件类型仍可进行。', confirmScope: '确认范围',
+  ineligible: '这个项目的投递已暂停。移除事件类型仍可进行。',
 };
 const useMessages = () => useI18n().locale === 'zh-CN' ? zh : en;
 
@@ -53,12 +61,43 @@ const EVENT_TYPES: readonly WebhookEventType[] = ['task.created', 'task.status_c
 const idle: WebhookIntentState = { phase: 'idle', prepared: null, result: null, error: null, reconciling: false, persistenceError: null };
 const inertSubscribe = () => () => {};
 
-/** Outbound delivery accepts only public HTTPS targets, so loopback and plain HTTP deployments cannot target their own inbox. */
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+// Non-public IPv4 ranges of the IANA special-purpose registry that the outbound sender
+// (packages/daynight-server/internal/utils/httpoutbound/address.go) rejects.
+const NON_PUBLIC_V4: readonly (readonly [number, number])[] = [
+  [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0000200, 24],
+  [0xc0586300, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xc6336400, 24], [0xcb007100, 24], [0xe0000000, 4], [0xf0000000, 4],
+];
+const publicV4 = (value: number) => !NON_PUBLIC_V4.some(([prefix, bits]) => (value >>> (32 - bits)) === (prefix >>> (32 - bits)));
+const parseV6 = (host: string): number[] | null => {
+  const halves = host.split('::');
+  if (halves.length > 2) return null;
+  const groups = (part: string) => part === '' ? [] : part.split(':').map(group => /^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN);
+  const head = groups(halves[0]!), tail = halves.length === 2 ? groups(halves[1]!) : [];
+  const fill = 8 - head.length - tail.length;
+  if (fill < 0 || halves.length === 1 && fill !== 0) return null;
+  const all = [...head, ...Array<number>(fill).fill(0), ...tail];
+  return all.some(Number.isNaN) ? null : all;
+};
+/** Mirrors the sender's public-address policy for IP literals; host names are resolved and checked only when delivering. */
+const publicLiteral = (host: string): boolean => {
+  const v4 = IPV4.exec(host);
+  if (v4 !== null) return publicV4(v4.slice(1).reduce((value, part) => value * 256 + Number(part), 0));
+  if (!host.includes(':')) return true;
+  const groups = parseV6(host);
+  if (groups === null) return false;
+  // IPv4-mapped addresses are classified as their IPv4 address.
+  if (groups.slice(0, 5).every(group => group === 0) && groups[5] === 0xffff) return publicV4((groups[6]! * 0x10000 + groups[7]!) >>> 0);
+  const [first, second] = [groups[0]!, groups[1]!];
+  // Only 2000::/3 is global unicast; within it the IETF protocol, documentation and 6to4 blocks are not public targets.
+  return (first & 0xe000) === 0x2000 && !(first === 0x2001 && second < 0x0200) && !(first === 0x2001 && second === 0x0db8) && first !== 0x2002 && (first & 0xfff0) !== 0x3ff0;
+};
+/** Outbound delivery accepts only public HTTPS targets, so loopback, private-address and plain HTTP deployments cannot target their own inbox. */
 export const canSelfSubscribe = (origin: string): boolean => {
   let url: URL;
   try { url = new URL(origin); } catch { return false; }
   const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  return url.protocol === 'https:' && host !== 'localhost' && !host.endsWith('.localhost') && host !== '::1' && host !== '0.0.0.0' && !/^127\./.test(host);
+  return url.protocol === 'https:' && host !== 'localhost' && !host.endsWith('.localhost') && publicLiteral(host);
 };
 /**
  * The inbox route and its Delivery target check accept only the exact inbox path, so a query string does not separate
@@ -84,8 +123,12 @@ export const targetsAnyInbox = (target: string | null, origin: string): boolean 
 
 /** The event types chosen for each selected project, keyed by project id. An unselected project has no key. */
 type Selection = Readonly<Record<string, readonly WebhookEventType[]>>;
-/** An edit is bound to the endpoint state it started from; `base` is null when the edit creates the endpoint. */
-type Draft = { readonly base: WebhookActiveEndpoint | null; readonly projects: Selection };
+/**
+ * An edit is bound to the inbox it was made for (`key`) and the endpoint state it started from; `base` is null when the
+ * edit creates the endpoint. `conflicted` is set when the service rejected this draft's base version; the draft is kept
+ * but cannot be submitted again.
+ */
+type Draft = { readonly key: string; readonly base: WebhookActiveEndpoint | null; readonly projects: Selection; readonly conflicted: boolean };
 // Each project shows the union of its subscriptions' events. A project may hold several independent subscriptions; it
 // appears once.
 const selectionOf = (endpoint: WebhookActiveEndpoint | null): Selection => {
@@ -200,9 +243,13 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? (() => idle));
   const busy = intent.phase === 'preparing' || intent.phase === 'submitting' || intent.phase === 'unknown' || intent.reconciling;
   const [failure, setFailure] = useState<unknown>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  // Set when the service rejected this draft's base version; the draft is kept but cannot be submitted again.
-  const [conflicted, setConflicted] = useState(false);
+  const [storedDraft, setDraft] = useState<Draft | null>(null);
+  // Re-enabling the task's inbox issues a new inbox id without remounting this panel. A draft made for another inbox is
+  // ignored, so its choices are never sent to the new destination even when neither inbox has an endpoint.
+  const draft = storedDraft !== null && storedDraft.key === matchKey ? storedDraft : null;
+  // Set for the whole save, including the create preflight read, so the draft submitted is the draft a confirmation clears.
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   // Both a direct submit and a manual reconciliation can confirm a create; either way the endpoint is adopted.
   const confirm = useCallback((state: WebhookIntentState) => {
     if (state.result?.operation.kind === 'endpoint.create' && matchKey !== null && inboxUrl !== null) {
@@ -219,7 +266,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
       setDirectory(old => old === null ? old : { ...old, value: { ...old.value, personal: old.value.personal.flatMap(item => fresh(item) ?? []) } });
       setCreated(old => old?.endpoint == null || old.endpointId !== view.id ? old : { ...old, endpoint: fresh(old.endpoint) });
     }
-    setDraft(null); setConflicted(false); setRevision(value => value + 1);
+    setDraft(null); setRevision(value => value + 1);
   }, [matchKey, inboxUrl, matches]);
   /** Returns the rejection error, or null when the change was confirmed or its outcome is unknown. */
   const submit = useCallback(async (input: WebhookIntentInput): Promise<unknown> => {
@@ -241,19 +288,21 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   // An edit in progress survives background reloads; a confirmed save or an explicit retry adopts the service's
   // configuration again.
   const lastRevision = useRef(revision);
-  useEffect(() => { if (lastRevision.current !== revision) { lastRevision.current = revision; setDraft(null); setConflicted(false); } }, [revision]);
+  useEffect(() => { if (lastRevision.current !== revision) { lastRevision.current = revision; setDraft(null); } }, [revision]);
   // PATCH replaces the whole subscription list under the CAS version it names. A reload that advances the endpoint must
   // not carry an older draft to the newer version, which would silently drop subscriptions added elsewhere; nor may a
   // create draft proceed once an endpoint already targets this inbox. The draft keeps its starting state, and a
   // changed endpoint, or a version conflict the service reported for it, blocks saving until the user discards the edit.
   const editing = draft === null ? primary : draft.base;
   const baseline = useMemo(() => draft === null ? current : selectionOf(draft.base), [draft, current]);
-  const stale = draft !== null && (conflicted || !sameEndpointState(draft.base, primary));
+  const stale = draft !== null && (draft.conflicted || !sameEndpointState(draft.base, primary));
   const selection: Selection = draft?.projects ?? current;
   const [invalid, setInvalid] = useState(false);
+  const locked = busy || saving;
   const edit = (change: (projects: Selection) => Selection) => {
+    if (savingRef.current || matchKey === null) return;
     setInvalid(false);
-    setDraft(old => { const next = old ?? { base: primary, projects: current }; return { ...next, projects: change(next.projects) }; });
+    setDraft(old => { const next = old !== null && old.key === matchKey ? old : { key: matchKey, base: primary, projects: current, conflicted: false }; return { ...next, projects: change(next.projects) }; });
   };
   // A project checked again starts from the events it had before the edit, so unchecking by mistake loses nothing.
   const toggleProject = (projectId: string, checked: boolean) => edit(projects => {
@@ -264,12 +313,12 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
     const events = projects[projectId] ?? [];
     return { ...projects, [projectId]: checked ? EVENT_TYPES.filter(item => item === event || events.includes(item)) : events.filter(item => item !== event) };
   });
-  const discard = () => { setInvalid(false); setDraft(null); setConflicted(false); setRefresh(value => value + 1); };
-  const holdConflict = (held: Draft) => { setFailure(null); setDraft(held); setConflicted(true); setRefresh(value => value + 1); };
+  const discard = () => { setInvalid(false); setDraft(null); setRefresh(value => value + 1); };
+  const holdConflict = (held: Draft) => { setFailure(null); setDraft({ ...held, conflicted: true }); setRefresh(value => value + 1); };
   const expansionAvailable = data?.expansionAvailable ?? true;
   const save = async () => {
-    if (inboxUrl === null || stale || editing === null && awaitingCreated) return;
-    const held: Draft = draft ?? { base: editing, projects: selection };
+    if (savingRef.current || inboxUrl === null || matchKey === null || stale || editing === null && awaitingCreated) return;
+    const held: Draft = draft ?? { key: matchKey, base: editing, projects: selection, conflicted: false };
     const chosen = Object.entries(selection);
     // Every checked project must keep at least one event type, so the submitted project list always equals the form's.
     if (chosen.length === 0 || chosen.some(([, events]) => events.length === 0)) { setInvalid(true); return; }
@@ -284,12 +333,16 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
       return existing.map((item, index) => ({ id: item.id, projectId, eventTypes: [...item.eventTypes.filter(event => !removed.includes(event)), ...(index === 0 ? added.filter(event => !item.eventTypes.includes(event)) : [])] }));
     }).filter(item => item.eventTypes.length > 0);
     const input: WebhookIntentInput = editing === null
-      ? { kind: 'endpoint.create', body: { name: `${m.endpointName} · ${task.name}`.slice(0, 100), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
-      : { kind: 'endpoint.patch', endpointId: editing.id, ifVersion: editing.configVersion, destinationRevision: editing.destinationRevision, body: { subscriptions, ...(editing.enabled ? {} : { enabled: true }) } };
+      ? { kind: 'endpoint.create', body: { name: [...`${m.endpointName} · ${task.name}`].slice(0, 100).join(''), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
+      : { kind: 'endpoint.patch', endpointId: editing.id, ifVersion: editing.configVersion, destinationRevision: editing.destinationRevision, body: { subscriptions } };
     // The service answers an expansion during maintenance with 503 before recording a receipt, which would leave the
     // intent unknown and block later writes; the catalog gate is applied before submission instead.
     if (!expansionAvailable && webhookExpansion(input, editing)) return;
-    if (editing === null) {
+    savingRef.current = true; setSaving(true);
+    try { await send(input, held); } finally { savingRef.current = false; setSaving(false); }
+  };
+  const send = async (input: WebhookIntentInput, held: Draft) => {
+    if (input.kind === 'endpoint.create') {
       // Webhook creation has no create-if-absent precondition, so a second tab could create a parallel endpoint. Reading
       // the targets again just before submission turns a create already made elsewhere into the stale-draft conflict;
       // the remaining race is surfaced by the duplicate-endpoint warning.
@@ -302,6 +355,12 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const reloadOnConflict = async (input: WebhookIntentInput) => { if (versionConflict(await submit(input))) setRefresh(value => value + 1); };
   const pause = (endpoint: WebhookActiveEndpoint) => reloadOnConflict({ kind: 'endpoint.patch', endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { enabled: false } });
   const remove = (endpoint: WebhookActiveEndpoint) => reloadOnConflict({ kind: 'endpoint.delete', endpointId: endpoint.id, ifVersion: endpoint.configVersion, body: {} });
+  // Resuming deliveries and confirming a project's scope are explicit actions on the endpoint as currently loaded; a
+  // subscription save never changes them. Both add deliveries, so they are offered only without unsaved edits, which their
+  // confirmation would otherwise discard, and while the catalog admits expansion.
+  const resume = (endpoint: WebhookActiveEndpoint) => reloadOnConflict({ kind: 'endpoint.patch', endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { enabled: true } });
+  const confirmScope = (endpoint: WebhookActiveEndpoint, projectId: string) => reloadOnConflict({ kind: 'endpoint.patch', endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { confirmProjectIds: [projectId] } });
+  const expanding = locked || draft !== null || !expansionAvailable;
 
   if (!selfSubscribe) return <section className="assistant-task-panel assistant-task-subscriptions" aria-labelledby={heading}><header><h3 id={heading}>{m.title}</h3></header><p className="notice">{m.local}</p></section>;
   if (matchKey === null) return null;
@@ -311,31 +370,45 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   // Pause and delete act only on endpoints verified to target this inbox; the others are opened on their configuration
   // page, which shows the full destination.
   const actionable = retired ? [] : data?.personal.filter(endpoint => endpoint.capabilities.manage) ?? [];
-  const projectNames = new Map<string, string>([...(primary?.subscriptions.map(item => [item.projectId, item.projectName ?? item.projectId] as const) ?? []), ...(data?.projects.map(project => [project.id, project.name] as const) ?? [])]);
+  // A project the user can no longer access is still listed while the endpoint or the draft selects it, so it can be
+  // removed; it is labelled by id rather than by a name the user may no longer read.
+  const accessible = new Set(data?.projects.map(project => project.id) ?? []);
+  const projectNames = new Map<string, string>([
+    ...[...(primary?.subscriptions.map(item => item.projectId) ?? []), ...Object.keys(selection)].map(id => [id, m.unavailableProject(id)] as const),
+    ...(data?.projects.map(project => [project.id, project.name] as const) ?? []),
+  ]);
+  // Event capture skips a subscription that is not eligible, so an event added to it is not delivered. Adding is blocked
+  // for such a project until its scope is confirmed; removing events stays available.
+  const eligibility = new Map((editing?.subscriptions ?? []).filter(item => item.eligibility !== 'eligible').map(item => [item.projectId, item.eligibility] as const));
   return <section className="assistant-task-panel assistant-task-subscriptions" aria-labelledby={heading}>
     <header><h3 id={heading}>{m.title}</h3></header>
     {inboxEnabled ? <p className="assistant-task-meta">{m.intro}</p> : null}
-    {loadError !== null ? <div className="notice error" role="alert"><p>{m.loadError}</p><button className="button" type="button" onClick={() => setRevision(value => value + 1)}>{m.retry}</button></div> : null}
+    {/* Retrying a failed read keeps an edit in progress and its conflict; only discarding or a confirmed change adopts the service configuration. */}
+    {loadError !== null ? <div className="notice error" role="alert"><p>{m.loadError}</p><button className="button" type="button" onClick={() => setRefresh(value => value + 1)}>{m.retry}</button></div> : null}
     {data === null ? loadError === null ? <p role="status">{m.loading}</p> : null : <>
       {data.team.length > 0 ? <p className="notice warning" role="alert">{m.teamWarning}</p> : null}
       {!inboxEnabled && data.personal.length > 0 ? <p className="notice warning" role="alert">{retired ? m.retiredWarning : m.disabledWarning}</p> : null}
       {inboxEnabled && data.personal.length > 1 ? <p className="notice warning" role="alert">{m.duplicate}</p> : null}
       {inboxEnabled && !data.expansionAvailable ? <p className="notice warning" role="status">{m.maintenance}</p> : null}
+      {inboxEnabled && primary !== null && !primary.enabled ? <div className="notice warning" role="status"><p>{m.pausedNotice}</p>{primary.capabilities.manage ? <button className="button" type="button" disabled={expanding} onClick={() => void resume(primary)}>{m.resume}</button> : null}</div> : null}
       {inboxEnabled ? <form className="assistant-task-form assistant-task-subscription-form" onSubmit={event => { event.preventDefault(); void save(); }}>
-        <fieldset><legend>{m.projects}</legend><div className="assistant-task-subscription-projects">
+        <fieldset disabled={locked}><legend>{m.projects}</legend><div className="assistant-task-subscription-projects">
           {projectNames.size === 0 ? <span className="assistant-task-meta">{m.noProjects}</span> : [...projectNames].map(([id, name]) => {
-            const events = selection[id];
+            const events = selection[id], status = eligibility.get(id);
             return <div key={id} className="assistant-task-subscription-project">
               <label><input type="checkbox" checked={events !== undefined} onChange={event => toggleProject(id, event.target.checked)} /><span>{name}</span></label>
+              {status === undefined ? null : <div className="notice warning" role="status"><p>{wm.eligibility[status]} · {status === 'confirmation_required' ? m.confirmNotice : m.ineligible}</p>
+                {status === 'confirmation_required' && editing !== null && editing.capabilities.manage && accessible.has(id) ? <button className="button" type="button" disabled={expanding} onClick={() => void confirmScope(editing, id)}>{m.confirmScope}</button> : null}
+              </div>}
               {events === undefined ? null : <div className="assistant-task-subscription-checks" role="group" aria-label={m.eventsFor(name)}>
-                {EVENT_TYPES.map(event => <label key={event}><input type="checkbox" checked={events.includes(event)} onChange={changed => toggleEvent(id, event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
+                {EVENT_TYPES.map(event => <label key={event}><input type="checkbox" checked={events.includes(event)} disabled={status !== undefined && !events.includes(event)} onChange={changed => toggleEvent(id, event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
               </div>}
             </div>;
           })}
         </div></fieldset>
         {invalid ? <p className="notice error" role="alert">{m.invalid}</p> : null}
         {stale ? <div className="notice warning" role="alert"><p>{m.stale}</p><button className="button" type="button" onClick={discard}>{m.discard}</button></div> : null}
-        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={busy || stale || (editing === null ? awaitingCreated || !data.expansionAvailable : !editing.capabilities.manage)}>{editing === null ? m.create : m.save}</button></div>
+        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={locked || stale || (editing === null ? awaitingCreated || !data.expansionAvailable : !editing.capabilities.manage)}>{editing === null ? m.create : m.save}</button></div>
       </form> : null}
       <h4>{m.linked}</h4>
       {data.personal.length + data.team.length === 0 ? <p className="assistant-task-meta">{m.none}</p> : <ul className="assistant-task-subscription-endpoints">

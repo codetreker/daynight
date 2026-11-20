@@ -9,6 +9,8 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
 
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: [], nextCursor: null })) }));
+vi.mock('../src/api/webhooks', async original => ({ ...await original<typeof import('../src/api/webhooks')>(), getWebhookCatalog: vi.fn(async () => ({ items: [], service: { configurationExpansionAvailable: true, dispatchEnabled: true } })) }));
+vi.mock('../src/api/teams', async original => ({ ...await original<typeof import('../src/api/teams')>(), listTeams: vi.fn(async () => ({ items: [], nextCursor: null })) }));
 
 const taskId = botId(90), inboxId = botId(91), operationId = botId(92);
 const token = `dnib_${'A'.repeat(43)}`, rotated = `dnib_${'B'.repeat(43)}`;
@@ -127,6 +129,34 @@ it('lists endpoints of an inbox that was disabled before this panel mounted for 
   // The id of an inbox disabled elsewhere is unknown, so the endpoint is opened on its configuration page instead of acted on.
   expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', `/webhooks?owner=personal&endpointId=${endpointId}`);
   expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+});
+
+it('narrows cleanup to the inbox this panel disabled only while the disabled snapshot is attributable to that disable', async () => {
+  const origin = 'https://daynight.example', target = `${origin}/api/v1/assistant-task-inbox/${inboxId}`, endpointId = botId(93);
+  const endpoint = { id: endpointId, owner: { kind: 'personal', id: BOT_USER }, lifecycle: 'active', configVersion: '4', deletedAt: null, name: 'Assistant inbox', enabled: true, destinationRevision: '2',
+    destination: { kind: 'http', adapterVersion: '1', url: target, displayUrl: target }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(94), overlapUntil: null },
+    subscriptions: [], capabilities: { manage: true, readSecret: true, redeliver: true }, createdAt: BOT_TIME, updatedAt: BOT_TIME };
+  const state = { inbox: on };
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
+    const path = String(url);
+    if (options?.method === 'POST' && path.endsWith('/inbox/disable')) { state.inbox = off; return botResponse(receipt('inbox_disable', off, String((JSON.parse(String(options.body)) as { operationId: string }).operationId))); }
+    if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(state.inbox);
+    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [{ id: endpointId, owner: endpoint.owner, name: endpoint.name, enabled: true, configVersion: '4', destination: endpoint.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: null, lastResult: null }], nextCursor: null });
+    if (path === `/api/v1/me/webhooks/${endpointId}`) return botResponse(endpoint);
+    return botError(404, 'not_found');
+  }));
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (current: AssistantTask) => <TaskCacheProvider scope={scope}><AssistantTaskInbox task={current} enabled disabled={false} onChanged={vi.fn(async () => undefined)} serviceOrigin={origin} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(task), { locale: 'en' });
+  fireEvent.click(await screen.findByRole('button', { name: 'Disable inbox' }));
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Disable inbox' })).getByRole('button', { name: 'Disable inbox' }));
+  rerender(view({ ...task, version: '8' }));
+  // The disable produced version 8, so the disabled snapshot identifies the inbox it retired and its endpoints can be acted on.
+  expect(await screen.findByRole('button', { name: 'Delete' })).toBeVisible();
+  // Another tab re-enables and disables the task inbox again; the disabled snapshot no longer identifies which inbox it retired.
+  rerender(view({ ...task, version: '10' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull());
+  expect(screen.getByRole('alert')).toHaveTextContent('These personal endpoints target an assistant inbox on this site');
 });
 
 it('keeps the inbox state on refused writes and reports read failures', async () => {
