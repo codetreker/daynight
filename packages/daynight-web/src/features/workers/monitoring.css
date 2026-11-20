@@ -5,7 +5,7 @@
 .monitoring-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
 .monitoring-card { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: #fff; box-shadow: var(--shadow); color: #68758b; font-size: var(--text-sm); line-height: 1.7; overflow-wrap: anywhere; }
 .monitoring-card h2 { font-size: var(--text-lg); font-weight: 500; margin: 0 0 12px; }
-.monitoring-value { color: #344258; font-size: var(--text-xl); font-weight: 600; }
+.monitoring-value { color: #344258; font-size: var(--text-sm); font-weight: 600; }
 .monitoring-value small { font-size: var(--text-sm); font-weight: 400; }
 .monitoring-card ul { margin: 8px 0 0; padding-left: 18px; }
 .monitoring-card dl, .monitoring-activities dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 12px 0 0; font-size: var(--text-sm); }

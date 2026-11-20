@@ -28,7 +28,7 @@ const retainedObservation = () => ({
 });
 const install = async (page: Page, retained = false, locale = 'zh-CN', partial = false) => {
   const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle;
-  const state = { fail: false, detailFail: false, activity: true, activities: null as readonly MonitoringActivity[] | null, partial, detailReads: 0, monitoringReads: 0, detail };
+  const state = { fail: false, detailFail: false, activity: true, activities: null as readonly MonitoringActivity[] | null, capacityUnknown: false, partial, detailReads: 0, monitoringReads: 0, detail };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -50,7 +50,7 @@ const install = async (page: Page, retained = false, locale = 'zh-CN', partial =
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
     if (path === `/api/v1/me/workers/${target}/monitoring`) { state.monitoringReads++; return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: state.partial ? 'partial' : 'complete', permissionProjection: state.partial ? 'restricted' : 'current', data: {
-      runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
+      runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: state.capacityUnknown ? null : { ...capacity, detailCoverage: 'complete' },
       admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
       currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: { operationId: workerId(910), component: 'execution', scope, association: { ...association, title: 'Recovery-only task' }, observedAt: WORKER_TIME, explanation: 'The operation recovered.', explanationTruncated: false }, detailCoverage: state.partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: { observedAt: WORKER_TIME, phase: 'write', error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, requestId: workerId(911) } },
@@ -63,6 +63,43 @@ const install = async (page: Page, retained = false, locale = 'zh-CN', partial =
 };
 
 const releaseTitle = 'Review the cross-platform release checklist and confirm the failing tests';
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 320]) for (const rootSize of [16, 24]) test(`monitoring values use sm at ${width}px and ${rootSize}px root in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, true, locale);
+  await page.goto('/workers');
+  await page.addStyleTag({ content: `html { font-size: ${rootSize}px; }` });
+  const listState = page.locator('.monitoring-card-state');
+  await expect(listState).toContainText('6 / 6');
+  await expect(listState).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  await page.locator(`a.worker-card[href="/workers/${target}"]`).click();
+  const cards = page.locator('.monitoring-grid .monitoring-card');
+  const phase = cards.nth(0), capacity = cards.nth(1);
+  const phaseValue = phase.locator('.monitoring-value'), capacityValue = capacity.locator('.monitoring-value');
+  await expect(phaseValue).toHaveText(locale === 'zh-CN' ? '等待下次检查' : 'Waiting for next check');
+  await expect(capacityValue).toContainText('6 / 6');
+  for (const value of [phaseValue, capacityValue, capacityValue.locator('small')]) {
+    await expect(value).toBeVisible();
+    await expect(value).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  }
+  await expect(phaseValue).toHaveCSS('font-weight', '600');
+  await expect(capacityValue.locator('small')).toHaveCSS('font-weight', '400');
+  for (const card of [phase, capacity]) await expect(card.locator('h2')).toHaveCSS('font-size', `${rootSize * 1.125}px`);
+  await expect(capacity).toContainText(locale === 'zh-CN' ? '0 可用' : '0 available');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toContainText(locale === 'zh-CN' ? '活动任务占用' : 'Active task occupancy');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toContainText(locale === 'zh-CN' ? '保留资源占用' : 'Retained resource occupancy');
+  await expect(capacity.locator('.monitoring-capacity-breakdown')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.locator('[data-worker-tab="system"]:visible').click();
+  const metric = page.locator('.worker-metric-value').first();
+  await expect(metric).toBeVisible(); await expect(metric).toHaveCSS('font-size', `${rootSize * 1.375}px`);
+  await page.locator('[data-worker-tab="overview"]:visible').click();
+  state.capacityUnknown = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(capacity).toContainText(locale === 'zh-CN' ? '尚未观测到容量。' : 'Capacity has not been observed.');
+  await expect(capacityValue).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
 
 for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`task cleanup filtering and links at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 });
