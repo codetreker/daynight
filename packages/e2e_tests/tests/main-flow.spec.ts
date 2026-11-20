@@ -66,7 +66,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   }, { timeout: 60_000, intervals: [1_000] }).toEqual(expect.any(String));
 
   await page.goto(`${topology.baseURL}/account`);
-  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v1/me/tokens") && response.request().method() === "GET");
+  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v2/me/tokens") && response.request().method() === "GET");
   await page.getByRole("link", { name: "Access credentials", exact: true }).click();
   const tokenResponse = await tokenList;
   expect(tokenResponse.status()).toBe(200);

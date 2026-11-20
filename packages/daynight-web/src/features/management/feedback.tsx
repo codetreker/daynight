@@ -5,9 +5,9 @@ import { ApiError } from '../../api/client';
 import { ManagementDialog } from './ManagementDialog';
 
 export const ManagementError = ({ error, retry }: { readonly error: unknown; readonly retry?: () => void }) => {
-  const { messages: { auth: { management: { common: m } }, common } } = useI18n();
+  const { locale, messages: { auth: { management: { common: m } }, common } } = useI18n();
   return <div className="notice error" role="alert">
-  <p>{error instanceof ApiError && error.status === 401 ? m.unauthenticated
+  <p>{error instanceof ApiError && error.code === "credential_interface_unavailable" ? (locale === "zh-CN" ? "访问凭据接口暂不可用，请稍后重试。" : "Credential management is temporarily unavailable. Try again later.") : error instanceof ApiError && error.status === 401 ? m.unauthenticated
     : error instanceof ApiError && error.status === 404 ? m.notFound
       : m.operationFailed}</p>
   {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}<code>{error.requestId}</code></p>}

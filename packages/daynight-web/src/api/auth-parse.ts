@@ -2,6 +2,8 @@ import { array, boolean, id, malformed, nonemptyString, record, string, timestam
 import { parseTeamRef, parseProjectOwnership } from "./team-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
+import { parseCredentialDescription } from './credential-description';
+import type { LegacyPersonalAccessToken } from './auth-types';
 import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, CreatedTeamInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, RevokeTeamInvitationResult, User, TeamInvitation, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
@@ -46,17 +48,21 @@ export const parseUser = (value: unknown): User => {
   };
 };
 
-export const parseToken = (value: unknown): PersonalAccessToken => {
+export const parseToken = (value: unknown): LegacyPersonalAccessToken => {
   const data = record(value);
   return { id: id(data.id), name: nonemptyString(data.name), createdAt: timestamp(data.createdAt), expiresAt: nullable(data.expiresAt, timestamp), lastUsedAt: nullable(data.lastUsedAt, timestamp) };
 };
-export const parseTokens = (value: unknown): PersonalAccessToken[] => unique(array(record(value).items, parseToken), (item) => item.id);
-export const parseCreatedToken = (value: unknown): CreatedPersonalAccessToken => {
+export const parseTokens = (value: unknown): LegacyPersonalAccessToken[] => unique(array(record(value).items, parseToken), (item) => item.id);
+export const parseCreatedToken = (value: unknown): LegacyPersonalAccessToken & { readonly token: string } => {
   const data = record(value);
   const token = string(data.token);
   if (!/^[\x21-\x7e]+$/.test(token)) return malformed();
   return { ...parseToken(data), token };
 };
+
+export const parseManagedToken = (value: unknown): PersonalAccessToken => ({ ...parseToken(value), description: parseCredentialDescription(record(value).description) });
+export const parseManagedTokens = (value: unknown): PersonalAccessToken[] => unique(array(record(value).items, parseManagedToken), item => item.id);
+export const parseCreatedManagedToken = (value: unknown): CreatedPersonalAccessToken => ({ ...parseCreatedToken(value), description: parseCredentialDescription(record(value).description) });
 
 export const parseMember = (value: unknown, projectId?: string, userId?: string): ProjectMember => {
   const data = record(value);

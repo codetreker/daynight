@@ -18,10 +18,10 @@ const install = async (page: Page) => {
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === '/api/v1/me/tokens') return request.method() === 'POST'
-      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
+    if (path === '/api/v2/me/tokens') return request.method() === 'POST'
+      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', description: null, lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
       : send({ items: [] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [] });
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -102,11 +102,11 @@ test('traversing account tabs retains the one-time token owner without replaying
   await expect(tabs.getByRole('link', { name: 'Access credentials' })).toHaveAttribute('aria-current', 'page');
   await expect(secret).toHaveValue('once-only-secret');
   expect(await secret.evaluate(element => element === (window as unknown as { tokenSecretNode: Element }).tokenSecretNode)).toBe(true);
-  expect(writes).toEqual(['POST /api/v1/me/tokens']);
+  expect(writes).toEqual(['POST /api/v2/me/tokens']);
   await page.reload();
   await expect(tabs.getByRole('link', { name: 'Access credentials' })).toHaveAttribute('aria-current', 'page');
   await expect(secret).toHaveCount(0);
-  expect(writes).toEqual(['POST /api/v1/me/tokens']);
+  expect(writes).toEqual(['POST /api/v2/me/tokens']);
 });
 
 for (const hasTouch of [false, true]) {
@@ -139,7 +139,7 @@ for (const hasTouch of [false, true]) {
         await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
         await expect(secret).toHaveCSS('font-size', `${rootSize * 0.875}px`);
       }
-      expect(writes).toEqual(['POST /api/v1/me/tokens']);
+      expect(writes).toEqual(['POST /api/v2/me/tokens']);
     } finally { await context.close(); }
   });
 }

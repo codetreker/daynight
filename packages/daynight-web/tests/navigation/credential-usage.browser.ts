@@ -53,14 +53,14 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
       tokenRevoked = true;
       return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': userId } });
     }
-    if (path === '/api/v1/me/tokens') return send({ items: [
-      ...tokenRevoked ? [] : [{ id: tokenId, name: tokenName, createdAt, expiresAt, lastUsedAt: usedAt }],
-      { id: '00000000-0000-4000-8000-000000000022', name: 'Unused token', createdAt, expiresAt: null, lastUsedAt: null },
+    if (path === '/api/v2/me/tokens') return send({ items: [
+      ...tokenRevoked ? [] : [{ id: tokenId, name: tokenName, createdAt, expiresAt, description: null, lastUsedAt: usedAt }],
+      { id: '00000000-0000-4000-8000-000000000022', name: 'Unused token', createdAt, expiresAt: null, description: null, lastUsedAt: null },
     ] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [
-      { id: grantId, clientName: 'Long client', clientId, resource, scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: grantUse, revokedAt: null, status: 'active' },
-      { id: '00000000-0000-4000-8000-000000000032', clientName: 'Unused client', clientId: 'https://unused.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: null, revokedAt: null, status: 'active' },
-      { id: '00000000-0000-4000-8000-000000000033', clientName: 'Revoked client', clientId: 'https://revoked.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, lastUsedAt: usedAt, revokedAt: usedAt, status: 'revoked' },
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [
+      { id: grantId, clientName: 'Long client', clientId, resource, scope: 'daynight:mcp', createdAt, expiresAt, description: null, lastUsedAt: grantUse, revokedAt: null, status: 'active' },
+      { id: '00000000-0000-4000-8000-000000000032', clientName: 'Unused client', clientId: 'https://unused.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, description: null, lastUsedAt: null, revokedAt: null, status: 'active' },
+      { id: '00000000-0000-4000-8000-000000000033', clientName: 'Revoked client', clientId: 'https://revoked.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt, expiresAt, description: null, lastUsedAt: usedAt, revokedAt: usedAt, status: 'revoked' },
     ] });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -203,7 +203,7 @@ test('a clock tick and metadata refresh preserve the focused open details and sc
     state.credentialScrollTop = state.credentialScroll.scrollTop;
   });
   expect(await page.evaluate(() => (window as unknown as { credentialScrollTop: number }).credentialScrollTop)).toBeGreaterThan(0);
-  const credentialReads = () => fixture.reads.filter(value => value === 'GET /api/v1/me/tokens' || value === 'GET /api/v2/oauth/grants').length;
+  const credentialReads = () => fixture.reads.filter(value => value === 'GET /api/v2/me/tokens' || value === 'GET /api/v3/oauth/grants').length;
   const initialReads = credentialReads();
   await page.clock.fastForward(60_000);
   await expect(summary).toContainText('About 4 min ago');

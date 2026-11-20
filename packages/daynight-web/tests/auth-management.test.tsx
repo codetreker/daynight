@@ -16,12 +16,12 @@ import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
 
-vi.mock('../src/api/oauth-grants', () => ({ listOwnerGrants: vi.fn(), revokeOwnerGrant: vi.fn() }));
+vi.mock('../src/api/oauth-grants', () => ({ listOwnerGrants: vi.fn(), revokeOwnerGrant: vi.fn(), updateOwnerGrantDescription: vi.fn() }));
 
 vi.mock('../src/api/project-settings', () => ({ getProject: vi.fn() }));
 
 vi.mock('../src/api/auth', () => ({
-  listTokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), updateTokenExpiry: vi.fn(),
+  listTokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), updateTokenExpiry: vi.fn(), updateTokenDescription: vi.fn(),
   getProjectAccess: vi.fn(), listMembers: vi.fn(), listInvitations: vi.fn(), createInvitation: vi.fn(), revokeInvitation: vi.fn(), setProjectGrant: vi.fn(), removeProjectGrant: vi.fn(),
 }));
 
@@ -30,7 +30,7 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { taskCach
 let actorRole: 'admin' | 'member' = 'admin';
 
 const user: CurrentUser = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: '00000000-0000-4000-8000-000000000201', name: 'Jianjun', email: 'a@example.com', emailVerified: true, avatarUrl: null };
-const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', lastUsedAt: null, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
+const token: PersonalAccessToken = { id: 'token-a', name: 'MacBook', description: null, lastUsedAt: null, createdAt: '2026-10-22T12:00:00Z', expiresAt: '2099-10-22T12:00:00Z' };
 const member = (id: string, role: 'admin' | 'member' = 'member'): ProjectParticipant => ({ inheritedFrom: null,
   userId: id, profile: { name: id === user.id ? user.name : id, email: `${id}@example.com`, avatarUrl: null }, effectiveRole: role,
   directGrant: { projectId: '00000000-0000-4000-8000-000000000101', userId: id, role, version: 9223372036854775806n, createdAt: '2026-10-22T12:00:00Z', updatedAt: '2026-10-22T12:00:00Z' },
@@ -149,6 +149,7 @@ describe('account credentials', () => {
 
   it('validates code points and optional expiration, shows the PAT once, copies it, and warns on implicit close', async () => {
     vi.mocked(auth.createToken).mockResolvedValue({ ...token, token: 'pat-secret-once' });
+    vi.mocked(auth.listTokens).mockResolvedValueOnce([]).mockResolvedValue([token]);
     const copy = vi.fn().mockResolvedValue(undefined); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
     account(); await tokensTab();
     await createForm('😀'.repeat(101));
@@ -160,7 +161,7 @@ describe('account credentials', () => {
     fireEvent.change(tokenForm().getByLabelText('到期日期和时间'), { target: { value: '2099-10-22T12:00' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     await screen.findByRole('dialog', { name: '访问令牌已创建' });
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '😀'.repeat(100), expiresAt: new Date('2099-10-22T12:00').toISOString() }, expect.any(AbortSignal));
+    expect(auth.createToken).toHaveBeenCalledWith({ name: '😀'.repeat(100), expiresAt: new Date('2099-10-22T12:00').toISOString(), description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     expect(screen.getByLabelText('一次性访问令牌')).toHaveValue('pat-secret-once');
     const copyButton = within(screen.getByRole('dialog')).getByRole('button', { name: '复制' });
     expect(copyButton).toHaveClass('copy-button--labelled'); expect(copyButton).toHaveTextContent('复制');
@@ -187,7 +188,7 @@ describe('account credentials', () => {
 
   it('keeps failed creation and revocation recoverable, disables duplicate submissions and reloads revoked metadata', async () => {
     vi.mocked(auth.listTokens).mockResolvedValueOnce([token]).mockResolvedValue([]);
-    vi.mocked(auth.createToken).mockRejectedValue(new Error('sensitive PAT raw error'));
+    vi.mocked(auth.createToken).mockRejectedValue(Object.assign(new ApiError('server', 400, 'invalid_input'), { message: 'sensitive PAT raw error' }));
     account(); await tokensTab(); await createForm('device');
     await screen.findByRole('alert'); expect(screen.queryByText(/sensitive PAT/)).toBeNull();
     await dialogClick('取消'); click('撤销令牌 MacBook');
@@ -214,7 +215,7 @@ describe('account credentials', () => {
     fireEvent.change(tokenForm().getByLabelText(/令牌名称/), { target: { value: '  device name  ' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     await screen.findByLabelText('一次性访问令牌');
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '  device name  ', expiresAt: null }, expect.any(AbortSignal));
+    expect(auth.createToken).toHaveBeenCalledWith({ name: '  device name  ', expiresAt: null, description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
   });
 
   it('aborts in-flight credential mutations when account state unmounts', async () => {
@@ -249,7 +250,7 @@ describe('account credentials', () => {
     expect(screen.getByLabelText(en.secret.tokenLabel)).toHaveValue('unaltered-secret-value');
     expect(screen.getByRole('alert')).toHaveTextContent(en.secret.tokenCloseWarning);
     expect(screen.getByRole('status')).toHaveTextContent(en.secret.copyFailed);
-    expect(auth.createToken).toHaveBeenCalledWith({ name: '  unchanged name 😀  ', expiresAt: new Date('2099-10-22T12:31').toISOString() }, expect.any(AbortSignal));
+    expect(auth.createToken).toHaveBeenCalledWith({ name: '  unchanged name 😀  ', expiresAt: new Date('2099-10-22T12:31').toISOString(), description: null, expectedUserId: user.id }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     expect(auth.createToken).toHaveBeenCalledOnce();
     await dialogClick(en.secret.confirmClose); expect(screen.queryByRole('dialog')).toBeNull();
   });
