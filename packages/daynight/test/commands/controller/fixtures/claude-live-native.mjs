@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, watch } from "node:fs";
+import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 if (process.argv.includes("--version")) { process.stdout.write("2.1.247 (controlled fixture)\n"); process.exit(0); }
 const send = value => process.stdout.write(JSON.stringify(value) + "\n");
@@ -11,9 +12,16 @@ createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (request.type === "control_request") {
     const subtype = request.request.subtype;
-    const response = subtype === "initialize" ? { commands: [], models: [{ value: "claude-sonnet-5-5", displayName: "Controlled vision", description: "Fixture", resolvedModel: "claude-sonnet-5-5" }], account: {} }
+    const response = subtype === "initialize" ? { commands: [], models: [{ value: "claude-sonnet-5-5", displayName: "Controlled vision", description: "Fixture", resolvedModel: "claude-sonnet-5-5" }], account: process.env.DAYNIGHT_TEST_CLAUDE_API_PROVIDER ? { apiProvider: process.env.DAYNIGHT_TEST_CLAUDE_API_PROVIDER } : {} }
       : subtype === "get_settings" ? { applied: { model: "claude-sonnet-5-5", effort: null } } : {};
-    send({ type: "control_response", response: { subtype: "success", request_id: request.request_id, response } }); return;
+    const reply = () => send({ type: "control_response", response: { subtype: "success", request_id: request.request_id, response } });
+    const gate = process.env.DAYNIGHT_TEST_CLAUDE_INITIALIZE_GATE;
+    if (subtype === "initialize" && gate) {
+      let released = false;
+      const release = () => { if (!released && existsSync(gate)) { released = true; watcher.close(); reply(); } };
+      const watcher = watch(dirname(gate), release); release(); return;
+    }
+    reply(); return;
   }
   if (request.type !== "user") return;
   const blocks = typeof request.message.content === "string" ? [{ type: "text", text: request.message.content }] : request.message.content;

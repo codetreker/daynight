@@ -159,7 +159,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	assistanttaskhttp.RegisterRoutes(mux, app.AssistantTasks, auth, logger)
 	if app.AssistantTaskInbox != nil {
 		// Public: the inbox token or a verified Daynight delivery is the credential.
-		assistanttaskhttp.RegisterInboxRoute(mux, app.AssistantTaskInbox, logger)
+		assistanttaskhttp.RegisterInboxRoute(mux, app.AssistantTaskInbox)
 	}
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)

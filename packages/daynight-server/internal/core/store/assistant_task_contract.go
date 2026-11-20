@@ -14,6 +14,15 @@ type AssistantTaskWriter interface {
 
 type AssistantTaskScope interface{ AssistantTaskDAO() AssistantTaskDAO }
 
+// AssistantTaskRelatedQuery selects appendices related to one notification
+// context. An empty dimension is unknown to the caller: it neither scores nor
+// excludes an appendix.
+type AssistantTaskRelatedQuery struct {
+	OwnerUserID, TaskID                string
+	ProjectID, EventType, ItemCategory string
+	Limit                              int
+}
+
 type AssistantTaskPosition struct {
 	CreatedAt time.Time
 	ID        string
@@ -89,6 +98,11 @@ type AssistantTaskDAO interface {
 	// validates the appendix, so concurrent duplicates cannot both count.
 	InsertAppendixValidation(context.Context, model.AssistantTaskAppendixValidation) (bool, error)
 	DeleteAppendixValidations(context.Context, string, string, string) error
+	// RelatedAppendices returns non-deleted appendices whose declared scope
+	// admits every queried dimension, ordered by the number of matched declared
+	// dimensions, last validation time (never validated last) and ID, all
+	// descending, and bounded by Limit.
+	RelatedAppendices(context.Context, AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error)
 	Proposal(context.Context, string, string, string) (model.AssistantTaskProposal, error)
 	Proposals(context.Context, AssistantTaskQuery) ([]model.AssistantTaskProposal, error)
 	InsertProposal(context.Context, model.AssistantTaskProposal) (bool, error)
@@ -154,9 +168,9 @@ type AssistantTaskInboxDAO interface {
 	// task targeted at bot.
 	PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error)
 	// ReceivedInbound reports whether bot was the target of an unsuppressed
-	// receipt about the project Task subject at or after since, across the
-	// owner's assistant tasks.
-	ReceivedInbound(ctx context.Context, owner, bot, subject string, since time.Time) (bool, error)
+	// receipt about the project Task subject received within the inclusive
+	// interval [since, until], across the owner's assistant tasks.
+	ReceivedInbound(ctx context.Context, owner, bot, subject string, since, until time.Time) (bool, error)
 	// ReclaimInboxReceipts deletes at most limit receipts of the task, from any
 	// of its inboxes, that expired by current database time.
 	ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error)

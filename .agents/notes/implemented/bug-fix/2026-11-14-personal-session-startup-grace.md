@@ -10,7 +10,7 @@ to investigate before initialization has had a reasonable opportunity to finish.
 
 ## Decision
 
-Ordinary Task rows suppress the Session check warning and attention suffix for
+Ordinary Task rows suppress the Session check warning and its attention flag for
 the first two minutes of the current Task execution interval. The server's
 `task.startedAt` defines that interval, so a process restart within it does not
 restart the grace period. A separately confirmed, unexpired Session reading

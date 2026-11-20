@@ -58,7 +58,7 @@ type inboundDAO struct {
 	destinationOwner, destinationOrigin, destinationEvent string
 	woke, countRejected                                   bool
 	wakeBot, wakeSubject                                  string
-	wakeSince                                             time.Time
+	wakeSince, wakeUntil                                  time.Time
 	suppressedCount                                       int
 	// lockedTask, when set, is the projection after the task lock; task is
 	// the earlier unlocked projection.
@@ -178,11 +178,11 @@ func (d *inboundDAO) PendingInboundEvents(_ context.Context, owner, task, bot st
 	return d.pending, d.step("pending")
 }
 
-func (d *inboundDAO) ReceivedInbound(_ context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+func (d *inboundDAO) ReceivedInbound(_ context.Context, owner, bot, subject string, since, until time.Time) (bool, error) {
 	if owner != inOwner {
 		d.t.Fatalf("wake owner %s", owner)
 	}
-	d.wakeBot, d.wakeSubject, d.wakeSince = bot, subject, since
+	d.wakeBot, d.wakeSubject, d.wakeSince, d.wakeUntil = bot, subject, since, until
 	return d.woke, d.step("wake")
 }
 
@@ -623,6 +623,44 @@ func TestReceiveIdempotentReplayAndConflict(t *testing.T) {
 	}
 }
 
+// The header equality rule applies only to external requests: a verified
+// Daynight event is keyed by its event ID, while the same header pair on an
+// external request is rejected.
+func TestReceiveHeaderEqualityOnlyForExternal(t *testing.T) {
+	s, _, d, _ := newInbound(t)
+	in := daynightInput(t)
+	in.IdempotencyKey = "other"
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || result.Classification != core.InboundDaynight || len(d.receipts) != 1 || d.receipts[0].IdempotencyKey != inEvent {
+		t.Fatal(err, result)
+	}
+	s, _, d, token := newInbound(t)
+	in = daynightInput(t)
+	in.IdempotencyKey, in.Token = "other", &token
+	d.sources.missing = true
+	_, err = s.Receive(context.Background(), in)
+	requireInboundCode(t, err, "invalid_input")
+	if len(d.events) != 0 || len(d.receipts) != 0 {
+		t.Fatal("rejected request wrote")
+	}
+}
+
+// A replay reports the original reception's classification even when this
+// attempt no longer verifies as a Daynight event.
+func TestReceiveReplayKeepsOriginalClassification(t *testing.T) {
+	s, _, d, token := newInbound(t)
+	sum := sha256.Sum256(inboundEventBody(t))
+	original, subject := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", inTask
+	d.receipt = &model.AssistantTaskInboxReceipt{InboxID: inInbox, IdempotencyKey: inEvent, BodySHA256: hex.EncodeToString(sum[:]), EventID: &original, SubjectTaskID: &subject}
+	d.projectErr = model.ErrNotFound
+	in := daynightInput(t)
+	in.Token = &token
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || !result.Duplicate || result.Classification != core.InboundDaynight || result.EventID == nil || *result.EventID != original || len(d.events) != 0 {
+		t.Fatal(err, result)
+	}
+}
+
 func TestReceiveStorageFailuresStopBeforeLaterSteps(t *testing.T) {
 	for _, step := range []string{"identity", "peek", "bot", "task", "lock", "now", "receipt", "pending", "event", "insert-receipt", "reclaim-receipts", "reclaim-events", "recheck"} {
 		t.Run(step, func(t *testing.T) {
@@ -759,8 +797,11 @@ func TestReceiveDeliversPeerOutsideReactionWindow(t *testing.T) {
 	if err != nil || result.Suppressed || result.EventID == nil || len(d.events) != 1 || d.suppressedCount != 0 {
 		t.Fatal(err, result, d.suppressedCount)
 	}
-	if d.wakeBot != inPeer || d.wakeSubject != inSubject || !d.wakeSince.Equal(inEpoch.Add(-10*time.Minute)) {
-		t.Fatalf("wake query %s %s %v", d.wakeBot, d.wakeSubject, d.wakeSince)
+	// The window ends at the event's occurrence, one second before this
+	// delivery, rather than at the delivery time.
+	occurred := inEpoch.Add(-time.Second)
+	if d.wakeBot != inPeer || d.wakeSubject != inSubject || !d.wakeSince.Equal(occurred.Add(-10*time.Minute)) || !d.wakeUntil.Equal(occurred) {
+		t.Fatalf("wake query %s %s %v %v", d.wakeBot, d.wakeSubject, d.wakeSince, d.wakeUntil)
 	}
 	if d.receipts[0].Suppressed {
 		t.Fatalf("%+v", d.receipts[0])
@@ -800,5 +841,28 @@ func TestReceiveSuppressionFailuresAbort(t *testing.T) {
 	d.woke, d.receiptRejected = true, true
 	if _, err := s.Receive(context.Background(), daynightInput(t)); err == nil || !strings.Contains(err.Error(), "under the task lock") {
 		t.Fatal(err)
+	}
+}
+
+// A delivery retried long after the peer's write still looks for the receipt
+// that preceded the write, and a receipt the peer gets after the write does
+// not count: the window is anchored to the event's occurrence.
+func TestReceiveAnchorsReactionWindowToOccurrence(t *testing.T) {
+	occurred := inEpoch.Add(-12 * time.Minute)
+	body, err := protocol.Render(inEvent, protocol.Fact{Type: protocol.Created, ProjectID: inProject, TaskID: inSubject, OccurredAt: occurred, TaskVersion: 3, Status: "todo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _, d, _ := newInbound(t)
+	sum := sha256.Sum256(body)
+	d.sources.provenance.FactSHA256, d.woke = sum[:], true
+	in := daynightInput(t)
+	in.Body = body
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || !result.Suppressed {
+		t.Fatal(err, result)
+	}
+	if !d.wakeSince.Equal(occurred.Add(-10*time.Minute)) || !d.wakeUntil.Equal(occurred) {
+		t.Fatalf("wake window %v %v", d.wakeSince, d.wakeUntil)
 	}
 }

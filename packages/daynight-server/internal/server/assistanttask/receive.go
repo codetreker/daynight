@@ -47,38 +47,32 @@ type inboxReceiver interface {
 // RegisterInboxRoute registers the public inbox receive route. It sits outside
 // authentication: the inbox token or a verified Daynight delivery is the only
 // credential, and the route never reads cookies.
-func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver, logger *slog.Logger) {
-	r := &inboxRoute{inbox: inbox, logger: logger, limiter: newInboxLimiter(time.Now)}
+func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver) {
+	r := &inboxRoute{inbox: inbox, quiet: slog.New(slog.DiscardHandler), limiter: newInboxLimiter(time.Now)}
 	mux.HandleFunc(core.InboxPathPrefix+"{inboxId}", r.serve)
 }
 
 type inboxRoute struct {
-	inbox   inboxReceiver
-	logger  *slog.Logger
+	inbox inboxReceiver
+	// quiet receives the diagnostics of shared response and failure helpers,
+	// whose records carry fields outside the inbox log allowlist.
+	quiet   *slog.Logger
 	limiter *inboxLimiter
 }
 
-// serve logs one line per request with only the inbox ID, classification,
-// status and body size; the token, the URL query and the body never reach logs.
+// serve reports the inbox ID, classification and body size to the request
+// logging middleware, which writes them with the server-generated request ID
+// and the status as the request's only record. The token, the URL query, the
+// body, any sender-supplied request ID and failure causes never reach logs.
 func (h *inboxRoute) serve(w http.ResponseWriter, r *http.Request) {
-	outcome := inboxOutcome{}
-	status := h.receive(w, r, &outcome)
-	attributes := []any{"type", "operation", "component", "assistant_task_inbox", "status", status, "bytes", outcome.bytes, "request_id", httpx.RequestID(r.Context())}
-	if outcome.inboxID != "" {
-		attributes = append(attributes, "inbox_id", outcome.inboxID)
+	outcome := httpx.InboxRecordFrom(r.Context())
+	if outcome == nil {
+		outcome = &httpx.InboxRecord{}
 	}
-	if outcome.classification != "" {
-		attributes = append(attributes, "classification", outcome.classification)
-	}
-	h.logger.InfoContext(r.Context(), "assistant task inbox request", attributes...)
+	h.receive(w, r, outcome)
 }
 
-type inboxOutcome struct {
-	inboxID, classification string
-	bytes                   int
-}
-
-func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *inboxOutcome) int {
+func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *httpx.InboxRecord) int {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		return h.refuse(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is supported.", "")
@@ -87,10 +81,15 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id || parsed == uuid.Nil {
 		return h.refuse(w, r, http.StatusNotFound, "not_found", "The assistant task inbox does not exist.", "")
 	}
-	outcome.inboxID = id
+	outcome.InboxID = id
 	token, problem := requestInboxToken(r)
 	if problem != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
+	}
+	webhookID, webhookOK := idempotencyHeader(r, "Webhook-Id")
+	idempotencyKey, keyOK := idempotencyHeader(r, "Idempotency-Key")
+	if !webhookOK || !keyOK {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", "Provide Webhook-Id and Idempotency-Key at most once each, with a non-empty value.", "")
 	}
 	if r.ContentLength > InboxBodyLimit {
 		return h.refuse(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "The request body exceeds 64 KiB.", "")
@@ -104,27 +103,27 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	}
 	body, err := httpx.ReadBody(w, r, InboxBodyLimit, transport.JSONBodyReadTimeout)
 	if err != nil {
-		httpx.WriteBodyError(w, r, h.logger, "assistant_task_inbox", "body", err)
+		httpx.WriteBodyError(w, r, h.quiet, "assistant_task_inbox", "body", err)
 		var bodyErr *httpx.BodyReadError
 		if errors.As(err, &bodyErr) {
 			return bodyErr.Status
 		}
 		return http.StatusBadRequest
 	}
-	outcome.bytes = len(body)
+	outcome.Bytes = len(body)
 	if message := inboxBodyProblem(body, text); message != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", message, "")
 	}
 	result, err := h.inbox.Receive(r.Context(), service.ReceiveInput{
 		InboxID: id, Token: token, MediaType: mediaType,
-		WebhookID: r.Header.Get("Webhook-Id"), IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		WebhookID: webhookID, IdempotencyKey: idempotencyKey,
 		Body: body,
 	})
 	if err != nil {
-		return h.failure(w, r, err)
+		return h.failure(w, r, err, webhookID != "" || idempotencyKey != "")
 	}
-	outcome.classification = result.Classification
-	httpx.WriteJSON(w, r, h.logger, http.StatusAccepted, api.AssistantTaskInboxReceipt{EventID: result.EventID, Classification: result.Classification, Duplicate: result.Duplicate, Suppressed: result.Suppressed})
+	outcome.Classification = result.Classification
+	httpx.WriteJSON(w, r, h.quiet, http.StatusAccepted, api.AssistantTaskInboxReceipt{EventID: result.EventID, Classification: result.Classification, Duplicate: result.Duplicate, Suppressed: result.Suppressed})
 	return http.StatusAccepted
 }
 
@@ -133,17 +132,22 @@ func (h *inboxRoute) refuse(w http.ResponseWriter, r *http.Request, status int, 
 	if retryAfter != "" {
 		w.Header().Set("Retry-After", retryAfter)
 	}
-	httpx.WriteJSON(w, r, h.logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
+	httpx.WriteJSON(w, r, h.quiet, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
 	return status
 }
 
 // failure maps receive results to the inbox status table. Anything else is an
-// internal failure reported without its cause.
-func (h *inboxRoute) failure(w http.ResponseWriter, r *http.Request, err error) int {
+// internal failure reported without its cause. An unknown commit is safe to
+// replay only under an idempotency identity; without one, a replay of a request
+// whose commit succeeded writes a second event, so that sender is warned.
+func (h *inboxRoute) failure(w http.ResponseWriter, r *http.Request, err error, identified bool) int {
 	var completion *service.WriteError
 	if errors.As(err, &completion) && completion.Outcome == store.TransactionUnknown {
-		httpx.LogFailure(h.logger, r.Context(), "assistant_task_inbox", "completion", err)
-		return h.refuse(w, r, http.StatusServiceUnavailable, "write_outcome_unknown", "The receive result is unknown; retry with the same idempotency identity.", inboxRetryAfter)
+		message := "The receive result is unknown; retry with the same idempotency identity."
+		if !identified {
+			message = "The receive result is unknown and the request has no idempotency identity; a retry can record the event twice."
+		}
+		return h.refuse(w, r, http.StatusServiceUnavailable, "write_outcome_unknown", message, inboxRetryAfter)
 	}
 	if fault, ok := httpx.KnownFault(err); ok && completion == nil {
 		statuses := map[string]int{
@@ -160,7 +164,6 @@ func (h *inboxRoute) failure(w http.ResponseWriter, r *http.Request, err error) 
 			return h.refuse(w, r, status, fault.Code, fault.Message, retryAfter)
 		}
 	}
-	httpx.LogFailure(h.logger, r.Context(), "assistant_task_inbox", "receive", err)
 	return h.refuse(w, r, http.StatusInternalServerError, "internal_error", "internal server error", "")
 }
 
@@ -180,11 +183,13 @@ func requestInboxToken(r *http.Request) (*string, string) {
 	var token string
 	switch {
 	case len(headers) == 1:
+		// RFC 6750 section 2.1 permits one or more spaces after the scheme;
+		// whitespace inside the credential still fails the token form check.
 		scheme, value, found := strings.Cut(headers[0], " ")
 		if !found || !strings.EqualFold(scheme, "Bearer") {
 			return nil, "The Authorization header must use the Bearer scheme."
 		}
-		token = value
+		token = strings.TrimLeft(value, " ")
 	case len(queried) == 1:
 		token = queried[0]
 	default:
@@ -194,6 +199,21 @@ func requestInboxToken(r *http.Request) (*string, string) {
 		return nil, "The inbox token form is invalid."
 	}
 	return &token, ""
+}
+
+// idempotencyHeader returns the header value, or "" when the header is absent.
+// An explicitly empty or repeated header is refused rather than read as absent:
+// absence writes a new event per request, so a sender that meant to supply a
+// key would otherwise duplicate events on retry.
+func idempotencyHeader(r *http.Request, name string) (string, bool) {
+	values := r.Header.Values(name)
+	switch {
+	case len(values) == 0:
+		return "", true
+	case len(values) == 1 && values[0] != "":
+		return values[0], true
+	}
+	return "", false
 }
 
 // inboxMediaType accepts application/json, any +json type and text/plain,
@@ -209,8 +229,14 @@ func inboxMediaType(values []string) (string, bool, bool) {
 	if charset, present := params["charset"]; present && !strings.EqualFold(charset, "utf-8") {
 		return "", false, false
 	}
+	// mime.ParseMediaType also accepts a bare token such as "problem+json",
+	// so a +json type must name both a type and a subtype.
+	kind, subtype, pair := strings.Cut(essence, "/")
+	if !pair || kind == "" || subtype == "" {
+		return "", false, false
+	}
 	text := essence == "text/plain"
-	if !text && essence != "application/json" && !strings.HasSuffix(essence, "+json") {
+	if !text && essence != "application/json" && !strings.HasSuffix(subtype, "+json") {
 		return "", false, false
 	}
 	return essence, text, true

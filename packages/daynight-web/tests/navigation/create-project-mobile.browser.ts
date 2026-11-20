@@ -2,14 +2,14 @@ import { expect, test, type Page } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000201', personalId = '00000000-0000-4000-8000-000000000701', time = '2026-10-20T09:00:00Z';
 async function install(page: Page) {
-  const state = { writes: 0, meReads: 0, teamReads: 0, teamGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>(), repositoryConflict: false };
+  const state = { writes: 0, meReads: 0, teamReads: 0, teamGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>(), repositoryConflict: false, unknown: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': userId } });
     const error = { error: { code: 'internal_error', message: 'Fixture refusal', requestId: 'fixture-error' } };
     if (path === '/api/v1/me') { state.meReads++; return send({ id: userId, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
-    if (path === '/api/v1/projects' && request.method() === 'POST') { state.writes++; await state.createGate.promise; return state.repositoryConflict ? send({ error: { code: 'project_repository_conflict', message: 'Fixture refusal', requestId: 'repository-conflict' } }, 409) : send(error, 400); }
+    if (path === '/api/v1/projects' && request.method() === 'POST') { state.writes++; await state.createGate.promise; return state.unknown ? route.abort('failed') : state.repositoryConflict ? send({ error: { code: 'project_repository_conflict', message: 'Fixture refusal', requestId: 'repository-conflict' } }, 409) : send(error, 400); }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') { state.teamReads++; await state.teamGate; return send({ items: [], nextCursor: null }); }
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
@@ -17,6 +17,27 @@ async function install(page: Page) {
   });
   return state;
 }
+
+for (const locale of ['en', 'zh-CN'] as const) test(`unknown project creation shows a base-sized recovery heading in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  const state = await install(page); state.unknown = true; state.createGate.resolve();
+  await page.goto('/projects');
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+  await page.getByRole('button', { name: locale === 'en' ? '＋ Create project' : '＋ 创建项目', exact: true }).click();
+  const dialog = page.locator('dialog.auth-dialog');
+  await dialog.getByLabel(locale === 'en' ? 'Project name' : '项目名称').fill('Recovery project');
+  await dialog.getByLabel(locale === 'en' ? 'Repository URL' : '仓库地址').fill('https://example.com/team/project');
+  await dialog.getByRole('button', { name: locale === 'en' ? 'Create project' : '创建项目', exact: true }).click();
+  await dialog.getByRole('button', { name: locale === 'en' ? 'Check projects' : '查看项目' }).click();
+  const heading = dialog.getByRole('heading', { name: locale === 'en' ? 'Current projects' : '当前项目' });
+  await expect(heading).toBeVisible();
+  for (const size of [12, 24]) {
+    await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+    await expect(heading).toHaveCSS('font-size', `${size}px`);
+  }
+  await expect(dialog.getByText(locale === 'en' ? 'No projects found.' : '未找到项目。')).toBeVisible();
+  expect(state.writes).toBe(1);
+});
 
 for (const locale of ['en', 'zh-CN'] as const) for (const [width, repositoryConflict] of [[320, false], [390, false], [320, true], [1280, true]] as const) {
   test(`create project retains focus and failed draft at ${width}px in ${locale} (repository conflict: ${repositoryConflict})`, async ({ page }) => {

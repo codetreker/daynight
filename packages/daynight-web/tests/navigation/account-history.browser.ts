@@ -109,6 +109,41 @@ test('traversing account tabs retains the one-time token owner without replaying
   expect(writes).toEqual(['POST /api/v1/me/tokens']);
 });
 
+for (const hasTouch of [false, true]) {
+  test(`account credentials preserve ordinary sizes at 320px (touch=${hasTouch})`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+    const page = await context.newPage();
+    try {
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+      expect(await page.evaluate(() => matchMedia('(pointer: fine)').matches)).toBe(!hasTouch);
+      const writes = await install(page);
+      await page.goto('/account?tab=tokens');
+      const create = page.getByRole('region', { name: 'Personal access tokens' }).getByRole('button', { name: 'Create token' });
+      await expect(create).toBeEnabled(); await create.click();
+      const dialog = page.getByRole('dialog', { name: 'Create personal access token' });
+      const name = dialog.getByLabel('Token name');
+      const expiry = dialog.getByLabel('Expiration', { exact: true });
+      await expiry.selectOption('custom');
+      const date = dialog.getByLabel('Expiration date and time');
+      for (const rootSize of [16, 12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+        for (const field of [name, expiry, date]) await expect(field).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+      }
+      await expiry.selectOption('never');
+      await name.fill('Device');
+      await dialog.getByRole('button', { name: 'Create token' }).click();
+      const secret = page.getByLabel('One-time access token');
+      await expect(secret).toHaveValue('once-only-secret');
+      await expect(secret).not.toHaveAttribute('data-touch-text');
+      for (const rootSize of [16, 12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+        await expect(secret).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+      }
+      expect(writes).toEqual(['POST /api/v1/me/tokens']);
+    } finally { await context.close(); }
+  });
+}
+
 test('URL owns selection even with stale account history payloads', async ({ page }) => {
   await install(page);
   await page.goto('/account?tab=tokens');

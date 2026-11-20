@@ -99,6 +99,18 @@ func (h *handler) appendices(_ http.ResponseWriter, r *http.Request, a core.Acto
 	return pageResponse(value, appendixResponse), err
 }
 
+// relatedAppendices accepts each notification dimension at most once; an
+// omitted dimension is unknown and neutral in the ranking.
+func (h *handler) relatedAppendices(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
+	values, err := httpx.QueryValues(r, "projectId", "eventType", "itemCategory")
+	if err != nil {
+		return nil, err
+	}
+	input := core.RelatedAppendixInput{ProjectID: values.Get("projectId"), EventType: values.Get("eventType"), ItemCategory: values.Get("itemCategory")}
+	value, err := h.tasks.RelatedAppendix(r.Context(), a, taskID, input)
+	return relatedAppendicesResponse(value), err
+}
+
 func (h *handler) proposals(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
 	page, err := readPage(r, "state")
 	if err != nil {

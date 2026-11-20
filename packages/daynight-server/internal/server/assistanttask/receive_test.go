@@ -3,6 +3,7 @@ package assistanttask
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +18,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const receivePath = "/api/v1/assistant-task-inbox/" + testID
@@ -29,10 +33,17 @@ func (f receiverFunc) Receive(ctx context.Context, input service.ReceiveInput) (
 	return f(ctx, input)
 }
 
+// receiveHandler wraps the route in the production middleware order, whose
+// request logging writes the inbox record.
 func receiveHandler(receive receiverFunc, logs io.Writer) http.Handler {
+	return receiveHandlerWithMetrics(receive, logs, nil)
+}
+
+func receiveHandlerWithMetrics(receive receiverFunc, logs io.Writer, metrics *httpx.RequestMetrics) http.Handler {
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	mux := http.NewServeMux()
-	RegisterInboxRoute(mux, receive, slog.New(slog.NewJSONHandler(logs, nil)))
-	return mux
+	RegisterInboxRoute(mux, receive)
+	return httpx.RequestLoggingWithMetrics(logger, httpx.LimitRequestTarget(logger, mux), metrics)
 }
 
 func receiveRequest(h http.Handler, target, contentType, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -65,6 +76,9 @@ func TestInboxReceiveForwardsRequestAndAnswersReceipt(t *testing.T) {
 			service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "application/json", IdempotencyKey: "key-1", Body: []byte(`{"a":1}`)}},
 		{"query token", receivePath + "?token=" + token, "text/plain", "hello",
 			nil, service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "text/plain", Body: []byte("hello")}},
+		{"spaced bearer", receivePath, "application/problem+json", `{}`,
+			map[string]string{"Authorization": "bearer   " + token},
+			service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "application/problem+json", Body: []byte(`{}`)}},
 		{"no token", receivePath, "application/cloudevents+json", `{"id":"e"}`,
 			map[string]string{"Webhook-Id": "e"}, service.ReceiveInput{InboxID: testID, MediaType: "application/cloudevents+json", WebhookID: "e", Body: []byte(`{"id":"e"}`)}},
 	} {
@@ -113,11 +127,15 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 		{"basic scheme", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Basic " + receiveToken}, 400, "invalid_input"},
 		{"bare scheme", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer"}, 400, "invalid_input"},
 		{"empty bearer", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer "}, 400, "invalid_input"},
+		{"spaces only bearer", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer   "}, 400, "invalid_input"},
 		{"empty query", receivePath + "?token=", "application/json", `{}`, nil, 400, "invalid_input"},
+		{"empty idempotency key", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Idempotency-Key": ""}, 400, "invalid_input"},
+		{"empty webhook id", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Webhook-Id": ""}, 400, "invalid_input"},
 		{"missing media type", receivePath, "", `{}`, nil, 415, "unsupported_media_type"},
 		{"html", receivePath, "text/html", `x`, nil, 415, "unsupported_media_type"},
 		{"latin1 text", receivePath, "text/plain; charset=latin1", `x`, nil, 415, "unsupported_media_type"},
 		{"malformed media type", receivePath, "application/json; charset", `{}`, nil, 415, "unsupported_media_type"},
+		{"bare +json token", receivePath, "problem+json", `{}`, nil, 415, "unsupported_media_type"},
 		{"xml", receivePath, "application/xml", `<a/>`, nil, 415, "unsupported_media_type"},
 		{"NUL text", receivePath, "text/plain", "a\x00b", nil, 400, "invalid_input"},
 		{"invalid UTF-8 text", receivePath, "text/plain", "a\xffb", nil, 400, "invalid_input"},
@@ -141,6 +159,16 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("repeated header status=%d", w.Code)
+	}
+	for _, name := range []string{"Idempotency-Key", "Webhook-Id"} {
+		r = httptest.NewRequest(http.MethodPost, receivePath, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header[name] = []string{"key-1", "key-1"}
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("repeated %s status=%d", name, w.Code)
+		}
 	}
 	r = httptest.NewRequest(http.MethodPost, receivePath, strings.NewReader(`{}`))
 	r.Header["Content-Type"] = []string{"application/json", "text/plain"}
@@ -225,6 +253,28 @@ func TestInboxReceiveMapsServiceResults(t *testing.T) {
 			}
 			if strings.Contains(w.Body.String(), "exploded") || strings.Contains(w.Body.String(), "lost") {
 				t.Fatalf("internal cause leaked: %s", w.Body)
+			}
+		})
+	}
+}
+
+func TestInboxReceiveWarnsUnidentifiedSendersAboutUnknownCommits(t *testing.T) {
+	h := receiveHandler(func(context.Context, service.ReceiveInput) (service.ReceiveResult, error) {
+		return service.ReceiveResult{}, &service.WriteError{Operation: "Receive", Outcome: store.TransactionUnknown, Cause: errors.New("lost")}
+	}, io.Discard)
+	for _, test := range []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{"idempotency key", map[string]string{"Idempotency-Key": "key-1"}, "retry with the same idempotency identity"},
+		{"webhook id", map[string]string{"Webhook-Id": "e"}, "retry with the same idempotency identity"},
+		{"no identity", nil, "a retry can record the event twice"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			w := receiveRequest(h, receivePath, "application/json", `{}`, test.headers)
+			if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != inboxRetryAfter || !strings.Contains(w.Body.String(), test.want) {
+				t.Fatalf("status=%d retry=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body)
 			}
 		})
 	}
@@ -317,6 +367,173 @@ func TestInboxReceiveLogsNeverContainTheToken(t *testing.T) {
 	}
 }
 
+// The production request logging middleware must not adopt a sender's
+// request ID on the public inbox route or add its own completion record.
+func TestInboxReceiveLogsNeverContainTheSenderRequestID(t *testing.T) {
+	const senderID = "sender-chosen-request-id"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	h := receiveHandler(accepted, &logs)
+	for _, target := range []string{receivePath, "/api/v1/assistant-task-inbox/unknown/path"} {
+		logs.Reset()
+		w := receiveRequest(h, target, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "X-Request-ID": senderID})
+		served := w.Header().Get("X-Request-ID")
+		if strings.Contains(logs.String(), senderID) || served == senderID || !httpx.ValidRequestID(served) {
+			t.Fatalf("%s: sender request ID adopted: header=%q logs=%s", target, served, logs.String())
+		}
+		if strings.Contains(logs.String(), "request completed") {
+			t.Fatalf("%s: generic completion record written: %s", target, logs.String())
+		}
+		if !strings.Contains(logs.String(), `"msg":"assistant task inbox request"`) || !strings.Contains(logs.String(), `"request_id":"`+served+`"`) {
+			t.Fatalf("%s: inbox record missing: %s", target, logs.String())
+		}
+		if target == receivePath && w.Code != http.StatusAccepted {
+			t.Fatalf("inbox record: status=%d logs=%s", w.Code, logs.String())
+		}
+	}
+	logs.Reset()
+	other := httpx.RequestLoggingWithMetrics(logger, http.NotFoundHandler(), nil)
+	w := receiveRequest(other, "/api/v1/tasks", "", "", map[string]string{"X-Request-ID": senderID})
+	if w.Header().Get("X-Request-ID") != senderID || !strings.Contains(logs.String(), "request completed") {
+		t.Fatalf("other routes keep the sender request ID: header=%q logs=%s", w.Header().Get("X-Request-ID"), logs.String())
+	}
+}
+
+var inboxLogAllowlist = map[string]bool{"time": true, "level": true, "msg": true, "type": true, "component": true, "status": true, "bytes": true, "request_id": true, "inbox_id": true, "classification": true}
+
+// inboxLogRecord returns the request's single log record after checking that
+// every field is in the inbox log allowlist.
+func inboxLogRecord(t *testing.T, logs string) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(logs), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("want one record, got %d: %s", len(lines), logs)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	for key := range record {
+		if !inboxLogAllowlist[key] {
+			t.Fatalf("field %q outside the allowlist: %s", key, lines[0])
+		}
+	}
+	return record
+}
+
+// Every inbox request, including failure paths, writes exactly one record whose
+// fields are all in the inbox log allowlist.
+func TestInboxReceiveFailureLogsKeepTheAllowlist(t *testing.T) {
+	unknown := &service.WriteError{Operation: "Receive", Outcome: store.TransactionUnknown, Cause: errors.New("lost commit")}
+	for _, test := range []struct {
+		name   string
+		body   io.Reader
+		err    error
+		status int
+	}{
+		{"unknown commit", strings.NewReader(`{}`), unknown, http.StatusServiceUnavailable},
+		{"internal", strings.NewReader(`{}`), errors.New("database exploded"), http.StatusInternalServerError},
+		{"chunked oversized", strings.NewReader(strings.Repeat(" ", InboxBodyLimit+1)), nil, http.StatusRequestEntityTooLarge},
+		{"failed body read", io.MultiReader(strings.NewReader("{"), failingReader{}), nil, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := receiveHandler(func(ctx context.Context, input service.ReceiveInput) (service.ReceiveResult, error) {
+				if test.err != nil {
+					return service.ReceiveResult{}, test.err
+				}
+				return accepted(ctx, input)
+			}, &logs)
+			r := httptest.NewRequest(http.MethodPost, receivePath, test.body)
+			r.Header.Set("Content-Type", "application/json")
+			r.ContentLength = -1
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if test.status != 0 && w.Code != test.status || w.Code < 400 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+			if test.err == unknown && w.Header().Get("Retry-After") != inboxRetryAfter {
+				t.Fatalf("retry=%q", w.Header().Get("Retry-After"))
+			}
+			if record := inboxLogRecord(t, logs.String()); record["msg"] != "assistant task inbox request" || record["inbox_id"] != testID {
+				t.Fatalf("record=%v", record)
+			}
+		})
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+
+// A request target rejected before routing still writes the inbox record and
+// none of the generic records.
+func TestInboxReceiveLogsTargetRejectionsBeforeDispatch(t *testing.T) {
+	var logs bytes.Buffer
+	calls := 0
+	h := receiveHandler(func(ctx context.Context, input service.ReceiveInput) (service.ReceiveResult, error) {
+		calls++
+		return accepted(ctx, input)
+	}, &logs)
+	target := receivePath + "?token=" + strings.Repeat("a", transport.MaxRawQueryBytes)
+	w := receiveRequest(h, target, "application/json", `{}`, map[string]string{"X-Request-ID": "sender-chosen-request-id"})
+	if w.Code != http.StatusRequestURITooLong || calls != 0 {
+		t.Fatalf("status=%d calls=%d", w.Code, calls)
+	}
+	record := inboxLogRecord(t, logs.String())
+	if record["msg"] != "assistant task inbox request" || record["status"] != float64(http.StatusRequestURITooLong) || record["request_id"] != w.Header().Get("X-Request-ID") {
+		t.Fatalf("record=%v", record)
+	}
+}
+
+type failingFlushWriter struct{ *httptest.ResponseRecorder }
+
+func (w failingFlushWriter) FlushError() error { return errors.New("connection reset") }
+
+// A body rejection whose response flush fails aborts the handler. The abort
+// keeps its semantics and metric outcome and still writes only the inbox record.
+func TestInboxReceiveLogsAbortedBodyRejections(t *testing.T) {
+	var logs bytes.Buffer
+	registry := prometheus.NewRegistry()
+	metrics, err := httpx.NewRequestMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := receiveHandlerWithMetrics(accepted, &logs, metrics)
+	r := httptest.NewRequest(http.MethodPost, receivePath, strings.NewReader(strings.Repeat(" ", InboxBodyLimit+1)))
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = -1
+	w := failingFlushWriter{httptest.NewRecorder()}
+	func() {
+		defer func() {
+			if value := recover(); value != http.ErrAbortHandler {
+				t.Fatalf("recovered %v, want http.ErrAbortHandler", value)
+			}
+		}()
+		h.ServeHTTP(w, r)
+	}()
+	record := inboxLogRecord(t, logs.String())
+	if record["msg"] != "assistant task inbox request interrupted" || record["inbox_id"] != testID || record["status"] != float64(http.StatusRequestEntityTooLarge) {
+		t.Fatalf("record=%v", record)
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	aborted := false
+	for _, family := range families {
+		if family.GetName() != "daynight_http_requests_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "outcome" && label.GetValue() == "aborted" && metric.GetCounter().GetValue() == 1 {
+					aborted = true
+				}
+			}
+		}
+	}
+	if !aborted {
+		t.Fatalf("aborted request metric missing: %v", families)
+	}
+}

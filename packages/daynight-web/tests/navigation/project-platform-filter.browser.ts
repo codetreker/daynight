@@ -91,3 +91,33 @@ for (const locale of ['en', 'zh-CN'] as const) test(`platform filter is usable w
   await expect(platform).toHaveValue('linux');
   expect(writes).toEqual([]);
 });
+
+for (const coarse of [false, true]) test(`project filters fit their labels at enlarged and reduced root sizes with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 800 }, hasTouch: coarse });
+  try {
+    const page = await context.newPage();
+    const writes = await install(page, 'en');
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.locator('#project-task-tab-standalone').click();
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
+    const platform = page.getByRole('combobox', { name: 'Platform' });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      const observed = await platform.evaluate(control => {
+        const bounds = control.getBoundingClientRect(), style = getComputedStyle(control);
+        const label = control.closest('label')!.querySelector('span')!, labelBounds = label.getBoundingClientRect();
+        return { width: document.documentElement.scrollWidth, viewport: innerWidth, height: bounds.height,
+          font: style.fontSize, paddingTop: parseFloat(style.paddingTop), labelHeight: labelBounds.height };
+      });
+      expect(observed.width).toBeLessThanOrEqual(observed.viewport);
+      expect(observed.font).toBe(`${coarse ? Math.max(root, 16) : root * .875}px`);
+      expect(observed.height).toBeGreaterThanOrEqual(44);
+      expect(observed.paddingTop).toBeCloseTo(root * .75 * 1.5, 1);
+      expect(observed.height - observed.paddingTop - 2).toBeGreaterThanOrEqual(parseFloat(observed.font) * 1.5);
+      expect(observed.paddingTop).toBeGreaterThanOrEqual(observed.labelHeight);
+      await expect(platform.locator('option').first()).toHaveCSS('font-size', observed.font);
+    }
+    expect(writes).toEqual([]);
+  } finally { await context.close(); }
+});

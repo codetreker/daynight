@@ -437,7 +437,7 @@ describe('project task views', () => {
     expect(childRows).toHaveLength(3);
     for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
       expect(childRows[position]).toBeVisible();
-      expect(childRows[position]!.closest('.task-row')!.querySelector('.root-status')).toHaveTextContent(status);
+      expect(childRows[position]!.closest('.task-row')!.querySelector('.task-row-primary-status')).toHaveTextContent(status);
     }
     expect(goal.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;

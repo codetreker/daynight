@@ -86,6 +86,7 @@ daynight assistant-task proposal list <task-id> --json
 daynight assistant-task record add <task-id> --kind fact --text "Observed result" --json
 daynight assistant-task record add <task-id> --kind outcome --outcome effective --action-record <action-record-id> --text "Observed result" --json
 daynight assistant-task appendix validate <task-id> <appendix-id> --outcome-record <outcome-record-id> --json
+daynight assistant-task appendix related <task-id> --project <project-id> --event-type report --category "build" --json
 daynight assistant-task ask <task-id> --question "What is the current finding?" --json
 daynight assistant-task answer <task-id> <inquiry-id> --answer "Observed result" --json
 ```
@@ -101,7 +102,10 @@ timeout. Appendices cite records and may declare a scope with repeatable
 without values stays unrestricted. `appendix validate` registers one
 `effective` (success) or `ineffective` (failure) outcome record as evidence for
 an appendix; `inconclusive` outcomes and repeated registrations are refused, and
-`appendix list` shows the scope and counts once used. Proposals cite evidence and retain the base
+`appendix list` shows the scope and counts once used. `appendix related` reads
+at most five live appendices for a project, event type and item category, each
+optional: a declared matching dimension ranks higher, a declared mismatch
+excludes the appendix, and recent validation breaks ties. Proposals cite evidence and retain the base
 manual version. Proposals do not change the effective manual until a user decides.
 
 User terminals can create/update/pause/resume/delete tasks, edit/delete appendices,

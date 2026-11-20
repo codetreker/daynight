@@ -232,12 +232,12 @@ type wakeStub struct {
 	err                 error
 	calls               int
 	bot, subject, owner string
-	since               time.Time
+	since, until        time.Time
 }
 
-func (s *wakeStub) ReceivedInbound(_ context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+func (s *wakeStub) ReceivedInbound(_ context.Context, owner, bot, subject string, since, until time.Time) (bool, error) {
 	s.calls++
-	s.owner, s.bot, s.subject, s.since = owner, bot, subject, since
+	s.owner, s.bot, s.subject, s.since, s.until = owner, bot, subject, since, until
 	return s.woke, s.err
 }
 
@@ -268,7 +268,7 @@ func TestSuppressInboundOnlyForOwnerBotLoops(t *testing.T) {
 			if err != nil || got != tc.want || (d.calls == 1) != tc.query {
 				t.Fatalf("got %v err %v calls %d", got, err, d.calls)
 			}
-			if tc.query && (d.owner != ownerID || d.bot != peer || d.subject != subject || !d.since.Equal(epoch.Add(-10*time.Minute))) {
+			if tc.query && (d.owner != ownerID || d.bot != peer || d.subject != subject || !d.since.Equal(epoch.Add(-10*time.Minute)) || !d.until.Equal(epoch)) {
 				t.Fatalf("query %+v", d)
 			}
 		})
