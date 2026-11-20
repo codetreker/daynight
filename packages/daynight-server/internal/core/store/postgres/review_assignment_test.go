@@ -30,7 +30,7 @@ func TestReviewAssignmentLocksAndRollback(t *testing.T) {
 			return err
 		}
 		repo, err := w.LockConnection(ctx)
-		if err != nil || repo == nil || *repo != 30 {
+		if err != nil || repo == nil || (repo.RepositoryID == nil || *repo.RepositoryID != 30) {
 			return fmt.Errorf("connection: %v %v", repo, err)
 		}
 		worker, err := w.LockWorker(ctx, owner, workerID)
@@ -242,7 +242,7 @@ func TestReviewAssignmentSeesConnectionAndPRAfterProjectLockWait(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if repo == nil || *repo != 31 {
+			if repo == nil || (repo.RepositoryID == nil || *repo.RepositoryID != 31) {
 				return fmt.Errorf("stale repository %v", repo)
 			}
 			pr, err := w.PullRequest(ctx, 30, 1)

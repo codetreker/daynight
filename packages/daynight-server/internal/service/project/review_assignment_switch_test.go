@@ -58,7 +58,7 @@ func TestRepositorySwitchAndReviewAssignmentSerialize(t *testing.T) {
 			workerID := uuid.NewString()
 			raw := fmt.Sprintf(`{"projects":[{"projectId":%q,"nativeOverrides":{}}]}`, p.ID)
 			testutil.MustExec(t, db.Pool, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot,review_enabled,configuration_revision,configuration_updated_at,desired_configuration) VALUES($1,$2,now(),now(),'{}','{}',true,1,now(),$3::jsonb)`, actor.UserID, workerID, raw)
-			testutil.MustExec(t, db.Pool, `INSERT INTO project_github(project_id,repository_id,legacy_repository_id,repository_full_name) VALUES($1,30,30,'owner/old')`, p.ID)
+			testutil.MustExec(t, db.Pool, `INSERT INTO project_github(project_id,repository_id,legacy_repository_id,repository_full_name,repository_default_branch) VALUES($1,30,30,'owner/old','main')`, p.ID)
 			testutil.MustExec(t, db.Pool, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,30,'owner/old')`, p.ID)
 			testutil.MustExec(t, db.Pool, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,1,10,'url','title','open',false,'main','sha',now(),now(),now(),1)`, p.ID)
 			preview, err := app.RepositoryPreview(ctx, actor, p.ID, "https://example.com/new", actor.UserID)
@@ -83,7 +83,7 @@ func TestRepositorySwitchAndReviewAssignmentSerialize(t *testing.T) {
 				if _, err := app.SetRepository(ctx, actor, p.ID, change); err != nil {
 					t.Fatal(err)
 				}
-				testutil.MustExec(t, db.Pool, `UPDATE project_github SET repository_id=30 WHERE project_id=$1`, p.ID)
+				testutil.MustExec(t, db.Pool, `UPDATE project_github SET repository_id=30,repository_default_branch='main' WHERE project_id=$1`, p.ID)
 				switchDone <- nil
 				close(barrier.release)
 			} else if assignmentFirst {

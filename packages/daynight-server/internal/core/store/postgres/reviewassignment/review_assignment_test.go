@@ -43,7 +43,7 @@ func TestReviewAssignmentStoragePagingAndIdentity(t *testing.T) {
 	if err != nil || len(page) != 1 || page[0].WorkerID != second {
 		t.Fatalf("second worker page: %+v %v", page, err)
 	}
-	testutil.MustExec(t, s.Pool, `INSERT INTO project_github(project_id,repository_id) VALUES($1,30)`, project)
+	testutil.MustExec(t, s.Pool, `INSERT INTO project_github(project_id,repository_id,repository_default_branch) VALUES($1,30,'main')`, project)
 	for n := int64(1); n <= 3; n++ {
 		testutil.MustExec(t, s.Pool, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,$2,$2,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project, n)
 	}
@@ -85,6 +85,23 @@ func TestReviewAssignmentStoragePagingAndIdentity(t *testing.T) {
 	pr, err = s.ReviewOpenPRs(ctx, owner, project, 30, nil, nil, 2)
 	if err != nil || len(pr) != 2 || !pr[0].Assigned || pr[1].Assigned {
 		t.Fatalf("assignment flags %+v %v", pr, err)
+	}
+	// Retargeting and unknown default branches affect candidate scanning, while
+	// the stored assignment remains independently readable.
+	testutil.MustExec(t, s.Pool, `UPDATE project_pull_requests SET base_ref='release' WHERE project_id=$1 AND number=3`, project)
+	pr, err = s.ReviewOpenPRs(ctx, owner, project, 30, nil, nil, 10)
+	if err != nil || len(pr) != 1 || pr[0].Number != 2 {
+		t.Fatalf("retargeted candidate %+v %v", pr, err)
+	}
+	testutil.MustExec(t, s.Pool, `UPDATE project_github SET repository_default_branch=NULL WHERE project_id=$1`, project)
+	pr, err = s.ReviewOpenPRs(ctx, owner, project, 30, nil, nil, 10)
+	if err != nil || len(pr) != 0 {
+		t.Fatalf("unknown default candidates %+v %v", pr, err)
+	}
+	testutil.MustExec(t, s.Pool, `UPDATE project_github SET repository_default_branch='release' WHERE project_id=$1`, project)
+	pr, err = s.ReviewOpenPRs(ctx, owner, project, 30, nil, nil, 10)
+	if err != nil || len(pr) != 1 || pr[0].Number != 3 || !pr[0].Assigned {
+		t.Fatalf("changed default candidates %+v %v", pr, err)
 	}
 	if err := s.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
 		a, err := sc.(store.ReviewAssignmentSnapshot).ReviewAssignment(ctx, owner, project, 30, 3)
@@ -137,7 +154,7 @@ func TestReviewAssignmentDAOFactsAndFailures(t *testing.T) {
 	if repo, err := reader.ReviewRepository(ctx, project); err != nil || repo != nil {
 		t.Fatalf("missing repo %v %v", repo, err)
 	}
-	testutil.MustExec(t, db.Pool, `INSERT INTO project_github(project_id,repository_id) VALUES($1,30)`, project)
+	testutil.MustExec(t, db.Pool, `INSERT INTO project_github(project_id,repository_id,repository_default_branch) VALUES($1,30,'main')`, project)
 	testutil.MustExec(t, db.Pool, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot,review_enabled) VALUES($1,$2,now(),now(),'{}','{}',true)`, owner, id)
 	testutil.MustExec(t, db.Pool, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,1,10,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project)
 	tx, err := db.Pool.Begin(ctx)
@@ -148,7 +165,7 @@ func TestReviewAssignmentDAOFactsAndFailures(t *testing.T) {
 	if _, err := dao.LockAuthorization(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
-	if repo, err := dao.LockConnection(ctx); err != nil || repo == nil || *repo != 30 {
+	if repo, err := dao.LockConnection(ctx); err != nil || repo == nil || (repo.RepositoryID == nil || *repo.RepositoryID != 30) {
 		t.Fatalf("connection %v %v", repo, err)
 	}
 	if worker, err := dao.LockWorker(ctx, owner, id); err != nil || !worker.ReviewEnabled || worker.UserID != owner {

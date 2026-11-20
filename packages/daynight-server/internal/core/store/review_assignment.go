@@ -32,7 +32,7 @@ type ReviewWorker struct {
 
 type ReviewPR struct {
 	Number, GitHubID int64
-	State            string
+	State, BaseRef   string
 	Assigned         bool
 }
 
@@ -47,11 +47,16 @@ type ReviewAssignmentStore interface {
 	WriteReviewAssignment(context.Context, string, func(ReviewAssignmentWrite) error) (Completion, error)
 }
 
+type ReviewConnection struct {
+	RepositoryID  *int64
+	DefaultBranch *string
+}
+
 // Calls lock authorization, connection and worker in this order, after the
 // Project write lock, then sample ObservedAt and re-read the PR before Insert.
 type ReviewAssignmentWrite interface {
 	LockAuthorization(context.Context, string) (model.ProjectAccess, error)
-	LockConnection(context.Context) (*int64, error)
+	LockConnection(context.Context) (*ReviewConnection, error)
 	LockWorker(context.Context, string, string) (ReviewWorker, error)
 	ObservedAt(context.Context) (time.Time, error)
 	PullRequest(context.Context, int64, int64) (*ReviewPR, error)

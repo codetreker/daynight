@@ -30,6 +30,39 @@ func TestDecodeIdentities(t *testing.T) {
 	}
 }
 
+func TestRepositoryDefaultBranchObservation(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, want string
+	}{
+		{"normal", `,"default_branch":"trunk"`, "trunk"},
+		{"nested unicode", `,"default_branch":"版本/v1"`, "版本/v1"},
+		{"missing", ``, ""},
+		{"null", `,"default_branch":null`, ""},
+		{"wrong type", `,"default_branch":42`, ""},
+		{"empty", `,"default_branch":""`, ""},
+		{"space", `,"default_branch":"bad branch"`, ""},
+		{"dots", `,"default_branch":"a..b"`, ""},
+		{"component", `,"default_branch":"a/.hidden"`, ""},
+		{"lock", `,"default_branch":"a.lock"`, ""},
+		{"leading dash", `,"default_branch":"-bad"`, ""},
+		{"control", `,"default_branch":"a\u0000b"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, err := decodeRepository([]byte(`{"id":1,"full_name":"owner/repo","private":false` + tc.field + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if repo.DefaultBranch != nil {
+					t.Fatalf("expected unknown, got %q", *repo.DefaultBranch)
+				}
+			} else if repo.DefaultBranch == nil || *repo.DefaultBranch != tc.want {
+				t.Fatalf("expected %q, got %v", tc.want, repo.DefaultBranch)
+			}
+		})
+	}
+}
+
 func TestDecodePullRequestPreservesFacts(t *testing.T) {
 	got, err := decodePullRequest([]byte(validPullRequest))
 	if err != nil {
