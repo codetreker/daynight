@@ -2903,7 +2903,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			route.path == worker+"/monitoring" || route.path == worker+"/readonly/channel" ||
 			route.path == "/api/v1/session-capabilities" || route.path == "/api/v1/test-session-capabilities" ||
 			route.path == "/api/v1/test-sessions" || route.path == testSession ||
-			route.path == task+"/sessions/current" || route.path == task+"/preview/{path...}"
+			route.path == task+"/sessions/current"
 		for _, suffix := range []string{"/timeline", "/channel", "/operations/{operationId}", "/resources/{resourceId}/content"} {
 			explicit = explicit || route.path == session+suffix || route.path == testSession+suffix
 		}

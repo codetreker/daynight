@@ -74,7 +74,7 @@ func TestAttachmentRegistrationReportsHostScopeClasses(t *testing.T) {
 				path = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(path, "{projectId}", scopedProject), "{taskId}", scopedTask), "{path...}", "docs/file.txt")
 				_, matched := mux.Handler(httptest.NewRequest(method, path, nil))
 				want := pattern
-				if method == http.MethodHead && (test.host == "preview Cookie" || !strings.Contains(pattern, "/preview/")) {
+				if method == http.MethodHead {
 					want = "GET " + strings.TrimPrefix(pattern, "HEAD ")
 				}
 				if matched != want {

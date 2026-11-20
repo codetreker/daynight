@@ -22,7 +22,6 @@ const (
 	routeRead routeClass = iota
 	routeUpload
 	routeDelete
-	routeNavigation
 	routePreviewCookie
 	routeFallback
 	routePreviewCookieFallback
@@ -42,8 +41,6 @@ func (r routeRegistry) handle(pattern string, handler http.HandlerFunc, class ro
 		entry.Operations = []scopepolicy.Operation{scopepolicy.AttachmentUpload, scopepolicy.AttachmentRead}
 	case routeDelete:
 		entry.Operations = []scopepolicy.Operation{scopepolicy.AttachmentDelete}
-	case routeNavigation:
-		entry.PublicNavigation = true
 	case routePreviewCookie:
 		entry.PreviewCookieOnly = true
 	case routeFallback:
@@ -60,5 +57,21 @@ func (r routeRegistry) handle(pattern string, handler http.HandlerFunc, class ro
 			entry.Pattern = "HEAD " + strings.TrimPrefix(pattern, "GET ")
 			r.observe(entry)
 		}
+	}
+}
+
+func (r routeRegistry) handlePreview(pattern string, navigate, readHead http.HandlerFunc) {
+	// The inherited HEAD match also identifies preview reads to the root CORS
+	// adapter, whose explicit HEAD registrations represent protocol refusals.
+	r.mux.HandleFunc("GET "+pattern, func(w http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodHead {
+			readHead(w, request)
+			return
+		}
+		navigate(w, request)
+	})
+	if r.observe != nil {
+		r.observe(ScopeRoute{Pattern: "GET " + pattern, PublicNavigation: true})
+		r.observe(ScopeRoute{Pattern: "HEAD " + pattern, Operations: []scopepolicy.Operation{scopepolicy.AttachmentRead}})
 	}
 }

@@ -89,7 +89,7 @@ REST 的显式 `RegisterScopedRoutes` 复用原解析与流响应。附件列表
 文件 GET 及自动 HEAD 对应读取，PUT 对应上传完整响应，DELETE 对应删除。
 主站 preview GET 保留原无需业务授权的跳转；preview HEAD 必须经过 scoped Open。
 独立 preview host 仍只通过原 preview Cookie 路径读取，不新增 PAT/MCP 预览入口。
-实际注册同时提供按 host 区分的观察记录，覆盖自动 HEAD、显式 preview HEAD、
+实际注册同时提供按 host 区分的观察记录，覆盖自动 HEAD、preview HEAD 读取分支、
 公开跳转、Cookie 专用入口和方法回退，供全量启用时核对。
 方法回退保留原认证和 405。权限不足沿用 403 `forbidden`，并附加
 `Daynight-Scope-Status: insufficient_scope`。
