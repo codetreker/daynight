@@ -477,6 +477,13 @@ func committedResponseFailure(w http.ResponseWriter, request *http.Request, logg
 
 func writeTaskMutation(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, location string, task model.Task) {
 	logger = logger.With("tx_outcome", "committed")
+	if taskReceiptRequested(request.Context()) {
+		if location != "" {
+			w.Header().Set("Location", location)
+		}
+		writeTaskReceipt(w, request, logger, component, status, task)
+		return
+	}
 	response, err := taskResponse(task, request)
 	if err != nil {
 		committedResponseFailure(w, request, logger, component, err)

@@ -132,7 +132,12 @@ func (s *Execution) GrantBot(ctx context.Context, p model.Principal, workerID, i
 			return conflict()
 		}
 		return nil
-	}, nil, func(op *Operation, scope store.SessionScope, _ model.Bot, access *Access, _ func(model.Principal) error) error {
+	}, nil, func(op *Operation, scope store.SessionScope, _ model.Bot, access *Access, recheck func(model.Principal) error) error {
+		if s.producerRun != nil {
+			if err := recheck(p); err != nil {
+				return err
+			}
+		}
 		_, tx := op.scoped(scope)
 		r := access.record
 		var err error

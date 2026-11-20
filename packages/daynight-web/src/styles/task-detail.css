@@ -117,7 +117,7 @@
 .task-detail-status-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
 .task-detail-status-row .task-detail-badges { min-width: 0; flex: 1 1 auto; }
 .task-automation-control { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-left: auto; min-height: 24px; flex: none; white-space: nowrap; }
-.task-automation-control > span { color: var(--task-helper); font-size: var(--text-sm); font-weight: 500; }
+.task-automation-control > span { color: var(--task-helper); font-size: var(--text-xs); font-weight: 500; }
 .task-automation-switch { width: 42px; height: 24px; border: 1px solid #d6dae5; border-radius: 15px; background: #e4e7ef; position: relative; padding: 2px; flex: none; }
 .task-automation-switch > span { display: block; width: 18px; height: 18px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px #35405630; }
 .task-automation-switch[aria-checked=true] { background: #5c5ce0; border-color: #5c5ce0; }

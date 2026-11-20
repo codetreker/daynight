@@ -15,7 +15,7 @@ export const workspace: WorkspaceMessages = {
     copyRepositoryUrl: "复制仓库地址", repositoryUrlCopied: "已复制", copyRepositoryUrlFailed: "复制仓库地址失败，请重试。",
     statusFilter: "状态", allStatuses: "全部状态", noStatuses: "未选择状态", selectedStatuses: ({ count }) => `已选 ${number(count)} 项`, statusOptions: { proposed: "待确认", todo: "待办", in_progress: "进行中", done: "已完成", cancelled: "已取消" },
     back: "← 项目", lastRefreshed: ({ time }) => `最近成功刷新 ${time}`, refreshing: "正在刷新…", loading: "正在加载任务图", loadingDetail: "正在读取项目任务和依赖关系。", notFound: "项目不存在", incomplete: "任务图数据不完整", loadingFailed: "项目加载失败", networkError: "无法连接服务，请检查本地服务后重试。", protocolError: "任务图数据不完整或不一致，请重试。", notFoundDetail: "这个项目不存在，请返回项目列表。", readError: "暂时无法读取任务图，请重试。",
-    refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", dismissNotice: "关闭提示", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, endedBreakdown: ({ done, cancelled, percent }) => `${number(done)} 完成 · ${number(cancelled)} 取消 · ${number(percent)}% 已结束`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "未就绪", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
+    refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", dismissNotice: "关闭提示", statistics: "项目任务统计", totalTasks: "任务总数", ready: "可开始", blocked: "未就绪", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
   },
   search: {
     form: "搜索项目任务", input: "搜索任务 ID、标题和描述", placeholder: "搜索 ID、标题和描述，支持 AND、OR、NOT…", submit: "搜索", clear: "清空搜索",

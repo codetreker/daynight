@@ -51,7 +51,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if err != nil {
 			return err
 		}
-		header, err := taskWriteHeader(ctx, tx, taskID, version)
+		header, err := s.stepWriteHeader(ctx, tx, taskID, version)
 		if err != nil {
 			return err
 		}

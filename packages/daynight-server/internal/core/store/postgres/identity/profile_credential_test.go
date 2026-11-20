@@ -240,10 +240,12 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 			}
 
 			predicate := "expires_at > clock_timestamp()"
+			columns := "expires_at"
 			if kind == model.PATCredential {
 				predicate = "(expires_at IS NULL OR expires_at > clock_timestamp())"
+				columns += ", business_scopes, scope_version"
 			}
-			statement := "SELECT expires_at FROM " + table + " WHERE id=$1 AND user_id=$2 AND " + predicate + " FOR SHARE"
+			statement := "SELECT " + columns + " FROM " + table + " WHERE id=$1 AND user_id=$2 AND " + predicate + " FOR SHARE"
 			waitProfileCredentialLock(t, ctx, db, statement, readerPID, holderPID, result)
 			testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
 			holderCommitAttempted = true

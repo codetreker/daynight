@@ -71,6 +71,12 @@ func (s *scope) ReadLockedPATScope(ctx context.Context, user, id string) (model.
 	return c, pg.AuthQueryError("share scoped token", err)
 }
 
+// ReadPATScope reads an active policy without taking a write-transaction lock.
+func (s *scope) ReadPATScope(ctx context.Context, user, id string, now time.Time) (model.PersonalAccessToken, error) {
+	c, err := scanScopedPAT(s.tx.QueryRow(ctx, `SELECT `+scopedPATFields+` FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND (expires_at IS NULL OR expires_at>GREATEST($3::timestamptz,clock_timestamp())) AND EXISTS (SELECT 1 FROM users WHERE id=user_id)`, id, user, now))
+	return c, pg.AuthQueryError("read scoped token", err)
+}
+
 func (s *scope) LockPATScope(ctx context.Context, user, id string) (model.PersonalAccessToken, error) {
 	c, err := scanScopedPAT(s.tx.QueryRow(ctx, `SELECT `+scopedPATFields+` FROM personal_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user))
 	return c, pg.AuthQueryError("lock scoped token", err)

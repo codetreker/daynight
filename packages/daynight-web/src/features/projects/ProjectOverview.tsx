@@ -23,7 +23,6 @@ export const ProjectOverview = ({ snapshot, progress, pagination, pausedTasks, a
   const { messages: { workspace: { project: m, sections, overview }, common }, format } = useI18n();
   const summary = snapshot.graph.summary;
   const headingId = useId();
-  const completion = summary.total === 0 ? 0 : Math.round((summary.done + summary.cancelled) * 100 / summary.total);
   const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => {
     const display = completionProgress(value);
     return <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
@@ -43,13 +42,13 @@ export const ProjectOverview = ({ snapshot, progress, pagination, pausedTasks, a
   return <>
     <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p><ProjectPausedTasks tasks={pausedTasks} active={active} onOpenTask={onOpenTask} onFocusFallback={onPausedFocusFallback} /></div>
     <section className="stats" aria-label={m.statistics}>
-      <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p><p className="stat-foot">{m.uniqueTasks}</p></div>
-      <div className="stat done"><p className="stat-label">{summary.cancelled === 0 ? common.status.done : common.status.ended}</p><p className="stat-number">{format.number(summary.done + summary.cancelled)}</p><p className="stat-foot">{summary.cancelled === 0 ? m.completion({ percent: completion }) : m.endedBreakdown({ done: summary.done, cancelled: summary.cancelled, percent: completion })}</p></div>
+      <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p></div>
+      <div className="stat done"><p className="stat-label">{summary.cancelled === 0 ? common.status.done : common.status.ended}</p><p className="stat-number">{format.number(summary.done + summary.cancelled)}</p></div>
       <div className="stat proposed"><p className="stat-label">{common.status.proposed}</p><p className="stat-number">{format.number(summary.proposed)}</p></div>
-      <div className="stat"><p className="stat-label">{common.status.todo}</p><p className="stat-number">{format.number(summary.todo)}</p><p className="stat-foot">{m.waiting}</p></div>
-      <div className="stat active"><p className="stat-label">{common.status.in_progress}</p><p className="stat-number">{format.number(summary.inProgress)}</p><p className="stat-foot">{m.advancing}</p></div>
-      <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p><p className="stat-foot">{m.todoSubset}</p></div>
-      <div className="stat blocked"><p className="stat-label">{m.blocked}</p><p className="stat-number">{format.number(summary.blocked)}</p><p className="stat-foot">{m.todoSubset}</p></div>
+      <div className="stat"><p className="stat-label">{common.status.todo}</p><p className="stat-number">{format.number(summary.todo)}</p></div>
+      <div className="stat active"><p className="stat-label">{common.status.in_progress}</p><p className="stat-number">{format.number(summary.inProgress)}</p></div>
+      <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p></div>
+      <div className="stat blocked"><p className="stat-label">{m.blocked}</p><p className="stat-number">{format.number(summary.blocked)}</p></div>
     </section>
     <section className="overview-progress" id="project-overview-progress" tabIndex={-1} aria-labelledby={headingId}>
       <h2 id={headingId}>{overview.heading}</h2>

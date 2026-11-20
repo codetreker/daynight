@@ -113,6 +113,29 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Task 写入准入
+
+Task 写入服务按解析后的字段合并所需操作，项目访问、原有角色、版本、
+依赖和 claim 规则继续生效。创建的默认值不增加权限；显式非默认负责人和
+平台使用 `task:assign`，依赖与父 Goal 使用 `task:dependencies`，普通状态
+和阻塞属性使用 `task:status`。标题、普通属性和 Task Tag 关联使用
+`task:write`，显式 `allowAgents` 使用 `agent:authorize`。删除使用
+`task:delete`，带 claim 的完成使用 `worker:complete`。组合缺少任何一项
+时不执行部分写入；Task Tag 关联不授予 Tag 目录修改权限。无 `task:read`
+时，错误保留原错误码和完成结果，但不返回已有依赖的 Task ID。
+
+显式 scoped REST 与 MCP 写入口将认证策略和响应选择传给同一服务准入。
+原完整 Task 或属性响应需要在写入前取得 `task:read`。REST 请求
+`Daynight-Return: receipt-v1` 时成功响应回显该 header，并仅返回
+`projectId`、`taskId` 和数值 `version`。MCP 的 `returnView: "receipt"`
+返回相同身份和十进制字符串版本及既有写入结果；省略视图且受限凭据缺少
+`task:read` 时选择该回执，显式 summary/full 需要读取权限。省略 MCP
+版本时的现有预读同样需要 `task:read`。服务在提交前检查实际 MCP 回执的
+响应容量。Goal 依赖编辑保留原最小回执。
+
+直接写入使用本次认证的策略快照；既有生产装配保持原行为，scoped 写入
+入口由启用阶段接入。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
+
 ## 附件准入
 
 `service/attachment.NewScopedAttachments` 显式接收授权事实，复用普通附件服务的
@@ -149,6 +172,7 @@ REST 的显式 `RegisterScopedRoutes` 复用原解析与流响应。附件列表
 `task_attachment_remove` 传递原调用授权，分别执行读取和删除准入。工具 schema、
 发现和原完成结果不变；权限拒绝为 `insufficient_scope`，删除拒绝标为
 `not_committed`。私有分片上传、下载票据及其事务复核由独立传输服务负责。
+
 
 ## 账户与集成准入
 
@@ -217,6 +241,28 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 `Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
 拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
 
+## Session 读取与订阅准入
+
+Session 的 scoped 读取沿用原 Task、Test Session、归档及 Terminal 的资源和
+角色检查，并在对应事务或只读快照中复核原凭据的当前 `session:read`。PAT
+复用凭据行锁；OAuth 按 grant、access 顺序锁定并保留原资源与客户端绑定。
+历史目录和 inspection 使用同一只读快照，inspection 在采样前后分别复核。
+缺失授权来源、身份或 profile 不匹配均拒绝，不能把缺失策略解释为固定授权。
+启用装配需要接入绑定对应事务或快照的当前凭据读取。
+
+Task 与 Test Session 的状态、历史、操作回执、内容、Terminal 及归档读取，
+以及 Task 历史目录和 inspection 使用独立的 scoped 接线。MCP 的
+`task_session_current`、`task_session_list`、`task_session_show`、
+`task_session_read`、`task_session_entry` 和 `task_session_operation` 共享这些业务准入，保持原工具
+schema 与资源绑定。用户通道在握手及每次投递前复核当前权限，撤权后停止
+后续投递并关闭连接、释放资源；网络 I/O 不持有凭据事务。能力查询、生产者
+与命令入口保留各自的协议和准入责任。
+
+图片 occurrence 状态读取可能结算重试或调度复制，而 `retry_source` 另需
+`session:control`，主动重试还返回完整状态。在完整图片准入接入前，scoped
+装配对 PAT 的状态读取和重试在业务操作前失败关闭；Cookie 和固定 OAuth API
+profile 保持原有规则。图片状态及重试的完整权限与结算由图片准入实现负责。
+
 ## Worker 报告与检查准入
 
 `service/worker.NewScopedWorkers` 及 `NewScopedWorkersWithPrompts` 显式启用业务
@@ -276,10 +322,30 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+同时启用 MCP 命令与回执时，组合注册持有构造时安装了不可替换命令准入的
+Execution；替换服务的公开执行字段不会改变该入口实际调用的实例。
+启用时，`NewScopedCommandsAndProducer` 在同一 Session 服务装配命令和
+生产者准入；各自的 scoped 构造入口只安装其对应的规则。
+
+## Session 生产者准入
+
+Session 与用量生产的 scoped 装配在实际操作所属事务或快照中读取原 PAT 的
+当前策略，要求 `session:produce`。Task 注册检查实际调用凭据；后续 Controller
+操作使用连接绑定的父凭据，保留原 claim、执行代次和连接 fence。Test 与 Bot
+Session 的当前 grant 父凭据和活动连接父凭据可能不同：同代重连更换 grant 后，
+旧连接仍须分别复核两者的有效性和生产权限。同一凭据只需一次策略检查。
+Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再参与新 grant 的
+消费；正常同代重连保留旧 lease 时仍分别复核两者。
+用量上传凭据保留原父凭据和资源绑定，不能凭新连接的权限替代原父凭据。
+
+注册、签发及新生产操作在相应阶段拒绝权限不足；已有持久结果不因撤权改写。
+恢复和重试仍遵循各自的原身份、回执和完成语义。固定 profile 继续受原协议和
+资源约束，受限入口不将缺失的 PAT 策略解释为无限权限。具体权衡见
+[Session 生产者准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-producer-scope.md)。
 
 ## 装配边界
 
-生产仍使用原有附件、Worker、Tag、Team、Bot、Session、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用既有业务装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方
@@ -288,3 +354,26 @@ scoped 命令服务显式装配后使用这些能力，原生产装配保持不�
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
 附件准入与完整上传回执的取舍见[附件决策](../../.agents/notes/implemented/architecture/2026-11-20-attachment-scope-admission.md)。
+
+## Steps 与讨论准入
+
+Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合，MCP 写响应
+也包含已有数据，因此写入需要 `step:write` 与 `step:read`。权限检查在原项目
+访问及写入角色检查后、读取 Steps 内容或修改之前执行；版本、排序、容量和
+事务完成语义保持原有规则。项目资源检查不隐含 `task:read` 或 `project:read`。
+
+讨论读取使用 `thread:read`，发帖和回复使用 `thread:post`。REST 原响应包含
+既有作者资料，因此还需要 `thread:read`；指定 `Daynight-Return: receipt-v1`
+时仅返回项目、任务和新消息 ID，并回显 header。MCP 按事务中的当前策略选择
+原消息响应或最小回执。项目访问、有效凭据和指定 claim 的真实执行归属仍分别
+检查。发帖在原 Thread 事务中读取当前策略，OAuth 按 grant、access 顺序锁定，
+与 grant 编辑保持互斥；读取使用原快照中的当前策略。失败继续区分确定未提交
+和提交结果未知。
+
+REST 的 Steps 集合及单项 GET（包括自动 HEAD）对应读取，集合 POST、单项
+PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执行业务。
+讨论 messages GET（包括自动 HEAD）对应读取，POST 对应发帖。MCP 的
+`task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
+`task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
+`task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
+复用原解析与资源检查，原产品装配保持不变。

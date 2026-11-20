@@ -40,7 +40,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 		if err != nil {
 			return err
 		}
-		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
+		header, err := s.stepWriteHeader(ctx, tx, taskID, input.Version)
 		if err != nil {
 			return err
 		}

@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
@@ -29,6 +31,7 @@ const (
 	BrowserAccess BrowserPurpose = iota
 	TaskMessageAccess
 	TaskReceiptAccess
+	ProducerAccess
 )
 
 type BrowserRunner func(context.Context, model.Principal, string, string, string, BrowserPurpose, func(*Access) error) error
@@ -41,6 +44,8 @@ type GrantRunner func(context.Context, []byte, func(*Access) error) error
 type TaskRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error
 type CredentialRunner func(context.Context, model.Principal, func(*Operation, store.SessionScope) error) error
 type AuthorizationRunner func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) error
+type ProducerRunner func(context.Context, store.SessionScope, model.Principal) error
+
 type BotRunner func(context.Context, model.Principal, string, string, func(model.Bot) error, func(model.Bot, *Access) error, func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error
 
 // Execution binds the shared engine to its application's transaction runner.
@@ -63,18 +68,42 @@ type Execution struct {
 	taskRun                  TaskRunner
 	credentialRun            CredentialRunner
 	authorizationRun         AuthorizationRunner
-	commandAdmission         func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error
+	commandAdmission         *commandAdmissionState
 	botRun                   BotRunner
+	producerRun              ProducerRunner
+}
+
+type commandAdmissionState struct {
+	mutex sync.RWMutex
+	check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error
 }
 
 func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, authorization AuthorizationRunner) *Execution {
-	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization}
+	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization, commandAdmission: &commandAdmissionState{}}
 }
 
-// SetCommandAdmission installs transaction-bound command authorization before
-// the Execution is published. A nil check retains the legacy assembly.
-func (s *Execution) SetCommandAdmission(check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) {
-	s.commandAdmission = check
+// SetCommandAdmission installs transaction-bound command authorization. Once
+// installed it cannot be replaced or removed, including after publication.
+func (s *Execution) SetCommandAdmission(check func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error) error {
+	if s.commandAdmission == nil {
+		return errors.New("Session execution was not constructed for command admission")
+	}
+	s.commandAdmission.mutex.Lock()
+	defer s.commandAdmission.mutex.Unlock()
+	if s.commandAdmission.check != nil {
+		return errors.New("Session command admission is already installed")
+	}
+	s.commandAdmission.check = check
+	return nil
+}
+
+func (s *Execution) commandAdmissionCheck() func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
+	if s.commandAdmission == nil {
+		return nil
+	}
+	s.commandAdmission.mutex.RLock()
+	defer s.commandAdmission.mutex.RUnlock()
+	return s.commandAdmission.check
 }
 
 // BeginOperation admits work without taking a live-cell lock. Database locks
@@ -177,3 +206,24 @@ func (s *Engine) Stop(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+// SetProducerAdmission installs transaction-bound admission for producer work.
+func (s *Execution) SetProducerAdmission(run ProducerRunner) { s.producerRun = run }
+
+func (s *Execution) authorizeProducer(ctx context.Context, tx *operationTx, p model.Principal, r *record) error {
+	if s.producerRun == nil {
+		return nil
+	}
+	if p.Kind == model.PATCredential {
+		if err := s.producerRun(ctx, tx.scope, p); err != nil {
+			return err
+		}
+	}
+	if r.Snapshot.TestExecutionID != "" && r.Parent != "" && r.Parent != p.CredentialID {
+		return s.producerRun(ctx, tx.scope, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent})
+	}
+	return nil
+}
+
+// SetBotRunner binds the Bot lifecycle to the selected runtime admission.
+func (s *Execution) SetBotRunner(run BotRunner) { s.botRun = run }

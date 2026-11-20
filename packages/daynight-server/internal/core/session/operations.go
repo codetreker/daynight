@@ -83,16 +83,17 @@ func commandScope(kind string) (scopepolicy.Operation, error) {
 }
 
 func (s *Execution) admitCommand(ctx context.Context, tx *operationTx, p model.Principal, operation scopepolicy.Operation) error {
-	if s.commandAdmission == nil {
+	check := s.commandAdmissionCheck()
+	if check == nil {
 		return nil
 	}
-	return s.commandAdmission(ctx, tx.scope, p, operation)
+	return check(ctx, tx.scope, p, operation)
 }
 
 // A replay may disclose a receipt or a conflicting intent. Read authorization
 // precedes loading either, while a new write requires only its own scope.
 func (s *Execution) admitReplay(ctx context.Context, tx *operationTx, p model.Principal, session, id string) error {
-	if s.commandAdmission == nil {
+	if s.commandAdmissionCheck() == nil {
 		return nil
 	}
 	probe, ok := tx.dao.(store.SessionOperationExistenceDAO)

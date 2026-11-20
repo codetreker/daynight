@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/freeze"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -70,6 +71,7 @@ type TaskPage struct {
 }
 
 func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID string, input taskcore.CreateTask) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, taskcore.CreateOperations(input, principal)...)
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
@@ -100,6 +102,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 }
 
 func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID, id string, input taskcore.UpdateTask) (model.Task, error) {
+	ctx = withTaskWriteOperations(ctx, taskcore.UpdateOperations(input)...)
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, input.Version)
 	if err != nil {
 		return model.Task{}, err
@@ -107,6 +110,7 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 	if err := taskcore.ValidateUpdateFields(input); err != nil {
 		return model.Task{}, err
 	}
+	ctx = withTaskWriteTarget(ctx, id, false)
 	return s.writeTagged(ctx, principal, projectID, input.TagIDs, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		mutation, err := s.writeOperations.prepareUpdate(ctx, tx.TaskDAO(), id, input)
 		return mutation, err
@@ -123,6 +127,9 @@ func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal mod
 	if err != nil {
 		return model.Task{}, err
 	}
+	ops := append(taskcore.UpdateOperations(input), scopepolicy.TaskDependencies)
+	ctx = withTaskWriteOperations(ctx, ops...)
+	ctx = withTaskWriteTarget(ctx, id, false)
 	return s.versionedWriteTagged(ctx, principal, projectID, id, input.Version, input.TagIDs, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
 		all, ext, err := PartitionDependencies(ordinary, external)
 		if err != nil {
@@ -145,6 +152,9 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			if errors.As(err, &refusal) {
 				return nil
 			}
+			return err
+		}
+		if err := s.authorizeTaskWrite(ctx, tx, principal); err != nil {
 			return err
 		}
 		actor, err := sourceActor(ctx, tx, principal)
@@ -286,7 +296,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, facts)
 	})
 	if err != nil {
-		err = projectcore.ProjectWriteError(err)
+		err = redactTaskWriteError(ctx, projectcore.ProjectWriteError(err))
 		if fault, ok := err.(*model.Fault); ok {
 			return model.Task{}, fault
 		}
@@ -296,7 +306,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 		return model.Task{}, fmt.Errorf("write task: transaction did not confirm commit")
 	}
 	if refusal != nil {
-		return model.Task{}, refusal
+		return model.Task{}, redactTaskWriteError(ctx, refusal)
 	}
 	return result, nil
 }
@@ -314,8 +324,9 @@ func (s *Tasks) versionedWriteTaggedWithGoalLock(ctx context.Context, principal 
 	if err != nil {
 		return model.Task{}, err
 	}
+	ctx = withTaskWriteTarget(ctx, id, goal)
 	return s.writeTagged(ctx, principal, projectID, requested, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
-		if goal {
+		if goal && !scopedGoalLocked(ctx) {
 			if err := tx.GoalDependencyDAO().LockTeam(ctx); err != nil {
 				return taskcore.Mutation{}, err
 			}

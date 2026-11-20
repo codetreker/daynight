@@ -29,10 +29,31 @@ func ThreadCredential(ctx context.Context, tx pgx.Tx, principal model.Principal,
 		predicate = "(expires_at IS NULL OR expires_at > clock_timestamp())"
 	}
 	var credential store.ThreadCredential
-	err := tx.QueryRow(ctx, `SELECT expires_at FROM `+table+` WHERE id=$1 AND user_id=$2 AND `+predicate+lock,
-		principal.CredentialID, principal.UserID).Scan(&credential.ExpiresAt)
+	var ids []scopepolicy.ScopeID
+	var version *int64
+	columns := "expires_at"
+	if principal.Kind == model.PATCredential {
+		columns += ", business_scopes, scope_version"
+	}
+	row := tx.QueryRow(ctx, `SELECT `+columns+` FROM `+table+` WHERE id=$1 AND user_id=$2 AND `+predicate+lock, principal.CredentialID, principal.UserID)
+	var err error
+	if principal.Kind == model.PATCredential {
+		err = row.Scan(&credential.ExpiresAt, &ids, &version)
+	} else {
+		err = row.Scan(&credential.ExpiresAt)
+	}
 	if err != nil {
 		return store.ThreadCredential{}, QueryError("read thread credential", err)
+	}
+	if ids != nil || version != nil {
+		if ids == nil || version == nil {
+			return store.ThreadCredential{}, fmt.Errorf("invalid PAT credential scope policy")
+		}
+		policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, ids, *version)
+		if err != nil {
+			return store.ThreadCredential{}, fmt.Errorf("invalid PAT credential scope policy: %w", err)
+		}
+		credential.ScopePolicy = &policy
 	}
 	credential.ExpiresAt = UTCTime(credential.ExpiresAt)
 	return credential, nil

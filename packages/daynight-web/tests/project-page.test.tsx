@@ -1063,7 +1063,7 @@ describe("project dashboard", () => {
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   beforeEach(() => { rememberRoot(A); });
 
-  it("loads a complete graph into six accurate unique-task statistics and opens a chain only on request", async () => {
+  it("loads a complete graph into seven accurate task statistics and opens a chain only on request", async () => {
     window.localStorage.clear();
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(pending.promise);
@@ -1072,9 +1072,10 @@ describe("project dashboard", () => {
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy(); await waitForGraph();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
-    expect(screen.getByText("完成比例 25%")).toBeTruthy();
-    expect(screen.getAllByText("待处理的子集")).toHaveLength(2);
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "0", "3", "0", "2", "1"]);
+    const cards = document.querySelectorAll(".stats .stat");
+    expect(cards).toHaveLength(7);
+    for (const card of cards) expect([...card.children].map(child => child.className)).toEqual(["stat-label", "stat-number"]);
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(screen.getByText("git@github.com:example/project.git")).toBeTruthy();
     expect(screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime")).not.toBe(time);
@@ -1243,8 +1244,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await waitFor(() => expect(number("任务总数")).toBe("0"));
     expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
-    expect(screen.getByText("完成比例 0%")).toBeTruthy();
+    expect(["任务总数", "已完成", "待确认", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0", "0"]);
   });
 
   it.each([

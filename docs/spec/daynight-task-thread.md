@@ -39,7 +39,7 @@ POST 只接受一个 JSON 对象：
 
 body 必填；replyTo 和 claimId 可以省略，显式 null 拒绝。未知/只读字段、重复字段、多个 JSON 值、错误类型、非法原始 UTF-8、错误媒体类型和 query 参数均拒绝。完整请求体沿用 1 MiB 上限。
 
-无 claimId 时 Agent=false，不从当前任务执行者推定作者。提供 claimId 时，必须匹配当前活动执行、TaskInProgress 及认证账号的 worker.UserID；项目管理员也不能冒充他人的执行。成功 POST 在确认 commit 后返回 201 和完整默认消息资源，不提供单消息 GET 或 Location。
+无 claimId 时 Agent=false，不从当前任务执行者推定作者。提供 claimId 时，必须匹配当前活动执行、TaskInProgress 及认证账号的 worker.UserID；项目管理员也不能冒充他人的执行。成功 POST 在确认 commit 后返回 201 和完整默认消息资源，不提供单消息 GET 或 Location。受限 scope 装配启用时，原响应需要 `thread:post` 和 `thread:read`；请求 `Daynight-Return: receipt-v1` 只需要 `thread:post`，成功响应回显该 header 并返回 `{projectId, taskId, messageId}`。无效或重复 header 在写入前拒绝。
 
 GET 的唯一 query 参数为：
 

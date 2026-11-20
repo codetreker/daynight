@@ -46,6 +46,12 @@ func TestScopedOAuthStorage(t *testing.T) {
 		t.Fatalf("locked access identity: %+v", locked)
 	}
 	assert(locked.ScopePolicy, 1, ids)
+	unlocked, err := dao.ReadScopedAccess(ctx, identity.Principal, bindings, now)
+	check(t, err)
+	if unlocked.Principal != identity.Principal || unlocked.GrantID != issue.Grant.ID {
+		t.Fatalf("read access identity: %+v", unlocked)
+	}
+	assert(unlocked.ScopePolicy, 1, ids)
 	for _, tc := range []struct {
 		name     string
 		actor    model.Principal
@@ -58,6 +64,8 @@ func TestScopedOAuthStorage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := dao.LockScopedAccess(ctx, tc.actor, tc.bindings, now)
+			missing(t, err)
+			_, err = dao.ReadScopedAccess(ctx, tc.actor, tc.bindings, now)
 			missing(t, err)
 		})
 	}
@@ -87,6 +95,9 @@ func TestScopedOAuthStorage(t *testing.T) {
 	locked, err = dao.LockScopedAccess(ctx, identity.Principal, bindings, now)
 	check(t, err)
 	assert(locked.ScopePolicy, 2, changed)
+	unlocked, err = dao.ReadScopedAccess(ctx, identity.Principal, bindings, now)
+	check(t, err)
+	assert(unlocked.ScopePolicy, 2, changed)
 	_, err = dao.CompareGrantScope(ctx, issue.Grant.UserID, issue.Grant.ID, 1, ids, now)
 	missing(t, err)
 	if _, err = dao.CompareGrantScope(ctx, issue.Grant.UserID, issue.Grant.ID, 2, []scopepolicy.ScopeID{"task:read", "task:read"}, now); err == nil {
@@ -99,6 +110,8 @@ func TestScopedOAuthStorage(t *testing.T) {
 	_, err = dao.CompareGrantScope(ctx, issue.Grant.UserID, issue.Grant.ID, 2, ids, now)
 	missing(t, err)
 	_, err = dao.ScopedAccess(ctx, issue.AccessHash, bindings, now)
+	missing(t, err)
+	_, err = dao.ReadScopedAccess(ctx, identity.Principal, bindings, now)
 	missing(t, err)
 }
 
@@ -124,6 +137,11 @@ func TestScopedOAuthCorruptAndFixedProfiles(t *testing.T) {
 	if fixedLocked.ScopePolicy != nil || fixedLocked.GrantID != api.Grant.ID {
 		t.Fatalf("fixed API locked access: %+v", fixedLocked)
 	}
+	fixedRead, err := dao.ReadScopedAccess(ctx, fixed.Principal, bind(api), now)
+	check(t, err)
+	if fixedRead.ScopePolicy != nil || fixedRead.GrantID != api.Grant.ID {
+		t.Fatalf("fixed API read access: %+v", fixedRead)
+	}
 	_, err = dao.CompareGrantScope(ctx, api.Grant.UserID, api.Grant.ID, 1, []scopepolicy.ScopeID{"task:read"}, now)
 	missing(t, err)
 	for _, tc := range []struct {
@@ -140,6 +158,9 @@ func TestScopedOAuthCorruptAndFixedProfiles(t *testing.T) {
 		principal := model.Principal{Kind: model.OAuthCredential, UserID: mcp.Grant.UserID, CredentialID: mcp.AccessID}
 		if _, err = dao.LockScopedAccess(ctx, principal, bind(mcp), now); err == nil {
 			t.Fatalf("corrupt MCP policy accepted under lock: %+v", tc)
+		}
+		if _, err = dao.ReadScopedAccess(ctx, principal, bind(mcp), now); err == nil {
+			t.Fatalf("corrupt MCP policy accepted in snapshot: %+v", tc)
 		}
 	}
 	_, err = tx.Exec(ctx, `UPDATE oauth_grants SET business_scopes=ARRAY['task:read'],scope_version=1 WHERE id=$1`, api.Grant.ID)

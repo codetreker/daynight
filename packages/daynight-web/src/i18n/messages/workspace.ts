@@ -63,14 +63,8 @@ export type WorkspaceMessages = {
     readonly dismissNotice: string;
     readonly statistics: string;
     readonly totalTasks: string;
-    readonly uniqueTasks: string;
-    readonly completion: (args: { readonly percent: number }) => string;
-    readonly endedBreakdown: (args: { readonly done: number; readonly cancelled: number; readonly percent: number }) => string;
-      readonly waiting: string;
-    readonly advancing: string;
     readonly ready: string;
     readonly blocked: string;
-    readonly todoSubset: string;
     readonly empty: string;
     readonly emptyDetail: string;
     readonly chains: string;

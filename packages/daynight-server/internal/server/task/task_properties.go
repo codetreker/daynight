@@ -126,5 +126,9 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 	}
 	logger.InfoContext(request.Context(), "task property operation applied", "type", "resource", "component", "task_property", "phase", phase,
 		"outcome", outcome, "request_id", httpx.RequestID(request.Context()))
+	if taskReceiptRequested(request.Context()) {
+		writeTaskReceipt(w, request, logger, "task_property", http.StatusOK, task)
+		return
+	}
 	httpx.WriteMutationJSON(w, request, logger.With("tx_outcome", "committed"), "task_property", http.StatusOK, propertyResponse(task))
 }

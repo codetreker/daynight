@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
@@ -24,6 +25,7 @@ type TaskSteps struct {
 	capturer        Capturer
 	readOperations  taskStepReadOperations
 	writeOperations taskStepWriteOperations
+	admit           func(...scopepolicy.Operation) error
 }
 
 type taskStepReadOperations struct {
@@ -41,6 +43,7 @@ type taskStepWriteOperations struct {
 func NewTaskSteps(database StepsStore, capture ...Capturer) *TaskSteps {
 	return &TaskSteps{
 		store:          database,
+		admit:          func(...scopepolicy.Operation) error { return nil },
 		capturer:       capturer(capture),
 		readOperations: taskStepReadOperations{requireProjectRead: projectcore.RequireProjectRead},
 		writeOperations: taskStepWriteOperations{
@@ -158,6 +161,9 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 		}
 		if header.DeletedAt != nil {
 			return taskcore.NotFound(model.ErrTaskDeleted)
+		}
+		if err := s.admit(scopepolicy.StepRead); err != nil {
+			return err
 		}
 		if err := taskcore.CheckStepsForType(header.Type); err != nil {
 			return err
@@ -302,7 +308,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
+		header, err := s.stepWriteHeader(ctx, tx, taskID, input.Version)
 		if err != nil {
 			return err
 		}
@@ -333,6 +339,28 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		return s.captureStep(ctx, tx, actor, projectID, taskID, step.ID, "created", observed, nil, nil, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
+}
+
+// stepWriteHeader checks Task visibility before policy without exposing the
+// version or type on a scope refusal. The project write scope stabilizes it.
+func (s *TaskSteps) stepWriteHeader(ctx context.Context, tx store.ProjectWriteScope, taskID string, version int64) (model.TaskHeader, error) {
+	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.TaskHeader{}, taskcore.NotFound(err)
+	}
+	if err != nil {
+		return model.TaskHeader{}, err
+	}
+	if header.DeletedAt != nil {
+		return model.TaskHeader{}, taskcore.NotFound(model.ErrTaskDeleted)
+	}
+	if err := s.admit(scopepolicy.StepWrite, scopepolicy.StepRead); err != nil {
+		return model.TaskHeader{}, err
+	}
+	if err := taskcore.CheckStepsForType(header.Type); err != nil {
+		return model.TaskHeader{}, err
+	}
+	return header, taskcore.RequireVersion(header.Version, version)
 }
 
 func finishStepsWrite(result StepsWriteResult, projectLocked bool, completion store.Completion, err error) (StepsWriteResult, error) {

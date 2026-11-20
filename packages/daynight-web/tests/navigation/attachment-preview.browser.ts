@@ -54,6 +54,67 @@ const uploadGeometry = (attachments: Locator) => attachments.evaluate(element =>
   };
 });
 
+for (const goal of [false, true]) for (const mobile of [false, true]) {
+  test(`${goal ? 'Goal' : 'Task'} attachment sidebar typography at ${mobile ? '320px with a 24px root' : 'desktop'}`, async ({ page }) => {
+    await page.setViewportSize(mobile ? { width: 320, height: 900 } : { width: 1360, height: 900 });
+    const state = await install(page, false, false, undefined, goal);
+    const filename = `${'long-filename-'.repeat(8)}end.txt`;
+    state.files.push({ path: filename, contentType: 'text/plain', sizeBytes: longText.length, createdAt: time, updatedAt: time });
+    await page.route(`**/attachments/files/${filename}`, route => route.fulfill({ contentType: 'text/plain', body: longText, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    const sessionId = '00000000-0000-4000-8000-000000000051';
+    await page.route(url => url.pathname === `${root}/sessions`, route => route.fulfill({ contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID }, body: stringifyWireJson({ items: [{ sessionId, claimId: successorId, executionGeneration: '1', agentControlMode: 'web', contentKind: 'native_timeline', createdAt: time, endedAt: time, archive: { state: 'unavailable', sha256: null, byteLength: null, completeness: null } }], nextCursor: null }) }));
+    await page.route(`**/sessions/${sessionId}/archive`, route => route.fulfill({ contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID }, body: stringifyWireJson({ archive: { state: 'unavailable', sha256: null, byteLength: null, errorCode: null } }) }));
+    if (goal) {
+      await page.goto(`/projects/${projectId}`);
+      await page.locator('#project-section-tab-tasks').click();
+      await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+      await page.locator(`#project-goal-detail-${taskId}`).click();
+      await page.locator('.goal-detail-surface').getByRole('tab', { name: 'Attachments', exact: true }).click();
+    } else await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+    if (mobile) await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+    const attachments = page.locator('.task-attachments');
+    const sm = mobile ? '21px' : '14px', xs = mobile ? '18px' : '12px';
+    await expect(attachments.locator('.attachment-section-heading h4')).toHaveCSS('font-size', sm);
+    await expect(attachments.locator('.attachment-section-heading .button')).toHaveCSS('font-size', sm);
+    const disclosure = attachments.locator('.attachment-upload-disclosure');
+    await expect(disclosure.locator('summary')).toHaveCSS('font-size', sm);
+    const row = treeRow(attachments, filename);
+    for (const selector of ['.attachment-file', '.attachment-file-icon', '.attachment-file-name', '.attachment-file-size', '.attachment-actions-trigger']) {
+      await expect(row.locator(selector)).toHaveCSS('font-size', xs);
+    }
+    await expect(attachments.locator('.attachment-tree summary').first()).toHaveCSS('font-size', sm);
+    if (goal) await expect(attachments.locator('.managed-session-records')).toHaveCount(0);
+    else {
+      const records = attachments.locator('.managed-session-records');
+      await expect(records.locator('h4')).toHaveCSS('font-size', sm);
+      await expect(records.locator('.terminal-host-toolbar .button')).toHaveCSS('font-size', sm);
+      const record = records.locator('.managed-session-list .button');
+      await expect(record).toHaveText(/2026-10-20 09:00:00Z · Web ·/);
+      await expect(record).toHaveCSS('font-size', xs);
+      await record.click();
+      await expect(attachments.locator('.attachment-record-preview')).toContainText('No recording is available for this execution.');
+    }
+    const file = row.locator('.attachment-file');
+    await file.click();
+    await expect(file).toHaveAttribute('aria-pressed', 'true');
+    await expect(attachments.locator('.attachment-preview-header h5')).toHaveText(filename);
+    await expect(attachments.locator('.attachment-preview-header h5')).toHaveCSS('font-size', sm);
+    await expect(attachments.locator('.attachment-text')).toHaveText(longText);
+    await row.locator('.attachment-actions-trigger').click();
+    await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toHaveCSS('font-size', sm);
+    await page.keyboard.press('Escape');
+    await disclosure.locator('summary').click();
+    await expect(disclosure).toHaveAttribute('open', '');
+    await expect(disclosure.locator('.attachment-upload label').first()).toHaveCSS('font-size', sm);
+    if (mobile) await attachments.getByRole('button', { name: 'Back to files', exact: true }).click();
+    else await disclosure.locator('summary').click();
+    await expect(disclosure).not.toHaveAttribute('open');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    expect(state.writes).toEqual([]);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 320, height: 640 }, { width: 375, height: 667 }, { width: 390, height: 844 }]) {
   test(`attachment upload fills narrow container at ${viewport.width}px in ${locale}`, async ({ browser }) => {
     const context = await browser.newContext({ viewport, hasTouch: true });
