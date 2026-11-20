@@ -7,6 +7,7 @@
 .member-search-clear { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: none; color: #556176; cursor: pointer; }
 .member-search-clear:hover { background: #f0f1f7; }
 .member-search-popover { position: fixed; z-index: 100; max-width: calc(100vw - 32px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #dedfeb; border-radius: 9px; background: #fff; box-shadow: 0 9px 28px #17244724, 0 2px 6px #17244706; color: #172132; }
+.project-member-search-popover { z-index: 2; }
 .member-search-popover[hidden] { display: none; }
 .member-search-heading, .member-search-footer { display: flex; justify-content: space-between; gap: 10px; flex: none; color: #556176; background: #fdfdfe; }
 .member-search-heading { padding: 10px 13px; border-bottom: 1px solid #eceef3; font-size: var(--text-interface); }
