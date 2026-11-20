@@ -166,6 +166,13 @@ compiled CLI, isolated configuration and topology. Product scenarios use valid
 data and ordinary sizes. Boundary, denial, conflict, race, recovery and stress
 matrices belong to module tests and their own integration entries.
 
+The credential-scope journey obtains device-issued PATs and OAuth grants through
+the public authorization flows. It checks the initial selections and independent
+management edits, then reads and updates the same tasks through REST and MCP
+before and after removing `task:write`. A separate credential of each kind remains
+usable, and a real refresh retains the edited grant's policy. Detailed admission
+and concurrency matrices remain with their owning module and store tests.
+
 Framework verification is separate from product journeys:
 
 ```bash

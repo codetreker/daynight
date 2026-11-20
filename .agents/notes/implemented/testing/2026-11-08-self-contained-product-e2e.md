@@ -27,6 +27,13 @@ after reload. It also checks the default gray, edits and filters associations,
 and checks renamed and deleted catalog entries across clients. Module and store
 tests retain the error, concurrency and capacity matrices.
 
+The credential-scope journey uses the same isolated runtime to obtain device
+PATs and OAuth grants through their public flows. It exercises independent
+credential edits and the resulting REST and MCP operations, including refresh,
+against the same persisted tasks. The targeted refusal demonstrates that an
+edited credential is effective across assembled entry points; detailed refusal
+and concurrency matrices remain with their owning layers.
+
 Every run owns an internal database network, a private ingress bridge, a
 PostgreSQL instance and data volume, an ephemeral Redis monitoring store, an application container, private
 credentials and storage. Public addresses are
