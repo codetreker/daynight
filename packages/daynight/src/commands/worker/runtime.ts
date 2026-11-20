@@ -745,7 +745,13 @@ export const runWorker = async (options: {
     const exchange = createWorkerConfigurationExchange({ manager, needsRead: resource === undefined, bootstrap: configurationBootstrap, prompts: currentPromptSource,
       onStage: configurationDiagnostics.exchange,
       read: operation => readCloudConfiguration(operation.signal, operation),
-      send: (report, captured, operation, selectors) => remote.reportConfiguration(workerId, report, captured, operation, selectors),
+      send: async (report, captured, operation, selectors) => {
+        const receipt = await remote.reportConfiguration(workerId, report, captured, operation, selectors);
+        // Recovery needs the service's accepted machine identity, independently
+        // of whether local configuration receipt persistence can finish.
+        if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
+        return receipt;
+      },
     });
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
     reporter = createWorkerReporter({ signal, collect: async operation => {
@@ -753,7 +759,11 @@ export const runWorker = async (options: {
       const snapshot = manager.current();
       const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, local, "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
-    }, send: (report, operation) => remote.report(workerId, report, operation), emit, configuration: exchange });
+    }, send: async (report, operation) => {
+      const receipt = await remote.report(workerId, report, operation);
+      if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
+      return receipt;
+    }, emit, configuration: exchange });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
     scheduleInitialRemovals();
     signal.throwIfAborted();

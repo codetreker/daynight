@@ -633,7 +633,10 @@ describe("assistant-task managed loops", () => {
     await runtime.tick("delivery", signal());
     expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52)]);
     expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain(id(51));
-    expect(f.listEvents.mock.calls.slice(-1).every(([, query]) => query?.excludeType === "inbound")).toBe(true);
+    expect(f.listEvents.mock.calls.map(([, query]) => query)).toEqual([
+      { state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 },
+      { state: "pending", targetBotId: f.bot.botId, type: "inbound", limit: 1 },
+    ]);
     expect(f.onError).not.toHaveBeenCalled();
   });
 
@@ -641,10 +644,11 @@ describe("assistant-task managed loops", () => {
     const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
     f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
     const send = f.send.getMockImplementation()!;
-    f.send.mockImplementationOnce(async (bot, command, abort) => { f.task = { ...f.task, state: "paused" }; return send(bot, command, abort); });
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; f.task = { ...f.task, state: "paused" }; return send(bot, command, abort); });
     await runtime.tick("delivery", signal());
     expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51)]);
-    expect(f.listEvents.mock.calls.at(-1)![1]).toEqual({ state: "pending", targetBotId: f.bot.botId, limit: 1 });
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
     expect(f.onError).not.toHaveBeenCalled();
   });
 
@@ -658,9 +662,7 @@ describe("assistant-task managed loops", () => {
     f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; return send(bot, command, abort); });
     await runtime.tick("delivery", signal());
     expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52), id(51)]);
-    const acknowledgment = f.listEvents.mock.calls.slice(selected).map(([, query]) => query);
-    expect(acknowledgment[0]).toEqual({ state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 });
-    expect(acknowledgment.slice(1)).toEqual([{ state: "pending", targetBotId: f.bot.botId, type: "inbound", limit: 1 }]);
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
     expect(f.events.filter(event => event.taskId === f.task.id).every(event => event.state === "pending")).toBe(true);
     expect(f.onError).not.toHaveBeenCalled();
   });
@@ -716,7 +718,74 @@ describe("assistant-task managed loops", () => {
     expect(f.readOperation.mock.calls.every(call => call[1].operationId === original.operationId)).toBe(true);
   });
 
-  it("recovers a lost ACK response by reading event state without sending or acknowledging it twice", async () => {
+  it("acknowledges journaled events directly without reading another task's pending backlog", async () => {
+    const f = await fixture(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
+      f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
+      // A later backlog of another task, whose reads would fail, must not hold the journal.
+      f.events = [...f.events, ...Array.from({ length: 5 }, (_, index) => ({ ...f.event(100 + index), taskId: id(12) }))];
+      f.listEvents.mockRejectedValue(new Error("ACK recovery must not page pending events"));
+      return { ...f.events[0]!, state: "delivered", ackOperationId: input.operationId };
+    });
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(true, "request_failed"));
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.onError).toHaveBeenCalledOnce();
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
+    // The retained journal replays its ACKs with the original operation, which the server answers idempotently.
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
+    expect(f.onError).toHaveBeenCalledOnce();
+  });
+
+  it.each(["invalid_transition", "operation_conflict", "task_deleted", "not_found"])("settles a journaled event that a confirmed %s refusal shows is no longer pending", async code => {
+    const f = await fixture(), runtime = f.create(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(false, code, code === "not_found" ? 404 : 409));
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["transfer", "takeover"])("settles a journaled inbound event retargeted by a %s between Session acceptance and ACK", async kind => {
+    const f = await fixture(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!, ack = f.ackEvent.getMockImplementation()!;
+    // The server retargets pending inbound events to the new holder and adds claim_lost for the previous one.
+    f.send.mockImplementationOnce(async (bot, command, abort) => {
+      const result = await send(bot, command, abort);
+      f.events = [...f.events.map(event => event.type === "inbound" ? { ...event, targetBotId: id(90) } : event), { ...f.event(52), type: "claim_lost", payload: { reason: kind } }];
+      return result;
+    });
+    f.ackEvent.mockImplementation(async (taskId, eventId, input) => {
+      if (f.events.find(event => event.id === eventId)!.targetBotId !== f.bot.botId) throw new AssistantTaskApiError(false, "forbidden", 403, true);
+      return ack(taskId, eventId, input);
+    });
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.listEvents.mock.calls.at(-1)).toEqual([f.task.id, { state: "pending", targetBotId: f.bot.botId, limit: 1 }]);
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.send.mock.calls[1]![1])).toContain(id(52));
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the journal when the task read also refuses the Bot identity after a forbidden ACK", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    const list = f.listEvents.getMockImplementation()!;
+    f.ackEvent.mockRejectedValue(new AssistantTaskApiError(false, "forbidden", 403, true));
+    f.listEvents.mockImplementation(async (taskId, query) => { if (taskId !== undefined) throw new AssistantTaskApiError(false, "forbidden", 403, true); return list(taskId, query); });
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    f.events = [...f.events, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51)]);
+    expect(f.listEvents.mock.calls.filter(([taskId]) => taskId !== undefined)).toHaveLength(2);
+    expect(f.onError).toHaveBeenCalledTimes(2);
+    expect(f.onError.mock.calls.every(([message]) => String(message).includes("(forbidden)"))).toBe(true);
+  });
+
+  it("replays a lost ACK response with its original operation without sending the notification again", async () => {
     const f = await fixture(); f.events = [f.event(51), f.event(52)];
     f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
       f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
@@ -725,8 +794,8 @@ describe("assistant-task managed loops", () => {
     const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
     await f.create().tick("delivery", signal());
     expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
-    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
-    expect(f.ackEvent.mock.calls[0]![2].operationId).toBe(f.ackEvent.mock.calls[1]![2].operationId);
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
   });
 
   it.each(["interval", "daily"])("does not duplicate a due %s event after runtime reconstruction", async kind => {

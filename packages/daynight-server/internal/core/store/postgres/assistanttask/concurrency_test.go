@@ -176,26 +176,29 @@ func TestCredentialExpiryRechecksAfterShareLockWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rollbackDatabase(t, blocker)
-	// Leave enough time to enter the observed lock wait on a cold runner.
-	// The blocker never updates this row: only natural expiry may invalidate it.
-	var expiry time.Time
-	if err := f.db.Pool.QueryRow(ctx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at`, principal.CredentialID).Scan(&expiry); err != nil {
-		t.Fatal(err)
-	}
+	defer func() {
+		cancel()
+		rollbackDatabaseNow(t, blocker)
+	}()
+	// The separate expiry update commits before the blocker locks the unchanged Session row.
+	expiry := testutil.ArmCredentialExpiry(t, ctx, f.db.Pool, "sessions", principal.CredentialID, 2)
 	if _, err := blocker.Exec(ctx, `SELECT id FROM sessions WHERE id=$1 FOR UPDATE`, principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
+	var completion store.Completion
 	result := asyncDatabase(t, ctx, func(ctx context.Context) error {
-		_, err := f.db.WriteAssistantTask(ctx, func(s store.AssistantTaskScope) error { return s.AssistantTaskDAO().Credential(ctx, principal) })
+		var err error
+		completion, err = f.db.WriteAssistantTask(ctx, func(s store.AssistantTaskScope) error {
+			return s.AssistantTaskDAO().Credential(ctx, principal)
+		})
 		return err
 	})
-	testutil.WaitForQueryLock(t, f.db.Pool, "SELECT expires_at FROM sessions")
-	awaitDatabaseTime(t, f, expiry)
+	testutil.WaitTransferTeamLock(t, ctx, f.db.Pool, "SELECT expires_at FROM sessions", blocker.Conn().PgConn().PID())
+	testutil.WaitForCredentialExpiry(t, ctx, f.db.Pool, expiry)
 	if err := blocker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("expired credential admitted after waiting: %v", err)
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("expired credential admitted after waiting: %+v %v", completion, err)
 	}
 }

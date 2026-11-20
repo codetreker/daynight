@@ -150,6 +150,13 @@ func (m *operationMock) SaveItem(ctx context.Context, actor core.Actor, input co
 	}
 	return value.(model.AssistantTaskItem), err
 }
+func (m *operationMock) Metrics(ctx context.Context, actor core.Actor, taskID string) (model.AssistantTaskMetrics, error) {
+	value, err := m.call(ctx, actor, "Metrics", taskID)
+	if value == nil {
+		return model.AssistantTaskMetrics{}, err
+	}
+	return value.(model.AssistantTaskMetrics), err
+}
 func (m *operationMock) ListRecords(ctx context.Context, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskRecord], error) {
 	value, err := m.call(ctx, actor, "ListRecords", taskID, input)
 	if value == nil {

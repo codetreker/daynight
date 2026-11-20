@@ -105,6 +105,7 @@ type Application struct {
 	TaskObservations TaskObservationOperations
 	TaskInspection   *session.Inspection
 	TaskHistory      *session.History
+	HistoryDirectory *session.GroupDirectory
 	TaskSearch       store.TaskSearchReader
 	TaskSteps        TaskStepsOperations
 	TaskThreads      *task.TaskThreads
@@ -162,13 +163,14 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		Prompts:          prompt.New(database),
 		WorkerReadOnly:   workerReadOnly,
 		AssistantTasks:   assistanttask.New(database),
-		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
+		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly).WithSessionObserver(engine),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tags:             tag.New(database),
 		Tasks:            construct.tasks(database, capturer),
 		TaskObservations: construct.taskObservations(database, engine),
 		TaskInspection:   inspection,
 		TaskHistory:      session.NewHistory(inspection, sessions),
+		HistoryDirectory: session.NewGroupDirectory(database),
 		TaskSearch:       database,
 		TaskSteps:        construct.taskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),

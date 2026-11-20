@@ -9,7 +9,7 @@ export const imageCommandNotDispatched = (error: unknown): error is ApiError =>
 
 /** Associates a local request failure with its original receipt without changing the ledger. */
 export class OperationRequestError extends Error {
-  constructor(readonly operationId: string, cause: unknown) {
+  constructor(readonly operationId: string, cause: unknown, readonly outcome: 'terminal' | 'unknown' | null = null) {
     super(cause instanceof Error ? cause.message : 'The operation failed.', { cause });
     this.name = 'OperationRequestError';
   }

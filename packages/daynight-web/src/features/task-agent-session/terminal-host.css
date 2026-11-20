@@ -1,24 +1,24 @@
 .task-session-host, .terminal-session { min-width: 0; }
-.terminal-session { padding: 1rem; gap: .75rem; }
-.terminal-host-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; margin-bottom: .65rem; }
-.terminal-host-toolbar > label { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
-.terminal-host-toolbar time { color: var(--muted, #64748b); font-size: .8rem; overflow-wrap: anywhere; }
-.terminal-notice { padding: .75rem; border: 1px solid #d6d3ee; border-radius: .5rem; background: #f8f7ff; }
+.terminal-session { padding: 14px; gap: 10.5px; }
+.terminal-host-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; margin-bottom: 9.1px; }
+.terminal-host-toolbar > label { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+.terminal-host-toolbar time { color: var(--muted, #64748b); font-size: var(--text-metadata); overflow-wrap: anywhere; }
+.terminal-notice { padding: 10.5px; border: 1px solid #d6d3ee; border-radius: 7px; background: #f8f7ff; }
 .terminal-notice p { margin: 0 0 .5rem; }
-.managed-session-records { margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #e0e3eb; min-width: 0; }
-.managed-session-records .terminal-host-toolbar { margin-bottom: .5rem; }
-.managed-session-records h4 { margin: 0; font-size: 11px; font-weight: 550; color: #637087; }
-.managed-session-records p { font-size: 11px; line-height: 1.7; color: #737d8e; }
-.managed-recording-close { flex: none; padding: .5rem; }
-.managed-session-list { padding: 0; list-style: none; display: grid; gap: .5rem; }
+.managed-session-records { margin-bottom: 14px; padding-bottom: 10.5px; border-bottom: 1px solid #e0e3eb; min-width: 0; }
+.managed-session-records .terminal-host-toolbar { margin-bottom: 7px; }
+.managed-session-records h4 { margin: 0; font-size: var(--text-interface); font-weight: 550; color: #637087; }
+.managed-session-records p { font-size: var(--text-interface); line-height: 1.7; color: #737d8e; }
+.managed-recording-close { flex: none; padding: 7px; }
+.managed-session-list { padding: 0; list-style: none; display: grid; gap: 7px; }
 .managed-session-list .button { width: 100%; text-align: left; overflow-wrap: anywhere; }
 .terminal-session.session-fullscreen { overflow: auto; }
-@media (max-width: 600px) { .terminal-host-toolbar > label { flex-basis: 100%; flex-wrap: wrap; } .terminal-session { padding: .65rem; } }
+@media (max-width: 600px) { .terminal-host-toolbar > label { flex-basis: 100%; flex-wrap: wrap; } .terminal-session { padding: 9.1px; } }
 .task-session-host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.task-session-host > .terminal-host-toolbar { flex: none; padding: .5rem .75rem; margin: 0; border-bottom: 1px solid #e8ebf1; }
+.task-session-host > .terminal-host-toolbar { flex: none; padding: 7px 10.5px; margin: 0; border-bottom: 1px solid #e8ebf1; }
 .task-session-host > .terminal-host-toolbar > label { flex: 1 1 0; flex-wrap: nowrap; min-width: min-content; max-width: 500px; white-space: nowrap; }
 .task-session-current { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .task-session-current[hidden] { display: none; }
 .terminal-session { overflow: auto; }
 .terminal-session > * { flex-shrink: 0; }
-.terminal-session > .session-timeline-shell { flex-shrink: 1; min-height: 12rem; }
+.terminal-session > .session-timeline-shell { flex-shrink: 1; min-height: 168px; }

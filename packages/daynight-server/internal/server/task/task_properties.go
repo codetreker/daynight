@@ -18,8 +18,8 @@ func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthenti
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/properties"
 	mux.HandleFunc("GET "+path, auth.Require(handler.getProperties))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("PUT "+path+"/{name}", auth.Require(handler.setProperty))
-	mux.HandleFunc("DELETE "+path+"/{name}", auth.Require(handler.removeProperty))
+	mux.HandleFunc("PUT "+path+"/{name}", auth.Require(declaredBot(logger, taskBotRefusal("task_property", "set"), handler.setProperty)))
+	mux.HandleFunc("DELETE "+path+"/{name}", auth.Require(declaredBot(logger, taskBotRefusal("task_property", "remove"), handler.removeProperty)))
 	mux.HandleFunc(path+"/{name}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT, DELETE")))
 }
 

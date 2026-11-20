@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -61,6 +62,13 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 		result.AppState = appState
 		result.FollowerBotID = task.HolderBotID
 		result.UpdatedAt = now
+		closing := old.State == "open" && result.State == "closed"
+		switch {
+		case old.State == "closed" && result.State == "open":
+			result.OpenedAt = &now
+		case closing:
+			result.ClosedAt = &now
+		}
 		ok, err := dao.SaveItem(ctx, result, old.Version)
 		if err != nil {
 			return result, err
@@ -68,11 +76,29 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 		if !ok {
 			return result, conflict()
 		}
+		if closing {
+			// The task lock serializes item writes, so the closed period's
+			// opening time is the one read with the previous state.
+			closure := model.AssistantTaskItemClosure{ID: uuid.NewString(), OwnerUserID: task.OwnerUserID, TaskID: task.ID, ItemID: result.ID, Episode: result.Episode, OpenedAt: old.OpenedAt, ClosedAt: now}
+			if err = dao.InsertItemClosure(ctx, closure); err != nil {
+				return result, err
+			}
+			// Item writes require the live holder of an active task, so the
+			// retrospective always targets that holder and never a paused task.
+			// The episode is a decimal string like the item API's, because
+			// int64 values exceed the range that JavaScript consumers parse.
+			if _, err = m.systemEvent(ctx, dao, task, *task.HolderBotID, "retrospective", map[string]any{"reason": "item_closed", "itemId": result.ID, "episode": strconv.FormatInt(result.Episode, 10)}, now); err != nil {
+				return result, err
+			}
+		}
 	} else {
 		if input.ItemVersion != nil {
 			return result, model.ErrNotFound
 		}
 		result = model.AssistantTaskItem{ID: input.ID, OwnerUserID: task.OwnerUserID, TaskID: task.ID, Key: input.Key, Episode: input.Episode, State: input.State, Category: input.Category, AppState: appState, FollowerBotID: task.HolderBotID, Version: 1, RequestFingerprint: hash, CreatedAt: now, UpdatedAt: now}
+		if result.State == "open" {
+			result.OpenedAt = &now
+		}
 		ok, err := dao.InsertItem(ctx, result)
 		if err != nil {
 			return result, err

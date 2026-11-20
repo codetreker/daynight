@@ -434,6 +434,10 @@ func (mock *taskHTTPSnapshotScopeMock) UserCandidateDAO() store.UserCandidateRea
 	return mock.UserCandidateDAOFn()
 }
 
+func (mock *taskHTTPSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (mock *taskHTTPSnapshotScopeMock) CredentialDAO() store.CredentialReader {
 	mock.need("CredentialDAO", mock.CredentialDAOFn != nil)
 	return mock.CredentialDAOFn()
@@ -495,6 +499,10 @@ type taskHTTPProjectScopeMock struct {
 func (mock *taskHTTPProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
 	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
@@ -2293,6 +2301,31 @@ func (d sessionHTTPRejectedBotDAO) BotCreationWorker(context.Context, string, st
 
 var _ store.BotWriteDAO = sessionHTTPRejectedBotDAO{}
 
+func (d sessionHTTPRejectedBotDAO) RecoveryWorker(context.Context, string, string) (model.WorkerMachine, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RecoveryWorker")
+	panic("unconfigured BotDAO.RecoveryWorker")
+}
+func (d sessionHTTPRejectedBotDAO) RegisterBotRecovery(context.Context, string, int64, model.BotRecovery) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RegisterBotRecovery")
+	panic("unconfigured BotDAO.RegisterBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) AdvanceBotRecovery(context.Context, string, int64, int64, string, model.WorkerMachine) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.AdvanceBotRecovery")
+	panic("unconfigured BotDAO.AdvanceBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryOperation(context.Context, string, string) (store.BotRecoveryOperation, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryOperation")
+	panic("unconfigured BotDAO.BotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) SaveBotRecoveryOperation(context.Context, string, store.BotRecoveryOperation) error {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.SaveBotRecoveryOperation")
+	panic("unconfigured BotDAO.SaveBotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryTokenUsed(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryTokenUsed")
+	panic("unconfigured BotDAO.BotRecoveryTokenUsed")
+}
+
 func startupBody(f *sessionHTTPFixture) map[string]any {
 	return map[string]any{
 		"schemaVersion": 1, "source": "worker", "sessionId": f.snapshot.SessionID, "claimId": f.snapshot.ClaimID,
@@ -2849,6 +2882,11 @@ func (mock *taskHTTPProjectWriterMock) RepositoryIdentity(ctx context.Context) (
 func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
 	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
 	return mock.RepositoryOccupiedFn(ctx, team, identity)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", false)
+	return nil
 }
 
 func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {

@@ -26,10 +26,11 @@ const fixture = async (options: { answer?: string; interactive?: boolean; failur
   const base = path.resolve("../../.tmp"); await mkdir(base, { recursive: true });
   const dir = await mkdtemp(path.join(base, "project-transfer-")); dirs.push(dir); vi.stubEnv("DN_CONFIG_DIR", dir);
   await writeFile(path.join(dir, "config.yml"), "serverUrl: http://localhost:8787\nserverToken: test-token\n");
-  const calls: { path: string; method: string; body: string | undefined }[] = [];
+  const calls: { path: string; method: string; body: string | undefined; headers: Headers; warningShown: boolean }[] = [];
+  let warningShown = false;
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     const pathname = new URL(String(url)).pathname;
-    calls.push({ path: pathname, method: init!.method!, body: typeof init?.body === "string" ? init.body : undefined });
+    calls.push({ path: pathname, method: init!.method!, body: typeof init?.body === "string" ? init.body : undefined, headers: new Headers(init!.headers), warningShown });
     const headers = { "content-type": "application/json", "Daynight-User-ID": userId };
     if (pathname.endsWith("/me")) return new Response(stringifyApiJson(me), { headers });
     if (pathname === "/api/v1/projects") return new Response(stringifyApiJson({ items: [project], nextCursor: null }), { headers });
@@ -43,7 +44,7 @@ const fixture = async (options: { answer?: string; interactive?: boolean; failur
   });
   const ask = vi.fn(async (_question: string, _signal: AbortSignal) => options.answer ?? "yes");
   const stdoutBytes = vi.fn(async (_value: Uint8Array) => { if (options.outputFailure) throw new Error("output failed"); });
-  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout: vi.fn(), stderr: vi.fn(), stdoutBytes, prompt: { isInteractive: options.interactive ?? true, ask, close: vi.fn(), select: vi.fn(), selectMany: vi.fn() } };
+  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout: vi.fn(), stderr: vi.fn((value: string) => { if (value.includes("permanently removes all Goal dependencies")) warningShown = true; }), stdoutBytes, prompt: { isInteractive: options.interactive ?? true, ask, close: vi.fn(), select: vi.fn(), selectMany: vi.fn() } };
   const dependencies = { runServerCommand: ((ctx, command) => runServerCommand(ctx, command, { fetch })) as typeof runServerCommand };
   return { calls, context, dependencies, ask, stdoutBytes };
 };
@@ -73,17 +74,21 @@ describe("project transfer", () => {
     expect(parseApiJson(output)).toEqual(receipt);
     expect(output).toContain('"actorAccess":null'); expect(output).toContain(`"version":${version + 1n}`);
     expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "POST", "POST"]);
+    expect(f.calls.slice(0, -1).every(x => !x.headers.has("Daynight-Confirm-Goal-Dependency-Removal"))).toBe(true);
+    expect(f.calls[3]!.headers.get("Daynight-Confirm-Goal-Dependency-Removal")).toBe("true");
+    expect(f.calls[3]!.warningShown).toBe(true);
+    expect(f.context.stderr.mock.calls[0]![0]).toMatch(/permanently removes all Goal dependencies.*within and across Projects/);
     expect(parseApiJson(f.calls[3]!.body!)).toEqual({ ownership: { teamId: sourceId, version }, targetTeam: { id: targetId, version }, expectedUserId: userId });
   });
   it("previews and confirms exact versions, reports success after losing access without a follow-up GET", async () => {
     const f = await fixture();
-    await runProjectCommand([...args, "--if-version", version.toString()], f.context, f.dependencies);
+    await runProjectCommand([...args, "--if-version", version.toString(), "--confirm"], f.context, f.dependencies);
     expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "POST", "POST"]);
     expect(f.calls[3]!.body).toContain(`"version":${version}`);
     expect(f.calls[3]!.body).toContain(`"expectedUserId":"${userId}"`);
-    expect(f.ask.mock.calls[0]![0]).toContain("Your access after transfer: none");
-    expect(f.ask.mock.calls[0]![0]).toContain("Project\\nname");
-    expect(f.ask.mock.calls[0]![0]).not.toContain("\u001b");
+    expect(f.context.stderr.mock.calls[0]![0]).toContain("Your access after transfer: none");
+    expect(f.context.stderr.mock.calls[0]![0]).toContain("Project\\nname");
+    expect(f.context.stderr.mock.calls[0]![0]).not.toContain("\u001b");
     expect(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString()).toContain("Your access: none");
   });
   it("discovers a repository without writing its binding or ignore file", async () => {
@@ -96,15 +101,12 @@ describe("project transfer", () => {
     await expect(stat(path.join(repo, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(path.join(repo, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it("refuses noninteractive execution before any request", async () => {
-    const f = await fixture({ interactive: false });
-    await expect(runProjectCommand(args, f.context, f.dependencies)).rejects.toThrow(/interactive confirmation/);
+  it.each([true, false])("refuses execution without confirmation before any request (interactive=%s)", async (interactive) => {
+    const f = await fixture({ interactive });
+    await expect(runProjectCommand(args, f.context, f.dependencies)).rejects.toThrow(/requires --confirm/);
     expect(f.calls).toEqual([]);
   });
-  it("does not write after cancellation or a stale version", async () => {
-    const f = await fixture({ answer: "n" });
-    await expect(runProjectCommand(args, f.context, f.dependencies)).rejects.toThrow(/cancelled/);
-    expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "POST"]);
+  it("does not write after a stale version", async () => {
     const stale = await fixture();
     await expect(runProjectCommand([...args, "--if-version", "1", "--confirm"], stale.context, stale.dependencies)).rejects.toThrow(/version differs/);
     expect(stale.calls.map(x => x.method)).toEqual(["GET", "GET", "POST"]);

@@ -41,6 +41,39 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it('retains the original recovery when settling fails and retries the same operation', async () => {
+    const f = fixture(null);
+    await f.store.importLegacy(identity, { text: 'Retained input', revision: '1', submission: null });
+    const controller = f.create(); await controller.sync(); await controller.send();
+    const original = f.commands[0]!;
+    const ref = controller.getSnapshot().recoveries[0]!.ref;
+    f.query.mockResolvedValue(f.operation(original, 'provider_accepted'));
+    const settle = vi.spyOn(f.store, 'settleSubmission').mockRejectedValueOnce(new Error('storage unavailable'));
+    await controller.checkStatus(ref);
+    expect(controller.getSnapshot().recoveries[0]).toMatchObject({ ref, error: 'image_draft_failed', canCheck: true });
+    expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(original.operationId);
+    await controller.checkStatus(ref);
+    expect(controller.getSnapshot().recoveries).toEqual([]);
+    expect(settle).toHaveBeenCalledTimes(2);
+    expect(f.query.mock.calls.every(([, id]) => id === original.operationId)).toBe(true);
+    expect(f.commands).toHaveLength(1);
+  });
+
+  it('reports a concurrent recovery as busy rather than silently ignoring it', async () => {
+    const f = fixture(null);
+    await f.store.importLegacy(identity, { text: 'Retained input', revision: '1', submission: null });
+    const controller = f.create(); await controller.sync(); await controller.send();
+    const ref = controller.getSnapshot().recoveries[0]!.ref;
+    const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<SessionOperation>();
+    f.query.mockImplementation(async () => { entered.resolve(); return finish.promise; });
+    const first = controller.checkStatus(ref); await entered.promise;
+    await expect(controller.checkStatus({ ...ref, operationId: crypto.randomUUID() })).rejects.toThrow('image_check_in_progress');
+    await expect(controller.checkStatus()).resolves.toBeUndefined();
+    expect(controller.getSnapshot().error).toBeNull();
+    finish.resolve(f.operation(f.commands[0]!, 'provider_accepted')); await first;
+    expect(controller.getSnapshot().recoveries).toEqual([]);
+  });
+
   it.each(['before', 'during'] as const)('does not reauthorize cleared storage when account refresh stops %s reconciliation', async phase => {
     const f = fixture(null), other = new SessionDraftStore(); stores.push(other);
     await f.store.importLegacy(identity, { text: 'Original local draft', revision: 'original', submission: null });
@@ -1013,6 +1046,27 @@ describe('durable Session image coordination', () => {
     const f = fixture(), controller = f.create(); const open = vi.spyOn(f.store, 'openOwner').mockRejectedValue(new Error('database unavailable'));
     await controller.addFiles([file()], 'retain me'); expect(controller.getSnapshot().text).toBe('retain me'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.validation).toBe('pending');
     open.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true); expect((await f.store.readExisting(identity))?.editable?.text).toBe('retain me');
+  });
+  it('settles the draft release once an accepted message references the upload', async () => {
+    const f = fixture(), controller = f.create();
+    vi.mocked(f.resources.releaseUpload).mockRejectedValue(new ApiError('server', 409, 'resource_in_use'));
+    f.dispatch.mockImplementation(async command => { f.commands.push(command); return f.operation(command, 'provider_accepted'); });
+    await controller.addFiles([file()], 'with image'); await controller.send();
+    await controller.checkStatus(); await controller.checkStatus();
+    const saved = (await f.store.readExisting(identity))!;
+    expect(f.commands).toHaveLength(1);
+    expect(f.resources.releaseUpload).toHaveBeenCalledOnce();
+    expect(saved.uploads).toEqual([expect.objectContaining({ releaseIntent: true, releaseRetained: true, outcomeUnknown: false, pendingAction: null })]);
+    expect(controller.getSnapshot()).toMatchObject({ error: null, text: '', items: [], submission: null });
+  });
+  it('keeps a removed upload release unknown when the service rejects it for another reason', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'keep text');
+    vi.mocked(f.resources.releaseUpload).mockRejectedValue(new ApiError('server', 409, 'resource_conflict'));
+    await controller.remove(controller.getSnapshot().items[0]!.draftImageId);
+    const saved = (await f.store.readExisting(identity))!;
+    expect(saved.uploads).toEqual([expect.objectContaining({ releaseIntent: true, outcomeUnknown: true })]);
+    expect(saved.uploads[0]).not.toHaveProperty('releaseRetained', true);
+    expect(controller.getSnapshot().error).not.toBeNull();
   });
   it('can send a text successor after every image is explicitly removed without Web Locks', async () => {
     const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'text only'); await controller.remove(controller.getSnapshot().items[0]!.draftImageId); await controller.send();

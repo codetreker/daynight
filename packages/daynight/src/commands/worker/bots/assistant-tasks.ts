@@ -181,6 +181,9 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       yield event;
     }
   }
+  /** A confirmed ACK refusal showing the event was deleted, is no longer pending or was acknowledged by another operation. */
+  const settledAck = (error: unknown): boolean => error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed
+    && (error.status === 404 || ["not_found", "task_deleted", "invalid_transition", "operation_conflict"].includes(error.code ?? ""));
   const deliveryBot = async (bot: BotRecord, signal: AbortSignal): Promise<void> => {
     await withAssistantRuntimeState({ owner: options.owner, stateDirectory: await options.stateDirectory(bot.botId), key: "delivery" }, async (read, save) => {
       const saved = await read();
@@ -241,24 +244,37 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         await save(delivery);
       }
       if (!delivery.confirmed) return;
-      // Pending-only reads exclude delivered history. Each page and ACK has its own
-      // bounded API operation; a lost ACK response never creates a new Session command.
-      // The journal does not record event types. Non-inbound events are acknowledged
-      // first without reading the inbound backlog. Delivered inbound events were the
-      // earliest pending inbound events of non-paused tasks, so the server-filtered
-      // inbound read reaches them before any later backlog and never reads a paused
-      // task's backlog. Only an event still unacknowledged after both passes, such
-      // as one whose task was paused after the notification was sent, needs the
-      // unfiltered read.
-      const remaining = new Set(delivery.events.map(event => `${event.taskId}/${event.id}`));
-      for (const filter of [{ excludeType: INBOUND_EVENT_TYPE }, { type: INBOUND_EVENT_TYPE }, {}] satisfies EventTypeFilter[]) {
-        if (!remaining.size) break;
-        for await (const event of pendingEvents(bot, signal, filter)) {
-          const key = `${event.taskId}/${event.id}`;
-          if (!remaining.has(key)) continue;
-          await options.withApi(bot.botId, signal, api => api.ackEvent(event.taskId, event.id, { operationId: delivery!.command.operationId }));
-          remaining.delete(key);
-          if (!remaining.size) break;
+      // The journal holds each delivered event's task and ID, so every ACK
+      // addresses its event directly with the batch operation ID; recovery
+      // never pages pending events of other tasks and is unaffected by type
+      // filters or a task paused after delivery. The journal stays until every
+      // event is settled, and a retry replays the same operation, which the
+      // server answers idempotently for events it already acknowledged; a lost
+      // ACK response never creates a new Session command. A confirmed refusal
+      // showing the event is no longer pending, was deleted or was acknowledged
+      // by another operation settles it, as the pending scan it replaces
+      // skipped such events.
+      //
+      // A transfer or takeover between Session acceptance and ACK retargets a
+      // still-pending inbound event to the new holder, and the server checks
+      // the target before replaying an acknowledgment, so the ACK is refused
+      // as forbidden. That refusal is ambiguous with a lost Bot identity, so
+      // one single-item read of the same task, which repeats the identity and
+      // task-ownership checks of the ACK, decides it: success leaves only the
+      // event target check, so the event is settled, and a failed read keeps
+      // the journal and reports the original refusal.
+      const operationId = delivery.command.operationId;
+      for (const event of delivery.events) {
+        try {
+          await options.withApi(bot.botId, signal, api => api.ackEvent(event.taskId, event.id, { operationId }));
+        } catch (error) {
+          if (settledAck(error)) continue;
+          if (!(error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed && error.code === "forbidden")) throw error;
+          try {
+            await options.withApi(bot.botId, signal, api => api.listEvents(event.taskId, { state: "pending", targetBotId: bot.botId, limit: 1 }));
+          } catch (probe) {
+            if (!settledAck(probe)) throw error;
+          }
         }
       }
       await save(null);

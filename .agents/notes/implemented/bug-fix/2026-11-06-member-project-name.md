@@ -11,15 +11,16 @@ addressed the new project.
 
 ## Decision
 
-Each member panel reads its project name through the existing project endpoint,
-inside its authenticated project access boundary. The response must identify the
-current account. Project and account keys isolate mounted panels; cancellation
-and the project access revision prevent revoked or obsolete responses from
-restoring a name. Access withdrawal clears the name.
+The project settings workspace reads its own project name through the existing
+project endpoint, inside the authenticated project access boundary. Project and
+account keys, cancellation and access revisions prevent revoked or obsolete
+responses from restoring a name. The member section does not read or repeat it.
+The [section heading decision](../simplification/2026-11-20-member-section-heading.md)
+records the presentation change.
 
-Name reads have their own error and retry state, leaving member directory and
-mutation behavior independent. The subtitle reserves space until the name is
-available and wraps long names without shrinking the invitation button.
+Project metadata errors and retries remain independent of member directory and
+mutation behavior. The workspace falls back to the project ID until a name is
+available.
 
 ## Alternatives
 
@@ -37,7 +38,7 @@ member operations and their failure handling intact.
 
 ## Consequences
 
-Member pages make an additional project read on entry or reactivation. Names
+The shared workspace reads the project on entry or reactivation. Names
 are tied to the authenticated project instead of navigation history. The
 existing access refresh and account lifecycle remain responsible for observing
 permission and identity changes; this correction does not add another polling

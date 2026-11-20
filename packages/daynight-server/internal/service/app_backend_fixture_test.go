@@ -26,6 +26,7 @@ type appBackend struct {
 	store.WebhookRetentionTransactions
 	store.WebhookReceiptGC
 	store.WebhookConfigGC
+	store.ReviewAssignmentStore
 	t                                                                                 *testing.T
 	mu                                                                                sync.Mutex
 	calls                                                                             map[string]int
@@ -42,6 +43,13 @@ type appBackend struct {
 	privateActor                                                                      *model.Principal
 	privateGets, privatePuts                                                          int
 	collector                                                                         *appTestCollector
+}
+
+func (b *appBackend) ReviewScanStart(ctx context.Context) (time.Time, *store.ReviewWorkerKey, error) {
+	if err := b.check(ctx); err != nil {
+		return time.Time{}, nil, err
+	}
+	return time.Now(), nil, nil
 }
 
 func (b *appBackend) ListArchiveCleanup(ctx context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
@@ -571,6 +579,10 @@ func openTestApp(t *testing.T, ctx context.Context, c config.Config, logger *slo
 type unexpectedAppTransactions struct{ backend *appBackend }
 
 var _ store.Transactions = unexpectedAppTransactions{}
+
+func (s unexpectedAppTransactions) ReadHistoryDirectory(context.Context, func(store.HistoryDirectoryScope) error) error {
+	return s.backend.unexpected("ReadHistoryDirectory")
+}
 
 func (s unexpectedAppTransactions) ReadUsage(context.Context, func(store.UsageScope) error) error {
 	return s.backend.unexpected("ReadUsage")

@@ -35,7 +35,7 @@
 }
 
 .native-select[data-density][data-mode="popup"] > .native-select__control {
-  block-size: var(--native-select-height);
+  block-size: max(var(--native-select-height), calc(1.5 * var(--native-select-font-size) + 2px));
   padding-block: 0;
   padding-inline-end: 30px;
   text-overflow: ellipsis;
@@ -58,6 +58,11 @@
 .native-select[data-density] > .native-select__control:disabled { color: #747d91; background: #f5f6f9; }
 .native-select[data-density]:has(> .native-select__control:disabled) { color: #747d91; }
 .native-select[data-density] > .native-select__control:focus-visible { outline: 3px solid var(--native-select-focus); outline-offset: 2px; }
+
+@container project-task-filters (max-width: 420px) {
+  .project-task-filters > .task-status-filter > .native-select { display: grid; }
+  .project-task-filters > .task-status-filter > .native-select > .native-select__control { padding-top: calc(1.5 * var(--text-metadata)); }
+}
 
 @media (forced-colors: active) {
   .native-select[data-density] { color: CanvasText; }

@@ -7,7 +7,7 @@ import { botUUID, parseBot, parseBotOwner, type Bot, type BotOwner } from "./typ
 export type BotRemote = {
   readonly owner: Readonly<BotOwner>;
   list(signal: AbortSignal): Promise<readonly Bot[]>;
-  read(botId: string, signal: AbortSignal): Promise<Bot | null>;
+  read(botId: string, signal: AbortSignal, originalOwner?: BotOwner): Promise<Bot | null>;
 };
 
 /** Read only the original service/account/Worker binding; no creation or execution requests. */
@@ -80,13 +80,15 @@ export const createBotRemote = (options: { owner: BotOwner; serverToken: string 
         return items;
       } finally { read.dispose(); }
     },
-    read: async (botId, signal) => {
+    read: async (botId, signal, originalOwner = owner) => {
       botUUID(botId, "Bot ID");
+      const original = parseBotOwner(originalOwner);
+      if (original.serverOrigin !== owner.serverOrigin || original.ownerUserId !== owner.ownerUserId) throw new Error("Bot detail requires its original service and account.");
       const read = operation(signal);
       try {
         const value = await request(`/api/v1/me/bots/${botId}`, read, true);
         if (value === missing) return null;
-        const bot = parseBot(value, owner);
+        const bot = parseBot(value, original);
         if (bot.id !== botId) throw new ProtocolError("Bot detail identity differs from the requested Bot.");
         return bot;
       } finally { read.dispose(); }

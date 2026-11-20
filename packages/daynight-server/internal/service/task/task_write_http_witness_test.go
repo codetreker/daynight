@@ -200,6 +200,10 @@ func (s *writeWitnessStore) WriteProject(ctx context.Context, project string, ru
 
 type writeWitnessScope struct{ f *writeWitness }
 
+func (s *writeWitnessScope) GoalRelationDAO() store.GoalRelationEditor {
+	panic(s.f.unexpected("GoalRelationDAO"))
+}
+
 func (s *writeWitnessScope) ProjectDAO() store.ProjectWriteDAO {
 	s.f.checkContext(s.f.ctx)
 	s.f.step("ProjectDAO")
@@ -400,6 +404,10 @@ func (d *writeWitnessProjectDAO) RepositoryIdentity(context.Context) (*string, e
 }
 func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
 	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
+}
+
+func (s *writeWitnessScope) BotBarrierDAO() store.BotBarrierDAO {
+	panic(s.f.unexpected("BotBarrierDAO"))
 }
 
 func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {

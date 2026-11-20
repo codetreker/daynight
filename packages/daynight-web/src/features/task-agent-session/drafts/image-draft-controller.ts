@@ -726,7 +726,7 @@ export class ImageDraftController {
       if (!upload) continue;
       if (!upload.releaseIntent && !observe && (!this.canPrepare() || upload.receipt?.state === 'complete' || upload.outcomeUnknown || upload.pendingAction)) continue;
       if (!upload.releaseIntent && upload.receipt && ['failed', 'expired', 'released'].includes(upload.receipt.state)) continue;
-      if (upload.releaseIntent && upload.receipt?.state === 'released') continue;
+      if (upload.releaseIntent && (upload.receipt?.state === 'released' || upload.releaseRetained)) continue;
       const uploader = new DraftUploader({ store: this.store, locks: this.locks, resources: c.resources, signal: this.network.signal, isCurrent: () => this.current(epoch) && !!this.options.getContext()?.canEdit, canPrepare: () => this.canPrepare(), changed: async () => { if (!this.current(epoch)) return; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } });
       const run = uploader.run(this.saved.owner, upload.uploadId, this.blobs.get(upload.blobId) ?? null, observe, retryPrepareId === upload.uploadId).catch(error => { if (this.current(epoch)) this.fail(error); });
       this.uploadFlights.set(upload.uploadId, run);
@@ -923,12 +923,13 @@ export class ImageDraftController {
       } catch (error) { if (this.current(epoch)) this.recoveryErrors.set(recoveryKey(entry.submission), message(error)); }
       if (!this.current(epoch) || !this.networkAllowed()) return;
     }
-    await this.reconcileLegacySubmission(epoch);
+    if (!ref || this.pendingLegacy?.submission?.operationId === ref.operationId) await this.reconcileLegacySubmission(epoch);
     await this.refreshRecoveries(epoch); await this.reload();
   }
   checkStatus = async (ref?: ImageDraftRecoveryRef): Promise<void> => {
-    if (this.checking || !this.saved || !this.networkAllowed()) return; this.checking = true; this.publish();
-    try { await this.checkSubmissions(ref); await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
+    if (this.checking) { if (ref) throw new Error('image_check_in_progress'); return; }
+    if (!this.saved || !this.networkAllowed()) return; this.checking = true; this.publish();
+    try { await this.checkSubmissions(ref); if (!ref) await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
   };
   private stopObserving(): void { if (this.observeTimer) clearTimeout(this.observeTimer); this.observeTimer = null; this.observeStarted = 0; this.observeAttempt = 0; }
   private observeLater(reset = false): void {

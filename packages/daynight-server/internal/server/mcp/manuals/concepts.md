@@ -19,7 +19,7 @@ Use this topic when identity or the intended Project is unknown. A connection au
 | Session | Execution or conversation content with its own execution identity. Task material cannot reconstruct it. |
 | Bot | An Account-owned assistant definition and runtime state. Creation establishes neither readiness nor execution. |
 
-[Materials](daynight://manuals/materials.md) owns shared Goal conclusions and task-specific results. [Dependencies](daynight://manuals/dependencies.md) owns scheduling relationships. A terminal Task or Goal progress count does not establish acceptance of the full objective.
+[Materials](daynight://manuals/materials.md) owns shared Goal conclusions and task-specific results. [Dependencies](daynight://manuals/dependencies.md) owns ordinary scheduling and Goal acceptance relationships. A terminal Task or Goal progress count does not establish acceptance of the full objective.
 
 MCP supplies advertised service operations. The host supplies checkout, filesystem, shell, Git, browser, tests and collaboration capabilities; a repository address supplies none of these. The target project's workflow owns required documents, review and delivery gates. No universal Goal/PR pipeline or separate discussion Task is imposed. Explicit Worker assignments follow [Worker operations](daynight://manuals/worker-operations.md).
 
@@ -36,7 +36,7 @@ Project access may come from direct grants or the owning Team. Membership and ac
 | Personal | No rename, deletion, member changes or invitations. |
 | Ordinary | Must retain at least one admin; removing or demoting the last admin is refused. Transfer out all owned Projects before deletion. |
 
-Team and Project mutations use their advertised identity, name, version and confirmation inputs. Settings, ownership, Team and membership versions protect their own objects, not Tasks. Project transfer may remove the actor's access after a valid receipt; preserve confirmation separately from a later failed read.
+Team and Project mutations use their advertised identity, name, version and confirmation inputs. Settings, ownership, Team and membership versions protect their own objects, not Tasks. The Project transfer procedure below requires a preview and the user's explicit confirmation.
 
 ## Select the intended Project
 
@@ -75,3 +75,25 @@ Resolution does not register a Project, configure a local binding/default, inspe
 ## Register a repository
 
 `project_create` resolves the selected `team` first. A unique accessible Project with the same repository identity in that Team is returned with `created: false`, including access through a direct Project grant. Multiple visible matches return `resource_conflict`. With no match, creation requires `confirm: true`; a concurrent or inaccessible occupant can cause `project_repository_conflict`. Unknown write outcomes must be observed before any new decision. Other Teams do not participate in reuse.
+
+## Change a Project repository
+
+Read [Write safety](daynight://manuals/write-safety.md) before submitting. Call `project_preview_repository` with the explicit `projectId` and candidate `repoUrl`; this works independently of the host's current repository. The preview returns `projectId`, `projectName`, `currentRepoUrl`, `repoUrl`, exact decimal `repositoryVersion` and `ownershipVersion`, `classification`, nullable `targetGitHubRepositoryId` and `unverifiedReason`, and `bindingsInvalidated`.
+
+Show the user the Project, old and new addresses, classification and effects. `unchanged` preserves the address and bindings; `same_repository` changes the address and preserves bindings. `different_repository` disconnects the Project's GitHub App repository binding and removes the Project from Worker cloud configurations selected in the transaction's batch. For `unverified`, explain the reason and the same switch effects if the user chooses to proceed. Worker configuration application has a synchronization window, and existing executions may be stopped by the normal Worker removal process. Local clones and worktrees are not changed; reconnect GitHub and manage local Worker configuration as needed.
+
+Wait for the user's explicit confirmation of these facts. No answer or refusal means no call to `project_set_repository`. For `unverified`, separately obtain explicit agreement to treat it as a switch. Submit once with `confirm: true`, the same `projectId` and `repoUrl`, the exact preview `repositoryVersion`, `ownershipVersion`, `classification` and nullable `targetGitHubRepositoryId`. Set `treatUnverifiedAsSwitch: true` only for an explicitly agreed unverified switch. Preserve all decimal digits; do not refresh or substitute the confirmed values.
+
+On `version_conflict`, preview and present the current facts again, then obtain new confirmation before another submission. For an unknown outcome, read the current Project and relevant state without automatically replaying the write; current state does not establish the original receipt. A successful `data` receipt contains `projectId`, `repoUrl`, `repositoryVersion`, `changed` and `bindingsInvalidated`; `meta.writeOutcome` and `meta.refs.projectId` identify the confirmed write and Project. A confirmed switch establishes the server-side changes for the batch, not that Workers have applied them.
+
+## Transfer a Project
+
+Read [Write safety](daynight://manuals/write-safety.md) before submitting. Call read-only `project_transfer_preview` with `projectId` and `toTeam` (a canonical Team UUID or exact same-service `/teams/{uuid}` link). It checks the existing transfer-preview permissions and returns `projectId`, `projectName`, `sourceTeam`, `targetTeam` with its exact decimal `version`, `ownership` with its exact decimal `version`, and `goalDependencyRemoval`.
+
+Present the Project, source and destination Teams and permanent cleanup scope to the user. An actual ownership change permanently removes every Goal dependency with either endpoint in this Project: internal relationships, cross-project prerequisites and cross-project downstream references. Other Projects can be affected, and transferring back does not restore the relationships. Same-owner transfers preserve them. The warning covers all such relationships present when the transaction commits; it is not an edge inventory or count.
+
+Wait for the user's explicit answer about this transfer and cleanup. No answer or refusal means zero calls to `project_transfer`. After agreement, call it once with the same `projectId` and `toTeam`, `confirm: true`, `confirmGoalDependencyRemoval: true`, `ifVersion` copied unchanged from `ownership.version`, and `ifTargetVersion` copied unchanged from `targetTeam.version`. Both versions are required with cleanup confirmation. Preserve every digit; neither a fresh preflight nor the other object's version replaces the confirmed value.
+
+On `version_conflict`, obtain another preview, show the current facts and obtain another explicit confirmation before a new submission. An unknown write result requires observing the original operation's state before any new decision; do not replay automatically. A successful transfer may remove the actor's access. Preserve the receipt independently of a later denied read.
+
+Legacy requests without cleanup confirmation remain accepted only under existing service rules: a real transfer with Goal dependencies is refused without removing them; no-edge and same-owner operations retain their existing behavior. The stateless MCP transport does not ask the user itself; confirmation is the host's responsibility, and the server validates the supplied signal and versions. If the host uses another supported entry to delete a Project, first obtain explicit user confirmation of the Project and the same permanent cleanup scope. There is no native MCP Project deletion tool.

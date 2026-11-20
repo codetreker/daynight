@@ -40,7 +40,7 @@ const geometry = (page: Page) => page.evaluate(() => {
   const rect = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().toJSON();
   return { workspace: rect('.workspace'), content: rect('.content'), back: rect('.test-session-back'), session: rect('.test-session-page > .task-agent-session'), timeline: rect('.session-timeline-shell'), composer: rect('.session-composer'), heading: rect('.test-session-page > h1'), overflow: document.documentElement.scrollWidth > innerWidth };
 });
-for (const [width, height] of [[320, 640], [375, 667], [390, 844], [600, 640], [601, 700], [768, 900], [1360, 900], [375, 400]]) {
+for (const [width, height] of [[320, 640], [375, 667], [390, 844], [600, 640], [601, 700], [740, 800], [741, 800], [768, 900], [1360, 900], [375, 400]]) {
   test(`${width}x${height} preserves reading space and accessible navigation`, async ({ page }, info) => {
     await page.setViewportSize({ width: width!, height: height! });
     await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
@@ -51,6 +51,14 @@ for (const [width, height] of [[320, 640], [375, 667], [390, 844], [600, 640], [
     await info.attach('geometry', { body: JSON.stringify(before), contentType: 'application/json' });
     await page.screenshot({ path: info.outputPath('page.png') });
     expect(before.overflow).toBe(false);
+    if (width! <= 740) {
+      expect(before.workspace.x).toBe(0); expect(before.workspace.width).toBe(width);
+      const opener = page.getByRole('button', { name: '打开导航', exact: true });
+      await expect(opener).toBeInViewport(); await opener.click();
+      await expect(page.getByRole('dialog', { name: '工作空间导航' })).toBeVisible();
+      await page.keyboard.press('Escape'); await expect(opener).toBeFocused();
+      expect((await geometry(page)).session).toEqual(before.session);
+    }
     await expect(page.getByRole('heading', { name: '测试会话', level: 1 })).toHaveCount(1);
     if (width! <= 600) {
       expect(before.session.x).toBe(before.workspace.x);

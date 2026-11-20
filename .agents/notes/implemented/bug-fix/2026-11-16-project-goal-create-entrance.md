@@ -27,5 +27,6 @@ be displayed.
 ## Consequences
 
 The entrance is available alongside Task creation without changing the current
-selection. The toolbar must accommodate both buttons at narrow widths, while
-the existing form retains its write, recovery and focus behavior.
+selection. The [narrow heading decision](2026-11-20-project-heading-menu.md)
+collects both entrances in a menu while the existing form retains its write,
+recovery and focus behavior.

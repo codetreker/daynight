@@ -372,7 +372,8 @@ installed CLI changes. They write `.tmp/completion-module-evidence.json` and
 `.tmp/completion-evidence.json`, respectively, unless the receipt path is overridden.
 The dedicated Ubuntu 24.04 job in the
 [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-runs both suites on every `main` push and through `workflow_dispatch`.
+is triggered by `main` pushes and `workflow_dispatch` to run both suites; main
+concurrency can replace a pending run before it starts.
 Its result belongs to that workflow's checked-out revision and does not gate
 ordinary PR `checks`. The `daynight-completion-acceptance` artifact contains
 both available JSON receipts. Upload runs after the module harness starts,
@@ -419,7 +420,8 @@ records the original parallel model; the [independent macOS validation decision]
 owns the current macOS topology and its allocation trade-off. The
 [Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
 owns the Windows ordinary allocation and completeness checks.
-Main pushes run every module. The checkout includes the required history.
+Main pushes select every module, subject to workflow concurrency. The checkout
+includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
 reads the selected file sequentially and records its byte count, SHA-256 and
@@ -577,6 +579,14 @@ wait. The fixture holds only the subsequent retry so IPC cancellation reaches
 the waiting Controller before a second synchronous acquisition. The
 [Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
 owns the cancellation boundary.
+The Controller IPC waiter-capacity regression observes all 32 authenticated
+response-waiter registrations before probing rejection. Its controlled schedule
+holds duplicate client frames to verify that first native dispatch alone does
+not establish capacity. Finalization cancels and joins requests and the
+Controller before deleting the SQLite fixture; the ordinary test deadline stays
+unchanged. The
+[IPC admission decision](../.agents/notes/implemented/testing/2026-11-19-ipc-waiter-admission-barrier.md)
+owns the ordering proof and its historical attribution limits.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -687,9 +697,22 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
+independent `.tmp/dev-builds/build-*/` snapshot. Each resolved physical package
+has its own `.dev-store/<id>/node_modules/<package-name>/` directory, with links
+to its dependencies inside the snapshot. This preserves package names needed by
+native shared-library lookup and keeps different versions and peer resolutions
+separate. Dependency file symlinks are materialized; no dependency link points
+back to the source checkout's mutable `node_modules`.
+
+Before atomically replacing the installed symlink, the installer verifies the
+snapshot's version and runs separate Node processes that process a tiny in-memory
+image with sharp, query an in-memory better-sqlite3 database, and load Koffi.
+A native verification failure names the module and leaves the previous entry and
+snapshot available. These checks require no `LD_LIBRARY_PATH` workaround or
+system libvips installation. `--build-info` reports the
 source checkout, commit, dirty state, version, build time and snapshot directory.
+The [native dependency requirements](spec/development-snapshot-native-layout.md)
+define closure independence, failure behavior and runtime acceptance.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
 while any execution can use them. Removing a worktree also removes its snapshots;
@@ -795,7 +818,8 @@ API examples, logs, updates and volume removal.
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
-`DAYNIGHT_TEST_DATABASE_URL` to an isolated database and run:
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
+PostgreSQL and Redis instances, then run:
 
 ```bash
 bash scripts/check.sh
@@ -1345,16 +1369,19 @@ gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref. Each main run
-has its own group by workflow, ref, full commit SHA and run ID, so later runs
-do not replace or cancel it; runner availability still controls job scheduling.
+Workflow concurrency cancels an older PR run for the same ref. Each workflow has
+its own group for main: the running run continues, and a new pending run replaces
+the older pending run. Intermediate commits can therefore be skipped; runner
+availability still controls job scheduling. Manual shell/browser runs on main
+share that workflow's main group.
 Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
 
 The separate [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-contains `verify-completion` and `verify-web-browser`. It runs both jobs on every
-`main` push and on `workflow_dispatch`, without module detection or a PR trigger.
+contains `verify-completion` and `verify-web-browser`. A `main` push or
+`workflow_dispatch` triggers both jobs, without module detection or a PR trigger;
+main concurrency can replace a pending run before either job starts.
 Each job checks out its event's source and installs its own locked dependencies.
 Shell validation retains the Bash 4.2, modern Bash and zsh behavior matrix and
 artifact acceptance. Browser validation retains the complete assistant suite,

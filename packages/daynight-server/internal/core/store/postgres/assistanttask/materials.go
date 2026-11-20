@@ -68,9 +68,12 @@ func (d *DAO) DeleteAppendixValidations(ctx context.Context, owner, task, append
 	return d.execute(ctx, "delete assistant appendix validations", `DELETE FROM assistant_task_appendix_validations WHERE owner_user_id=$1 AND task_id=$2 AND appendix_id=$3`, owner, task, appendix)
 }
 
-// relatedAppendixSQL treats each dimension alike: an empty query value is
-// neutral, an empty stored set is unrestricted and neutral, and a nonempty set
-// either contains the queried value (one point) or excludes the appendix.
+// relatedAppendixSQL executes the assistanttask module's
+// RelatedAppendixMatch filter and score and its CompareRelatedAppendices order:
+// an empty query value is neutral, an empty stored set is unrestricted and
+// neutral, and a nonempty set either contains the queried value (one point) or
+// excludes the appendix. Canonical UUID text order equals uuid order, so the
+// final ID tie-break agrees with the module's string comparison.
 const relatedAppendixSQL = `SELECT ` + appendixColumns + ` FROM assistant_task_appendix
 WHERE owner_user_id=$1 AND task_id=$2 AND state<>'deleted'
  AND ($3='' OR scope_project_ids='[]'::jsonb OR scope_project_ids @> jsonb_build_array($3::text))
@@ -112,12 +115,13 @@ func (d *DAO) SaveProposal(ctx context.Context, v model.AssistantTaskProposal, s
 	return d.changed(ctx, "save assistant proposal", `UPDATE assistant_task_proposals SET body=$4,reason=$5,status=$6,decision_note=$7,request_fingerprint=$8,base_version=$9,rules=$10,evidence_records=$11,author_bot_id=$12,widens=$13,created_at=$14,decided_at=$15 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND status=$16`, append(proposalValues(v), status)...)
 }
 
-const itemColumns = `id::text,owner_user_id::text,task_id::text,key,state,category,request_fingerprint,episode,version,follower_bot_id::text,app_state,created_at,updated_at`
+const itemColumns = `id::text,owner_user_id::text,task_id::text,key,state,category,request_fingerprint,episode,version,follower_bot_id::text,app_state,created_at,updated_at,opened_at,closed_at`
 
 func scanItem(row pgx.Row) (model.AssistantTaskItem, error) {
 	var v model.AssistantTaskItem
-	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Key, &v.State, &v.Category, &v.RequestFingerprint, &v.Episode, &v.Version, &v.FollowerBotID, &v.AppState, &v.CreatedAt, &v.UpdatedAt)
+	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Key, &v.State, &v.Category, &v.RequestFingerprint, &v.Episode, &v.Version, &v.FollowerBotID, &v.AppState, &v.CreatedAt, &v.UpdatedAt, &v.OpenedAt, &v.ClosedAt)
 	v.CreatedAt, v.UpdatedAt = v.CreatedAt.UTC(), v.UpdatedAt.UTC()
+	v.OpenedAt, v.ClosedAt = pg.UTCTime(v.OpenedAt), pg.UTCTime(v.ClosedAt)
 	return v, err
 }
 func (d *DAO) Item(ctx context.Context, owner, task, id string) (model.AssistantTaskItem, error) {
@@ -128,13 +132,16 @@ func (d *DAO) Items(ctx context.Context, q store.AssistantTaskQuery) ([]model.As
 	return many(ctx, d.tx, "list assistant items", `SELECT `+itemColumns+` FROM assistant_task_items WHERE owner_user_id=$1 AND task_id=$2 AND ($3='' OR state=$3) AND ($4::timestamptz IS NULL OR (created_at,id)>($4,$5::uuid)) ORDER BY created_at,id LIMIT $6`, scanItem, q.OwnerUserID, q.TaskID, q.State, after, id, limit)
 }
 func itemValues(v model.AssistantTaskItem) []any {
-	return []any{v.ID, v.OwnerUserID, v.TaskID, v.Key, v.State, v.Category, v.RequestFingerprint, v.Episode, v.Version, v.FollowerBotID, v.AppState, v.CreatedAt, v.UpdatedAt}
+	return []any{v.ID, v.OwnerUserID, v.TaskID, v.Key, v.State, v.Category, v.RequestFingerprint, v.Episode, v.Version, v.FollowerBotID, v.AppState, v.CreatedAt, v.UpdatedAt, v.OpenedAt, v.ClosedAt}
 }
 func (d *DAO) InsertItem(ctx context.Context, v model.AssistantTaskItem) (bool, error) {
-	return d.changed(ctx, "insert assistant item", `INSERT INTO assistant_task_items(id,owner_user_id,task_id,key,state,category,request_fingerprint,episode,version,follower_bot_id,app_state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING`, itemValues(v)...)
+	return d.changed(ctx, "insert assistant item", `INSERT INTO assistant_task_items(id,owner_user_id,task_id,key,state,category,request_fingerprint,episode,version,follower_bot_id,app_state,created_at,updated_at,opened_at,closed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT DO NOTHING`, itemValues(v)...)
 }
 func (d *DAO) SaveItem(ctx context.Context, v model.AssistantTaskItem, version int64) (bool, error) {
-	return d.changed(ctx, "save assistant item", `UPDATE assistant_task_items SET key=$4,state=$5,category=$6,request_fingerprint=$7,episode=$8,version=$9,follower_bot_id=$10,app_state=$11,created_at=$12,updated_at=$13 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND version=$14`, append(itemValues(v), version)...)
+	return d.changed(ctx, "save assistant item", `UPDATE assistant_task_items SET key=$4,state=$5,category=$6,request_fingerprint=$7,episode=$8,version=$9,follower_bot_id=$10,app_state=$11,created_at=$12,updated_at=$13,opened_at=$14,closed_at=$15 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND version=$16`, append(itemValues(v), version)...)
+}
+func (d *DAO) InsertItemClosure(ctx context.Context, v model.AssistantTaskItemClosure) error {
+	return d.execute(ctx, "insert assistant item closure", `INSERT INTO assistant_task_item_closures(id,owner_user_id,task_id,item_id,episode,opened_at,closed_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, v.ID, v.OwnerUserID, v.TaskID, v.ItemID, v.Episode, v.OpenedAt, v.ClosedAt)
 }
 func (d *DAO) TransferOpenItems(ctx context.Context, owner, task string, follower *string) error {
 	return d.execute(ctx, "transfer assistant items", `UPDATE assistant_task_items SET follower_bot_id=$3,version=version+1,updated_at=clock_timestamp() WHERE owner_user_id=$1 AND task_id=$2 AND state='open' AND follower_bot_id IS DISTINCT FROM $3::uuid`, owner, task, follower)

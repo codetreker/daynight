@@ -16,24 +16,18 @@ type Service struct {
 	database     store.UsageStore
 	writeEnabled bool
 	qualified    map[string]bool
-	cursorKey    []byte
 }
 type Options struct {
 	WriteEnabled      bool
 	QualifiedProfiles []string
-	CursorKey         []byte
 }
 
 func New(database store.UsageStore, options Options) (*Service, error) {
-	key := append([]byte{}, options.CursorKey...)
-	if len(key) != 32 {
-		return nil, configurationError("DAYNIGHT_USAGE_CURSOR_KEY", "must identify exactly 32 bytes of stable signing key material")
-	}
 	q, err := qualificationEntries(options.QualifiedProfiles)
 	if err != nil {
 		return nil, err
 	}
-	return &Service{database: database, writeEnabled: options.WriteEnabled, qualified: q, cursorKey: key}, nil
+	return &Service{database: database, writeEnabled: options.WriteEnabled, qualified: q}, nil
 }
 func (s *Service) qualify(p core.Profile, version string) core.Profile {
 	return core.Qualify(p, s.qualified[p.ID+"@"+version])

@@ -34,6 +34,9 @@ func (d *projectAppDAO) Facts(ctx context.Context, p model.Principal) (store.Git
 	if err != nil {
 		return f, err
 	}
+	if err = d.tx.QueryRow(ctx, `SELECT repository_version FROM projects WHERE id=$1`, d.projectID).Scan(&f.RepositoryVersion); err != nil {
+		return f, pg.QueryError("read project repository version", err)
+	}
 	f.Connection, err = readConnection(ctx, d.tx, d.projectID, d.lock)
 	if err != nil {
 		return f, err

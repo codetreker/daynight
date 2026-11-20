@@ -11,11 +11,13 @@ before any job starts.
 
 ## Decision
 
-Both workflows group main runs by workflow name, ref, full commit SHA and run ID.
-Every independent trigger, including a manual run of the same commit, has its
-own group. Main runs retain `cancel-in-progress: false`; other refs retain the
+Both workflows were grouped by workflow name, ref, full commit SHA and run ID.
+Every independent trigger, including a manual run of the same commit, had its
+own group. Main runs retained `cancel-in-progress: false`; other refs retained the
 workflow/ref group and their existing cancellation policy. PR updates therefore
-continue to supersede earlier runs for the same PR.
+continued to supersede earlier runs for the same PR. The later
+[bounded main CI decision](2026-11-19-bounded-main-ci-runs.md) replaces this
+grouping policy to limit runner backlog.
 
 This replaces the grouping policy in the archived [main CI continuity decision](../../archived/process/2026-11-03-main-ci-continuity.md).
 That decision protected running main validation and explicitly acknowledged
@@ -33,8 +35,8 @@ independent group.
 
 ## Consequences
 
-Later main triggers cannot replace or automatically cancel an earlier run through
-these workflow concurrency groups. Independent runs may compete for runner
-capacity; group isolation does not guarantee immediate job start or successful
-execution. Trigger selection, validation suites and result aggregation are
-unchanged.
+Under this decision, later main triggers could not replace or automatically
+cancel an earlier run through these workflow concurrency groups. Independent
+runs could compete for runner capacity; group isolation did not guarantee
+immediate job start or successful execution. Trigger selection, validation
+suites and result aggregation were unchanged.

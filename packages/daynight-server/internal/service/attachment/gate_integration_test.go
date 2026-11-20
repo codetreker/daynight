@@ -12,9 +12,102 @@ import (
 	"time"
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+type revocableAttachmentGate struct {
+	io.Closer
+	revoke context.CancelCauseFunc
+}
+
+func (g *revocableAttachmentGate) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	g.revoke = cancel
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+type attachmentGateStorage struct {
+	filestorage.Storage
+	gate *revocableAttachmentGate
+}
+
+func (s attachmentGateStorage) AcquireGate(ctx context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
+	permit, err := s.Storage.AcquireGate(ctx, domain, key)
+	if err != nil {
+		return nil, err
+	}
+	s.gate.Closer = permit
+	return s.gate, nil
+}
+
+func TestAttachmentOpenRetainsReaderAfterGateRelease(t *testing.T) {
+	_, m, files, task, p := attachmentUnit(t)
+	const body = "pinned contents"
+	item := attachmentItem(task, "file", "text/plain", int64(len(body)))
+	if _, err := files.Put(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, item.Path), strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+	planAttachmentOpen(m, p, task, item)
+	gate := &revocableAttachmentGate{}
+	subject := m.service(m, attachmentGateStorage{Storage: files, gate: gate})
+	_, object, err := subject.Open(t.Context(), p, task.ProjectID, task.ID, item.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := io.ReadAll(object.Body)
+	if err := errors.Join(err, object.Body.Close()); err != nil || string(contents) != body {
+		t.Fatalf("read pinned contents after release: %q, %v", contents, err)
+	}
+}
+
+func TestAttachmentPutStopsBeforePublicationWhenGateIsLost(t *testing.T) {
+	_, m, files, task, p := attachmentUnit(t)
+	gate := &revocableAttachmentGate{}
+	subject := m.service(m, attachmentGateStorage{Storage: files, gate: gate})
+	m.read(p, task)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("live", task.ProjectID)
+	m.conflict(task, "file", false).after = func() { gate.revoke(filestorage.ErrGateLost) }
+	_, _, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("stale"))
+	if err == nil || filestorage.PublicationOutcome(err) != filestorage.NotPublished {
+		t.Fatalf("upload after loss: %v", err)
+	}
+	object, err := files.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
+	if object.Body != nil {
+		_ = object.Body.Close()
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stale upload replaced the target: %v", err)
+	}
+}
+
+type revokeAfterPublication struct {
+	attachmentGateStorage
+}
+
+func (s revokeAfterPublication) Put(ctx context.Context, bucket, path string, body io.Reader) (filestorage.FileInfo, error) {
+	info, err := s.Storage.Put(ctx, bucket, path, body)
+	if err == nil {
+		s.gate.revoke(filestorage.ErrGateLost)
+	}
+	return info, err
+}
+
+func TestAttachmentPutStopsBeforeMetadataIfPublishedFileOutlivesGate(t *testing.T) {
+	_, m, files, task, p := attachmentUnit(t)
+	storage := revokeAfterPublication{attachmentGateStorage{Storage: files, gate: &revocableAttachmentGate{}}}
+	subject := m.service(m, storage)
+	m.read(p, task)
+	m.mutation(task, store.Completion{Outcome: store.TransactionNotCommitted})
+	m.expect("live", task.ProjectID)
+	m.conflict(task, "file", false)
+	_, _, err := subject.Put(t.Context(), p, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("published"))
+	if !errors.Is(err, filestorage.ErrGateLost) || filestorage.PublicationOutcome(err) != filestorage.Published {
+		t.Fatalf("upload losing gate after publication: %v", err)
+	}
+}
 
 func TestAttachmentGateOrdersConcurrentInstances(t *testing.T) {
 	for _, operations := range [][2]string{{"put", "put"}, {"put", "delete"}, {"delete", "put"}, {"put", "open"}} {

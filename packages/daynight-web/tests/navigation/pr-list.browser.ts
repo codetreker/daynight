@@ -21,6 +21,38 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`status icons center within short and multiline cards at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    state.longContent = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    for (const [filter, first, expected] of [['active', '1248', ['open', 'draft']], ['merged', '1236', ['merged']], ['closed', '1208', ['closed']]] as const) {
+      await page.locator('#pr-filter').selectOption(filter);
+      await expect(page.locator('.pr-row')).toHaveCount(6);
+      await expect(page.locator('.pr-row').first()).toHaveAttribute('id', `pr-row-${first}`);
+      for (const tone of expected) {
+        const rows = page.locator('.pr-row').filter({ has: page.locator(`.pr-status-icon.${tone}`) });
+        expect(await rows.count()).toBeGreaterThanOrEqual(2);
+        const heights: number[] = [];
+        for (const row of await rows.all()) {
+          const geometry = await row.evaluate(element => {
+            const row = element.getBoundingClientRect(), icon = element.querySelector('.pr-status-icon')!.getBoundingClientRect();
+            const main = element.querySelector('.pr-row-main')!.getBoundingClientRect();
+            return { difference: Math.abs(row.top + row.height / 2 - icon.top - icon.height / 2), gap: main.left - icon.right, height: row.height };
+          });
+          expect(geometry.difference).toBeLessThanOrEqual(1);
+          expect(geometry.gap).toBeGreaterThanOrEqual(0);
+          heights.push(geometry.height);
+        }
+        expect(Math.max(...heights)).toBeGreaterThan(Math.min(...heights));
+      }
+      await assertFits(page);
+    }
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
   test(`PR cards retain geometry and readable long content at ${width}px in ${locale}`, async ({ page }, info) => {
     const state = await installPrList(page, locale);
@@ -45,8 +77,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 3
     expect([geometry.listBorder, geometry.listOverflow]).toEqual(['0px', 'visible']);
     expect([geometry.padding, geometry.rowGap]).toEqual(compact ? ['9px 11px', '6px'] : ['10px 15px', '12px']);
     expect([geometry.border, geometry.radius, geometry.background]).toEqual(['1px solid rgb(213, 220, 229)', '8px', 'rgb(250, 251, 252)']);
-    expect(geometry.title).toEqual(['13px', '650', '19.5px', 'rgb(23, 33, 50)']);
-    expect(geometry.meta).toEqual(['11px', '16.5px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
+    expect(geometry.title).toEqual(['14px', '650', '21px', 'rgb(23, 33, 50)']);
+    expect(geometry.meta).toEqual(['14px', '21px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
     expect(geometry.content.every(Boolean)).toBe(true);
     const badge = page.locator('.pr-row-badge.draft').first();
     await expect(badge).toHaveCSS('color', 'rgb(85, 97, 118)');
@@ -173,7 +205,7 @@ for (const width of [1440, 800, 390, 320]) test(`connection label follows langua
 test('all 48 summaries are reachable with server cursors, filters and page state survive section history', async ({ page }) => {
   const state = await installPrList(page);
   await open(page);
-  const panel = page.locator('#project-section-panel-prs'), filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  const panel = page.locator('#project-section-panel-prs'), filter = panel.locator('#pr-filter'), search = panel.locator('.pr-toolbar input');
   await filter.selectOption('all');
   await expect(panel).toContainText('48');
   const seen: string[] = [];
@@ -274,7 +306,7 @@ test('a background sync status change preserves filtering, pagination and the op
   await page.clock.install();
   await open(page);
   const panel = page.locator('#project-section-panel-prs');
-  const filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  const filter = panel.locator('#pr-filter'), search = panel.locator('.pr-toolbar input');
   await filter.selectOption('all');
   await search.fill('Pull request');
   await expect(page.locator('.pr-row')).toHaveCount(6);
@@ -345,7 +377,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 768, 3
     await page.setViewportSize({ width, height: 900 });
     await open(page);
     const filter = page.getByRole('combobox', { name: locale === 'en' ? 'Pull request status' : 'PR 状态' });
-    const arrow = page.locator('.pr-filter-wrap .native-select__arrow');
+    const arrow = filter.locator('..').locator('.native-select__arrow');
     await expect(arrow).toHaveAttribute('aria-hidden', 'true');
     await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 3.5 3 3 3-3');
     await expect(filter.locator('option')).toHaveCount(4);
@@ -550,7 +582,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
       const daily = Array(30).fill('0'); daily[29] = '4';
       const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
-      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: 'author' } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+      await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: 'author' } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     });
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/projects/${projectId}?tab=statistics`);
@@ -559,11 +591,37 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const prChart = panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' });
     await expect(taskChart.getByRole('option')).toHaveCount(30);
     await expect(prChart.getByRole('option')).toHaveCount(30);
+    const cards = panel.locator('.statistics-card');
+    await expect(cards).toHaveCount(2);
+    for (const card of await cards.all()) {
+      const title = card.locator('.statistics-chart-heading h3');
+      const control = card.locator('.statistics-chart-heading select, .statistics-chart-heading button');
+      await expect(card.locator('.statistics-header h2')).toHaveCSS('font-size', '18px');
+      await expect(title).toHaveCSS('font-size', '14px');
+      const geometry = await title.evaluate(element => {
+        const heading = element.parentElement!, control = heading.querySelector('select, button')!;
+        const text = document.createRange(); text.selectNodeContents(element);
+        const titleBox = text.getBoundingClientRect(), controlBox = control.getBoundingClientRect(), box = heading.getBoundingClientRect();
+        return { titleLeft: titleBox.left, titleRight: titleBox.right, titleTop: titleBox.top, titleBottom: titleBox.bottom,
+          controlLeft: controlBox.left, controlRight: controlBox.right, controlTop: controlBox.top,
+          controlBottom: controlBox.bottom, left: box.left, right: box.right, scroll: element.scrollWidth, client: element.clientWidth };
+      });
+      expect(geometry.titleLeft).toBeGreaterThanOrEqual(geometry.left - 1);
+      expect(geometry.titleRight).toBeLessThanOrEqual(geometry.right + 1);
+      expect(geometry.scroll).toBeLessThanOrEqual(geometry.client + 1);
+      expect(geometry.controlLeft).toBeGreaterThanOrEqual(geometry.left - 1);
+      expect(geometry.controlRight).toBeLessThanOrEqual(geometry.right + 1);
+      expect(geometry.titleBottom <= geometry.controlTop + 1 || geometry.controlBottom <= geometry.titleTop + 1 || geometry.titleRight <= geometry.controlLeft + 1).toBe(true);
+      if (width === 320) expect(geometry.controlTop).toBeGreaterThanOrEqual(geometry.titleBottom - 1);
+    }
     for (const chart of [taskChart, prChart]) await expectChartLabelsFit(chart.locator('..'));
     await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-label', /: 4$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await prChart.focus(); await page.keyboard.press('End');
-    await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+    for (const chart of [taskChart, prChart]) {
+      await chart.focus(); await page.keyboard.press('End');
+      await expect(chart.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+      await expect(chart.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " bar-chart ")][1]').locator('output')).toHaveText((await chart.getByRole('option').last().getAttribute('aria-label'))!);
+    }
     const picker = panel.locator('.pr-author-trigger');
     await picker.click();
     await page.locator('[data-author-id="42"]').click();
@@ -584,7 +642,7 @@ test('statistics charts expose the touched date and count at phone width', async
     await page.route('**/pull-request-statistics?*', async route => {
       const url = new URL(route.request().url()), daily = Array(30).fill('0');
       daily[29] = '4';
-      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily, authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+      await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily, authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     });
     await page.goto(`/projects/${projectId}?tab=statistics`);
     const panel = page.locator('#project-section-panel-statistics');
@@ -638,7 +696,7 @@ test('PR statistics failure leaves task statistics readable and retry restores t
   await page.route('**/pull-request-statistics?*', async route => {
     if (fail) return route.fulfill({ status: 500, json: { error: { code: 'internal_error', message: 'Fixture read failure', requestId: 'statistics-fixture' } }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     const url = new URL(route.request().url());
-    return route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    return route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
   });
   await page.goto(`/projects/${projectId}?tab=statistics`);
   const panel = page.locator('#project-section-panel-statistics');
@@ -698,7 +756,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`statistics headings and lon
     const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
     const daily = Array(30).fill('0'); daily[29] = '4';
     const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
-    await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: longLogin } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: longLogin } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
   });
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto(`/projects/${projectId}?tab=statistics`);
@@ -757,6 +815,188 @@ for (const locale of ['en', 'zh-CN'] as const) test(`statistics headings and lon
   await expect(panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' }).getByRole('option').last()).toHaveAttribute('aria-label', /: 2$/);
   const pickerBox = (await picker.boundingBox())!, parentBox = (await picker.locator('..').boundingBox())!;
   expect(pickerBox.x).toBeGreaterThanOrEqual(parentBox.x - 1); expect(pickerBox.x + pickerBox.width).toBeLessThanOrEqual(parentBox.x + parentBox.width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`new matching PRs join the first page without disturbing the creator menu at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await open(page);
+    const trigger = page.locator('.pr-author-trigger'), menu = page.locator('.pr-author-menu');
+    await trigger.click();
+    await menu.getByRole('option', { name: /^author$/ }).click();
+    const search = page.locator('#pr-search');
+    await search.fill('Pull request');
+    await expect(page.locator('.pr-row').first()).toContainText('#1247');
+    await trigger.click();
+    const menuSearch = menu.getByRole('combobox');
+    await expect(menuSearch).toBeFocused();
+    await menu.evaluate(element => element.setAttribute('data-menu-witness', 'retained'));
+    const retainedRow = page.locator('#pr-row-1247');
+    await retainedRow.evaluate(element => element.setAttribute('data-row-witness', 'retained'));
+    const position = await page.evaluate(() => scrollY);
+    let release!: () => void;
+    state.holdPages = new Promise<void>(resolve => { release = resolve; });
+    state.added = [
+      { ...records[0]!, number: '1250', id: '9250', title: 'Pull request other author', author: { id: '9001', login: 'other' } },
+      { ...records[0]!, number: '1249', id: '9249', title: 'Pull request newly synchronized' },
+    ];
+    state.revision++;
+    const reads = state.pageReads.length;
+    try {
+      await page.clock.fastForward(15_100);
+      await expect.poll(() => state.pageReads.length).toBeGreaterThan(reads);
+      expect(new URLSearchParams(state.pageReads.at(-1)).has('cursor')).toBe(false);
+      await expect(retainedRow).toHaveAttribute('data-row-witness', 'retained');
+      await expect(menu).toHaveAttribute('data-menu-witness', 'retained');
+      await expect(menuSearch).toBeFocused();
+      await expect(page.locator('.pr-heading button')).toHaveAttribute('aria-busy', 'false');
+      await expect(page.locator('.pr-heading button')).toBeEnabled();
+      await expect(page.locator('.pr-row')).toHaveCount(6);
+    } finally { state.holdPages = null; release(); }
+    await expect(page.locator('.pr-row').first()).toContainText('#1249');
+    await expect(page.locator('.pr-row')).toHaveCount(6);
+    await expect(page.locator('.pr-results-count')).toContainText('11');
+    await expect(page.locator('#pr-row-1250')).toHaveCount(0);
+    await expect(retainedRow).toHaveAttribute('data-row-witness', 'retained');
+    await expect(menu).toHaveAttribute('data-menu-witness', 'retained');
+    await expect(menuSearch).toBeFocused();
+    expect(await page.evaluate(() => scrollY)).toBe(position);
+    await expect(page.locator('.pull-request-workspace')).not.toContainText(/New pull requests are available|有新的 PR，刷新后可纳入当前列表/);
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+
+  test(`an empty first page accepts its first matching PR at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    state.removed = records.map(item => item.number);
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-prs').click();
+    await expect(page.locator('.pr-empty-state')).toBeVisible();
+    const search = page.locator('#pr-search');
+    await search.fill('newly synchronized');
+    await expect(page.locator('.pr-empty-state')).toContainText(locale === 'en' ? 'No matching pull requests' : '没有找到匹配的 PR');
+    await search.focus();
+    state.added = [
+      { ...records[0]!, number: '1250', id: '9250', title: 'Does not match' },
+      { ...records[0]!, number: '1249', id: '9249', title: 'newly synchronized' },
+    ];
+    state.revision++;
+    await page.clock.fastForward(15_100);
+    await expect(page.locator('.pr-row')).toHaveCount(1);
+    await expect(page.locator('.pr-row').first()).toContainText('#1249');
+    await expect(page.locator('.pr-results-count')).toContainText('1');
+    await expect(search).toBeFocused();
+    await expect(page.locator('.pull-request-workspace')).not.toContainText(/New pull requests are available|有新的 PR，刷新后可纳入当前列表/);
+    await expect(page.locator('.pr-pagination button').first()).toBeDisabled();
+    await expect(page.locator('.pr-pagination button').last()).toBeDisabled();
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
+test('anchored pages stay put and a return to the first boundary resumes live first-page updates', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  const panel = page.locator('#project-section-panel-prs');
+  await panel.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1242');
+  state.added = [{ ...records[0]!, number: '1249', id: '9249', title: 'Newly synchronized' }];
+  state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-results-count')).toContainText('13');
+  await expect(page.locator('.pr-row').first()).toContainText('#1242');
+  await panel.getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1248');
+  const reads = state.pageReads.length;
+  await page.clock.fastForward(15_100);
+  await expect(page.locator('.pr-row').first()).toContainText('#1249');
+  expect(new URLSearchParams(state.pageReads[reads]).has('cursor')).toBe(false);
+  expect(state.unexpected).toEqual([]);
+});
+
+test('background failure remains retryable during the next check and leaves an open detail intact', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  await page.locator('#pr-row-1247').click();
+  const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
+  await raw.check();
+  await dialog.evaluate(element => element.setAttribute('data-detail-witness', 'retained'));
+  const body = dialog.locator('.dialog-body');
+  const position = await body.evaluate(element => { element.scrollTop = Math.floor(element.scrollHeight / 2); return element.scrollTop; });
+  state.pageError = true;
+  await page.clock.fastForward(15_100);
+  const alert = page.locator('#project-section-panel-prs').getByRole('alert');
+  await expect(alert).toContainText('Could not read pull requests');
+  await expect(alert.getByRole('button', { name: 'Retry' })).toBeVisible();
+  let release!: () => void;
+  state.holdPages = new Promise<void>(resolve => { release = resolve; });
+  state.pageError = false;
+  state.added = [{ ...records[0]!, number: '1249', id: '9249', title: 'Newly synchronized' }];
+  state.revision++;
+  const reads = state.pageReads.length;
+  try {
+    await page.clock.fastForward(15_100);
+    await expect.poll(() => state.pageReads.length).toBeGreaterThan(reads);
+    await expect(alert).toBeVisible();
+    await expect(dialog).toHaveAttribute('data-detail-witness', 'retained');
+    await expect(raw).toBeChecked();
+    await expect(raw).toBeFocused();
+    await expect(page.locator('.pr-heading button')).toHaveAttribute('aria-busy', 'false');
+  } finally { state.holdPages = null; release(); }
+  await expect(alert).toHaveCount(0);
+  await expect(page.locator('.pr-row').first()).toContainText('#1249');
+  await expect(dialog).toHaveAttribute('data-detail-witness', 'retained');
+  await expect(raw).toBeChecked();
+  await expect(raw).toBeFocused();
+  expect(await body.evaluate(element => element.scrollTop)).toBe(position);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`repository selection isolates same-number details and statistics at 320px in ${locale}`, async ({ page }) => {
+  const state = await installPrList(page, locale);
+  const reads: string[] = [];
+  const user = '00000000-0000-4000-8000-000000000201';
+  const repository = (id: string) => ({ repositoryId: id, fullName: id === '10' ? 'owner/current' : 'owner/history' });
+  await page.route('**/pull-request-repositories*', route => route.fulfill({ json: { currentRepositoryId: '10', items: [repository('10'), repository('11')], nextCursor: null }, headers: { 'Daynight-User-ID': user } }));
+  await page.route('**/pull-requests?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`list:${id}`);
+    const item = { ...records[0]!, number: '123', title: id === '10' ? 'Current 123' : 'Historical 123', url: `https://github.com/${repository(id).fullName}/pull/123`, base: { repositoryId: id, repositoryFullName: repository(id).fullName, ref: 'main' } };
+    return route.fulfill({ json: { projectId, repository: repository(id), revision: '1', items: [item], total: '1', counts: { active: '1', merged: '0', closed: '0', all: '1' }, previousCursor: null, nextCursor: null }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.route('**/pull-requests/123?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`detail:${id}`);
+    return route.fulfill({ json: { ...records[0]!, number: '123', title: id === '10' ? 'Current 123' : 'Historical 123', url: `https://github.com/${repository(id).fullName}/pull/123`, base: { repositoryId: id, repositoryFullName: repository(id).fullName, ref: 'main' }, description: 'Repository-specific description' }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.route('**/pull-request-statistics?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`statistics:${id}`);
+    return route.fulfill({ json: { projectId, repository: repository(id), endDate: new URL(route.request().url()).searchParams.get('endDate'), revision: '1', projectTotal: id === '10' ? '1' : '2', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/projects/${projectId}?tab=prs`);
+  const source = page.locator('#pr-source');
+  await expect(source).toHaveValue('10');
+  await page.locator('#pr-row-123').focus(); await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog')).toContainText('Current 123');
+  await expect(page.getByRole('dialog').getByRole('link', { name: /GitHub/i })).toHaveAttribute('href', 'https://github.com/owner/current/pull/123');
+  await page.keyboard.press('Escape');
+  await source.focus(); await source.selectOption('11');
+  await expect(page.locator('#pr-row-123')).toContainText('Historical 123');
+  await expect(page.locator('.pr-connected')).toHaveCount(0);
+  await page.locator('#pr-row-123').click();
+  await expect(page.getByRole('dialog')).toContainText('Historical 123');
+  await expect(page.getByRole('dialog').getByRole('link', { name: /GitHub/i })).toHaveAttribute('href', 'https://github.com/owner/history/pull/123');
+  await page.keyboard.press('Escape');
+  await page.locator('#project-section-tab-statistics').click();
+  await expect(page.locator('#project-section-panel-statistics .statistics-total strong').last()).toHaveText('2');
+  expect(reads).toEqual(expect.arrayContaining(['list:10', 'list:11', 'detail:10', 'detail:11', 'statistics:11']));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(state.unexpected).toEqual([]);
 });

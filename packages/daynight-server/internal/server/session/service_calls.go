@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -19,6 +20,10 @@ type archiveOperation interface {
 type archiveContent struct {
 	Data []byte
 	io.Closer
+}
+
+func (content archiveContent) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return filestorage.GateContext(ctx, content.Closer)
 }
 
 type serviceCalls struct {

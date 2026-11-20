@@ -95,12 +95,10 @@ are separate from this backend.
 `profiles[].qualifiedVersions` advertises exact provider versions and their
 capabilities; the baseline capability and unlisted versions remain unverified.
 
-`DAYNIGHT_USAGE_CURSOR_KEY` supplies a stable 32-byte signing key as canonical
-unpadded base64url. If absent, the service derives a purpose-separated key from
-the configured S2S shared key. All replicas must share the same effective key;
-replacement invalidates existing cursors. Without either key, usage routes
-remain unmounted, and explicitly enabling writes fails startup. Invalid
-explicit usage configuration also fails startup without exposing secrets.
+Usage routes do not require a pagination key or S2S shared key. Each page is
+authorized again, and unsigned cursors expire after 15 minutes or require a
+reset when the result changes. Invalid write or qualification configuration
+still fails startup.
 
 Performance qualification is separate from ordinary CI and requires an isolated
 PostgreSQL database, as do the normal backend checks:
@@ -116,10 +114,19 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker review participation resource](../../docs/design/worker-review-participation.md)
+provides an account-owned GET/PUT preference at
+`/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,
+uses an independent exact decimal version and preserves report, configuration
+and claim protocols. Editing it does not refresh Worker activity. Existing and
+new Worker rows receive the same defaults through migration and schema snapshot.
+
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
 author filter, scoped counts, project total and compatible cursor versions.
+The [PR review assignment design](../../docs/design/pr-review-assignment.md)
+defines server reconciliation and the account-scoped assignment read.
 The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
 the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
 describes management, scheduling and resource lifecycle. Independent App
@@ -564,7 +571,7 @@ Goal relationship revisions, and Goal lookup indexes to the shared dependency
 store. Existing rows and writes from already running old
 instances retain the ordinary Task type. New ordinary reads and writes filter
 that type. Existing Goal status and direct deletion operations enforce the stored Goal
-relationships; these migrations do not expose Goal edge writes.
+relationships. The Goal relationship service provides authorized snapshot reads and atomic edits without changing ordinary Task DTOs. Independent GET/PATCH `/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` routes use the [REST contract](../../docs/spec/goal-dependencies.md) and shared strict codec, with no-store reads and exact decimal revision strings. The [relationship design](../../docs/design/goal-dependencies.md) describes its authorization, revisions, graph admission and transaction outcomes. Migrations alone do not expose Goal edge writes.
 
 An old binary cannot restart against the newer migration ledger. Before Goal
 edge writes are enabled, stop every old instance that accesses this table,
@@ -952,7 +959,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
-| `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
+| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
@@ -962,7 +969,6 @@ diagnostics and cause categories.
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
 | `DAYNIGHT_USAGE_WRITE_ENABLED` | Permit usage registrations, grant changes and batches; exactly `true` or `false` | `false` |
 | `DAYNIGHT_USAGE_QUALIFIED_PROFILES` | Comma-separated unique supported `profileId@providerVersion` qualification pairs | Empty (unverified) |
-| `DAYNIGHT_USAGE_CURSOR_KEY` | Stable 32-byte usage cursor key, canonical unpadded base64url; absent derives from the configured S2S shared key | Unset |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |
@@ -1008,6 +1014,34 @@ coverage at one UTC second for retained repositories with synchronization intent
 preserves existing PRs and hints, and schedules available connections for a new
 full poll. Start only the matching new service after migration; restoring the old
 binary requires a matching database backup.
+
+Before migration 093, stop all old Server writers and drain GitHub workers. The
+migration requires a trustworthy repository ID and full name for every Project
+with retained PRs; a missing identity reports the Project ID and rolls back the
+migration without changing the old table. Correct the source facts before retrying.
+The migration rewrites PR rows and indexes under table locks; measure the window
+against actual data before deployment. Start only new writers after migration:
+old writers use an incompatible conflict key. Once new writes are admitted,
+recover forward to retain them. See the [storage design](../../docs/design/github-pr-storage.md#迁移).
+
+
+Project members can read retained PR sources through
+`GET /api/v1/projects/{projectId}/pull-request-repositories`. It accepts
+`limit` (default 100, maximum 100) and `cursor` and returns
+`{currentRepositoryId,items:[{repositoryId,fullName}],nextCursor}` with
+ascending repository IDs. IDs are decimal strings; the current ID and next
+cursor can be null. The cursor is bound to the Project.
+
+The `pull-requests` list, number-detail and review-assignment routes,
+`pull-request-authors` and `pull-request-statistics` accept optional
+`repositoryId` as a canonical positive int64 decimal string. Explicit reads
+require a source saved for that Project. List, author and statistics responses
+then include `repository:{repositoryId,fullName}`. Omitting the selector reads
+the fixed legacy source and preserves existing response forms. Explicit
+cursors are source-bound; legacy cursors remain valid only on omitted-source
+requests. Historical statistics do not use another repository's current sync
+progress. The [PR reading design](../../docs/design/github-pr-reading.md)
+defines complete parameters, response fields and cursor behavior.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
@@ -1217,10 +1251,10 @@ on the separate listener are excluded.
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
-Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
-PostgreSQL instance. The module check also requires `DAYNIGHT_TEST_REDIS_URL`
-for an isolated Redis instance; it owns SQL, Redis and other module mechanisms,
-while the startup/shutdown check owns command lifecycle mechanisms.
+Both checks require `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL`
+for isolated PostgreSQL and Redis instances. The module check owns SQL,
+Redis and other module mechanisms. The startup/shutdown check owns the
+command lifecycle, including Redis lease expiry after a writer process exits.
 Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
 fixtures without database, gateway, CLI or Web preparation. For disposable
@@ -3299,13 +3333,23 @@ Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
 reason references before deduplication. Public summaries contain fixed reason
 codes and projection quality, never private references or hidden counts.
 
-Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring.
-The only supported URL query parameter is `db`; connection and retry limits are
-fixed.
-If it is empty, the monitoring API returns 503 while existing business APIs and
-readiness continue; a nonempty invalid URL fails configuration validation.
-The Redis connection is owned only by monitoring and is closed during shutdown.
+`DAYNIGHT_REDIS_URL` enables monitoring and Redis storage gates, each with a
+separate client closed during shutdown. Use a valid `redis` or `rediss` URL.
+The only supported query parameter is `db`. An empty value returns 503 for
+monitoring and selects process-local storage gates for one Server instance.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
+
+For shared file storage, point all Server instances at the same Redis database
+with `noeviction`. Give each independently operated storage deployment its own
+Redis database. Redis stores gate keys with short TTLs. PostgreSQL and the
+file store retain business data. Redis errors fail operations that need a
+lease, while `/readyz` continues to check PostgreSQL. Stop all previous
+Server instances that share the storage before switching lock backends.
+Once the old processes exit, operators can remove the legacy
+`storage/.daynight-gates` directory. A Redis restart or failover can discard
+lease keys before their TTL. The server verifies ownership before publishing
+or deleting a file. Use the writable Redis endpoint. A file operation that
+has already passed this check can still finish after Redis loses the key.
 
 ### Monitoring format transition
 
@@ -3583,8 +3627,17 @@ out releases occupancy. An actual transfer of a legacy NULL identity returns
 HTTP 409 `project_repository_identity_unavailable`; reads, deletion and an
 authorized/version-matched same-Team no-op remain available. Existing request and
 success shapes remain unchanged, and unknown writes must not be replayed.
-UUID IDs are canonicalized to hyphenated lowercase; repository metadata cannot
-be updated after creation.
+UUID IDs are canonicalized to hyphenated lowercase. Project administrators can
+preview `POST /api/v1/projects/{projectId}/repository/preview` with `repoUrl` and
+`expectedUserId`, then submit `PATCH /api/v1/projects/{projectId}/repository` with
+the preview's decimal-string `repositoryVersion`, `ownershipVersion`,
+`classification`, nullable `targetGitHubRepositoryId`, and an explicit
+`treatUnverifiedAsSwitch` for an unverified target. The receipt identifies the
+saved address, version, change and binding invalidation. Stale facts require a
+new preview; unknown writes require observation before another decision. A real
+switch atomically retires the Project GitHub connection and removes the Project
+from selected Worker cloud configurations, retaining historical PR sources and
+local workspaces. Worker application is asynchronous; existing execution may stop.
 
 Every Project resource, including list items and the project embedded in task
 graphs, includes `settings: {version, executionWarningMinutes}`. Migration

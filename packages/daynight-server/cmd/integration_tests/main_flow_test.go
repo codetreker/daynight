@@ -95,6 +95,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 		}
 	})
+	t.Run("MCP project repository", func(t *testing.T) { serverAPIMCPProjectRepositoryNormalFlow(t, f) })
 	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
 	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
 	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
@@ -111,6 +112,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("project member candidates", func(t *testing.T) { serverAPIProjectCandidatesNormalFlow(t, f) })
 	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("task tags", func(t *testing.T) { serverAPITaskTagsNormalFlow(t, f) })
+	t.Run("Goal dependencies", func(t *testing.T) { serverAPIGoalDependenciesNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})

@@ -78,7 +78,7 @@ func (w *writer) PublicationFacts(ctx context.Context, lease store.GitHubLease, 
 	if !matching {
 		return facts, false, nil
 	}
-	current, err := (&reader{tx: w.tx}).PullRequest(ctx, w.projectID, number)
+	current, err := (&reader{tx: w.tx}).pullRequest(ctx, w.projectID, repositoryID, number)
 	if err == nil {
 		facts.Current = &current
 	} else if !errors.Is(err, model.ErrNotFound) {

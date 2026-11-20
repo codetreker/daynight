@@ -3,6 +3,7 @@ import { validateServerToken, validateTokenTransport } from "../config/server-to
 import type { Operation } from "./operation.js";
 import { fields, malformed, text, timestamp } from "./validation.js";
 import * as P from "./assistant-task-parse.js";
+import { botIdentityHeaders } from "./bot-identity.js";
 import type * as T from "./assistant-task-types.js";
 export * from "./assistant-task-types.js";
 export * from "./assistant-task-parse.js";
@@ -47,7 +48,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
       if (controller.signal.aborted) throw new AssistantTaskApiError(false, "request_cancelled");
       dispatched = true;
       response = await Promise.race([(options.fetch ?? globalThis.fetch)(new URL(`/api/v1${path}`, origin), {
-        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...(botId === undefined ? {} : { "X-Daynight-Bot-Id": botId }), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
+        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...botIdentityHeaders(botId), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
         ...(payload === undefined ? {} : { body: payload }), redirect: "manual", cache: "no-store", signal: controller.signal,
       }), aborted]);
       const principal = response.headers.get("Daynight-User-ID");
@@ -150,6 +151,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     listItems: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/items`, query, v => P.parseAssistantTaskItem(v, taskId)),
     getItem: (taskId: string, id: string) => request(entryPath(taskId, "items", id), "GET", undefined, v => P.parseAssistantTaskItem(v, taskId, id)),
     saveItem: (taskId: string, input: T.SaveAssistantTaskItemInput, id?: string) => request(id === undefined ? `${taskPath(taskId)}/items` : entryPath(taskId, "items", id), id === undefined ? "POST" : "PATCH", input, v => P.parseAssistantTaskItem(v, taskId, id ?? input.id)),
+    getMetrics: (taskId: string) => request(`${taskPath(taskId)}/metrics`, "GET", undefined, P.parseAssistantTaskMetrics),
     listRecords: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/records`, query, v => P.parseAssistantTaskRecord(v, taskId)),
     addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => { const result = P.parseAssistantTaskRecord(v, taskId, input.id); if (result.kind !== input.kind || result.outcome !== input.outcome || result.actionRecordId !== input.actionRecordId) return malformed(); return result; }),
     listEvents: (taskId?: string, query?: T.AssistantTaskEventQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),

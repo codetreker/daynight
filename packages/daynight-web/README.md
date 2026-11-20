@@ -26,6 +26,21 @@ server for single-origin delivery. The [localhost deployment](../../deployment/l
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
 provides an isolated instance of the same production build.
 
+Goal detail shows read-only acceptance dependencies before its general information.
+Prerequisites retain the service's hidden-target projection; dependent Goals use
+cursor pages, and external links open the actual Project/Goal resource with draft
+protection. A dialog link to its underlying root opens that root without nested
+readers and preserves the dialog entry for Back. Returning to the source entry rereads its selected downstream page
+and restores the originating link focus on repeated Back/Forward traversals.
+Each source entry retains its latest confirmed cursor independently of focus;
+new tab entries inherit the current coordinates and revisited entries reread their
+own position. Concurrent Goal readers keep separate positions. Only coordinates survive the
+route change; relation rows require fresh authorization. Visible descriptions reconcile relationships
+independently of Task versions. Transient refresh failures retain admitted data;
+permission loss withdraws it. Old services without the relationship route retain
+Goal detail and show capability unavailable. The [relationship design](../../docs/design/goal-dependencies.md#web-只读关系)
+owns request admission and pagination.
+
 The [requirements](../../docs/spec/daynight-web.md) own visible behavior and the
 [architecture](../../docs/design/daynight-web.md) owns graph projection, request
 lifecycles and delivery. The [task property requirements](../../docs/spec/daynight-task-properties.md)
@@ -298,7 +313,7 @@ and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
 gate. The expanded selector displays an avatar, a single-line name and an arrow,
 with no type row or reserved blank line; its accessible name and title retain the
-full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The rail hides the name and arrow. Project list headings and document titles use
+full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The desktop rail hides the name and arrow. Project list headings and document titles use
 Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
 not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
@@ -373,17 +388,35 @@ retain the browser's appearance choice. Read, invalid-value and write failures
 have localized visible feedback while the current in-memory choice remains
 usable. Retry saves that choice, and only a successful write clears the issue.
 
-At 740px and below, navigation uses a 60px rail and a 220px modal overlay. Its
-open state is temporary and never overwrites the desktop choice. The overlay
-contains keyboard focus, isolates the background and shares the reference-counted
-body scroll lock with the graph and task detail. Escape and backdrop dismissal
-restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, actual identity loss and unmount close
-the overlay and release its isolation and lock. Account-change waiting keeps it
-open with its focus containment and scroll lock.
+At 740px and below, workspace content occupies the first and only grid column;
+closed navigation has no rail, layout allocation or reachable links. One
+`WorkspaceNavigation` serves desktop and the 220px modal drawer without mounting
+another data consumer. A dedicated 44×44px hamburger button precedes the
+breadcrumbs in the authenticated topbar, with the sidebar's dark background,
+white icon, 8px corners and a light shadow. It exposes localized Open navigation,
+`aria-controls` and `aria-expanded`. The narrow document topbar stays sticky;
+assistant and Test session pages retain their existing visible header within
+their independent scrolling shell. The button, breadcrumbs and account/language
+actions remain reachable without overlap on narrow and short viewports.
+
+Workspace owns `useWorkspaceDrawer` and passes temporary drawer state, the opener
+reference and close reasons to `WorkspaceSidebar` independently of the stored desktop choice. The
+drawer header has a 44×44px Close navigation icon button. Opening moves focus
+inside; the drawer contains Tab focus, isolates the background and shares the
+reference-counted body scroll lock with the graph and task detail. Close-button,
+Escape and backdrop dismissal restore the visible opener after background inert
+is released. Ordinary navigation closes the drawer and uses target content
+focus; modified clicks and new tabs retain native link behavior. The Team
+popover handles Escape first and retains its creation-dialog focus handoff.
+Route changes, crossing the breakpoint, actual identity blocking or account
+changes, and unmount release the drawer's isolation and lock without focusing
+hidden controls. Returning to desktop recovers its saved width. Account-change
+waiting and unchanged-account background checks keep the drawer open with its
+focus containment and scroll lock.
 Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
-[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries; the
+[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries;
+the [mobile navigation button decision](../../.agents/notes/implemented/feature/2026-11-19-mobile-navigation-button.md) owns the narrow-screen entry and focus ordering; the
 [account menu decision](../../.agents/notes/archived/feature/2026-11-04-topbar-account-menu.md) records the rationale for account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
@@ -1426,7 +1459,7 @@ without narrowing the title or moving the restored page position. The header doe
 not display the current user's role; the members and invitations section retains
 role details. The
 [header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
-[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
+[project shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md) records the rationale for one page offset per account and project, independent of graph viewports.
 
 ## Languages
 
@@ -1505,10 +1538,12 @@ width, and explicit focus, pending and touch presentation. Consumer
 combinations. Their CSS may control external width, margins and flex/grid
 placement; internal skin, arrow and touch sizing belong to the common owners.
 SelectTrigger similarly exposes static `layoutClassName` and element-specific
-refs, events and ARIA while excluding arbitrary className/style. Task Assignee,
-Status and both Tag entries use filter/responsive/task presentation: 32px/11px
-above 800px with a fine pointer, and 44px/16px at smaller widths or coarse pointers.
-Search retains NativeSelect single selection with the same explicit presentation.
+refs, events and ARIA while excluding arbitrary className/style. Project task
+assignee, status, platform and both tag entries use filter/responsive-target/task
+presentation. Fine pointers use the scalable interface size (14px at a 16px
+root), with a 32px height above 800px in noncompact layouts and at least 44px height and hit width at
+800px or below. Coarse pointers retain at least 44px targets and the scalable
+16 CSS px minimum. Search retains native single selection with the same presentation.
 Tag panel typography, positioning and menu state remain feature-owned.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
@@ -1628,7 +1663,7 @@ requests or stored page preferences.
 Clicking a progress row selects Task list and the matching category, switches to
 the destination Goal's page, then scrolls, focuses and briefly highlights it.
 The standalone aggregate selects its list's first page. Explicit positioning wins
-over saved task-list scroll for that activation; ordinary category switches
+over initial project scroll restoration; ordinary category switches
 keep the current page position. The [recent browsing decision](../../.agents/notes/archived/feature/2026-10-27-recent-task-pages.md) records the rationale for the shared window and paging policy; the [progress decision](../../.agents/notes/archived/feature/2026-10-26-project-overview-progress.md)
 retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
@@ -1980,7 +2015,8 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category and one shared task-list page offset. Graph direction is saved per project
+category. The page offset is shared across sections and scoped by account and
+project. Graph direction is saved per project
 and representative task. Filters, graph dialog opening, witness, Goal disclosure,
 fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
@@ -2023,23 +2059,23 @@ does not delete it. Pending saves retain later local edits. Identity change or
 project access withdrawal retires private editing state.
 
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
-Task page scroll restoration and scroll/pagehide listeners are active only when
-Task list is selected and a snapshot is available. Leaving Tasks saves its
-shared position before Overview can restore its own per-mount memory
-position. Overview starts at zero and never reads or overwrites the persisted
-task offset. The JSON number at `daynight:task-list-scroll:${projectId}` is
-restored on task-list entry, reload or project return. Inner category switching
-does not call scroll restoration: the current offset stays within the new
-document range, and shorter content can naturally clamp it to the bottom.
-Returning to longer content does not recover an older category offset. The old
-`daynight:task-view-scroll:${projectId}` record is no longer read or written.
-Outer switches retain the already visited task subtree; inner
-switches retain their conditional-content mounting. Graph dialogs close on
-either departure and open only after a new dependency-graph action. Section/category
-switching, filtering and scroll restoration make no API requests and do not
-alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
-records the original persistence rules; the
-[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for the shared offset and category-switch behavior.
+The project page shares a nonnegative finite window offset across Overview,
+Statistics, Tasks, PRs and Tags, stored as a JSON number under
+`daynight:project-scroll:${JSON.stringify([projectId, userId])}`. The old
+task-list scroll keys are not read or migrated. The initial target restores at
+most once after usable content is ready; a section switch, user scroll or
+explicit positioning takes precedence. Loading, failure, access withdrawal and
+overlay locks do not save temporary offsets. Preference errors remain visible.
+Ordinary section and category switches and same-project history traversal do
+not restore older offsets: the browser naturally clamps shorter pages, and
+returning to longer content does not rebound. Native history restoration is
+managed for actual project entries; settings and other routes retain their
+existing behavior. Outer switches retain the already visited task subtree; inner
+switches retain conditional-content mounting. Graph dialogs close on departure
+and open only after a new dependency-graph action. Switching, filtering and
+scroll restoration make no API requests and do not alter project counters or
+prerequisites. The [project shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md)
+records the rationale and earlier choices.
 
 The generic task and summary decoders require type, nullable parentId and
 assignedTo, and a properties object, preserving all property keys. Graph decoders
@@ -2482,8 +2518,15 @@ attachment guard runs before ServeMux normalization; file endpoints keep their
 existing scope and authorization checks.
 
 The full-page detail allocates remaining height after its actual heading and
-tabs. Shared attachment panes stay adjacent at narrow widths and own their scroll
-independently. Markdown/text/images use the preview body; fitted HTML/PDF frames
+tabs. Shared attachment browsing panes stay adjacent at narrow widths and own their
+scroll independently. Opening upload below 560 CSS px of attachment content width
+temporarily fills the panel with one retained form; Back or Escape restores file
+browsing, and draft/native input identity survives layout and tab changes. Entering
+the narrow upload view dismisses file action menus and transfers their focus to
+upload controls; delete confirmations retain their top-layer focus ownership and
+restore focus into upload when their original trigger is unavailable. Wider
+containers keep the sidebar disclosure. The [attachment design](../../docs/design/daynight-task-attachments.md#web-文件树与预览)
+owns focus, successful-file reveal and scroll behavior. Markdown/text/images use the preview body; fitted HTML/PDF frames
 use their documents' scrolling, without another vertical wrapper. No fixed
 heading-height subtraction, extra renderer, metadata API or preview credential
 is introduced. The [full-reader decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)
@@ -2522,7 +2565,7 @@ The Go module check uses its own unit-test Web resource overlay; see the
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-its Node tooling tests, including native select ownership, the coverage checker
+its Node tooling tests, including native select and typography ownership, the coverage checker
 and asset publication. `scripts/native-select-policy.test.mts` exercises the
 real policy against controlled valid and invalid trees and the complete production
 `src/` tree. It verifies native JSX and React creation, import aliases, static
@@ -2534,6 +2577,23 @@ ASTs and the explicit `css-tree` dependency parse all production TS/TSX and CSS,
 including unreferenced inputs; failures include relative paths and line numbers.
 No legacy exemption list is used. Static ownership does not establish rendered
 geometry or system-menu behavior.
+
+`scripts/typography-policy.test.mts` checks valid and invalid stylesheet and inline
+font declarations, location diagnostics, source enumeration and the production
+tree. The harness also runs `scripts/typography-policy.mts` against every CSS,
+TS and TSX file under `src/`. Run that scan independently with
+`pnpm --filter @codetreker/daynight-web test:typography-policy`. The
+[UI standard](../../docs/ui-design.md#web-typography) owns shared role definitions,
+registered selection parameters, terminal scaling, the external diagram boundary
+and static-analysis limits. Fixed sizes, numeric fallbacks, unknown aliases and
+local role overrides fail, including declarations superseded by later rules.
+Browser checks remain responsible for reflow, clipping and interaction continuity.
+The `typography-ownership-playwright.config.ts` configuration exercises remaining
+shared notices, task controls, attachment metadata and Bot creation against the
+production shell, with controlled API responses. It checks English and Chinese,
+desktop and 320px layouts, larger browser fonts, draft selection, dialog focus and
+readable metadata. Its generated reports and captures belong to
+`.tmp/typography-j/`; they are not product resources.
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
@@ -2822,6 +2882,14 @@ attachments are under `.tmp/native-select-browser/results/`. The
 [main/manual browser workflow](../../.github/workflows/shell-browser.yml) invokes
 this same configuration and uploads its report and captures. Ordinary PR quality
 does not execute the browser fixture.
+
+The public/auth typography browser configuration exercises the production landing,
+Setup, login, device authorization and OAuth consent pages with controlled API
+responses. It checks shared font roles, English and Chinese, narrow layouts,
+coarse pointers, enlarged text, long identities and accessible actions during
+loading, error and disabled states. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/public-auth-typography-playwright.config.ts`.
+Its captures belong to `.tmp/public-auth-typography-results/`.
 
 The setup and landing-header browser configurations separately exercise real
 independent-page consumers, including language and client selection. These

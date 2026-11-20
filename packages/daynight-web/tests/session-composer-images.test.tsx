@@ -7,7 +7,7 @@ import { emptySessionState, hydrateSession } from '../src/features/task-agent-se
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 const render = createLocaleRender('en');
-const setup = (text = '', ready = true, overrides: Partial<ComposerAttachmentsBinding['view']> = {}) => {
+const setup = (text = '', ready = true, overrides: Partial<ComposerAttachmentsBinding['view']> = {}, checkableReceiptIds?: ReadonlySet<string>, visibleReceiptIds?: ReadonlySet<string>) => {
   const snapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
   snapshot.controls = { revision: '1', settings: [], commands: [{ id: 'review', name: 'review', description: 'Review', argumentHint: 'Instructions', available: true }], settingsError: null, commandsError: null };
   const attachments = {
@@ -16,9 +16,34 @@ const setup = (text = '', ready = true, overrides: Partial<ComposerAttachmentsBi
   };
   Object.assign(attachments.view, overrides);
   const props = { state: hydrateSession(emptySessionState(), snapshot, []), connected: true, draft: { text, revision: '1', submission: null }, onDraftChange: vi.fn(), onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), attachments };
-  render(<SessionComposer {...props} />);
+  render(<SessionComposer {...props} {...(checkableReceiptIds ? { checkableReceiptIds } : {})} {...(visibleReceiptIds ? { visibleReceiptIds } : {})} />);
   return props;
 };
+
+it.each([true, false])('keeps image recovery scoped to its original submission when a receipt is visible: %s', receiptVisible => {
+  const ref = { ownerKey: 'owner', operationId: 'original', choiceRevision: '1' };
+  const props = setup('retained', true, {
+    frozen: true, submission: { operationId: ref.operationId },
+    recoveries: [{ ref, state: 'unknown', error: null, currentOwner: true, currentExecution: true, frozen: null, successor: null, canCheck: true, canCancelPrepared: false, canResolveFailure: false }],
+  }, receiptVisible ? new Set([ref.operationId]) : undefined);
+  expect(screen.getByRole('button', { name: 'Continue editing' })).toBeEnabled();
+  if (receiptVisible) expect(screen.queryByRole('button', { name: 'Check status' })).toBeNull();
+  else {
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    expect(props.attachments.checkStatus).toHaveBeenCalledExactlyOnceWith(ref);
+  }
+});
+
+it('retains the original image recovery when a terminal receipt cannot settle the local draft', () => {
+  const ref = { ownerKey: 'owner', operationId: 'original', choiceRevision: '1' };
+  const props = setup('retained', true, {
+    frozen: true, submission: { operationId: ref.operationId },
+    recoveries: [{ ref, state: 'unknown', error: 'image_draft_failed', currentOwner: true, currentExecution: true, frozen: null, successor: null, canCheck: true, canCancelPrepared: false, canResolveFailure: false }],
+  }, undefined, new Set([ref.operationId]));
+  fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+  expect(props.attachments.checkStatus).toHaveBeenCalledExactlyOnceWith(ref);
+  expect(screen.getByRole('button', { name: 'Continue editing' })).toBeEnabled();
+});
 
 it('allows a prepared image-only message and preserves mixed-message whitespace', async () => {
   const props = setup();
@@ -32,6 +57,17 @@ it('keeps the complete message blocked when an image failed', () => {
   fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
   expect(props.onSend).not.toHaveBeenCalled();
   expect(screen.getByText('reference.png')).toBeInTheDocument();
+});
+
+it('explains a disabled image profile while retaining the draft and blocking send', () => {
+  const props = setup('Explain this image', true, { canSend: false, disabledReason: 'profile_disabled' });
+  expect(screen.getByText('Image input is not yet available for the current model. The draft is retained; remove the images to send text.')).toBeInTheDocument();
+  expect(screen.queryByText(/Check the connection/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+  expect(props.onSend).not.toHaveBeenCalled();
+  expect(screen.getByText('reference.png')).toBeInTheDocument();
+  expect(screen.getByRole('textbox')).toHaveValue('Explain this image');
 });
 
 it('keeps retry available while an unreadable saved draft blocks editing and sending', () => {

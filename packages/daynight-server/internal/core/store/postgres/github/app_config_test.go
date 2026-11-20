@@ -33,7 +33,7 @@ func TestAppConfigPersistenceFenceAndRemoval(t *testing.T) {
 		{`INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_id,installation_id,repository_id,repository_full_name,app_resource_id,team_grant_id,credential_version,claim_token,claim_until,claim_kind,access_hint_id,access_delivery_id,next_poll_at) VALUES($1,2,3,4,true,true,123,9,10,'owner/repo',$2,$3,1,$4,now()+interval '1 hour','poll',$5,'delivery',now()),($6,2,3,4,true,false,123,9,10,'owner/repo',$2,$3,1,NULL,NULL,NULL,NULL,NULL,NULL)`, []any{project, app, grant, uuid.NewString(), uuid.NewString(), disabled}},
 		{`INSERT INTO project_github(project_id,app_resource_id,credential_version,generation,revision) VALUES($1,$2,7,8,9)`, []any{unrelated, uuid.NewString()}},
 		{`INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,3,$2,'delivery',now(),now())`, []any{project, uuid.NewString()}},
-		{`INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, []any{project}},
+		{`INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,10,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, []any{project}},
 	} {
 		if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
@@ -236,25 +236,53 @@ func TestAppConfigSerializesMembershipAndReadsNewVersion(t *testing.T) {
 	}
 }
 
+type appConfigRollbackState struct {
+	app, connection, pending, invitation, admin string
+}
+
+func readAppConfigRollbackState(t *testing.T, ctx context.Context, db *postgres.Store, app, project string) appConfigRollbackState {
+	t.Helper()
+	var state appConfigRollbackState
+	var intact bool
+	err := db.Pool.QueryRow(ctx, `SELECT to_jsonb(a)::text,to_jsonb(c)::text,
+ (SELECT to_jsonb(p)::text FROM project_github_pending_prs p WHERE project_id=$2),
+ (SELECT to_jsonb(i)::text FROM github_app_admin_invitations i WHERE app_resource_id=$1),
+ (SELECT to_jsonb(m)::text FROM github_app_admins m WHERE app_resource_id=$1),
+ a.name='Automation' AND a.version=1 AND a.private_key_pem='key'::bytea AND c.generation=3 AND c.revision=4
+ FROM github_apps a JOIN project_github c ON c.app_resource_id=a.id WHERE a.id=$1 AND c.project_id=$2`, app, project).
+		Scan(&state.app, &state.connection, &state.pending, &state.invitation, &state.admin, &intact)
+	if err != nil || !intact {
+		t.Fatalf("App Config rollback fixture: %v, %v", intact, err)
+	}
+	return state
+}
+
 func TestAppConfigDatabaseFailuresRollback(t *testing.T) {
-	for _, tc := range []struct {
-		name, breakSQL, repairSQL string
-		operation                 func(context.Context, store.GitHubAppConfigWriter) error
+	db, _ := dbFixture(t)
+	const hideAdmins = `ALTER TABLE github_app_admins RENAME TO broken_admins`
+	const restoreAdmins = `ALTER TABLE broken_admins RENAME TO github_app_admins`
+	for i, test := range []struct {
+		fault     appCatalogFault
+		operation func(context.Context, store.GitHubAppConfigWriter) error
 	}{
-		{"update projection", `ALTER TABLE github_app_admins RENAME TO broken_admins`, `ALTER TABLE broken_admins RENAME TO github_app_admins`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+		{appCatalogFault{"update projection", hideAdmins, restoreAdmins, "42P01", "read updated github app"}, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
 			_, err := w.Update(ctx, store.GitHubAppConfigUpdate{Name: "changed", GitHubName: "Remote", GitHubSlug: "remote", Version: 2, CredentialVersion: 1, Credentials: githubpr.AppCredentials{PrivateKeyPEM: []byte("key"), WebhookSecret: []byte("secret")}})
 			return err
 		}},
-		{"fence pending", `ALTER TABLE project_github_pending_prs RENAME TO broken_pending`, `ALTER TABLE broken_pending RENAME TO project_github_pending_prs`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+		{appCatalogFault{"fence pending", `ALTER TABLE project_github_pending_prs RENAME TO broken_pending`,
+			`ALTER TABLE broken_pending RENAME TO project_github_pending_prs`, "42P01", "clear github app pending"}, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
 			return w.FenceConnections(ctx, store.GitHubAppCredentialFence{CredentialVersion: 2, AccessState: "unknown", ScheduleSyncAccess: true})
 		}},
-		{"fence update", `ALTER TABLE project_github RENAME COLUMN access_state TO broken_access_state`, `ALTER TABLE project_github RENAME COLUMN broken_access_state TO access_state`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+		{appCatalogFault{"fence update", `ALTER TABLE project_github RENAME COLUMN access_state TO broken_access_state`,
+			`ALTER TABLE project_github RENAME COLUMN broken_access_state TO access_state`, "42703", "fence github app connections"}, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
 			return w.FenceConnections(ctx, store.GitHubAppCredentialFence{CredentialVersion: 2, AccessState: "unknown", ScheduleSyncAccess: true})
 		}},
-		{"remove relations", `ALTER TABLE github_app_admins RENAME TO broken_admins`, `ALTER TABLE broken_admins RENAME TO github_app_admins`, func(ctx context.Context, w store.GitHubAppConfigWriter) error { return w.RemoveRelations(ctx) }},
+		{appCatalogFault{"remove relations", hideAdmins, restoreAdmins, "42P01", "remove github app relations"}, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			return w.RemoveRelations(ctx)
+		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db, app, actor, _ := appAdminFixture(t)
+		if !t.Run(test.fault.name, func(t *testing.T) {
+			app, actor, _ := seedAppAdminFixture(t, db, 123+int64(i))
 			ctx := t.Context()
 			project := uuid.NewString()
 			for _, q := range []struct {
@@ -263,31 +291,28 @@ func TestAppConfigDatabaseFailuresRollback(t *testing.T) {
 			}{
 				{`INSERT INTO project_github(project_id,app_resource_id,generation,revision) VALUES($1,$2,3,4)`, []any{project, app}},
 				{`INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,3,$2,'delivery',now(),now())`, []any{project, uuid.NewString()}},
-				{`INSERT INTO github_app_admin_invitations(id,app_resource_id,token_hash,created_by,issuer_membership_version,created_at,expires_at) VALUES($1,$2,$3,$4,1,now(),now()+interval '1 day')`, []any{uuid.NewString(), app, []byte("hash"), actor}},
+				{`INSERT INTO github_app_admin_invitations(id,app_resource_id,token_hash,created_by,issuer_membership_version,created_at,expires_at) VALUES($1,$2,$3,$4,1,now(),now()+interval '1 day')`, []any{uuid.NewString(), app, []byte(uuid.NewString()), actor}},
 			} {
 				if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err := db.Pool.Exec(ctx, tc.breakSQL); err != nil {
-				t.Fatal(err)
-			}
-			c, err := db.WriteGitHubAppConfig(ctx, app, func(w store.GitHubAppConfigWriter) error { return tc.operation(ctx, w) })
-			if err == nil || c.Outcome != store.TransactionNotCommitted {
-				t.Fatalf("failure completion: %+v %v", c, err)
-			}
-			if failed, _ := store.DatabaseErrorFacts(err); !failed {
-				t.Fatalf("missing database cause: %v", err)
-			}
-			if _, err := db.Pool.Exec(ctx, tc.repairSQL); err != nil {
-				t.Fatal(err)
-			}
-			var intact bool
-			err = db.Pool.QueryRow(ctx, `SELECT name='Automation' AND version=1 AND private_key_pem='key'::bytea AND (SELECT count(*) FROM github_app_admin_invitations WHERE app_resource_id=$1)=1 AND (SELECT count(*) FROM github_app_admins WHERE app_resource_id=$1)=1 AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$2)=1 AND (SELECT generation=3 AND revision=4 FROM project_github WHERE project_id=$2) FROM github_apps WHERE id=$1`, app, project).Scan(&intact)
-			if err != nil || !intact {
-				t.Fatalf("rollback: %v %v", intact, err)
-			}
-		})
+			before := readAppConfigRollbackState(t, ctx, db, app, project)
+			test.fault.run(t, db, func(ctx context.Context) (store.Completion, int, error) {
+				calls := 0
+				completion, err := db.WriteGitHubAppConfig(ctx, app, func(w store.GitHubAppConfigWriter) error {
+					calls++
+					return test.operation(ctx, w)
+				})
+				return completion, calls, err
+			}, func(ctx context.Context) {
+				if after := readAppConfigRollbackState(t, ctx, db, app, project); after != before {
+					t.Fatal("failed App Config write changed committed rows")
+				}
+			})
+		}) {
+			return
+		}
 	}
 }
 

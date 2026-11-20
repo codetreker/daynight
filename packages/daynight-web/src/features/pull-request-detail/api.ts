@@ -16,10 +16,11 @@ export type PullRequestDetail = {
 const decimal = (value: unknown): string => parseConfigurationRevision(value);
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 
-export const parsePullRequestDetail = (value: unknown, expectedNumber: string): PullRequestDetail => {
+export const parsePullRequestDetail = (value: unknown, expectedNumber: string, repositoryId: string | null = null): PullRequestDetail => {
   const data = record(value), number = decimal(data.number);
   if (number !== decimal(expectedNumber)) return malformed();
   const base = record(data.base), head = record(data.head);
+  if (repositoryId !== null && decimal(base.repositoryId) !== decimal(repositoryId)) return malformed();
   const author = nullable(data.author, value => {
     const item = record(value);
     return { id: decimal(item.id), login: string(item.login) };
@@ -37,13 +38,14 @@ export const parsePullRequestDetail = (value: unknown, expectedNumber: string): 
 
 export type PullRequestAdmission = { readonly userId: string; readonly onPrincipalMismatch: () => void; readonly onDispatch?: () => void };
 
-export const getPullRequestDetail = async (projectId: string, number: string, signal: AbortSignal, admission: PullRequestAdmission): Promise<PullRequestDetail> => {
+export const getPullRequestDetail = async (projectId: string, number: string, signal: AbortSignal, admission: PullRequestAdmission, repositoryId: string | null = null): Promise<PullRequestDetail> => {
   const project = requestId(projectId), userId = requestId(admission.userId);
   try { decimal(number); } catch (error) { throw new ApiError('protocol', null, 'protocol', null, error); }
-  const response = await request(`/api/v1/projects/${project}/pull-requests/${number}`, signal, { headers: { Accept: 'application/json' } }, admission.onDispatch);
+  const query = repositoryId === null ? '' : `?${new URLSearchParams({ repositoryId: decimal(repositoryId) })}`;
+  const response = await request(`/api/v1/projects/${project}/pull-requests/${number}${query}`, signal, { headers: { Accept: 'application/json' } }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
-    return parsePullRequestDetail(value, number);
+    return parsePullRequestDetail(value, number, repositoryId);
   });
 };

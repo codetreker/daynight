@@ -1,4 +1,4 @@
-import { resolveBotControllerStateDirectory } from "./paths.js";
+import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -52,7 +52,9 @@ const blockedAdmission = (cause: unknown): BotAdmissionBlockedError | undefined 
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
+  sessionApi: Omit<BotSessionApi, "registerRecovery">; recoveryLimit: number | (() => number); now?: () => number;
+  reconcileHosting?: (record: BotRecord) => boolean;
+  canControl?: (record: BotRecord) => boolean;
   canAdmitNewExecution(): boolean;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
@@ -140,6 +142,12 @@ export const createBotProcess = (options: {
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
     const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
+    if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
+      || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
+    if (ticket.claudeBotRecovery !== undefined && (ticket.claudeBotRecovery.botId !== record.botId
+      || ticket.claudeBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory)) throw new Error("Bot Claude recovery location conflicts with its original ownership.");
+    if (ticket.copilotBotRecovery !== undefined && (ticket.copilotBotRecovery.botId !== record.botId
+      || ticket.copilotBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).copilotRecoveryDirectory)) throw new Error("Bot Copilot recovery location conflicts with its original ownership.");
     if (toolLaunch !== undefined && (intent.toolLaunch === undefined || controllerPayloadHash(toolLaunch) !== controllerPayloadHash(intent.toolLaunch))
       || toolObservation !== undefined && (intent.toolObservation === undefined || controllerPayloadHash(toolObservation) !== controllerPayloadHash(intent.toolObservation))) throw new Error("Bot ticket tool selection differs from the original frozen intent.");
     if (config.selection !== undefined) {
@@ -234,6 +242,7 @@ export const createBotProcess = (options: {
         if (["starting", "ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped) {
           const observed = remember(record, snapshot);
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original spawn proof is unavailable; launch reconciliation is blocked.");
@@ -244,6 +253,7 @@ export const createBotProcess = (options: {
         const observed = remember(record, observation.snapshot);
         if (["starting", "ready", "working"].includes(observed.lifecycle) && !observed.nativeStopped) {
           options.executions.resumeObserved(record);
+          if (options.reconcileHosting?.(record)) await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(sessionRecord(current(record)), signal));
           return observed;
         }
         throw new Error("Bot original controller remains observable but is not available for recovery.");
@@ -327,6 +337,12 @@ export const createBotProcess = (options: {
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
             ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
+          ...(config.provider === "codex" && (previousTicket?.codexBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { codexBotRecovery: previousTicket?.codexBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory } } : {}),
+          ...(config.provider === "claude" && (previousTicket?.claudeBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { claudeBotRecovery: previousTicket?.claudeBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory } } : {}),
+          ...(config.provider === "copilot" && (previousTicket?.copilotBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { copilotBotRecovery: previousTicket?.copilotBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).copilotRecoveryDirectory } } : {}),
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
@@ -378,6 +394,7 @@ export const createBotProcess = (options: {
     // Migration required proven stop and fences every launch until takeover.
     if (retained.migration !== undefined) return;
     if (retained.intent === null) return;
+    if (options.canControl?.(retained) === false) throw new Error("Bot hosting is unconfirmed; the original writer and recovery evidence are retained.");
     const record = current(retained, true);
     const execution = options.executions.get(record);
     if (execution === null || execution.launchSubmission === "not-submitted") return;
@@ -546,6 +563,7 @@ export const createBotProcess = (options: {
      */
     withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
       assertBotMigrationExecutable(record);
+      if (record.cleanup === undefined && options.canControl?.(record) === false) throw new Error("Bot deletion requires confirmed local hosting.");
       signal.throwIfAborted(); deletionRecord(record);
       let active = true;
       try { return await action(() => {
@@ -574,7 +592,9 @@ export const createBotProcess = (options: {
       if (execution === null || execution.launchSubmission === "not-submitted" || execution.snapshot?.nativeStopped) return;
       const ticket = await checkedTicket(record);
       if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, now())) return;
-      const grant = await options.sessionApi.grant(sessionRecord(record), signal);
+      const snapshot = remember(record, await observe(ticket, signal));
+      if (!["starting", "ready", "working"].includes(snapshot.lifecycle) || snapshot.nativeStopped) return;
+      const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal);
       current(record); signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     }),

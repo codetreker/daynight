@@ -6,6 +6,7 @@ import type { BrowserMessage, TimelinePage } from '../../daynight/src/session/co
 import type { SessionApi } from '../src/api/sessions';
 import { TaskSessionClient } from '../src/features/task-agent-session/client';
 import { SessionView } from '../src/features/task-agent-session/SessionView';
+import { OperationRequestError } from '../src/features/task-agent-session/operation-error';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import type { TaskSessionSnapshot } from './helpers/session';
 
@@ -67,7 +68,7 @@ it.each(['cancel', 'interaction_response', 'update_setting', 'refresh_controls']
 });
 
 it.each([
-  ['accepted', 'Unable to confirm whether this operation completed. Check the original operation.'], ['offered', 'Unable to confirm whether this operation completed. Check the original operation.'], ['dispatching', 'Unable to confirm whether this operation completed. Check the original operation.'], ['unknown', 'Unable to confirm whether this operation completed. Check the original operation.'], ['failed', 'The operation failed. No further details are available.'], ['rejected', 'The operation was rejected. No further details are available.'], ['expired', 'The operation expired before completion.'],
+  ['accepted', 'Delivery outcome is unknown. Check this operation; do not resend it.'], ['offered', 'Delivery outcome is unknown. Check this operation; do not resend it.'], ['dispatching', 'Delivery outcome is unknown. Check this operation; do not resend it.'], ['unknown', 'Delivery outcome is unknown. Check this operation; do not resend it.'], ['failed', 'The operation failed. No further details are available.'], ['rejected', 'The operation was rejected. No further details are available.'], ['expired', 'The operation expired before completion.'],
 ] as const)('keeps %s visible after newer successful operations', async (state, label) => {
   const f = await fixture();
   await renderSession(f.client);
@@ -164,12 +165,112 @@ it('keeps an uncertain result visible and its draft intact when delivery fails',
   const { container } = await renderSession(f.client);
   act(() => f.client.setDraft('Unconfirmed input'));
   fireEvent.submit(container.querySelector('form')!);
-  await waitFor(() => expect(screen.getByText('Unable to confirm whether this operation completed. Check the original operation.')).toBeVisible());
-  expect(screen.getByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toBeVisible();
+  await waitFor(() => expect(screen.getAllByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toHaveLength(1));
+  expect(container.querySelector('.session-composer .session-notice')).toBeNull();
+  expect(container.querySelector('.session-composer .session-error')).toHaveTextContent('Connection interrupted');
   expect(screen.getByRole('button', { name: 'Check original operation' })).toBeEnabled();
   expect(screen.getByRole('textbox')).toHaveValue('Unconfirmed input');
   expect(container.querySelector('.session-receipt-progress')).toBeNull();
   expect(f.api.command).toHaveBeenCalledOnce();
+});
+
+it('shows only the receipt when the original send itself returns an unknown outcome', async () => {
+  const f = await fixture();
+  vi.mocked(f.api.command).mockImplementation(async (_session, command) => ({ ...f.operation('unknown'), operationId: command.operationId }));
+  const { container } = await renderSession(f.client);
+  act(() => f.client.setDraft('Unconfirmed input'));
+  fireEvent.submit(container.querySelector('form')!);
+  await waitFor(() => expect(screen.getAllByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toHaveLength(1));
+  expect(container.querySelector('.session-composer .session-error')).toBeNull();
+  expect(container.querySelector('.session-composer .session-notice')).toBeNull();
+  expect(screen.getByRole('textbox')).toHaveValue('Unconfirmed input');
+  expect(f.api.command).toHaveBeenCalledOnce();
+});
+
+it('keeps unknown delivery semantics alongside a provider diagnostic in the same receipt', async () => {
+  const f = await fixture();
+  const { container } = await renderSession(f.client);
+  f.emit(f.operation('unknown', 'send_message', { code: 'connection', message: 'Connection lost' }));
+  const receipt = container.querySelector('.session-receipt') as HTMLElement;
+  expect(within(receipt).getByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toBeVisible();
+  expect(within(receipt).getByText('Connection lost')).toBeVisible();
+  expect(container.querySelector('.session-composer .session-notice')).toBeNull();
+});
+
+it('checks only the selected image operation and reports checking state', async () => {
+  const f = await fixture();
+  const id = crypto.randomUUID();
+  const ref = { ownerKey: 'owner', operationId: id, choiceRevision: '1' };
+  const pending = Promise.withResolvers<void>();
+  (f.client as unknown as { imageOperationIds: Set<string> }).imageOperationIds.add(id);
+  const snapshot = f.client.imageDrafts.getSnapshot();
+  vi.spyOn(f.client.imageDrafts, 'getSnapshot').mockReturnValue({ ...snapshot, recoveries: [{ ref, state: 'unknown', error: null, currentOwner: true, currentExecution: true, frozen: null, successor: null, canCheck: true, canCancelPrepared: false, canResolveFailure: false }] });
+  const check = vi.spyOn(f.client.imageDrafts, 'checkStatus').mockReturnValue(pending.promise);
+  const result = f.client.checkOperation(id);
+  expect(check).toHaveBeenCalledExactlyOnceWith(ref);
+  expect(f.client.snapshot().checking.has(id)).toBe(true);
+  pending.resolve(); await result;
+  expect(f.client.snapshot().checking.has(id)).toBe(false);
+  expect(f.api.operation).not.toHaveBeenCalled();
+});
+
+it('shows one operation-owned failure while preserving the submitted draft and focus', async () => {
+  const f = await fixture();
+  const reason = 'The provider did not accept the message. Check the current session status before trying again.';
+  vi.mocked(f.api.command).mockImplementation(async (_session, command) => ({ ...f.operation('failed', 'send_message', { code: 'failure', message: reason }), operationId: command.operationId }));
+  const { container } = await renderSession(f.client);
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+  act(() => f.client.setDraft('Keep this draft'));
+  input.focus(); input.setSelectionRange(2, 6);
+  fireEvent.submit(container.querySelector('form')!);
+  await waitFor(() => expect(screen.getAllByText(reason)).toHaveLength(1));
+  expect(container.querySelector('.session-composer .session-error')).toBeNull();
+  expect(input).toHaveValue('Keep this draft');
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([2, 6]);
+  expect(f.api.command).toHaveBeenCalledOnce();
+});
+
+it.each(['local', 'different-operation'] as const)('retains a %s error even if another receipt has the same text', async kind => {
+  const f = await fixture();
+  const reason = 'Could not send this message.';
+  vi.spyOn(f.client, 'send').mockRejectedValue(kind === 'local' ? new Error(reason) : new OperationRequestError(crypto.randomUUID(), new Error(reason)));
+  const { container } = await renderSession(f.client);
+  f.emit(f.operation('failed', 'send_message', { code: 'failure', message: reason }));
+  act(() => f.client.setDraft('Keep this draft'));
+  fireEvent.submit(container.querySelector('form')!);
+  await waitFor(() => expect(screen.getAllByText(reason)).toHaveLength(2));
+  expect(container.querySelector('.session-composer .session-error')).toHaveTextContent(reason);
+});
+
+it('distinguishes identical failures and exposes complete long details', async () => {
+  const f = await fixture();
+  const { container } = await renderSession(f.client);
+  const message = 'A long provider error. '.repeat(30);
+  const first = f.operation('failed', 'send_message', { code: 'failure', message });
+  const second = f.operation('failed', 'send_message', { code: 'failure', message });
+  f.emit(first); f.emit(second);
+  const rows = container.querySelectorAll('.session-receipt');
+  expect(rows).toHaveLength(2);
+  const region = screen.getByRole('region', { name: 'Operation receipts' });
+  expect(region).toHaveAttribute('tabindex', '0'); region.focus(); expect(document.activeElement).toBe(region);
+  expect(rows[0]).toHaveTextContent(first.operationId);
+  expect(rows[1]).toHaveTextContent(second.operationId);
+  const details = within(rows[0] as HTMLElement).getByText('Details');
+  details.focus(); fireEvent.click(details);
+  expect(document.activeElement).toBe(details);
+  expect((rows[0] as HTMLElement).querySelector('.session-receipt-detail')).toHaveTextContent(message.trim());
+  expect((rows[0] as HTMLElement).querySelector('details')).toHaveAttribute('open');
+});
+
+it('retains the original long diagnostic including native stack lines in details', async () => {
+  const f = await fixture();
+  const { container } = await renderSession(f.client);
+  const message = `Permission denied\n    at dispatch (/private/${'worker/'.repeat(30)}provider.js:27:9)`;
+  f.emit(f.operation('failed', 'send_message', { code: 'failure', message }));
+  const details = screen.getByText('Details'); fireEvent.click(details);
+  expect(container.querySelector('.session-receipt-detail')?.textContent).toBe(message);
+  expect(container.querySelector('.session-receipt-message > span')).toHaveTextContent('Permission denied');
 });
 
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -306,7 +305,7 @@ func TestUsageStatePaginationBindsDerivedProjectionButNotObservationClock(t *tes
 				t.Fatal(err)
 			}
 			now := time.Now().UTC()
-			reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{CursorKey: []byte(strings.Repeat("k", 32))})
+			reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -394,7 +393,7 @@ func TestUsageStatePaginationResetsAtOriginalParentExpiryUsingProjectionClock(t 
 	now := time.Now().UTC()
 	expiry := now.Add(time.Minute)
 	testutil.MustExec(t, f.db.Pool, `UPDATE personal_access_tokens SET expires_at=$2 WHERE id=$1`, f.actor.CredentialID, expiry)
-	reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{CursorKey: []byte(strings.Repeat("k", 32))})
+	reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +430,7 @@ func TestUsageStatePaginationResetsAtNaturalGrantExpiryInOneOperationClock(t *te
 	now := time.Now().UTC()
 	expiry := now.Add(time.Minute)
 	testutil.MustExec(t, f.db.Pool, `UPDATE usage_records SET grant_expires_at=$2 WHERE id=$1`, reg.State.ID, expiry)
-	reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{CursorKey: []byte(strings.Repeat("k", 32))})
+	reader, err := app.New(fixedUsageReadClock{f.db, &now}, app.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -164,7 +164,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 决定；同 Team 活跃身份唯一性由共享 core 规则和 Team 行锁保护。不同 Team 可持有同仓库项目。
 Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
-依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；当前没有公开 Goal 边写入入口。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
+依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；Goal 关系通过独立的 [REST 资源](../spec/goal-dependencies.md)读写。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
 
 任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：
@@ -197,6 +197,8 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 `063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
 `070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名、改色和删除旋转标签目录 epoch；改名、改色和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；名称引用批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
+
+标签重名只在精确唯一索引标记和可靠的操作阶段回滚同时成立时映射为 409 `tag_name_conflict`。REST 检查完整错误树：标记分支只允许一个数据库错误；包围该标记、同样报告 SQLSTATE 23505 的存储包装描述同一故障，不重复计数。附加错误分支、清理失败、提交尝试及未知结果仍保留各自失败语义。
 
 `074_tag_color.sql` 为 Tag 增加非空大写 `#RRGGBB` 色值，既有和省略颜色的新 Tag 均为 `#9AA3B2`。服务在项目写锁内先校验原始版本，再原子更新名称和颜色；实际改色与改名一样 touch 关联 Task/Goal 并旋转目录 epoch，同值不写入。颜色批量读取在同一授权快照校验可选 epoch，并按规范化去重后的 ID 返回精确版本和颜色或明确缺失。REST 创建和更新接受颜色，并通过独立的颜色 resolve 投影按实际编码限制返回完整结果；旧 REST Tag 及 REST/MCP Task 标签引用不包含颜色，也不扩大既有回执预算；MCP Tag 结果包含颜色。设计取舍见[颜色存储决策](../../.agents/notes/implemented/architecture/2026-11-15-tag-color-storage.md)。
 
@@ -275,6 +277,14 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 [唯一性决策](../../.agents/notes/implemented/architecture/2026-11-18-team-project-repository-uniqueness.md)
 记录锁、存储和查询方案的取舍。
 
+### 项目仓库改址
+
+`projects.repository_version` 区分真实地址变更及 A→B→A，原样保存不推进版本。预览在只读快照取得项目、有效授权和 GitHub 连接事实，在事务外使用现有安装凭据读取旧稳定 ID；候选路径读取还要求 owner Team 管理权限与有效 grant。分类优先使用可用的稳定 ID，相同地址文本不发起外部观察。写入重新观察并比较预览分类和目标 ID，再在 Read Committed 事务按 Project、归属、owner Team、授权、App、grant、连接顺序锁定，重新核对版本及证明依赖。Team 锁后的新语句排除本项目检查占用。
+
+真实换仓在同一事务关闭旧仓库覆盖区间、推进 GitHub 世代、清除项目侧连接及旧工作，并按一次快照的 Worker 列表以用户和 Worker ID 顺序锁行。锁后基于最新原始配置只移除目标项目，保留其他配置和观测，仅推进实际受影响的目标版本。外部观察和数据库提交的结果独立，未知提交不能重放。旧来源读取见 [PR 来源](github-pr-reading.md)，连接恢复由管理员手工执行。
+
+改址日志关联请求、主体和 Project，记录阶段、分类及事务完成状态，不记录仓库地址或凭据。Worker 配置行数仅在确认提交时表示实际影响；提交未知时记录事务内拟变更数，回滚时记录零。
+
 ## 状态与依赖不变量
 
 普通 Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。Goal 使用四态及独立的状态时间和负责人策略，详见 [Goal 需求](../spec/daynight-goals.md)。
@@ -298,7 +308,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 
 ### Goal 验收依赖的生命周期保护
 
-Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际移除出边从逻辑值 1 推进到 2，空操作不推进。当前状态、直接删除与项目生命周期入口保护已有边，尚未公开 Goal 关系写入。
+Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际修改出边从逻辑值 1 推进到 2，空操作不推进，清空不删除修订。状态、直接删除与项目生命周期入口保护已有边；独立关系服务提供授权读取与编辑，机制见[Goal 关系设计](goal-dependencies.md)。公开关系路由独立于旧 Task 投影。
 
 显式状态与删除先读取不可变类型；识别为 Goal 后进入受图锁影响的分支，使用五秒预算覆盖后续连接池、锁、查询与提交。类型预判使用调用方原 context，不受该分支预算限制。写入先锁本地 Project，读取当前 owner Team，再取得该 Team 的事务级图锁，之后锁定并重读 Goal、检查权限与版本。进入 `done` 要求全部直接前置为 `done`；离开 `done` 时若有已完成下游则拒绝。直接删除拒绝未删除 Goal 的入边；无入边时同事务移除出边、推进关系修订并软删除。拒绝不公开对端身份；事务失败保留原结果及提交未知语义。普通 Task 写入及子 Task 自动开始 Parent 保持原项目事务，不取得图锁。
 
@@ -308,7 +318,7 @@ Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_typ
 
 实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不探测或清理边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。仅对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括其他项目内的下游；不锁远端 Project 或 Task，不修改其元数据版本。修订耗尽回滚全部操作。
 
-清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。
+清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。REST 转移与删除适配器共同严格解析单值 `Daynight-Confirm-Goal-Dependency-Removal: true`，将结果透传 TransferInput 或 DeletionInput；缺少 header 透传 false，错误 header 在业务调用前以 `400 invalid_input` 拒绝。既有请求体字段、删除空正文、预览与回执保持原结构，CORS allow-list 允许该请求 header。
 
 ## 写事务与并发
 
@@ -361,6 +371,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
+
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 复用项目转移预览准入，再读取 Project 名称，返回项目身份、来源和目标 Team、精确十进制字符串 ownership 与目标 Team 版本，以及永久清理范围。预览不枚举或计数关系；确认覆盖事务提交时所有相关 Goal 边，包括其他项目的入边和出边。宿主展示项目、两侧 Team 和影响，取得用户对本次转移及清理的明确答复后，才调用 `project_transfer`，同时提交 `confirm:true`、`confirmGoalDependencyRemoval:true`、预览原值 `ifVersion` 和 `ifTargetVersion`。清理确认要求两个版本均存在，适配器保持原值并交给既有事务检查。无答复或拒绝时宿主不调用写工具；冲突须重新预览和确认，结果未知不自动重放。stateless MCP 不发起服务端确认请求。旧工具请求缺少清理声明时沿用服务端拒绝规则，无边及同归属空操作保持可用。完整调用方法由嵌入的 `daynight://manuals/concepts.md` 维护。
 
 ## HTTP 传输准入
 
@@ -415,7 +427,8 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
-| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
+| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及普通 Task 依赖 |
+| `GET/PATCH /api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立授权投影与关系修订编辑 |
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
@@ -425,6 +438,8 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 | `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
+| `GET, PUT /api/v1/me/workers/{workerId}/review-participation` | 独立的账号级参与设置及版本 CAS，默认关闭；[设计](worker-review-participation.md)拥有字段和写入边界 |
+| `GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment` | 查询当前账号的长期 Reviewer 归属及 Worker 状态；[设计](pr-review-assignment.md)拥有资格、对账和并发规则 |
 
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。

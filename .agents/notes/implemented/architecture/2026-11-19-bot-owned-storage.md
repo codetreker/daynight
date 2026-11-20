@@ -64,9 +64,12 @@ responsibility instead of depending on already deleted evidence.
 New Bot persistence no longer depends on shared Worker or Controller data.
 Each opened Bot costs a dedicated database and lock; directory enumeration must
 validate identities rather than trusting a directory name. Existing shared data
-uses the [guarded migration](2026-11-19-bot-storage-migration.md), and Provider native records still need
-their own verified isolation and resume implementation. This storage change
-does not advertise complete native recovery or independent Worker takeover.
+uses the [guarded migration](2026-11-19-bot-storage-migration.md). Provider native
+records use their separately verified adapters, including the
+[Codex recovery profile](2026-11-19-codex-bot-recovery-points.md). Independent
+[Worker reconciliation](2026-11-20-bot-worker-reconciliation.md) consumes this
+storage and its locks; storage availability alone does not establish native
+recovery or service authorization.
 
 Deleted Bots retain minimal local responsibility and database allocation.
 Logical erasure of records is not a forensic disk-erasure guarantee.

@@ -31,7 +31,7 @@ const defaults: AssistantTaskCommandDependencies = {
 const userActions = new Set(["create", "update", "pause", "resume", "delete", "manual rollback", "appendix update", "appendix delete", "proposal decide", "events clear-attention"]);
 const botActions = new Set(["claim", "bind", "renew", "appendix add", "appendix validate", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
 const claimActions = new Set(["claim", "bind", "renew", "release", "transfer"]);
-const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "appendix related", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
+const readActions = new Set(["list", "show", "metrics", "claim-operation show", "manual show", "manual list", "appendix list", "appendix related", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
 const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record", "--scope-project", "--outcome-record", "--project"]);
 const integerOptions = new Set(["--if-version", "--base-version", "--manual-version", "--version", "--episode", "--expected-generation"]);
 const jsonOptions = new Set(["--rules", "--trigger", "--app-state", "--refs", "--payload"]);
@@ -102,6 +102,7 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
         switch (action) {
           case "list": return api.listTasks(query);
           case "show": return api.getTask(taskId!);
+          case "metrics": return api.getMetrics(taskId!);
           case "create": return api.createTask({ id: taskId!, name: option("--name")!, purpose: option("--purpose") ?? "", scope: option("--scope") ?? "", kind: (option("--kind") ?? "continuous") as "continuous" | "once", takeover: (option("--takeover") ?? "manual") as "manual" | "auto", ...(option("--application") === undefined ? {} : { application: option("--application")! }), ...(values.has("--trigger") ? { trigger: value("--trigger") } : {}), manual: { body: option("--body")!, rules: value("--rules", {}) } });
           case "update": return api.updateTask(taskId!, { ifVersion: option("--if-version")!, ...(option("--name") === undefined ? {} : { name: option("--name")! }), ...(option("--purpose") === undefined ? {} : { purpose: option("--purpose")! }), ...(option("--scope") === undefined ? {} : { scope: option("--scope")! }), ...(option("--takeover") === undefined ? {} : { takeover: option("--takeover")! as "manual" | "auto" }), ...(values.has("--trigger") ? { trigger: value("--trigger") } : {}) });
           case "pause": case "resume": return api.updateTask(taskId!, { ifVersion: option("--if-version")!, state: action === "pause" ? "paused" : "active" });

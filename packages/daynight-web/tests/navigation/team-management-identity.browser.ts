@@ -125,7 +125,7 @@ test('retains the create dialog input on foreground return', async ({ page }) =>
 test('keeps the narrow navigation and focus during foreground checks', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const state = await install(page); await page.goto('/projects');
-  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
   const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
   const link = drawer.getByRole('link', { name: 'Projects' });
   await link.focus();
@@ -145,7 +145,7 @@ test('keeps the Chinese narrow create dialog and selection during foreground che
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   const state = await install(page); await page.goto('/projects');
-  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await page.getByRole('button', { name: '打开导航' }).click();
   await page.locator('.team-selector .team-switch').click();
   await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '创建 Team' });

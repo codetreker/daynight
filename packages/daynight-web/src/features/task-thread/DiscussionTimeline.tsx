@@ -46,7 +46,18 @@ export const DiscussionTimeline = ({ controller, view, active, identity, timelin
               return <div key={message.id}>{(previous === undefined || format.date(previous.createdAt) !== day) && <div className="thread-day-divider">{dayFormat.format(new Date(message.createdAt))}</div>}
                 <article className={`thread-message${flashId === message.id ? ' flash' : ''}`} data-entry-key={message.id}>
                   <ThreadAvatar id={message.author.userId} name={message.author.displayName} agent={message.author.Agent} />
-                  <div className="thread-message-main"><div className="thread-message-header"><span className="thread-author">{author}</span>{message.author.execution !== undefined && <span className="thread-agent-badge"><ThreadIcon name="code" size={10} />{providerLabel[message.author.execution.provider]}</span>}<button className="thread-message-time" type="button" title={message.createdAt} aria-label={messages.messageAt(author, message.createdAt)} onClick={() => { void controller.openDetails(message.id); }}>{shortTime.format(new Date(message.createdAt))}</button><div className="thread-message-actions"><button className="thread-icon-button" type="button" aria-label={messages.reply(author)} onClick={() => { controller.setReply(message.id); inputRef.current?.focus(); }}><ThreadIcon name="reply" size={13} /></button><button className="thread-icon-button" type="button" aria-label={messages.messageDetails} onClick={() => { void controller.openDetails(message.id); }}><ThreadIcon name="more" size={13} /></button></div></div>
+                  <div className="thread-message-main">
+                    <div className="thread-message-header">
+                      <div className="thread-message-identity">
+                        <span className="thread-author">{author}</span>
+                        {message.author.execution !== undefined && <span className="thread-agent-badge"><ThreadIcon name="code" size={10} />{providerLabel[message.author.execution.provider]}</span>}
+                        <button className="thread-message-time" type="button" title={message.createdAt} aria-label={messages.messageAt(author, message.createdAt)} onClick={() => { void controller.openDetails(message.id); }}>{shortTime.format(new Date(message.createdAt))}</button>
+                      </div>
+                      <div className="thread-message-actions">
+                        <button className="thread-icon-button" type="button" aria-label={messages.reply(author)} onClick={() => { controller.setReply(message.id); inputRef.current?.focus(); }}><ThreadIcon name="reply" size={13} /></button>
+                        <button className="thread-icon-button" type="button" aria-label={messages.messageDetails} onClick={() => { void controller.openDetails(message.id); }}><ThreadIcon name="more" size={13} /></button>
+                      </div>
+                    </div>
                     {message.replyTo !== undefined && <button className="thread-reply-quote" type="button" aria-label={messages.viewReference} aria-busy={view.referenceLoading === message.replyTo} disabled={view.authPaused || view.referenceLoading !== null} onClick={() => reference(message.replyTo!)}>{parent === null ? <><strong>{messages.viewReference}</strong><span>{message.replyTo}</span></> : <><strong>{authorLabel(parent, messages)}</strong><span>{excerpt(parent.body, messages)}</span></>}{view.referenceLoading === message.replyTo && <ThreadIcon name="refresh" size={12} spinning />}</button>}
                     <ChatMarkdown text={message.body} className="thread-message-markdown" resourceUnavailable={messages.imageUnavailable} tableLabel={messages.table} />
                   </div>

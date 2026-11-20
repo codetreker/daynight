@@ -180,6 +180,27 @@ export type ProjectDeletionPreview = {
 };
 export type ProjectDeletionReceipt = { readonly projectId: string; readonly deleted: true };
 
+export type ProjectRepositoryClassification = "unchanged" | "same_repository" | "different_repository" | "unverified";
+export type ProjectRepositoryPreview = {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly currentRepoUrl: string;
+  readonly repoUrl: string;
+  readonly repositoryVersion: string;
+  readonly ownershipVersion: string;
+  readonly classification: ProjectRepositoryClassification;
+  readonly targetGitHubRepositoryId: string | null;
+  readonly unverifiedReason: "unsupported_host" | "no_verified_repository" | "no_github_access" | "provider_unavailable" | null;
+  readonly bindingsInvalidated: boolean;
+};
+export type ProjectRepositoryReceipt = {
+  readonly projectId: string;
+  readonly repoUrl: string;
+  readonly repositoryVersion: string;
+  readonly changed: boolean;
+  readonly bindingsInvalidated: boolean;
+};
+
 export type ProjectTransferPreview = {
   readonly sourceTeam: TeamRef;
   readonly targetTeam: TeamRef & { readonly version: bigint };

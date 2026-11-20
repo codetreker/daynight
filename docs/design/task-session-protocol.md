@@ -120,6 +120,26 @@ Controller 在所有副作用构造之前取得 permit 并准备 writer；自身
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
+### Linux 稳定出生身份确定方案
+
+Linux 的 `process-proof.ts` 路径使用稳定的内核出生身份。`LC_ALL=C` 继续稳定 `ps` 输出的语言与格式；`lstart` 展示不参与 Linux 身份比较。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
+
+Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
+
+一次采集共用原调用预算：先读取 boot identity 与 stat，再两次采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后 boot identity 与 starttime ticks 必须一致，两次 stat 和两次 `ps` 的进程组必须相同。最终 stat 既非 zombie 也无 `PF_EXITING` 时，父 PID 与命令还须一致，全部状态观测均须为非 zombie，前次 stat 也不能含退出标记；任何替换、不可读、格式错误、预算耗尽或运行身份不一致均拒绝采集，不保存部分运行证明。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+
+最终 stat 为 `Z` 时，采集器只返回该出生实例的 zombie 退出观察，允许退出期间父进程、命令显示及 zombie 状态发生变化。该分支仍要求全部出生和进程组观测一致，不能接受 PID 替换或组变化。`captureProcessProof` 与工具提取子进程拒绝将其作为运行 proof；`inspectProcessProof` 只有在该观察与已保存的原出生 token、进程组匹配时才确认单 PID stopped。完整停止仍独立检查原生子进程及进程组的存活成员。退出会改变运行字段；在已证明该实例成为 zombie 后继续要求这些字段不变，会把真实停止误判为未知。该终态分支不重采样、不延长原预算，也不将退出观察用于发信号。
+
+最终 stat 非 `Z`，但字段 9 的 flags 含 `PF_EXITING`（`0x00000004`）时，采集器返回 exiting 观察。该分支保留同一 boot、ticks 及四次进程组核验，允许退出中的父 PID 与命令显示变化；`captureProcessProof` 和工具提取子进程拒绝将其作为运行 proof。`inspectProcessProof` 仅在观察的出生 token 和进程组与原保存 proof 匹配时被动等待，每次最多 25 毫秒，随后完整重采。等待及所有重采共用进入 Linux 核验时由 `performance.now()` 固定的截止时间，不重置预算。匹配的 zombie 或明确 ESRCH 才确认该原 PID 停止；仍在退出时到期、读取失败或身份不一致继续保留未确认结果。退出标记本身不能证明 stopped，也不授权信号；普通命令冲突不进入该等待路径。
+
+Linux 的 [`PF_EXITING` 定义](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h#L1805)表示退出已经开始。[退出流程](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/kernel/exit.c#L922)先设置该标记，再执行 `exit_mm()`；[`/proc` stat 输出](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/fs/proc/array.c#L598)保留 flags。因此命令地址空间的退出变化可以早于 zombie 展示，已标记退出的原实例需要等待完成，而非继续要求完整运行命令或提前认定停止。
+
+Controller 启动证明、原生子进程证明、Worker/Bot 持久记录、独立 Test 恢复以及工具提取子进程使用相同出生 token 约束。所有持久解析器须保留完整 token，不截断、规范化成日期或丢弃版本。旧 proof 的读取与其能否授权运行操作分开：缺乏稳定 Linux 身份的旧记录继续可读，针对仍可能运行实例的核验须给出明确错误并保留记录；不能仅凭当前 PID 重新采样后覆盖原证明。原 PID 已不存在的权威观察以及原执行已有的有效停证，继续遵循各自停止确认规则，不能凭格式差异宣称原进程已退出。
+
+出生 token 相等不替代运行实例的命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生运行实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
+
+Linux 停止流程在被动等待后可能已不再拥有最初进程组清单中的存活实例。若核验后没有可用于发信号的原实例，须在原截止时间内重新读取组成员；当前组为空即可结束且不发信号。仅当本轮检查的原组实例全部明确为 stopped 时，才允许继续被动等待后代自然退出，每次最多 25 毫秒后重读组成员，不新建宽限期。任何原实例被替换或存在身份冲突都不进入等待；读取失败、到期仍有存活成员则保留未确认结果。该路径不向残留进程发信号、不补采其证明来建立授权；调用者仍须复核全部原实例及整个组为空。此前的非空清单不能代替退出后的观察。
+
 ### Codex 输出消费与 I/O
 
 私有 Codex RPC reader 将每个 OS chunk 以不超过 decoder 的 `bufferBytes`（64 KiB）的 `subarray` 片段交给同一个惰性 decoder，跨片段保留 UTF-8/JSON 状态。每个完整帧串行分发，保留一次微任务让响应消费者取得媒体 lease，再于 `finally` 释放帧引用。每帧和每个片段耗尽时均等待一次 ref'ed `node:timers/promises.setImmediate()`，使已就绪的 IPC、定时器及其他 I/O 在输入尚未耗尽时有执行机会；不复制整块输入或建立待派发队列。
@@ -341,7 +361,7 @@ Task 软删除保留原 Session 的归档收尾能力：仅原 owner 的有效 P
 
 ### 归档操作占用
 
-归档上传和正文读取先以非阻塞方式取得实例内单项预检名额，在短暂的权限作用域中取得可信原 owner；结束数据库作用域后，以非阻塞方式取得实例单项额度和共享存储根内的 owner 精确键额度。预检名额有界，数据库繁忙时不会累积无限等待的归档预检。实际业务操作重新执行原有权限、fence 与 Task-before-Session 锁定规则；删除后收尾使用原 owner 的专用资格，不恢复正文读取权限。精确键 gate 使用稳定锁文件，不在释放时删除可能已被其他实例打开的 inode。额度不占用额外 PostgreSQL 连接，嵌套的存储读回复用同一操作。
+归档上传和正文读取先以非阻塞方式取得实例内单项预检名额，在短暂的权限作用域中取得可信原 owner；结束数据库作用域后，以非阻塞方式取得实例单项额度和部署内的 owner 精确键额度。预检名额有界，数据库繁忙时不会累积无限等待的归档预检。实际业务操作重新执行原有权限、fence 与 Task-before-Session 锁定规则；删除后收尾使用原 owner 的专用资格，不恢复正文读取权限。已配置 Redis 的部署通过[存储租约](daynight-task-attachments.md#storage-接口与本地实现)持有 owner 精确键，失去租约时取消归档 I/O。额度不占用额外 PostgreSQL 连接，嵌套的存储读回复用同一操作。
 
 占用从读取上传正文或存储对象之前开始，贯穿解析、校验、写入以及响应编码和发送。返回的大正文由调用方持有并在最后使用后关闭，释放幂等；失败保留原始及清理错误。HTTP 上传使用 120 秒实际读取期限，归档响应使用独立 120 秒实际写入期限；已发送响应头后的传输失败中断连接，不伪造完整错误响应。归档正文 GET 不消费请求正文；若正文未读，入口关闭连接并设置读取期限，防止发送前的自动 drain 阻塞。上传超时后，仅固定 Go 版本的原生 HTTP/1 请求 body 在同一 socket 上的期限触发 drain 错误可以归入读取超时；未知 body 的关闭错误保留为清理失败。正文和不可变回执的字节及校验语义不变。选择理由见[归档占用决策](../../.agents/notes/implemented/architecture/2026-11-07-session-archive-residency.md)。
 
@@ -436,9 +456,9 @@ composer 通过实际 scrollHeight 与宽度变化调整输入的期望高度并
 
 composer 的表单保留提交、快捷键和设置面板的所有权；内部共同容器提供输入区、设置入口、活动状态、操作按钮的统一边框；快捷键说明作为发送操作的可访问提示，不占常驻布局行。textarea 使用透明背景且不单独绘制边框，焦点样式由共同容器与各可聚焦控件承担。设置面板继续由 composer 持有展开状态，命令菜单与输入共用同一表单。共同边界的选择理由见[统一 Chatbox 分组决策](../../.agents/notes/archived/bug-fix/2026-11-04-unified-session-chatbox.md)。
 
-`useSessionColumnLayout` 以 `.session-timeline-content` 的实际边界作为 composer 的宽度来源，计算正文相对表单内边框的左右距离，写入表单的 `--session-column-left/right` 横向 padding。正文 CSS 继续拥有默认 960px、助手 760px 上限与各入口侧边距；测量同时包含居中留白、边框和滚动条占位，避免重复常量与覆盖式滚动条假设。首次挂载同步测量，ResizeObserver 观察 Session、滚动视口和正文，后续测量合并到下一 animation frame；隐藏期间跳过零宽度，恢复后重新测量。身份变化、转为只读或卸载时取消观察和待执行帧并移除变量。表单及子节点结构、溢出策略、菜单高度预算和 container query 保持独立，宽度更新不操作焦点、选区或 scrollTop。取舍见[输入列对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-reading-column.md)。
+`useSessionColumnLayout` 以 `.session-timeline-content` 的实际边界作为 composer 的宽度来源，计算正文相对表单内边框的左右距离，写入表单的 `--session-column-left/right` 横向 padding。正文 CSS 继续拥有默认 960px、助手 760px 上限与各入口侧边距；测量同时包含居中留白、边框和滚动条占位，避免重复常量与覆盖式滚动条假设。首次挂载同步测量，ResizeObserver 观察 Session、滚动视口、正文和 composer，后续测量合并到下一 animation frame；隐藏期间跳过零宽度，恢复后重新测量。身份变化、转为只读或卸载时取消观察和待执行帧并移除变量。表单及子节点结构、溢出策略、菜单高度预算和 container query 保持独立，宽度更新不操作焦点、选区或 scrollTop。取舍见[输入列对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-reading-column.md)。
 
-默认 footer 使用 Grid 排列设置、状态、主操作三组；主操作中的 Interrupt 与 submit 使用不换行的 flex 容器，长发送标签在按钮内部换行。`.session-composer-surface` 是独立的 inline-size 查询容器，使阈值使用实际 footer 内容宽度。阈值按该内框中设置入口、按钮和间距的实际预算选取，不能把包含外部 padding 的原型容器宽度直接套入。状态和 Interrupt 均不可见且主操作仅为普通 Send 时，234px 以下两行、达到 234px 后一行；无可见状态时，若 Interrupt 仍可见或主操作为 Awaiting provider confirmation、Executing command 或 Add to current turn 等长标签，不足 516px 保持第二行，达到 516px 后才与设置同排。有可见状态时，346px 以下三行，346px 至不足 516px 两行，达到 516px 后三组同一行。状态与主操作同排时，Grid 为两者分别分配受限宽度，避免长操作标签挤没状态；三组同排时还保留设置组的最小宽度。组内文字换行只增加本组高度，不能重新拆开操作组、覆盖相邻控件或横向溢出。DOM 按设置、状态、Interrupt、submit 排列，不通过 CSS order 或重复控件改变键盘顺序。模型按钮中的文字 span 可收缩并省略，caret 独立且不收缩；按钮最小宽度 52px。粗指针下底部按钮最小高度和命令入口最小宽度均为 36px。
+默认 footer 使用 Grid 排列设置、状态、主操作三组；主操作中的 Interrupt 与 submit 使用不换行的 flex 容器，长发送标签在按钮内部换行。`.session-composer-surface` 是独立的 inline-size 查询容器，使阈值使用实际 footer 内容宽度。阈值按该内框中设置入口、按钮和间距的实际预算选取，不能把包含外部 padding 的原型容器宽度直接套入。有图片入口的断点结合像素下限与随根字号增长的 rem 值，兼顾固定大小的图片按钮与放大的文字。状态和 Interrupt 均不可见且主操作仅为普通 Send 时，无图片入口以 234px、有图片入口以 276px 为同排阈值；图片入口占用 44px，276px 至不足 325px 通过缩小间距、内边距及模型最小宽度保留同排，不足 236px 时设置组使用有序的两列 Grid；无可见状态时，若 Interrupt 仍可见或主操作为 Awaiting provider confirmation、Executing command 或 Add to current turn 等长标签，不足 516px 保持第二行，达到 516px 后才与设置同排。有可见状态时，346px 以下三行，346px 至不足 516px 两行，达到 516px 后三组同一行。状态与主操作同排时，Grid 为两者分别分配受限宽度，避免长操作标签挤没状态；三组同排时还保留设置组的最小宽度。组内文字换行只增加本组高度，不能重新拆开操作组、覆盖相邻控件或横向溢出。DOM 按设置、状态、Interrupt、submit 排列，不通过 CSS order 或重复控件改变键盘顺序。模型按钮中的文字 span 可收缩并省略，caret 独立且不收缩；按钮最小宽度通常为 52px，图片入口的紧凑空闲行降为 44px。粗指针下底部按钮最小高度和命令入口最小宽度均为 36px。
 
 `SessionActivity` 继续拥有计时、状态选择与 Interrupt 的可见性和门禁；可选的 `render(status, interrupt)` 只让默认 composer 分别安放已生成的节点。即使状态由 Session 主提示代为显示，中断仍按独立条件保留。没有可见状态或中断时仍调用该 render，以保留默认主操作中的 submit。未提供 render 时仍返回原有状态与 Interrupt 的组合。`presentation.renderFooter({ settings, activity, submit })` 继续收到这一组合 activity 与原 submit，保持自定义布局契约；默认 Grid 仅应用于默认 footer。快捷键提示仍由 submit 自己的操作容器持有，Interrupt 的 hover 或 focus 不获得发送提示。此分组不改变 Session header、外层布局或发送、追加、中断、设置、命令的协议。取舍和后续入口的约束见[响应式底部操作区决策](../../.agents/notes/implemented/bug-fix/2026-11-06-responsive-session-footer.md)。
 

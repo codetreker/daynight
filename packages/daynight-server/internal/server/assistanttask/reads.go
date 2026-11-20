@@ -64,6 +64,13 @@ func (h *handler) manual(_ http.ResponseWriter, r *http.Request, a core.Actor, t
 	value, err := h.tasks.GetManual(r.Context(), a, taskID, version)
 	return manualResponse(value), err
 }
+func (h *handler) metrics(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
+	if err := noQuery(r); err != nil {
+		return nil, err
+	}
+	value, err := h.tasks.Metrics(r.Context(), a, taskID)
+	return metricsResponse(value), err
+}
 func (h *handler) item(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, id string) (any, error) {
 	if err := noQuery(r); err != nil {
 		return nil, err

@@ -179,6 +179,10 @@ func (mock *taskHTTPSnapshotScopeMock) UserCandidateDAO() store.UserCandidateRea
 	return mock.UserCandidateDAOFn()
 }
 
+func (mock *taskHTTPSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (mock *taskHTTPSnapshotScopeMock) CredentialDAO() store.CredentialReader {
 	mock.need("CredentialDAO", mock.CredentialDAOFn != nil)
 	return mock.CredentialDAOFn()
@@ -226,6 +230,7 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
+	BotBarrierDAOFn            func() store.BotBarrierDAO
 	CaptureDAOFn               func() store.WebhookCaptureDAO
 	ProjectDAOFn               func() store.ProjectWriteDAO
 	TaskDAOFn                  func() store.TaskWriteDAO
@@ -238,6 +243,10 @@ type taskHTTPProjectScopeMock struct {
 func (mock *taskHTTPProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
 	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
@@ -1182,4 +1191,9 @@ type taskHTTPClaimAdmission struct {
 
 func (m taskHTTPClaimAdmission) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 	return m.read(ctx, user, worker)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

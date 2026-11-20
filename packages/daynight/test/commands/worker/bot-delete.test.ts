@@ -38,6 +38,7 @@ const fixture=()=>{
 
 test("cleans only private sources, strips execution records, and retains exact minimal receipt",async()=>{
  const f=fixture();await f.create().advance(f.current(),new AbortController().signal);
+ expect(f.remote.read).toHaveBeenCalledWith(f.current().botId, expect.any(AbortSignal), f.current().owner);
  expect(existsSync(f.intent.journalPath)).toBe(false);expect(existsSync(f.intent.ticketPath)).toBe(false);
  for(const name of ["cwd.txt","native-home.txt","task.txt","worktree.txt"])expect(existsSync(path.join(f.home,name))).toBe(true);
  expect(f.current()).toMatchObject({definition:null,intent:null,cleanup:{localCompleted:true,stop:f.stopProof,targets:[]}});

@@ -17,7 +17,7 @@ const fixture=(pollIntervalMs: number | (() => number) = 60000, assistantTasks?:
   const records=[3,4].map(n=>({owner,botId:id(n),intent:null,observed:{id:id(n),version:"1",deletion:null,startupResult:{state:"pending",code:null}},definition:{},observedAt:1}) as BotRecord);
   const store={list:()=>records,get:(_owner:unknown,key:string)=>records.find(r=>r.botId===key)!,observe:(_owner:unknown,bot:any)=>{const r=records.find(r=>r.botId===bot.id)!;r.observed=bot;return r;}};
   const process={advance:vi.fn(async(_record:BotRecord)=>({startup:{state:"ready",reasonCode:"ready"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null})),refreshGrant:vi.fn(async()=>{}),shutdown:vi.fn(async()=>{})};
-  const api={report:vi.fn(async(r:BotRecord,result:any)=>({...r.observed,version:"2",startupResult:{state:result.state,code:result.code??null}}))};
+  const api={registerRecovery:vi.fn(async(_record:BotRecord)=>{}),report:vi.fn(async(r:BotRecord,result:any)=>({...r.observed,version:"2",startupResult:{state:result.state,code:result.code??null}}))};
   const remote={owner,list:vi.fn(async()=>records.map(r=>r.observed)),read:vi.fn(async(key:string)=>records.find(r=>r.botId===key)!.observed)};
   const reconcile=vi.fn(async()=>({observed:records.map(r=>r.botId),missing:[]})); const onError=vi.fn();
   const deletion={advance:vi.fn(async(_record:BotRecord,_signal:AbortSignal)=>{})};
@@ -50,6 +50,27 @@ test("a failed inventory read retains local responsibility without launching fro
 test("deletion and missing authority prevent startup without deleting original records",async()=>{
   const f=fixture();f.remote.read.mockResolvedValue(null as never);await f.runtime.tick(new AbortController().signal);
   expect(f.process.advance).not.toHaveBeenCalled();expect(f.records).toHaveLength(2);
+});
+
+test("registers committed migration identity while retaining the missing-material execution fence", async () => {
+  const f = fixture(), record = f.records[0]!;
+  record.migration = { state: "registration_pending", manifestPath: "/private/migration.json" };
+  await f.runtime.tick(new AbortController().signal);
+  expect(f.api.registerRecovery).toHaveBeenCalledOnce();
+  expect(f.api.registerRecovery.mock.calls[0]![0]).toBe(record);
+  expect(f.process.advance.mock.calls.map(call => call[0].botId)).toEqual([id(4)]);
+  expect(f.api.report.mock.calls.map(call => call[0].botId)).toEqual([id(4)]);
+  expect(f.onError).toHaveBeenCalledWith(expect.stringContaining("recovery_material_missing"), id(3));
+  expect(record.migration?.state).toBe("registration_pending");
+});
+
+test("unknown migration registration does not prevent another Bot from advancing", async () => {
+  const f = fixture();
+  f.records[0]!.migration = { state: "registration_pending", manifestPath: "/private/migration.json" };
+  f.api.registerRecovery.mockRejectedValue(new Error("outcome_unknown"));
+  await f.runtime.tick(new AbortController().signal);
+  expect(f.process.advance.mock.calls.map(call => call[0].botId)).toEqual([id(4)]);
+  expect(f.onError).toHaveBeenCalledWith("outcome_unknown", id(3));
 });
 
 
@@ -91,6 +112,40 @@ test("cancelling the managed loop stops all Bots with a fresh cleanup signal", a
   cancellation.abort(); await running;
   expect(f.process.shutdown).toHaveBeenCalledTimes(2);
   for (const call of f.process.shutdown.mock.calls as unknown as [BotRecord, AbortSignal][]) expect(call[1].aborted).toBe(false);
+});
+
+test("shares an in-flight stop failure and re-observes it only on a later explicit shutdown", async () => {
+  const f = fixture();
+  let rejectStop!: (cause: Error) => void;
+  f.process.shutdown.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectStop = reject; }));
+  const first = f.runtime.shutdown();
+  await vi.waitFor(() => expect(f.process.shutdown).toHaveBeenCalledTimes(2));
+  const joined = f.runtime.shutdown();
+  const results = Promise.allSettled([first, joined]);
+  rejectStop(new Error("Original writer stop is unconfirmed"));
+  expect((await results).map(result => result.status)).toEqual(["rejected", "rejected"]);
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
+  await f.runtime.shutdown();
+  expect(f.process.shutdown).toHaveBeenCalledTimes(4);
+  await f.runtime.shutdown();
+  expect(f.process.shutdown).toHaveBeenCalledTimes(4);
+});
+
+test("re-observes failed writer shutdown after the managed run has rejected", async () => {
+  vi.useFakeTimers();
+  const f = fixture(), cancellation = new AbortController();
+  f.process.shutdown.mockRejectedValueOnce(new Error("Original writer stop is unconfirmed"));
+  const running = f.runtime.run(cancellation.signal);
+  const failed = expect(running).rejects.toThrow(/shutdown/);
+  await vi.advanceTimersByTimeAsync(1);
+  cancellation.abort();
+  await failed;
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
+  await f.runtime.shutdown();
+  expect(f.process.shutdown).toHaveBeenCalledTimes(4);
+  await f.runtime.shutdown();
+  expect(f.process.shutdown).toHaveBeenCalledTimes(4);
+  await expect(f.runtime.tick(new AbortController().signal)).rejects.toThrow(/closing/);
 });
 
 

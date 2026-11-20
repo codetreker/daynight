@@ -153,11 +153,11 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				_ = json.Unmarshal(out, &v)
 				original, _ = base64.StdEncoding.Strict().DecodeString(v.Data)
 			}
-			raw, check, finish, err := s.mediaFileIO(ctx, access, completedRow, payload, original)
+			workCtx, raw, check, finish, err := s.mediaFileIO(ctx, access, completedRow, payload, original)
 			if err != nil {
 				return nil, err
 			}
-			err = access(ctx, func(tx *operationTx, r *record) error {
+			err = access(workCtx, func(tx *operationTx, r *record) error {
 				if err := check(tx, r); err != nil {
 					return err
 				}
@@ -168,7 +168,7 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				if e != nil {
 					return e
 				}
-				row, e := d.SessionMediaRequest(ctx, id, requestID)
+				row, e := d.SessionMediaRequest(workCtx, id, requestID)
 				if e != nil {
 					return e
 				}
@@ -181,7 +181,7 @@ func (s *Execution) controllerMediaWithAccess(ctx context.Context, id, requestID
 				}
 				row.Expected = mediaExpected(row)
 				row.Result = payload
-				return saveMediaRequest(ctx, d, row)
+				return saveMediaRequest(workCtx, d, row)
 			})
 			err = errors.Join(err, finish())
 			if err != nil {

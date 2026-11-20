@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -52,9 +53,14 @@ func (tx *ProjectTx) ProjectGoalDependencyDAO() ProjectGoalDependencyDAO {
 func (tx *ProjectTx) GoalDependencyDAO() GoalDependencyDAO {
 	return task.NewGoalDependencyWriter(tx.tx, tx.projectID)
 }
+func (tx *ProjectTx) GoalRelationDAO() GoalRelationEditor {
+	return task.NewGoalRelationEditor(tx.tx, tx.projectID)
+}
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }
+
+func (tx *ProjectTx) BotBarrierDAO() BotBarrierDAO { return bot.NewBarrier(tx.tx) }
 
 func (tx *ProjectTx) WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO {
 	return worker.NewClaimAdmission(tx.tx)

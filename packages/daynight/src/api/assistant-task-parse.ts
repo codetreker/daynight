@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { jsonObjectSources } from "./json-source.js";
-import { array, bool, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
+import { array, bool, count, fields, id, malformed, nullableTimestamp, text, timestamp } from "./validation.js";
 import type * as T from "./assistant-task-types.js";
 
 export const assistantTaskId = (value: unknown): string => { const result = id(value); return result === "00000000-0000-0000-0000-000000000000" ? malformed() : result; };
@@ -123,6 +123,14 @@ export const parseAssistantTaskInquiry = (value: unknown, taskId: string, expect
   const d = fields(value, ["id", "taskId", "itemId", "fromBotId", "toBotId", "answerBotId", "question", "answer", "state", "createdAt", "deadline", "answeredAt"]);
   const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), fromBotId: assistantTaskId(d.fromBotId), toBotId: assistantTaskId(d.toBotId), answerBotId: nullableId(d.answerBotId), question: text(d.question, true), answer: text(d.answer), state: choice(d.state, ["open", "answered", "timed_out"] as const), createdAt: timestamp(d.createdAt), deadline: timestamp(d.deadline), answeredAt: nullableTimestamp(d.answeredAt) };
   if ((result.state === "answered") !== (result.answeredAt !== null) || (result.state === "answered") !== (result.answerBotId !== null)) return malformed();
+  return result;
+};
+export const parseAssistantTaskMetrics = (value: unknown): T.AssistantTaskMetrics => {
+  const d = fields(value, ["observedAt", "windowStart", "windowEnd", "actionCount", "outcomes", "escalationCount", "resultUnknownCount", "closureCount", "untimedClosureCount", "averageResolutionMs", "recurringItemCount"]);
+  const o = fields(d.outcomes, ["effective", "ineffective", "inconclusive"]);
+  const result = { observedAt: timestamp(d.observedAt), windowStart: timestamp(d.windowStart), windowEnd: timestamp(d.windowEnd), actionCount: count(d.actionCount), outcomes: { effective: count(o.effective), ineffective: count(o.ineffective), inconclusive: count(o.inconclusive) }, escalationCount: count(d.escalationCount), resultUnknownCount: count(d.resultUnknownCount), closureCount: count(d.closureCount), untimedClosureCount: count(d.untimedClosureCount), averageResolutionMs: d.averageResolutionMs === null ? null : count(d.averageResolutionMs), recurringItemCount: count(d.recurringItemCount) };
+  // Every closure is either timed or untimed, and only timed closures have an average.
+  if (result.untimedClosureCount > result.closureCount || (result.averageResolutionMs === null) !== (result.untimedClosureCount === result.closureCount) || result.windowEnd !== result.observedAt || Date.parse(result.windowStart) > Date.parse(result.windowEnd)) return malformed();
   return result;
 };
 // Related experience is complete for its query: at most five distinct

@@ -21,6 +21,7 @@ import * as storageLock from "../../../src/commands/controller/storage-lock.js";
 import { ControllerStorageWaitingError } from "../../../src/commands/controller/storage-preparation.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 
 afterEach(cleanupBotProcesses);
 
@@ -29,8 +30,30 @@ test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd
   expect(f.prepareEnvironment).toHaveBeenCalledWith(expect.objectContaining({ botId: f.current().botId, workerPaths: resolveConfigurationPaths(f.home) }));
   expect(snapshot.lifecycle).toBe("ready"); expect(f.getTicket()).toMatchObject({provider,cwd:f.home,initialInput:"none",initialPrompt:"",instructions:f.current().intent!.roleConfiguration!.instructions,resumeNativeSessionId:null});
   expect(f.getTicket()).not.toHaveProperty("claimId"); expect(f.getTicket()).not.toHaveProperty("workerId"); expect(f.getTicket().configuration.agentControlMode).toBe("web");
+  expect(f.getTicket()).not.toHaveProperty("codexBotRecovery");
+  expect(f.getTicket()).not.toHaveProperty("claudeBotRecovery");
+  expect(f.getTicket()).not.toHaveProperty("copilotBotRecovery");
   expect(existsSync(path.join(f.home,".git"))).toBe(false); expect(f.executions.get(f.current())!.launchSubmission).toBe("acknowledged"); expect(f.release).not.toHaveBeenCalled();
   await f.process.advance(f.current(),new AbortController().signal); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1); expect(f.prepareEnvironment).toHaveBeenCalledTimes(1);
+});
+
+test.each(["codex", "claude", "copilot"] as const)("binds dedicated recovery only for a new supported Bot storage profile (%s)", async provider => {
+  const f = fixture(provider, {}, false, true);
+  await f.process.advance(f.current(), new AbortController().signal);
+  if (provider === "codex") {
+    expect(f.getTicket().codexBotRecovery).toEqual({ botId: f.current().botId,
+      directory: resolveBotPaths(resolveConfigurationPaths(f.home).stateDirectory, f.current().botId).codexRecoveryDirectory });
+    expect(f.getTicket().nativeHome).toBe("/real/codex");
+  } else expect(f.getTicket()).not.toHaveProperty("codexBotRecovery");
+  if (provider === "claude") {
+    expect(f.getTicket().claudeBotRecovery).toEqual({ botId: f.current().botId,
+      directory: resolveBotPaths(resolveConfigurationPaths(f.home).stateDirectory, f.current().botId).claudeRecoveryDirectory });
+    expect(f.getTicket().nativeHome).toBe(path.join(f.home, ".claude"));
+  } else expect(f.getTicket()).not.toHaveProperty("claudeBotRecovery");
+  if (provider === "copilot") {
+    expect(f.getTicket().copilotBotRecovery).toEqual({ botId: f.current().botId,
+      directory: resolveBotPaths(resolveConfigurationPaths(f.home).stateDirectory, f.current().botId).copilotRecoveryDirectory });
+  } else expect(f.getTicket()).not.toHaveProperty("copilotBotRecovery");
 });
 
 test("reconciles an accepted registration with a lost response using the original role and identity",async()=>{
@@ -71,8 +94,10 @@ test("rejects unsupported native configuration before registration and leaves fa
 test("renews only expiring credentials and retains the observed native identity",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   await f.process.advance(f.current(),signal); await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(1);
+  expect(f.observe).not.toHaveBeenCalled();
   writeFileSync(f.getTicket().credentialFile,JSON.stringify({expiresAt:new Date(Date.now()+60000).toISOString()}));
   await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.observe).toHaveBeenCalledOnce();
   expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));expect(f.launch).toHaveBeenCalledTimes(1);
   writeFileSync(f.getTicket().credentialFile,"{}");await expect(f.process.refreshGrant(f.current(),signal)).rejects.toThrow(/expiry/);expect(f.grant).toHaveBeenCalledTimes(2);
 });
@@ -99,8 +124,8 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3) => {
-  const f = fixture("codex", configuration), signal = new AbortController().signal;
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex") => {
+  const f = fixture(provider, configuration, false, dedicated), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   if (unacknowledged) {
     f.launch.mockImplementationOnce(async options => { await options.onSubmitting(); await options.onSpawned(proof); throw new Error("observation unavailable"); });
@@ -136,6 +161,42 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     restart: () => f.createProcess(deps, recoveryLimit) };
 };
 
+test("refreshes authenticated IPC before renewing a credential from a cached starting snapshot", async () => {
+  const f = await recoveryFixture({}, false, true);
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "starting", nativeSessionId: null });
+  f.patch({ lifecycle: "ready", nativeSessionId: id(9), startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: id(9) });
+  expect(f.current().intent!.nativeSessionId).toBeNull();
+  expect(f.launch).toHaveBeenCalledOnce();
+});
+
+test("renews a ready lazy Provider before its native Session exists", async () => {
+  const f = await recoveryFixture({}, false, true, 3, false, "copilot");
+  f.patch({ lifecycle: "ready", nativeSessionId: null, startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBeNull();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: null });
+});
+
+test("does not renew after failed IPC authentication or a newly observed stopped Controller", async () => {
+  const f = await recoveryFixture({}, false, true);
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  const conflict = new ControllerIpcIdentityConflictError("Controller fence differs");
+  f.observe.mockRejectedValueOnce(conflict);
+  await expect(f.manager.refreshGrant(f.current(), f.signal)).rejects.toBe(conflict);
+  expect(f.grant).toHaveBeenCalledOnce();
+  f.observe.mockResolvedValueOnce({ ...f.saved(), lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() });
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledOnce();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+});
+
 test("shutdown retains Bot artifacts and restart resumes the original native session with a new generation", async () => {
   const f = await recoveryFixture(), original = f.current().intent!;
   await f.manager.shutdown(f.current(), f.signal);
@@ -143,9 +204,21 @@ test("shutdown retains Bot artifacts and restart resumes the original native ses
   expect(existsSync(original.ticketPath)).toBe(true);
   await f.restart().advance(f.current(), f.signal);
   expect(f.getTicket()).toMatchObject({ executionGeneration: "2", sessionId: original.sessionId, testExecutionId: original.executionId, resumeNativeSessionId: id(9), instructions: original.roleConfiguration!.instructions, initialInput: "none", initialPrompt: "" });
+  expect(f.getTicket()).not.toHaveProperty("codexBotRecovery");
   expect(f.current().intent!.registration).toEqual(original.registration);
   expect(f.register).toHaveBeenCalledTimes(1);
   expect(f.grant.mock.calls.at(-1)).toHaveLength(3);
+});
+
+test.each(["codex", "claude", "copilot"] as const)("a dedicated %s Bot recovery retains its original binding and shared configuration home", async provider => {
+  const f = await recoveryFixture({}, false, false, 3, true, provider), first = f.getTicket();
+  const field = `${provider}BotRecovery` as const;
+  expect(first[field]).toBeDefined();
+  await f.manager.shutdown(f.current(), f.signal);
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.getTicket()).toMatchObject({ [field]: first[field], nativeHome: first.nativeHome,
+    executionGeneration: "2", sessionId: first.sessionId, resumeNativeSessionId: id(9) });
+  expect(f.register).toHaveBeenCalledTimes(1);
 });
 
 test("closed new admission preserves shutdown and recovery of the original native conversation", async () => {
@@ -165,6 +238,28 @@ test("IPC loss with a live writer cannot grant or launch a new generation", asyn
   await expect(f.restart().advance(f.current(), f.signal)).rejects.toThrow(/stop|running|unreachable/i);
   expect(f.current().intent!.executionGeneration).toBe("1");
   expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+test("a new host reauthorizes an authenticated working Controller without replaying its turn", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.patch({ lifecycle: "working", activity: "working", currentTurnId: id(91) });
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).resolves.toMatchObject({ currentTurnId: id(91), lifecycle: "working" });
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.request).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
+});
+
+test("refused hosting authorization preserves the live Controller and its original generation", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.grant.mockRejectedValueOnce(new Error("resource_conflict"));
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).rejects.toThrow("resource_conflict");
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
 });
 
 test("shutdown fails visibly when its stop receipt cannot prove the process tree stopped", async () => {

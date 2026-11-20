@@ -22,7 +22,7 @@ func historyScopeBindings() historyScopeOperations {
 		lockTask:    (*core.Operation).LockTask,
 		credential:  (*core.Operation).LockTaskReadCredential,
 		project:     (*core.Operation).CheckProjectAccess,
-		load:        loadSession,
+		load:        loadTaskReadSession,
 		bindRead:    (*core.Operation).BindTaskRead,
 		bindArchive: (*core.Operation).BindArchive,
 	}

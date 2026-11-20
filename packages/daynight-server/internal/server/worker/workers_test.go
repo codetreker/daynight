@@ -154,6 +154,16 @@ type workerHTTPWriteDAO struct {
 	SetWorkerConfigurationObservationCall func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
 }
 
+func (d *workerHTTPWriteDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
+}
+
+func (d *workerHTTPWriteDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	workerHTTPUnexpected(d.t, "SetWorkerReviewParticipation")
+	return nil
+}
+
 func (d *workerHTTPWriteDAO) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
 	if d.WorkerAliasCall == nil {
 		workerHTTPUnexpected(d.t, "WorkerAlias")
@@ -238,6 +248,11 @@ type workerHTTPReader struct {
 	WorkerConfigurationCall func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
 
+func (d *workerHTTPReader) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
+}
+
 func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerPage, error) {
 	if d.WorkersCall == nil {
 		workerHTTPUnexpected(d.t, "Workers")
@@ -279,6 +294,10 @@ func (s *workerHTTPReadScope) UserCandidateDAO() store.UserCandidateReader {
 	workerHTTPUnexpected(s.t, "UserCandidateDAO")
 	return nil
 }
+func (s *workerHTTPReadScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *workerHTTPReadScope) CredentialDAO() store.CredentialReader {
 	workerHTTPUnexpected(s.t, "CredentialDAO")
 	return nil
