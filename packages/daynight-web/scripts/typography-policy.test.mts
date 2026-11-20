@@ -63,9 +63,10 @@ test('constrains terminal and touch expressions to their public boundaries', () 
   assert.deepEqual(inspectTypographyCss(terminal, 'src/features/task-agent-session/terminal-session.css', roles), []);
   assert.equal(inspectTypographyCss(terminal, 'src/other.css', roles).length, 1);
   const touch = '.field {font-size:max(var(--text-base),16px)}';
-  assert.deepEqual(inspectTypographyCss(touch, 'src/styles/typography.css', roles), []);
+  assert.deepEqual(inspectTypographyCss(touch, 'src/ui/selection-control/selection-control.css', roles), []);
+  assert.equal(inspectTypographyCss(touch, 'src/styles/typography.css', roles).length, 1);
   assert.equal(inspectTypographyCss(touch, 'src/view.css', roles).length, 1);
-  assert.equal(inspectTypographyCss('font-size:max(var(--text-base),16px)', 'src/styles/typography.css', roles, true).length, 1);
+  assert.equal(inspectTypographyCss('font-size:max(var(--text-base),16px)', 'src/ui/selection-control/selection-control.css', roles, true).length, 1);
 });
 
 test('tracks retired identifiers in all geometry, definitions and escaped references', () => {

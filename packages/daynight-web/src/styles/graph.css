@@ -95,16 +95,16 @@
 .task-node-meta { align-items:center; }
 .task-node-meta-labels { flex:0 1 auto; max-width:none; flex-wrap:nowrap; }
 .task-node-title { -webkit-line-clamp:3; }
-.task-external-label { display:inline; font-size:var(--text-metadata); font-weight:500; }
+.task-external-label { display:inline; font-size:var(--text-xs); font-weight:500; }
 .task-node-readings { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-top:auto; min-width:0; line-height:1.35; }
 .task-node-readings + .task-node-bottom { margin-top:0; }
 .task-node-readings .task-node-usage { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
 .task-node-readings .task-duration { margin-left:auto; }
 .task-node-state { display:inline-flex; align-items:center; gap:3px; min-width:0; }
-.task-node-state .task-stuck-label { padding:0 3px; font-size:var(--text-metadata); line-height:1.25; }
+.task-node-state .task-stuck-label { padding:0 3px; font-size:var(--text-xs); line-height:1.25; }
 .task-node-bottom .task-duration { justify-content:flex-end; }
 .task-node-expand > span, .task-node-expand > small { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.graph-reading-hint[popover] { box-sizing:border-box; overflow:auto; position:fixed; inset:auto; margin:0; max-width:min(320px, calc(100vw - 16px)); padding:7px 10px; border:1px solid #cad4e0; border-radius:6px; background:#253247; color:white; font-size:var(--text-interface); line-height:1.4; overflow-wrap:anywhere; box-shadow:0 4px 14px #17244733; }
+.graph-reading-hint[popover] { box-sizing:border-box; overflow:auto; position:fixed; inset:auto; margin:0; max-width:min(320px, calc(100vw - 16px)); padding:7px 10px; border:1px solid #cad4e0; border-radius:6px; background:#253247; color:white; font-size:var(--text-sm); line-height:1.4; overflow-wrap:anywhere; box-shadow:0 4px 14px #17244733; }
 .task-node-body { padding-block:4px; }
 .task-node-meta { margin-bottom:1px; }
 .task-node-title { line-height:1.2; min-height:1.2em; }

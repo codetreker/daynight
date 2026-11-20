@@ -31,9 +31,11 @@ deleting a definition and its baseline entry cannot strand unmigrated consumers.
 
 Retired identifiers are tracked independently of font declarations, including
 CSS geometry and statically readable TypeScript strings and style operations.
-Selection-control aliases and Mermaid's current configuration receive individual
-entries, so their surrounding files and configuration objects retain normal
-inspection. The zero-legacy mode refuses the bridge and all remaining baseline
+Mermaid's current configuration receives individual entries, so its surrounding
+files and configuration objects retain normal inspection. The workspace shell and
+shared selection controls use the public sizes directly; the shared selection CSS
+owns touch text adjustments and sizes controls from their actual text instead of
+private font aliases. The zero-legacy mode refuses the bridge and all remaining baseline
 uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
