@@ -145,6 +145,26 @@ describe('scoped PAT management', () => {
     await waitFor(() => expect(transport.scopes).toHaveBeenCalledTimes(2));
     expect(transport.scopes.mock.calls[1]?.[1].expectedScopeVersion).toBe('2');
   });
+  it.each(['removed', 'expired'] as const)('ends pending review when the target becomes %s during a later list refresh', async status => {
+    const other = { ...token, id: '00000000-0000-4000-8000-000000000003', name: 'Other' };
+    const remaining = { ...token, id: '00000000-0000-4000-8000-000000000004', name: 'Remaining' };
+    const unavailable = { ...token, expiresAt: '2000-01-01T00:00:00Z' };
+    const transport = fixture();
+    transport.list.mockResolvedValueOnce([token, other, remaining]).mockResolvedValueOnce([token, other, remaining]).mockResolvedValue(status === 'removed' ? [remaining] : [unavailable, remaining]);
+    transport.scopes.mockImplementationOnce(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
+    render(page(transport)); await openScope(); selectWrite(); saveScope();
+    await screen.findByRole('button', { name: 'Read current state' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read current state' }));
+    await screen.findByText(/Current permissions are shown and your draft is preserved/);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke token Other' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke token' }));
+    await screen.findByText('This credential is no longer available.');
+    expect(screen.queryByText(/Current permissions are shown and your draft is preserved/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit permissions: Remaining' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Create token' })).toBeEnabled();
+    expect(transport.scopes).toHaveBeenCalledOnce();
+  });
   it('preserves newly saved permissions when an expiry receipt contains old fields', async () => {
     const transport = fixture(); render(page(transport)); await openScope(); selectWrite(); saveScope();
     await screen.findByText('Permissions updated.');

@@ -30,9 +30,9 @@ export const ScopedOwnerGrantsPanel = (props: Props) => <ScopedOwnerGrantsConten
 const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, visible = true, onRetentionChange }: Props) => {
   const { locale, messages: { auth: { management: { account: m, common } } } } = useI18n();
   const copy = locale === "zh-CN" ? {
-    edit: "编辑权限", save: "保存权限", saving: "正在保存…", read: "读取当前权限", saved: "权限已更新。", unavailable: "此授权已不可编辑。", unknown: "保存结果未知，请读取当前权限后核对。", conflict: "权限或目录已变化，请读取当前权限后核对。", observed: "当前权限已读取，草稿已保留。请核对后继续。", review: "已核对权限", catalogError: "无法读取权限目录，请重试。", labels: "权限说明已更新，请刷新页面。", empty: "请至少选择一项权限。", storage: "无法保存待核对状态，请检查浏览器存储。", fixed: "固定权限，无法编辑", current: "当前权限", retry: "重试读取目录",
+    edit: "编辑权限", save: "保存权限", saving: "正在保存…", read: "读取当前权限", saved: "权限已更新。", unavailable: "此授权已不可编辑。", unknown: "保存结果未知，请读取当前权限后核对。", conflict: "权限或目录已变化，请读取当前权限后核对。", observed: "当前权限已读取，草稿已保留。请核对后继续。", review: "已核对权限", catalogError: "无法读取权限目录，请重试。", labels: "权限说明已更新，请刷新页面。", empty: "请至少选择一项权限。", storage: "无法保存待核对状态，请检查浏览器存储。", fixed: "固定权限，无法编辑", current: "当前权限", retry: "重试读取目录", resume: "继续核对权限",
   } : {
-    edit: "Edit permissions", save: "Save permissions", saving: "Saving…", read: "Read current permissions", saved: "Permissions updated.", unavailable: "This authorization can no longer be edited.", unknown: "The save result is unknown. Read the current permissions and review them.", conflict: "Permissions or the catalog changed. Read the current permissions and review them.", observed: "Current permissions are shown and your draft is preserved. Review before continuing.", review: "I reviewed the permissions", catalogError: "Unable to read the permissions catalog. Try again.", labels: "Permission descriptions have changed. Refresh this page.", empty: "Select at least one permission.", storage: "Unable to retain the pending recovery. Check browser storage.", fixed: "Fixed permissions; editing unavailable", current: "Current permissions", retry: "Retry catalog",
+    edit: "Edit permissions", save: "Save permissions", saving: "Saving…", read: "Read current permissions", saved: "Permissions updated.", unavailable: "This authorization can no longer be edited.", unknown: "The save result is unknown. Read the current permissions and review them.", conflict: "Permissions or the catalog changed. Read the current permissions and review them.", observed: "Current permissions are shown and your draft is preserved. Review before continuing.", review: "I reviewed the permissions", catalogError: "Unable to read the permissions catalog. Try again.", labels: "Permission descriptions have changed. Refresh this page.", empty: "Select at least one permission.", storage: "Unable to retain the pending recovery. Check browser storage.", fixed: "Fixed permissions; editing unavailable", current: "Current permissions", retry: "Retry catalog", resume: "Resume permission review",
   };
   const [initialMarker] = useState(() => readMarker(user.id));
   const panel = useCredentialPanel(user.id, transport.list, onIdentityMismatch, initialMarker.available && initialMarker.grantId === null, mergeScopedCredentialUses);
@@ -68,16 +68,29 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
   const [scopeOpen, setScopeOpen] = useState(false);
   const [scopeDraft, setScopeDraft] = useState<ScopeDraft | null>(initialScopeMarker.draft), [scopeNotice, setScopeNotice] = useState<"saved" | "unavailable" | null>(null), [scopeError, setScopeError] = useState<unknown>(null);
   const scopeRevision = useRef(0);
+  const resumeButton = useRef<HTMLButtonElement>(null), recoveryButton = useRef<HTMLButtonElement>(null), focusResume = useRef(false), focusAfterClose = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (focusResume.current && scopeDraft?.review && !scopeOpen && visible && resumeButton.current) {
+      focusResume.current = false; resumeButton.current.focus();
+    }
+  }, [scopeDraft, scopeOpen, visible]);
+  useLayoutEffect(() => {
+    if (scopeOpen || !visible || focusAfterClose.current === null) return;
+    const id = focusAfterClose.current;
+    const button = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-scope-grant-edit]")).find(item => item.dataset.scopeGrantEdit === id && !item.disabled);
+    const target = scopeRecovery !== null ? recoveryButton.current : button;
+    if (target) { focusAfterClose.current = null; target.focus(); }
+  }, [scopeOpen, scopeRecovery, visible, grants]);
   const scopePending = scopeRecovery !== null || scopeStorageError;
   const scopeClose = () => {
     if (pending || loading) return;
     if (scopeRecovery === null && scopeDraft?.review) {
       try { scopeMarker(null); setScopeStorageError(false); } catch { setScopeStorageError(true); return; }
     }
-    ++scopeRevision.current; setScopeOpen(false); if (scopeRecovery === null) setScopeDraft(null); setScopeError(null);
+    focusAfterClose.current = scopeDraft?.id ?? null; ++scopeRevision.current; setScopeOpen(false); if (scopeRecovery === null) setScopeDraft(null); setScopeError(null);
   };
   const openScope = (grant: ScopedOwnerGrant) => {
-    if (panel.busy() || scopePending || recovery !== null || error !== null || !grant.scopePolicy || grant.status !== "active") return;
+    if (panel.busy() || scopePending || recovery !== null || error !== null || !grant.scopePolicy || grant.status !== "active" || scopeDraft?.review && scopeDraft.id !== grant.id) return;
     descriptions.close(); setSelected(null); ++scopeRevision.current; setScopeNotice(null); setScopeError(null);
     setScopeDraft(previous => previous?.id === grant.id ? previous : { id: grant.id, name: grant.clientName || grant.clientId, version: grant.scopePolicy!.scopeVersion, original: grant.scopePolicy!.scopes, selected: grant.scopePolicy!.scopes, review: false }); setScopeOpen(true);
   };
@@ -93,7 +106,7 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
       try { scopeMarker(draft); setScopeStorageError(false); } catch { setScopeStorageError(true); return; }
       setScopeRecovery(null); setScopeError(null);
       if (!grant || grant.status !== "active" || grant.scopePolicy === null) { if (scopeRevision.current === instance) { setScopeDraft(null); setScopeOpen(false); } setScopeNotice("unavailable"); return; }
-      if (scopeRevision.current === instance && draft !== null) setScopeDraft(draft);
+      if (scopeRevision.current === instance && draft !== null) { if (!scopeOpen) focusResume.current = true; setScopeDraft(draft); }
     });
   };
   const retryScopeStorage = () => {
@@ -135,7 +148,14 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
   const descriptions = useCredentialDescriptions({ panel, userId: user.id, mismatch: onIdentityMismatch, transport: transport.describe, visible, name: grant => grant.clientName || grant.clientId, onOpen: () => { ++dialogRevision.current; setSelected(null); } });
   const retained = pending || selected !== null || recovery !== null || descriptions.retained || scopeDraft !== null || scopePending;
   useLayoutEffect(() => { onRetentionChange?.(retained); }, [retained, onRetentionChange]);
-  useLayoutEffect(() => { if (selected === null && restoreFocus.current && visible) { restoreFocus.current = false; heading.current?.focus(); } }, [selected, notice, visible]);
+  useLayoutEffect(() => { if (selected === null && restoreFocus.current && visible) { restoreFocus.current = false; heading.current?.focus(); } }, [selected, notice, scopeNotice, visible]);
+  useEffect(() => {
+    if (!scopeDraft?.review || scopeRecovery !== null || scopeStorageError || loading || grants === null) return;
+    const target = grants.find(item => item.id === scopeDraft.id);
+    if (target?.status === "active" && target.scopePolicy !== null) return;
+    try { scopeMarker(null); } catch { setScopeStorageError(true); return; }
+    ++scopeRevision.current; setScopeDraft(null); setScopeOpen(false); setScopeError(null); setScopeNotice("unavailable"); restoreFocus.current = true;
+  }, [scopeDraft, scopeRecovery, scopeStorageError, loading, grants]);
   const read = (target: Recovery | null = recovery, revision = dialogRevision.current) => { void panel.read(items => {
     if (target === null) return;
     if (!writeMarker(user.id, null)) { setStorageError(true); return; }
@@ -155,7 +175,7 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
     read();
   };
   const revoke = async (grant: ScopedOwnerGrant) => {
-    if (panel.busy() || recovery !== null || descriptions.unresolved(grant.id) || !grants?.some(item => item.id === grant.id && item.status === "active")) return;
+    if (panel.busy() || recovery !== null || scopeDraft?.review || descriptions.unresolved(grant.id) || !grants?.some(item => item.id === grant.id && item.status === "active")) return;
     if (!writeMarker(user.id, grant.id)) { setStorageError(true); return; }
     const revision = dialogRevision.current;
     setStorageError(false); setDialogError(null); setNotice(null);
@@ -187,7 +207,8 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
     {descriptions.recovery}
     {scopeNotice !== null && <p className="notice" role="status">{copy[scopeNotice]}</p>}
     {scopeStorageError && <div className="notice error" role="alert"><p>{copy.storage}</p><button className="button" type="button" onClick={retryScopeStorage}>{copy.read}</button></div>}
-    {scopeRecovery !== null && !scopeOpen && <div className="notice warning" role="alert"><p>{scopeRecovery.kind === "conflict" ? copy.conflict : copy.unknown}</p>{scopeError !== null && <ManagementError error={scopeError} />}<button className="button" type="button" disabled={loading || pending} onClick={readScope}>{copy.read}</button></div>}
+    {scopeRecovery !== null && !scopeOpen && <div className="notice warning" role="alert"><p>{scopeRecovery.kind === "conflict" ? copy.conflict : copy.unknown}</p>{scopeError !== null && <ManagementError error={scopeError} />}<button className="button" type="button" ref={recoveryButton} disabled={loading || pending} onClick={readScope}>{copy.read}</button></div>}
+    {scopeDraft?.review && !scopeOpen && <div className="notice warning" role="status"><p>{copy.observed} · {scopeDraft.name}</p><button className="button" type="button" ref={resumeButton} disabled={loading || pending || error !== null || scopeStorageError} aria-label={`${copy.resume}${locale === "zh-CN" ? "：" : ": "}${scopeDraft.name}`} onClick={() => { const grant = grants?.find(item => item.id === scopeDraft.id); if (grant) openScope(grant); }}>{copy.resume}</button></div>}
     <section className="panel" aria-labelledby="grants-title"><div className="panel-heading panel-heading-description"><div><h2 id="grants-title" ref={heading} tabIndex={-1}>{m.grantsTitle}</h2><p>{m.grantsDescription}</p></div><button className="button" type="button" disabled={loading || pending} aria-busy={loading} onClick={refresh}>{m.grantsRefresh}</button></div>
       {grants === null && loading && <div className="empty-inline" role="status">{m.grantsLoading}</div>}{error !== null && selected === null && <div className="grant-status-notice"><ManagementError error={error} retry={scopeRecovery !== null ? readScope : refresh} /></div>}{storageError && <div className="notice error grant-status-notice" role="alert">{m.grantStorage}</div>}
       {notice !== null && <p className="notice grant-status-notice" role="status"><strong>{notice.name}</strong> · {notice.kind === "observed" ? m.grantObserved : m.grantSaved}</p>}
@@ -196,7 +217,7 @@ const ScopedOwnerGrantsContent = ({ user, onIdentityMismatch, transport = api, v
         return <div className={`row grant-row owner-grant-row${grant.status === "active" ? "" : " revoked"}`} key={grant.id}>
           <div className="grant-main"><div className="grant-meta-line"><div>{descriptions.label(grant)}</div><span className={`badge${grant.status === "active" ? "" : " warning"}`}>{grant.status === "active" ? m.grantActive : grant.status === "expired" ? m.grantExpired : m.grantRevoked}</span></div><div className="grant-origin">{m.grantClient}: {grant.clientId}</div><div className="grant-scope">{m.grantScope}: {grant.scope}</div>{grant.scopePolicy && <div className="grant-scope">{copy.current}: {grant.scopePolicy.scopes.join(", ")}</div>}</div>
           <div className="grant-facts"><p>{m.grantResource}: <strong>{grant.resource}</strong></p><p>{common.createdAt}: <DateLabel value={grant.createdAt} /></p><p>{common.expiresAt}: <DateLabel value={grant.expiresAt} /></p><CredentialLastUse value={grant.lastUsedAt} />{grant.revokedAt !== null && <p>{m.grantRevoked}: <DateLabel value={grant.revokedAt} /></p>}</div>
-          <div className="actions">{grant.status === "active" && grant.scopePolicy !== null && <button className="button quiet" type="button" disabled={blocked || descriptions.unresolved(grant.id)} aria-label={`${copy.edit}${locale === "zh-CN" ? "：" : ": "}${name}`} onClick={() => openScope(grant)}>{copy.edit}</button>}{grant.status === "active" && grant.scopePolicy === null && <span className="muted small">{copy.fixed}</span>}{grant.status === "active" ? <button className="button quiet" type="button" disabled={blocked || descriptions.unresolved(grant.id)} aria-label={m.grantRevoke({ name })} onClick={() => { descriptions.close(); ++dialogRevision.current; setSelected(grant); setDialogError(null); setNotice(null); }}>{common.revoke}</button> : <span className="muted small">{common.unusable}</span>}</div>
+          <div className="actions">{grant.status === "active" && grant.scopePolicy !== null && <button className="button quiet" type="button" data-scope-grant-edit={grant.id} disabled={blocked || descriptions.unresolved(grant.id) || Boolean(scopeDraft?.review && scopeDraft.id !== grant.id)} aria-label={`${copy.edit}${locale === "zh-CN" ? "：" : ": "}${name}`} onClick={() => openScope(grant)}>{copy.edit}</button>}{grant.status === "active" && grant.scopePolicy === null && <span className="muted small">{copy.fixed}</span>}{grant.status === "active" ? <button className="button quiet" type="button" disabled={blocked || Boolean(scopeDraft?.review) || descriptions.unresolved(grant.id)} aria-label={m.grantRevoke({ name })} onClick={() => { descriptions.close(); ++dialogRevision.current; setSelected(grant); setDialogError(null); setNotice(null); }}>{common.revoke}</button> : <span className="muted small">{common.unusable}</span>}</div>
         </div>;
       }))}
       {recovery !== null && selected === null && <div className="notice warning grant-status-notice" role="alert"><p>{uncertain ? m.grantUnknown : m.grantReadCurrent} · {recovery.name}</p><button className="button" type="button" disabled={loading || pending} onClick={refresh}>{m.grantReadCurrent}</button></div>}

@@ -61,6 +61,14 @@ const ScopedTokensContent = ({ user, onIdentityMismatch, transport = api, visibl
     return () => controller.abort();
   }, [catalogNeeded, catalogAttempt, transport.catalog, user.id, onIdentityMismatch]);
   const descriptions = useCredentialDescriptions({ panel, userId: user.id, mismatch: onIdentityMismatch, transport: transport.describe, visible, name: token => token.name, onOpen: () => { ++revision.current; setDialog(null); } });
+  useEffect(() => {
+    if (scopeRecovery?.kind !== "review" || tokens === null) return;
+    const actual = tokens.find(item => item.id === scopeRecovery.tokenId);
+    if (actual && (actual.expiresAt === null || Date.parse(actual.expiresAt) > Date.now())) return;
+    try { writeRecovery(user.id, "scope", null); setStorageError(false); } catch { setStorageError(true); return; }
+    setScopeRecovery(null); setScopeNotice(scopeText.unavailable);
+    setDialog(current => current?.kind === "scope" && current.token.id === scopeRecovery.tokenId ? null : current);
+  }, [scopeRecovery, tokens, user.id, scopeText.unavailable]);
   const retained = pending || dialog !== null || recovery !== null || createRecovery || scopeRecovery !== null || storageError || descriptions.retained;
   useLayoutEffect(() => { onRetentionChange?.(retained); }, [retained, onRetentionChange]);
   const blocked = loading || pending || recovery !== null || error !== null || storageError;

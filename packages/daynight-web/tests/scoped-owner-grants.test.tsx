@@ -110,6 +110,56 @@ describe('scoped application authorization editing', () => {
     expect(screen.queryByText('The save result is unknown. Read the current permissions and review them.')).toBeNull();
     expect(transport.updateScopes).toHaveBeenCalledTimes(1);
   });
+  it('keeps a recovered grant draft bound to its target until review or cancellation', async () => {
+    const other = { ...grant, id: '00000000-0000-4000-8000-000000000003', clientName: 'Other' };
+    const transport = fixture([grant, other]);
+    transport.updateScopes.mockImplementation(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
+    const first = render(page(transport)); await screen.findByText('App'); edit(); expand(); change(); save();
+    await screen.findByRole('button', { name: 'Read current permissions' }); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const read = screen.getByRole('button', { name: 'Read current permissions' }); expect(read).toHaveFocus(); fireEvent.click(read);
+    const resume = await screen.findByRole('button', { name: 'Resume permission review: App' }); expect(resume).toHaveFocus();
+    const otherEdit = screen.getByRole('button', { name: 'Edit permissions: Other' }); expect(otherEdit).toBeDisabled(); fireEvent.click(otherEdit); expect(screen.queryByRole('dialog')).toBeNull();
+    first.unmount();
+    const second = render(page(transport)); await screen.findByText('App');
+    fireEvent.click(screen.getByRole('button', { name: 'Read current permissions' }));
+    const resumed = await screen.findByRole('button', { name: 'Resume permission review: App' }); expect(resumed).toHaveFocus(); fireEvent.click(resumed);
+    expect(screen.getByRole('dialog')).toHaveTextContent('App'); expand(); expect(screen.getByRole('checkbox', { name: /Create and rename Teams/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); expect(screen.getByRole('button', { name: 'Edit permissions: App' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Edit permissions: Other' })).toBeEnabled(); expect(transport.updateScopes).toHaveBeenCalledTimes(1); second.unmount();
+  });
+  it.each(['missing', 'revoked', 'expired', 'fixed'] as const)('clears a pending review when the refreshed target is %s', async state => {
+    const other = { ...grant, id: '00000000-0000-4000-8000-000000000003', clientName: 'Other' };
+    const changed: ScopedOwnerGrant = state === 'revoked' ? { ...grant, status: 'revoked', revokedAt: '2026-11-20T10:00:00Z' } : state === 'expired' ? { ...grant, status: 'expired' } : { ...grant, scopePolicy: null };
+    const transport = fixture([grant, other]);
+    transport.updateScopes.mockImplementation(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
+    transport.list.mockResolvedValueOnce([grant, other]).mockResolvedValueOnce([grant, other]).mockResolvedValueOnce(state === 'missing' ? [other] : [changed, other]);
+    render(page(transport)); await screen.findByText('App'); edit(); expand(); change(); save();
+    await screen.findByRole('button', { name: 'Read current permissions' }); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read current permissions' })); await screen.findByRole('button', { name: 'Resume permission review: App' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await screen.findByText('This authorization can no longer be edited.');
+    expect(screen.queryByRole('button', { name: 'Resume permission review: App' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit permissions: Other' })).toBeEnabled();
+    expect(sessionStorage.getItem(`daynight.oauthGrantScopeRecovery.${user.id}`)).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Application authorizations' })).toHaveFocus();
+  });
+  it('retains recoverability when removing an invalidated draft marker fails', async () => {
+    const other = { ...grant, id: '00000000-0000-4000-8000-000000000003', clientName: 'Other' };
+    const transport = fixture([grant, other]);
+    transport.updateScopes.mockImplementation(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
+    transport.list.mockResolvedValueOnce([grant, other]).mockResolvedValueOnce([grant, other]).mockResolvedValue([other]);
+    render(page(transport)); await screen.findByText('App'); edit(); expand(); change(); save();
+    await screen.findByRole('button', { name: 'Read current permissions' }); fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read current permissions' })); await screen.findByRole('button', { name: 'Resume permission review: App' });
+    const failed = vi.spyOn(Storage.prototype, 'removeItem').mockImplementationOnce(() => { throw new Error('storage unavailable'); });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await screen.findByText('Unable to retain the pending recovery. Check browser storage.');
+      expect(screen.getByRole('button', { name: 'Edit permissions: Other' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Read current permissions' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Read current permissions' }));
+      await screen.findByText('This authorization can no longer be edited.'); expect(screen.getByRole('button', { name: 'Edit permissions: Other' })).toBeEnabled();
+      expect(sessionStorage.getItem(`daynight.oauthGrantScopeRecovery.${user.id}`)).toBeNull();
+    } finally { failed.mockRestore(); }
+  });
   it('does not clear recovery after an older readback', async () => {
     const newer = { ...grant, scopePolicy: { scopeVersion: '3', scopes: ['team:read'] } };
     const stale = { ...grant, scopePolicy: { scopeVersion: '2', scopes: ['team:read'] } };
