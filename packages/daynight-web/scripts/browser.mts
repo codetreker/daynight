@@ -68,7 +68,6 @@ export const browserConfigs = [
   'worker-tool-paths-playwright.config.ts',
   'worker-settings-typography-playwright.config.ts',
   'typography-ownership-playwright.config.ts',
-  'webhook-tabs-playwright.config.ts',
   'worker-alias-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
 ] as const;
