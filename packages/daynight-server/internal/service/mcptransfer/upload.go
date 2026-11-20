@@ -165,16 +165,7 @@ func (s *Uploads) ExecuteScoped(ctx context.Context, auth model.CredentialAuthor
 	if auth.Principal != a.Principal || (a.AuthorityKind == "pat" && auth.Profile != model.ScopedPATProfile) || (a.AuthorityKind == "oauth" && auth.Profile != model.ScopedMCPProfile) {
 		return nil, model.Unauthenticated(nil)
 	}
-	result, err := s.execute(ctx, &auth, a, project, task, in)
-	if errors.Is(err, scopepolicy.ErrInsufficientScope) && (in.Action == "begin" || in.Action == "chunk" || in.Action == "commit" || in.Action == "inline") {
-		if result == nil {
-			result = make(map[string]any)
-		}
-		if _, present := result["writeOutcome"]; !present {
-			result["writeOutcome"] = "not_committed"
-		}
-	}
-	return result, err
+	return s.execute(ctx, &auth, a, project, task, in)
 }
 
 func (s *Uploads) execute(ctx context.Context, auth *model.CredentialAuthorization, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
@@ -294,6 +285,17 @@ func (s *Uploads) authorizedUploadResult(ctx context.Context, a transfer.Actor, 
 }
 
 func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (result map[string]any, err error) {
+	newWriteRejected := false
+	defer func() {
+		if !newWriteRejected {
+			return
+		}
+		fault, known := operation.KnownFault(err)
+		facts := operation.CompletionFacts(err)
+		if known && fault.Code == "insufficient_scope" && facts.Outcome == store.TransactionNotCommitted && !facts.CleanupFailed {
+			result["writeOutcome"] = "not_committed"
+		}
+	}()
 	if !transfer.Canonical(in.ChunkID) {
 		return nil, uploadFault("Invalid chunk ID.")
 	}
@@ -317,7 +319,11 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
 	}
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
-		defer func() { err = errors.Join(err, lease.Close()) }()
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}()
 	}
 	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
 	defer cancelUpload()
@@ -325,7 +331,11 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	if e != nil {
 		return nil, e
 	}
-	defer func() { err = errors.Join(err, p.Close()) }()
+	defer func() {
+		if closeErr := p.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -383,6 +393,7 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		var err error
 		if s.lifecycle.scoped {
 			if err = s.lifecycle.authorize(p.Context, dao, a, current); err != nil {
+				newWriteRejected = true
 				return err
 			}
 		}

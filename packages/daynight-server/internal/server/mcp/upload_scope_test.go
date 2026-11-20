@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
@@ -16,6 +17,33 @@ import (
 type scopedUploadFixture struct {
 	t     *testing.T
 	calls int
+}
+
+type refusedUploadRetry struct{ t *testing.T }
+
+func (s refusedUploadRetry) ExecuteScoped(ctx context.Context, auth model.CredentialAuthorization, actor transfer.Actor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {
+	if ctx.Err() != nil || actor.Principal != auth.Principal || project != testProjectID || task != testTargetID || input.Action != "commit" {
+		s.t.Fatal("commit retry lost its context or authority")
+	}
+	return nil, scopeadmission.Require(auth, scopepolicy.AttachmentUpload)
+}
+
+func TestScopedUploadCommitRefusalDoesNotAssertUnknownPriorOutcome(t *testing.T) {
+	f := newEntryFixture(t)
+	if err := f.entry.EnableScopedAuthentication(testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{"read": scopedTestAuthorization(t, "attachment:read")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterScopedUploadTools(f.entry, refusedUploadRetry{t}); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "action": "commit", "transferId": testProjectID, "totalBytes": "1"}
+	result := tagTestCall(t, f.client(t, "2026-07-28", "read"), "task_attachment_put", args)
+	env := structured(t, result)
+	failure := object(t, env["error"])
+	encoded, err := json.Marshal(env)
+	if err != nil || !result.IsError || failure["code"] != "insufficient_scope" || failure["writeOutcome"] != nil || env["data"] != nil || strings.Contains(string(encoded), "confirmed") || strings.Contains(string(encoded), "not_committed") {
+		t.Fatalf("refusal disclosed or misclassified retry: %s (%v)", encoded, err)
+	}
 }
 
 func (s *scopedUploadFixture) ExecuteScoped(ctx context.Context, auth model.CredentialAuthorization, actor transfer.Actor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {

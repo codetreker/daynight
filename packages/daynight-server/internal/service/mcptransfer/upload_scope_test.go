@@ -3,6 +3,7 @@ package mcptransfer
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -20,6 +21,26 @@ func (d *transferDAO) CurrentTransferAuthorization(ctx context.Context, principa
 		return model.CredentialAuthorization{}, err
 	}
 	return value.(model.CredentialAuthorization), err
+}
+
+// The scripted writer normally joins callback and completion errors. This
+// wrapper models the store's single transaction error containing the callback
+// refusal and its independently supplied completion facts.
+type uploadScopeTransactionWriter struct{ *transferWriter }
+
+func (w uploadScopeTransactionWriter) WritePrivateTransfer(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error) {
+	completion, err := w.transferWriter.WritePrivateTransfer(ctx, fn)
+	if !errors.Is(err, scopepolicy.ErrInsufficientScope) {
+		return completion, err
+	}
+	var tx *store.TransactionError
+	var fault *model.Fault
+	if !errors.As(err, &tx) || !errors.As(err, &fault) {
+		return completion, err
+	}
+	copy := *tx
+	copy.Cause = fault
+	return completion, &copy
 }
 
 func uploadPolicy(t *testing.T, principal model.Principal, ids ...scopepolicy.ScopeID) model.CredentialAuthorization {
@@ -79,7 +100,7 @@ func TestScopedUploadRefusalAndCleanup(t *testing.T) {
 	readOnly := uploadPolicy(t, h.actor.Principal, "attachment:read")
 	h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", readOnly, nil, h.actor.Principal))
 	result, err := h.uploads.ExecuteScoped(t.Context(), readOnly, h.actor, r.ProjectID, r.TaskID, UploadInput{Action: "begin", TransferID: r.ID, Path: r.Path, ContentType: r.ContentType})
-	if !errors.Is(err, scopepolicy.ErrInsufficientScope) || result["writeOutcome"] != "not_committed" {
+	if !errors.Is(err, scopepolicy.ErrInsufficientScope) || result != nil {
 		t.Fatalf("begin result=%v err=%v", result, err)
 	}
 	// Cleanup keeps the original authority check even when upload permission was removed.
@@ -95,6 +116,143 @@ func TestScopedUploadRefusalAndCleanup(t *testing.T) {
 	h.expect(getMissing(r.ID))
 	if _, err := h.uploads.boundForCleanup(t.Context(), h.actor, r.ProjectID, r.TaskID, r.ID); err == nil {
 		t.Fatal("missing cleanup target accepted")
+	}
+}
+
+func TestScopedUploadRetryRefusalDoesNotClaimPriorOutcome(t *testing.T) {
+	for _, state := range []string{"committed", "unknown"} {
+		for _, action := range []string{"begin", "chunk", "commit"} {
+			t.Run(state+"/"+action, func(t *testing.T) {
+				h := newUploadHarness(t)
+				h.lifecycle.scoped = true
+				h.uploads.scopedAttachments = &attachmentservice.ScopedAttachments{}
+				r := h.record("file", 1)
+				r.State = state
+				item, created := uploadAttachment(r, 1), true
+				outcome := "unknown"
+				if state == "committed" {
+					outcome = "confirmed"
+				}
+				r.Data = encodeUpload(uploadData{NextOffset: 1, OperationID: uuid.NewString(), WriteOutcome: outcome, Attachment: &item, Created: &created})
+				readOnly := uploadPolicy(t, h.actor.Principal, "attachment:read")
+				h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", readOnly, nil, h.actor.Principal))
+				input := UploadInput{Action: action, TransferID: r.ID, Path: r.Path, ContentType: r.ContentType, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ==", TotalBytes: "1"}
+				result, err := h.uploads.ExecuteScoped(t.Context(), readOnly, h.actor, r.ProjectID, r.TaskID, input)
+				if !errors.Is(err, scopepolicy.ErrInsufficientScope) || result != nil {
+					t.Fatalf("retry disclosed or misclassified old outcome: result=%v err=%v", result, err)
+				}
+			})
+		}
+	}
+}
+
+func TestScopedCommitRefusalAfterWaitingDoesNotClassifyConcurrentResult(t *testing.T) {
+	for _, state := range []string{"committed", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			h := newUploadHarness(t)
+			h.lifecycle.scoped = true
+			h.uploads.scopedAttachments = &attachmentservice.ScopedAttachments{}
+			receiving := h.record("file", 1)
+			previous := cloneTransfer(receiving)
+			previous.State = state
+			allowed := uploadPolicy(t, h.actor.Principal, "attachment:upload")
+			readOnly := uploadPolicy(t, h.actor.Principal, "attachment:read")
+			h.expect(get(receiving), auth(h.actor, receiving, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal))
+			h.expect(get(previous), auth(h.actor, previous, nil), method("CurrentTransferAuthorization", readOnly, nil, h.actor.Principal))
+			entered, release := make(chan struct{}), make(chan struct{})
+			lease := &uploadLease{}
+			h.lower.leases = append(h.lower.leases, func(ctx context.Context, p model.Principal, project, task string) (io.Closer, error) {
+				if p != h.actor.Principal || project != receiving.ProjectID || task != receiving.TaskID {
+					t.Error("upload lease lost its target")
+				}
+				close(entered)
+				select {
+				case <-release:
+					return lease, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+			results := make(chan uploadCallResult, 1)
+			go func() {
+				data, err := h.uploads.ExecuteScoped(t.Context(), allowed, h.actor, receiving.ProjectID, receiving.TaskID, UploadInput{Action: "commit", TransferID: receiving.ID, TotalBytes: "1"})
+				results <- uploadCallResult{data, err}
+			}()
+			waitUpload(t, entered)
+			close(release)
+			got := awaitUpload(t, results)
+			if !errors.Is(got.err, scopepolicy.ErrInsufficientScope) || got.data != nil || lease.count() != 1 {
+				t.Fatalf("waiting retry result=%v err=%v lease closes=%d", got.data, got.err, lease.count())
+			}
+		})
+	}
+}
+
+func TestNewChunkScopeRefusalRequiresReliableCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		outcome    store.TransactionOutcome
+		cleanup    bool
+		gateFailed bool
+		want       string
+	}{
+		{"rolled back", store.TransactionNotCommitted, false, false, "not_committed"},
+		{"unknown", store.TransactionUnknown, false, false, ""},
+		{"transaction cleanup failure", store.TransactionNotCommitted, true, false, ""},
+		{"permit cleanup failure", store.TransactionNotCommitted, false, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newUploadHarness(t)
+			h.lifecycle.scoped = true
+			h.lifecycle.db = uploadScopeTransactionWriter{h.db}
+			h.uploads.scopedAttachments = &attachmentservice.ScopedAttachments{}
+			counted := &countedUploadStorage{TransferStorage: h.files}
+			h.uploads.files = counted
+			if tc.gateFailed {
+				h.lifecycle.files = uploadGateCloseError{Storage: h.files, cause: errors.New("permit cleanup failed")}
+			}
+			r := h.record("file", 0)
+			allowed := uploadPolicy(t, h.actor.Principal, "attachment:upload")
+			readOnly := uploadPolicy(t, h.actor.Principal, "attachment:read")
+			input := UploadInput{Action: "chunk", TransferID: r.ID, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ=="}
+			h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal))
+			h.lease(h.actor, nil)
+			renewed := cloneTransfer(r)
+			renewed.Version++
+			h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal), get(r), uploadPut(t, r, renewed, nil, nil))
+			h.expect(get(renewed))
+			missing := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}
+			h.db.expect(store.Completion{Outcome: store.TransactionNotCommitted}, missing, get(renewed), auth(h.actor, renewed, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal), method("LockProjectLifecycle", nil, nil, r.ProjectID, r.TaskID), method("UploadChunk", nil, model.ErrNotFound, r.ID, input.ChunkID))
+			reserved := h.reserve(renewed, 1)
+			failure := &store.TransactionError{Phase: "operation", Outcome: tc.outcome, CleanupFailed: tc.cleanup}
+			h.db.expect(store.Completion{Outcome: tc.outcome}, failure, get(reserved), auth(h.actor, reserved, nil), method("CurrentTransferAuthorization", readOnly, nil, h.actor.Principal))
+			result, err := h.uploads.ExecuteScoped(t.Context(), allowed, h.actor, r.ProjectID, r.TaskID, input)
+			if !errors.Is(err, scopepolicy.ErrInsufficientScope) || result["writeOutcome"] != tc.want && !(tc.want == "" && result["writeOutcome"] == nil) || counted.puts.Load() != 0 {
+				t.Fatalf("result=%v err=%v file writes=%d", result, err, counted.puts.Load())
+			}
+		})
+	}
+}
+
+func TestChunkScopeRefusalBeforeReceiptDoesNotAssertOutcome(t *testing.T) {
+	h := newUploadHarness(t)
+	h.lifecycle.scoped = true
+	h.lifecycle.db = uploadScopeTransactionWriter{h.db}
+	h.uploads.scopedAttachments = &attachmentservice.ScopedAttachments{}
+	r := h.record("file", 0)
+	allowed := uploadPolicy(t, h.actor.Principal, "attachment:upload")
+	readOnly := uploadPolicy(t, h.actor.Principal, "attachment:read")
+	input := UploadInput{Action: "chunk", TransferID: r.ID, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: "YQ=="}
+	h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal))
+	h.lease(h.actor, nil)
+	renewed := cloneTransfer(r)
+	renewed.Version++
+	h.expect(get(r), auth(h.actor, r, nil), method("CurrentTransferAuthorization", allowed, nil, h.actor.Principal), get(r), uploadPut(t, r, renewed, nil, nil))
+	h.expect(get(renewed))
+	h.db.expect(store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted}, get(renewed), auth(h.actor, renewed, nil), method("CurrentTransferAuthorization", readOnly, nil, h.actor.Principal))
+	result, err := h.uploads.ExecuteScoped(t.Context(), allowed, h.actor, r.ProjectID, r.TaskID, input)
+	if !errors.Is(err, scopepolicy.ErrInsufficientScope) || result != nil {
+		t.Fatalf("unobserved receipt was classified: result=%v err=%v", result, err)
 	}
 }
 

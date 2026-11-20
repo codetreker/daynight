@@ -21,6 +21,10 @@ accepted operation can settle. The [attachment design](../../../../docs/design/d
 describes the lifecycle; the existing [private transfer decision](2026-11-06-private-transfer-lifecycle.md)
 owns its stable binding and capacity guarantees.
 
+A scope refusal during a transfer retry does not establish the original write
+outcome. A `not_committed` receipt is returned only when the operation can
+prove that fact, including transaction and cleanup completion.
+
 ## Alternatives
 
 **Store scope in the transfer record.** A persisted snapshot would authorize
