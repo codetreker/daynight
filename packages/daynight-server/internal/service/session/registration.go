@@ -30,6 +30,9 @@ func (s *Service) registerTask(ctx context.Context, p model.Principal, project, 
 		if err = op.CheckRegistration(task, p, input); err != nil {
 			return err
 		}
+		if err = s.requireProducer(ctx, scope, p); err != nil {
+			return err
+		}
 		id, err := scope.SessionDAO().FindTaskRegistration(ctx, project, input.RegistrationID, taskID, input.ClaimID)
 		if errors.Is(err, model.ErrNotFound) {
 			return work(op, scope, nil)
@@ -55,6 +58,9 @@ func (s *Service) registerTest(ctx context.Context, p model.Principal, input sp.
 		if err := op.LockCredential(ctx, scope, p); err != nil {
 			return err
 		}
+		if err := s.requireProducer(ctx, scope, p); err != nil {
+			return err
+		}
 		if err := scope.SessionDAO().LockTestOwner(ctx, p.UserID); err != nil {
 			return err
 		}
@@ -77,6 +83,12 @@ func (s *Service) registerTest(ctx context.Context, p model.Principal, input sp.
 		}
 		if err = authorizeTest(ctx, op, scope, p, access); err != nil {
 			return err
+		}
+		parent := access.Authority().ParentCredentialID
+		if parent != "" && parent != p.CredentialID {
+			if err = s.requireProducer(ctx, scope, model.Principal{Kind: model.PATCredential, UserID: p.UserID, CredentialID: parent}); err != nil {
+				return err
+			}
 		}
 		return work(op, scope, access)
 	})
@@ -115,6 +127,18 @@ func (s *Service) controllerGrant(ctx context.Context, hash []byte, work func(*s
 				return err
 			}
 			if err = op.CheckProjectAccess(ctx, scope, parent, authority.ProjectID); err != nil {
+				return err
+			}
+		}
+		if err = s.requireProducer(ctx, scope, parent); err != nil {
+			return err
+		}
+		if s.producerAuthorization != nil && authority.Test && authority.ConnectionCredentialID != "" && authority.ConnectionCredentialID != parent.CredentialID {
+			connection := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ConnectionCredentialID}
+			if err = op.LockCredential(ctx, scope, connection); err != nil {
+				return err
+			}
+			if err = s.requireProducer(ctx, scope, connection); err != nil {
 				return err
 			}
 		}

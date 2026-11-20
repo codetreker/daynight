@@ -126,6 +126,9 @@ func (s *Execution) UpdateArchive(ctx context.Context, p model.Principal, projec
 		if err != nil || out.State == "ready" {
 			return err
 		}
+		if err = s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
+		}
 		err = tx.dao.SetSessionArchiveState(ctx, id, in.State, in.ErrorCode)
 		out = sp.ArchiveStatus{State: in.State, ErrorCode: in.ErrorCode}
 		return err
@@ -181,6 +184,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 				return conflict()
 			}
 			return nil
+		}
+		if err = s.authorizeProducer(ctx, tx, p, r); err != nil {
+			return err
 		}
 		if s.files == nil {
 			return fault("controller_offline", "Archive file storage is unavailable.")

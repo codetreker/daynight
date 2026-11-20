@@ -129,9 +129,23 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 `Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
 拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
 
+## Session 生产者准入
+
+Session 与用量生产的 scoped 装配在实际操作所属事务或快照中读取原 PAT 的
+当前策略，要求 `session:produce`。Task 注册检查实际调用凭据；后续 Controller
+操作使用连接绑定的父凭据，保留原 claim、执行代次和连接 fence。Test 与 Bot
+Session 的当前 grant 父凭据和活动连接父凭据可能不同：同代重连更换 grant 后，
+旧连接仍须分别复核两者的有效性和生产权限。同一凭据只需一次策略检查。
+用量上传凭据保留原父凭据和资源绑定，不能凭新连接的权限替代原父凭据。
+
+注册、签发及新生产操作在相应阶段拒绝权限不足；已有持久结果不因撤权改写。
+恢复和重试仍遵循各自的原身份、回执和完成语义。固定 profile 继续受原协议和
+资源约束，受限入口不将缺失的 PAT 策略解释为无限权限。具体权衡见
+[Session 生产者准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-producer-scope.md)。
+
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Tag、Team、Bot、账户、Prompt、Session、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方

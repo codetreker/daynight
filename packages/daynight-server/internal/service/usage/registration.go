@@ -93,6 +93,9 @@ func (s *Service) Register(ctx context.Context, p model.Principal, input Registr
 		if err != nil {
 			return err
 		}
+		if err = s.requireProducer(ctx, scope, p, now, true); err != nil {
+			return err
+		}
 		r := model.UsageRecord{ID: input.StateID, Kind: "execution_state", Scope: session.Scope, ProjectID: session.ProjectID, TaskID: session.TaskID, TestExecutionID: session.TestExecutionID, SessionID: session.ID, ClaimID: session.ClaimID, Generation: input.Generation, WorkerID: worker, AuthorityUserID: p.UserID, Provider: provider, NativeSessionID: input.NativeSessionID, RegistrationID: core.Ptr(input.RegistrationID), ProfileID: input.ProfileID, ProviderVersion: input.ProviderVersion, ParentCredentialID: core.Ptr(p.CredentialID)}
 		old, err := dao.Generation(ctx, session.ID, input.Generation)
 		if err == nil {
@@ -172,7 +175,14 @@ func (s *Service) Rotate(ctx context.Context, p model.Principal, id string, inpu
 		if err != nil {
 			return err
 		}
-		auth, err := s.authority(ctx, scope, session, p.UserID, p.CredentialID, true)
+		var additional []string
+		if s.producerAuthorization != nil {
+			if r.AuthorityUserID != p.UserID || core.Value(r.ParentCredentialID) == "" {
+				return core.Fault("permission_revoked")
+			}
+			additional = append(additional, core.Value(r.ParentCredentialID))
+		}
+		auth, err := s.authority(ctx, scope, session, p.UserID, p.CredentialID, true, additional...)
 		if err != nil {
 			return err
 		}
@@ -188,6 +198,15 @@ func (s *Service) Rotate(ctx context.Context, p model.Principal, id string, inpu
 		now, err := dao.Now(ctx)
 		if err != nil {
 			return err
+		}
+		if err = s.requireProducer(ctx, scope, p, now, true); err != nil {
+			return err
+		}
+		if len(additional) != 0 && additional[0] != p.CredentialID {
+			original := model.Principal{Kind: model.PATCredential, UserID: r.AuthorityUserID, CredentialID: additional[0]}
+			if err = s.requireProducer(ctx, scope, original, now, true); err != nil {
+				return err
+			}
 		}
 		if r.GrantExpiresAt == nil || !now.Before(*r.GrantExpiresAt) {
 			return core.Fault("upload_expired")
@@ -261,6 +280,9 @@ func (s *Service) Revoke(ctx context.Context, p model.Principal, id, expected st
 			if p.UserID != session.OwnerID && a.Role != model.ProjectAdmin {
 				return core.Fault("resource_unavailable")
 			}
+		}
+		if err = s.requireProducer(ctx, scope, p, now, true); err != nil {
+			return err
 		}
 		if r.RowVersion != expected {
 			return core.Fault("usage_changed")

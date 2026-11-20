@@ -517,3 +517,27 @@ func TestArchiveExpiryRequiresMatchingOriginalControllerRelease(t *testing.T) {
 		})
 	}
 }
+
+func TestArchiveSettlementRequiresCurrentProducerBeforeChangingExpiredUpload(t *testing.T) {
+	f, op, path := expiredReclaimFixture(t)
+	refusal := errors.New("producer scope revoked")
+	f.s.SetProducerAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal) error {
+		if p != f.p {
+			t.Fatalf("wrong original producer: %#v", p)
+		}
+		return refusal
+	})
+	if err := op.SettleExpiredUploads(t.Context()); !errors.Is(err, refusal) {
+		t.Fatalf("expected producer refusal, got %v", err)
+	}
+	if u := f.d.uploads[f.spec.UploadID]; u.Receipt.State != "receiving" || u.StorageReleased {
+		t.Fatalf("settlement changed committed upload: %#v", u)
+	}
+	object, err := f.files.Open(t.Context(), sessionresource.Bucket, path)
+	if err != nil {
+		t.Fatalf("settlement removed staged bytes: %v", err)
+	}
+	if err := object.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

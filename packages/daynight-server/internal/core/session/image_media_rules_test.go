@@ -239,3 +239,41 @@ func TestImageMediaResponsesRetainUnknownIdentityAndStorageFailures(t *testing.T
 		t.Fatal("terminal remote error was not retained", e)
 	}
 }
+
+func TestUploadMediaRechecksOriginalProducerBeforeEachStage(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("original"))
+	refusal := errors.New("producer scope revoked")
+	checks := 0
+	f.s.SetProducerAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal) error {
+		if p != f.p {
+			t.Fatalf("wrong upload actor: %#v", p)
+		}
+		checks++
+		if checks > 1 {
+			return refusal
+		}
+		return nil
+	})
+	f.s.browserRun = func(_ context.Context, p model.Principal, _, _, _ string, _ BrowserPurpose, fn func(*Access) error) error {
+		if p != f.p {
+			t.Fatalf("wrong upload actor: %#v", p)
+		}
+		return fn(&Access{tx: &operationTx{dao: f.d, op: &Operation{}}, record: f.r, write: true})
+	}
+	first := uuid.NewString()
+	_, err := f.s.controllerUploadMedia(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, first, "prepare", map[string]any{"uploadId": uuid.NewString()})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("revocation while awaiting result: %v", err)
+	}
+	if row, ok := f.d.media[first]; !ok || row.Complete {
+		t.Fatal("committed pending request was not retained", row)
+	}
+	second := uuid.NewString()
+	_, err = f.s.controllerUploadMedia(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, second, "write", map[string]any{"uploadId": uuid.NewString()})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("new stage admitted: %v", err)
+	}
+	if _, ok := f.d.media[second]; ok {
+		t.Fatal("revoked producer created next request")
+	}
+}

@@ -13,8 +13,20 @@ import (
 // Runtime coordinates the Bot credential, definition and bound Session in a
 // single transaction. Bot locks always precede the associated Session lock.
 type Runtime struct {
-	core  coreOperations
-	write sessioncore.TransactionRunner
+	core     coreOperations
+	write    sessioncore.TransactionRunner
+	producer ProducerAuthorization
+}
+
+// NewScopedRuntime adds transaction-bound producer admission without changing
+// the legacy runtime assembly.
+func NewScopedRuntime(engine *sessioncore.Engine, write sessioncore.TransactionRunner, source ProducerAuthorization) (*Runtime, error) {
+	if source == nil {
+		return nil, errors.New("Bot producer authorization is required")
+	}
+	s := NewRuntime(engine, write)
+	s.producer = source
+	return s, nil
 }
 
 type coreOperations struct {
@@ -48,6 +60,17 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 	}
 	defer s.core.closeOperation(op)
 	return s.write(ctx, op, func(scope store.SessionScope) error {
+		checked := make(map[model.Principal]bool)
+		checkProducer := func(principal model.Principal) error {
+			if checked[principal] {
+				return nil
+			}
+			if err := requireProducer(ctx, scope, principal, s.producer); err != nil {
+				return err
+			}
+			checked[principal] = true
+			return nil
+		}
 		if p.Kind != model.PATCredential {
 			return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
 		}
@@ -95,8 +118,16 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 				if err = s.core.lockCredential(op, ctx, scope, parent); err != nil {
 					return err
 				}
+				if err = checkProducer(parent); err != nil {
+					return err
+				}
 			}
 		}
-		return work(op, scope, bot, access, func(principal model.Principal) error { return s.core.lockCredential(op, ctx, scope, principal) })
+		return work(op, scope, bot, access, func(principal model.Principal) error {
+			if err := s.core.lockCredential(op, ctx, scope, principal); err != nil {
+				return err
+			}
+			return checkProducer(principal)
+		})
 	})
 }
