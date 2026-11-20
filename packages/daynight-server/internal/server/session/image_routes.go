@@ -15,11 +15,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-func (h *Routes) registerImageRoutes(mux *http.ServeMux) {
+func (h *Routes) registerImageRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
 		for method, handler := range map[string]func(http.ResponseWriter, *http.Request, model.Principal){"PUT " + base + "/image-uploads/{uploadId}": h.prepareImage, "PUT " + base + "/image-uploads/{uploadId}/content": h.directImageUpload, "GET " + base + "/image-uploads/{uploadId}": h.getImageUpload, "DELETE " + base + "/image-uploads/{uploadId}": h.releaseImageUpload, "PUT " + base + "/image-uploads/{uploadId}/chunks": h.writeImageChunk, "POST " + base + "/image-uploads/{uploadId}/complete": h.completeImageUpload, "GET " + base + "/image-capabilities": h.imageCapabilities, "GET " + base + "/image-occurrences/{imageId}": h.imageOccurrence, "POST " + base + "/image-occurrences/{imageId}/retry": h.retryImageOccurrence} {
 			read := method == "GET "+base+"/image-occurrences/{imageId}"
-			mux.HandleFunc(method, h.auth.Require(h.imageParameters(handler, read)))
+			next := h.auth.Require(h.imageParameters(handler, read))
+			if method == "PUT "+base+"/image-uploads/{uploadId}" || method == "PUT "+base+"/image-uploads/{uploadId}/content" || method == "PUT "+base+"/image-uploads/{uploadId}/chunks" || method == "POST "+base+"/image-uploads/{uploadId}/complete" {
+				registerProducerRoute(mux, method, next, producerCredential, observe)
+			} else {
+				mux.HandleFunc(method, next)
+			}
 		}
 	}
 }

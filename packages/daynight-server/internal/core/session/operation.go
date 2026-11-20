@@ -31,6 +31,7 @@ const (
 	BrowserAccess BrowserPurpose = iota
 	TaskMessageAccess
 	TaskReceiptAccess
+	ProducerAccess
 )
 
 type BrowserRunner func(context.Context, model.Principal, string, string, string, BrowserPurpose, func(*Access) error) error
@@ -43,6 +44,8 @@ type GrantRunner func(context.Context, []byte, func(*Access) error) error
 type TaskRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error
 type CredentialRunner func(context.Context, model.Principal, func(*Operation, store.SessionScope) error) error
 type AuthorizationRunner func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) error
+type ProducerRunner func(context.Context, store.SessionScope, model.Principal) error
+
 type BotRunner func(context.Context, model.Principal, string, string, func(model.Bot) error, func(model.Bot, *Access) error, func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error
 
 // Execution binds the shared engine to its application's transaction runner.
@@ -67,6 +70,7 @@ type Execution struct {
 	authorizationRun         AuthorizationRunner
 	commandAdmission         *commandAdmissionState
 	botRun                   BotRunner
+	producerRun              ProducerRunner
 }
 
 type commandAdmissionState struct {
@@ -202,3 +206,24 @@ func (s *Engine) Stop(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+// SetProducerAdmission installs transaction-bound admission for producer work.
+func (s *Execution) SetProducerAdmission(run ProducerRunner) { s.producerRun = run }
+
+func (s *Execution) authorizeProducer(ctx context.Context, tx *operationTx, p model.Principal, r *record) error {
+	if s.producerRun == nil {
+		return nil
+	}
+	if p.Kind == model.PATCredential {
+		if err := s.producerRun(ctx, tx.scope, p); err != nil {
+			return err
+		}
+	}
+	if r.Snapshot.TestExecutionID != "" && r.Parent != "" && r.Parent != p.CredentialID {
+		return s.producerRun(ctx, tx.scope, model.Principal{Kind: model.PATCredential, UserID: r.Owner, CredentialID: r.Parent})
+	}
+	return nil
+}
+
+// SetBotRunner binds the Bot lifecycle to the selected runtime admission.
+func (s *Execution) SetBotRunner(run BotRunner) { s.botRun = run }

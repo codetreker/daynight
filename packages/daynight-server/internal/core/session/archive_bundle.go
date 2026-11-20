@@ -278,6 +278,9 @@ func (op *ArchiveOperation) bundleAccess(ctx context.Context, fn func(*operation
 		if r.Owner != op.owner {
 			return conflict()
 		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
 		if op.historyWriter != nil {
 			if err := op.validateHistoryWriter(r, t); err != nil {
 				return err
@@ -323,6 +326,9 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
 		if r.Owner != op.owner {
 			return conflict()
+		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
 		}
 		if err := archiveWriter(op.principal, r, in.Fence, in.ControllerID, in.ControllerInstanceID); err != nil {
 			return err

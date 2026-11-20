@@ -142,6 +142,18 @@ func (s *Service) browserForReadCheck(ctx context.Context, principal model.Princ
 			if err = authorizeTest(ctx, op, scope, principal, access); err != nil {
 				return err
 			}
+			if purpose == sessioncore.ProducerAccess {
+				if err = s.requireProducer(ctx, scope, principal); err != nil {
+					return err
+				}
+				authority := access.Authority()
+				if authority.ParentCredentialID != "" && authority.ParentCredentialID != principal.CredentialID {
+					parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
+					if err = s.requireProducer(ctx, scope, parent); err != nil {
+						return err
+					}
+				}
+			}
 			if err = op.BindTestBrowser(ctx, access); err != nil {
 				return err
 			}
@@ -182,6 +194,11 @@ func (s *Service) browserForReadCheck(ctx context.Context, principal model.Princ
 		}
 		if err = op.BindTaskPurpose(ctx, access, task, principal, project, taskID, purpose); err != nil {
 			return err
+		}
+		if purpose == sessioncore.ProducerAccess {
+			if err = s.requireProducer(ctx, scope, principal); err != nil {
+				return err
+			}
 		}
 		if purpose != sessioncore.TaskReceiptAccess {
 			if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
@@ -232,6 +249,15 @@ func (s *Service) controller(ctx context.Context, fence sp.ControllerFence, work
 				return err
 			}
 			if err = op.CheckProjectAccess(ctx, scope, owner, authority.ProjectID); err != nil {
+				return err
+			}
+		}
+		if err = s.requireProducer(ctx, scope, owner); err != nil {
+			return err
+		}
+		if authority.Test && authority.ParentCredentialID != "" && authority.ParentCredentialID != owner.CredentialID {
+			parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
+			if err = s.requireProducer(ctx, scope, parent); err != nil {
 				return err
 			}
 		}

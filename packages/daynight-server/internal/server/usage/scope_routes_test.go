@@ -24,21 +24,15 @@ func TestUsageRouteRegistrationClassifications(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]ScopeRoute{}
-	RegisterRoutesWithScopeObserver(http.NewServeMux(), service, fixedAuth{}, logger, func(route ScopeRoute) {
-		if _, ok := got[route.Pattern]; ok {
-			t.Fatalf("duplicate %s", route.Pattern)
-		}
-		got[route.Pattern] = route
-	})
 	want := map[string]ScopeRoute{}
 	add := func(pattern string, entry ScopeRoute) { entry.Pattern = pattern; want[pattern] = entry }
 	addGET := func(path string, entry ScopeRoute) { add("GET "+path, entry); add("HEAD "+path, entry) }
 	addGET("/api/usage/v1/capabilities", ScopeRoute{CapabilityCheck: true})
-	add("POST /api/usage/v1/registrations", ScopeRoute{Producer: true})
-	addGET("/api/usage/v1/states/{stateId}", ScopeRoute{Producer: true})
-	add("POST /api/usage/v1/states/{stateId}/grant", ScopeRoute{Producer: true})
-	add("POST /api/usage/v1/states/{stateId}/revoke", ScopeRoute{Producer: true})
+	producer := ScopeRoute{Producer: true, Operations: []scopepolicy.Operation{scopepolicy.SessionProduce}}
+	add("POST /api/usage/v1/registrations", producer)
+	addGET("/api/usage/v1/states/{stateId}", producer)
+	add("POST /api/usage/v1/states/{stateId}/grant", producer)
+	add("POST /api/usage/v1/states/{stateId}/revoke", producer)
 	add("POST /api/usage/v1/states/{stateId}/batches", ScopeRoute{IndependentProfile: true})
 	addGET("/api/usage/v1/states/{stateId}/sources", ScopeRoute{IndependentProfile: true})
 	read := ScopeRoute{Operations: []scopepolicy.Operation{scopepolicy.UsageRead}}
@@ -50,8 +44,24 @@ func TestUsageRouteRegistrationClassifications(t *testing.T) {
 	} {
 		addGET(path, read)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("registrations = %#v; want %#v", got, want)
+	for _, scoped := range []bool{false, true} {
+		got := map[string]ScopeRoute{}
+		observe := func(route ScopeRoute) {
+			if _, ok := got[route.Pattern]; ok {
+				t.Fatalf("duplicate %s", route.Pattern)
+			}
+			got[route.Pattern] = route
+		}
+		mux := http.NewServeMux()
+		if scoped {
+			calls := 0
+			RegisterScopedRoutesWithScopeObserver(mux, service, fixedAuth{}, fixedScopedAuth{calls: &calls}, logger, observe)
+		} else {
+			RegisterRoutesWithScopeObserver(mux, service, fixedAuth{}, logger, observe)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("scoped=%t registrations = %#v; want %#v", scoped, got, want)
+		}
 	}
 }
 

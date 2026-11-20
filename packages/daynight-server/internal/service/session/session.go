@@ -19,6 +19,7 @@ type Service struct {
 	historyOps             historyScopeOperations
 	beginBrowser           func() (browserOperation, error)
 	scopedCommandExecution *sessioncore.Execution
+	producerAuthorization  ProducerAuthorization
 }
 
 // ScopedCommandExecution returns the execution whose command admission was
@@ -54,6 +55,52 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	})
 	s.Execution.SetTaskReadRunners(s.taskContentRead, s.taskReadQuery, s.taskArchiveRead)
 	return s
+}
+
+// NewScoped enables producer admission without changing the existing assembly.
+func NewScoped(writer store.SessionWriter, engine *sessioncore.Engine, source ProducerAuthorization) (*Service, error) {
+	if source == nil {
+		return nil, errors.New("session producer authorization is required")
+	}
+	s := New(writer, engine)
+	if err := s.installProducer(source); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// NewScopedCommandsAndProducer installs both independent transaction-bound
+// policies on the same execution before it is exposed to callers.
+func NewScopedCommandsAndProducer(writer store.SessionWriter, engine *sessioncore.Engine, command CommandAuthorizationSource, producer ProducerAuthorization) (*Service, error) {
+	if producer == nil {
+		return nil, errors.New("session producer authorization is required")
+	}
+	s, err := NewScopedCommands(writer, engine, command)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.installProducer(producer); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Service) installProducer(source ProducerAuthorization) error {
+	s.producerAuthorization = source
+	s.Execution.SetProducerAdmission(s.requireProducer)
+	write := func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
+		return s.write(ctx, op.Finish, fn)
+	}
+	runtime, err := botruntime.NewScopedRuntime(s.engine, write, botruntime.ProducerAuthorization(source))
+	if err != nil {
+		return err
+	}
+	s.Recovery, err = botruntime.NewScopedRecovery(s.engine, write, botruntime.ProducerAuthorization(source))
+	if err != nil {
+		return err
+	}
+	s.Execution.SetBotRunner(runtime.Run)
+	return nil
 }
 
 func (s *Service) SetOrigin(origin string) { s.engine.Origin = origin }

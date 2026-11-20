@@ -25,6 +25,8 @@ When MCP also enables scoped commands, its combined entry retains the execution
 whose transaction-bound command admission was installed. That admission cannot
 be replaced or removed, and replacing the service's execution field does not
 change the instance used by the registered tools.
+The combined Session constructor installs command and producer admission on the
+same service, so both checks remain available when scoped routes are assembled.
 
 ## Alternatives
 

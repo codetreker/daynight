@@ -10,7 +10,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
-func (h *Routes) registerTestRoutes(mux *http.ServeMux) {
+func (h *Routes) registerTestRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
 	routes := map[string]struct {
 		handler httpx.AuthenticatedHandler
 		read    bool
@@ -31,16 +31,29 @@ func (h *Routes) registerTestRoutes(mux *http.ServeMux) {
 		if route == "GET /api/v1/test-sessions/{sessionId}/channel" {
 			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(item.handler, item.read), true))
 		} else {
-			mux.HandleFunc(route, h.auth.Require(h.Parameters(item.handler, item.read)))
+			next := h.auth.Require(h.Parameters(item.handler, item.read))
+			if route == "POST /api/v1/test-sessions" || route == "POST /api/v1/test-sessions/{sessionId}/controller-grant" {
+				registerProducerRoute(mux, route, next, producerCredential, observe)
+			} else {
+				mux.HandleFunc(route, next)
+			}
 		}
 	}
 	for path, method := range map[string]string{"/api/v1/test-session-capabilities": "GET", "/api/v1/test-sessions": "GET, POST", "/api/v1/test-sessions/{sessionId}": "GET", "/api/v1/test-sessions/{sessionId}/controller-grant": "POST", "/api/v1/test-sessions/{sessionId}/stop": "POST", "/api/v1/test-sessions/{sessionId}/timeline": "GET", "/api/v1/test-sessions/{sessionId}/commands": "POST", "/api/v1/test-sessions/{sessionId}/operations/{operationId}": "GET", "/api/v1/test-sessions/{sessionId}/resources/{resourceId}/content": "GET", "/api/v1/test-sessions/{sessionId}/channel": "GET"} {
 		fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			httpx.MethodNotAllowed(h.logger, method)(w, r)
 		})
-		mux.HandleFunc(path, fallback)
+		if path == "/api/v1/test-sessions" || path == "/api/v1/test-sessions/{sessionId}/controller-grant" {
+			registerProducerRoute(mux, path, fallback, producerFallback, observe)
+		} else {
+			mux.HandleFunc(path, fallback)
+		}
 		if method == "GET" || method == "GET, POST" {
-			mux.HandleFunc("HEAD "+path, fallback)
+			if path == "/api/v1/test-sessions" {
+				registerProducerRoute(mux, "HEAD "+path, fallback, producerFallback, observe)
+			} else {
+				mux.HandleFunc("HEAD "+path, fallback)
+			}
 		}
 	}
 }

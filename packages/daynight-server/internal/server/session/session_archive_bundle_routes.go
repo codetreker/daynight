@@ -26,7 +26,7 @@ type unifiedArchiveOperation interface {
 	PutArchiveManifest(context.Context, []byte) (sp.ArchiveStatus, error)
 }
 
-func (h *Routes) registerUnifiedArchiveRoutes(mux *http.ServeMux, base string) {
+func (h *Routes) registerUnifiedArchiveRoutes(mux *http.ServeMux, base string, observe func(ProducerRoute)) {
 	for route, handler := range map[string]httpx.AuthenticatedHandler{
 		"GET " + base + "/prepare":                         h.archivePreparation,
 		"POST " + base + "/prepare":                        h.prepareArchive,
@@ -43,7 +43,11 @@ func (h *Routes) registerUnifiedArchiveRoutes(mux *http.ServeMux, base string) {
 		if route[:3] != "GET" || route == "GET "+base+"/files/{fileId}" {
 			next = h.archivePreflight(next)
 		}
-		mux.HandleFunc(route, next)
+		if !strings.HasPrefix(route, "GET ") {
+			registerProducerRoute(mux, route, next, producerCredential, observe)
+		} else {
+			mux.HandleFunc(route, next)
+		}
 	}
 }
 func (h *Routes) unifiedArchiveParameters(next httpx.AuthenticatedHandler, scopedRead bool) httpx.AuthenticatedHandler {
