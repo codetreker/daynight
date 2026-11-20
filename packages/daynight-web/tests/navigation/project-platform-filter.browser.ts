@@ -74,7 +74,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`platform filter is usable w
   });
   expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
   expect(geometry.height).toBeGreaterThanOrEqual(44);
-  expect(geometry.font).toBe('14px');
+  expect(geometry.font).toBe('12px');
   expect(geometry.outline).toBe('rgb(52, 64, 84)');
   expect(geometry.outlineStyle).not.toBe('none');
   for (const control of geometry.controls) {
@@ -92,8 +92,8 @@ for (const locale of ['en', 'zh-CN'] as const) test(`platform filter is usable w
   expect(writes).toEqual([]);
 });
 
-for (const coarse of [false, true]) test(`project filters fit their labels at enlarged and reduced root sizes with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 320, height: 800 }, hasTouch: coarse });
+for (const coarse of [false, true]) for (const width of [320, 1280]) test(`project platform typography follows the root size at ${width}px with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width, height: 800 }, hasTouch: coarse });
   try {
     const page = await context.newPage();
     const writes = await install(page, 'en');
@@ -102,20 +102,23 @@ for (const coarse of [false, true]) test(`project filters fit their labels at en
     await page.locator('#project-task-tab-standalone').click();
     expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
     const platform = page.getByRole('combobox', { name: 'Platform' });
-    for (const root of [12, 24]) {
+    for (const root of [12, 16, 24]) {
       await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
       const observed = await platform.evaluate(control => {
         const bounds = control.getBoundingClientRect(), style = getComputedStyle(control);
-        const label = control.closest('label')!.querySelector('span')!, labelBounds = label.getBoundingClientRect();
+        const label = control.closest('label')!.querySelector('span')!, labelBounds = label.getBoundingClientRect(), toolbar = control.closest('.project-task-filters')!;
         return { width: document.documentElement.scrollWidth, viewport: innerWidth, height: bounds.height,
-          font: style.fontSize, paddingTop: parseFloat(style.paddingTop), labelHeight: labelBounds.height };
+          font: style.fontSize, labelFont: getComputedStyle(label).fontSize, paddingTop: parseFloat(style.paddingTop), labelHeight: labelBounds.height, compact: getComputedStyle(toolbar).display === 'grid' };
       });
       expect(observed.width).toBeLessThanOrEqual(observed.viewport);
-      expect(observed.font).toBe(`${coarse ? Math.max(root, 16) : root * .875}px`);
-      expect(observed.height).toBeGreaterThanOrEqual(44);
-      expect(observed.paddingTop).toBeCloseTo(root * .75 * 1.5, 1);
-      expect(observed.height - observed.paddingTop - 2).toBeGreaterThanOrEqual(parseFloat(observed.font) * 1.5);
-      expect(observed.paddingTop).toBeGreaterThanOrEqual(observed.labelHeight);
+      expect(observed.font).toBe(`${root * .75}px`);
+      expect(observed.labelFont).toBe(`${root * .75}px`);
+      expect(observed.height).toBeGreaterThanOrEqual(width <= 800 || coarse ? 44 : 32);
+      if (observed.compact) {
+        expect(observed.paddingTop).toBeCloseTo(root * .75 * 1.5, 1);
+        expect(observed.height - observed.paddingTop - 2).toBeGreaterThanOrEqual(parseFloat(observed.font) * 1.5);
+        expect(observed.paddingTop).toBeGreaterThanOrEqual(observed.labelHeight);
+      } else if (!coarse) expect(observed.height).toBe(32);
       await expect(platform.locator('option').first()).toHaveCSS('font-size', observed.font);
     }
     expect(writes).toEqual([]);

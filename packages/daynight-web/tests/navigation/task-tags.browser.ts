@@ -922,6 +922,105 @@ test('the filter remains usable in an offset, short visible viewport with an off
   expect(state.writes).toEqual([]);
 });
 
+const typographyScenarios = [
+  { width: 1280, coarse: false, locale: 'en' },
+  { width: 1280, coarse: true, locale: 'zh-CN' },
+  { width: 320, coarse: false, locale: 'zh-CN' },
+  { width: 320, coarse: true, locale: 'en' },
+] as const;
+
+for (const { width, coarse, locale } of typographyScenarios) test(`ordinary filter entries use xs at ${width}px in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: coarse });
+  try {
+    const page = await context.newPage(), state = await install(page, locale), zh = locale === 'zh-CN';
+    const assigneeName = zh ? '非常长的项目负责人姓名'.repeat(5) : 'UnbrokenProjectAssigneeName'.repeat(5);
+    state.assigneeName = assigneeName;
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
+    const toolbar = page.locator('.project-task-filters:visible');
+    const assignee = toolbar.locator('.task-assignee-filter > button');
+    await assignee.focus(); await page.keyboard.press('Enter');
+    await page.getByRole('option', { name: assigneeName }).click();
+    await expect(assignee).toHaveAccessibleName(new RegExp(assigneeName));
+    const status = toolbar.locator('.task-status-multifilter > button');
+    await status.focus(); await page.keyboard.press('Enter');
+    const statusPanel = toolbar.locator('.task-status-filter-panel');
+    await statusPanel.getByRole('checkbox', { name: zh ? '全部状态' : 'All statuses', exact: true }).uncheck();
+    await statusPanel.getByRole('checkbox', { name: zh ? '待办' : 'To do', exact: true }).check();
+    await statusPanel.getByRole('checkbox', { name: zh ? '已完成' : 'Done', exact: true }).check();
+    await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+    const main = toolbar.locator('.tag-filter').first();
+    await main.locator('summary').focus(); await page.keyboard.press('Enter');
+    await main.getByLabel('Goal label', { exact: true }).check();
+    await page.keyboard.press('Escape'); await expect(main.locator('summary')).toBeFocused();
+
+    for (const rootSize of [16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      for (const view of ['chains', 'standalone', 'goals']) {
+        await page.locator(`#project-task-tab-${view}`).click();
+        const xs = `${rootSize * .75}px`, sm = `${rootSize * .875}px`;
+        await expect(assignee.locator('.select-trigger__label')).toHaveCSS('font-size', xs);
+        await expect(assignee).toHaveAccessibleName(new RegExp(assigneeName));
+        await expect(status).toContainText(zh ? '已选 2 项' : '2 selected');
+        await expect(main.locator('.select-trigger__count')).toHaveText('1');
+        const captions = toolbar.locator(':scope > :is(.task-assignee-filter, .task-status-filter) > span:first-child');
+        for (const caption of await captions.all()) await expect(caption).toHaveCSS('font-size', xs);
+        const entries = toolbar.locator('.selection-control[data-density="filter"]');
+        for (const entry of await entries.all()) {
+          await expect(entry).toHaveCSS('font-size', xs);
+          const geometry = await entry.evaluate(element => {
+            const control = element.querySelector('select') ?? element;
+            const box = control.getBoundingClientRect(), arrow = element.querySelector('svg')!.getBoundingClientRect();
+            const label = element.querySelector('.select-trigger__label')?.getBoundingClientRect();
+            return { left: box.left, right: box.right, height: box.height, arrowLeft: arrow.left, arrowRight: arrow.right, labelRight: label?.right };
+          });
+          expect(geometry.left).toBeGreaterThanOrEqual(0); expect(geometry.right).toBeLessThanOrEqual(width);
+          expect(geometry.height).toBeGreaterThanOrEqual(width <= 800 || coarse ? 44 : 32);
+          if (width > 800 && !coarse) expect(geometry.height).toBe(32);
+          expect(geometry.arrowRight).toBeLessThanOrEqual(geometry.right);
+          if (geometry.labelRight !== undefined) expect(geometry.labelRight).toBeLessThanOrEqual(geometry.arrowLeft);
+        }
+        const grid = await toolbar.evaluate(element => ({ width: element.parentElement!.getBoundingClientRect().width, columns: getComputedStyle(element).gridTemplateColumns.split(' ').length, display: getComputedStyle(element).display }));
+        if (grid.width <= 420) { expect(grid.display).toBe('grid'); expect(grid.columns).toBe(grid.width < 264 ? 1 : 2); }
+        await expect(main.locator('summary > .select-trigger__label')).toHaveCSS('font-size', xs);
+        await expect(main.locator('.select-trigger__count')).toHaveCSS('font-size', xs);
+        await expect(main.locator('..').locator('.tag-filter-chip')).toHaveCSS('font-size', sm);
+        await status.focus(); await page.keyboard.press('Enter');
+        await expect(statusPanel).toHaveCSS('font-size', sm);
+        await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+        const platform = toolbar.locator('select');
+        if (view === 'goals') {
+          await expect(platform).toHaveCount(0);
+          const childFilter = toolbar.locator('.tag-filter').nth(1), trigger = childFilter.locator('summary');
+          await trigger.focus(); await page.keyboard.press('Enter');
+          await childFilter.getByLabel('Child label', { exact: true }).check();
+          await expect(childFilter.locator('.tag-filter-panel')).toHaveCSS('font-size', sm);
+          await expect(childFilter.locator('input[type="search"]')).toHaveCSS('font-size', `${coarse ? Math.max(rootSize, 16) : rootSize * .875}px`);
+          await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+          await expect(trigger.locator('.select-trigger__label')).toHaveCSS('font-size', xs);
+          await expect(trigger.locator('.select-trigger__count')).toHaveText('1');
+          await expect(trigger.locator('.select-trigger__count')).toHaveCSS('font-size', xs);
+        } else await expect(platform).toHaveCSS('font-size', xs);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      }
+      await assignee.focus(); await page.keyboard.press('Enter');
+      await expect(page.locator('.assignee-option-name').filter({ hasText: assigneeName })).toHaveCSS('font-size', `${rootSize * .875}px`);
+      await page.keyboard.press('Escape'); await expect(assignee).toBeFocused();
+      const search = page.locator('.task-search-form input[type="text"]');
+      await search.fill('goal'); await search.press('Enter');
+      const searchToolbar = page.locator('.task-search-filters');
+      await expect(searchToolbar).toBeVisible();
+      for (const entry of await searchToolbar.locator('.selection-control[data-density="filter"]').all()) {
+        await expect(entry).toHaveCSS('font-size', `${coarse ? Math.max(rootSize, 16) : rootSize * .875}px`);
+      }
+      await expect(searchToolbar.locator('select')).toHaveCSS('font-size', `${coarse ? Math.max(rootSize, 16) : rootSize * .875}px`);
+      await search.fill('');
+    }
+    expect(state.writes.every(write => write === `POST /api/v1/projects/${projectId}/tasks/search`)).toBe(true);
+  } finally { await context.close(); }
+});
+
 for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);
   const childLongName = `${longName}X`;

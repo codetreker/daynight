@@ -20,6 +20,7 @@
 @media (max-width: 800px) and (pointer: fine) {
   .selection-control[data-touch-mode="responsive-target"] { font-size: var(--text-sm); }
 }
+.project-task-filters .selection-control[data-density="filter"][data-touch-mode="responsive-target"] { font-size: var(--text-xs); }
 @container native-select-region (max-width: 600px) {
   .selection-control[data-touch-mode="container"] { --selection-control-height: 44px; --selection-control-min-hit-width: 44px; }
 }
