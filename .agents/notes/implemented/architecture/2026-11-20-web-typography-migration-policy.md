@@ -42,9 +42,11 @@ generic field fonts without changing their normal size. Consumers select the
 ordinary size on their field container and retain local control geometry,
 including the Prompt editor's 196px minimum height. Management dialog fields and
 invitation secret text use the shared responsive touch adjustment, while ordinary
-account tokens retain their inherited size. The zero-legacy mode refuses the
-bridge and all remaining baseline
-uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+account tokens retain their inherited size. Project and personal Task lists, Goal
+cards, tags and search select the public scale directly. Their search inputs use
+the shared coarse-pointer adjustment; the tag input derives its height from its
+line box and padding with a 44px minimum. The zero-legacy mode refuses the bridge
+and all remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
 ## Alternatives

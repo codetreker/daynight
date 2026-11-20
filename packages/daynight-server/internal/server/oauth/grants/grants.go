@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/credential"
 	"log/slog"
 	"net/http"
 	"time"
@@ -21,6 +22,7 @@ import (
 type lifecycle interface {
 	ListSessionGrants(context.Context, model.Principal) ([]store.OAuthGrant, time.Time, error)
 	RevokeSessionGrant(context.Context, model.Principal, string) (bool, error)
+	UpdateSessionGrantDescription(context.Context, model.Principal, string, string, *string, *string) (*string, error)
 }
 
 type routes struct {
@@ -34,6 +36,11 @@ func RegisterRoutes(mux *http.ServeMux, grants lifecycle, auth *authhttp.Authent
 	h := &routes{grants: grants, auth: auth, logger: logger}
 	mux.HandleFunc("GET /api/v1/oauth/grants", h.session(h.list))
 	mux.HandleFunc("GET /api/v2/oauth/grants", h.session(h.listV2))
+	mux.HandleFunc("GET /api/v3/oauth/grants", auth.RequireCredentialSession(h.listV3))
+	mux.HandleFunc("HEAD /api/v3/oauth/grants", auth.RequireCredentialSession(httpx.ResourceMethodNotAllowed(logger, "GET")))
+	mux.HandleFunc("/api/v3/oauth/grants", auth.RequireCredentialSession(httpx.ResourceMethodNotAllowed(logger, "GET")))
+	mux.HandleFunc("PATCH /api/v3/oauth/grants/{id}/description", auth.RequireCredentialSession(h.updateDescription))
+	mux.HandleFunc("/api/v3/oauth/grants/{id}/description", auth.RequireCredentialSession(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("HEAD /api/v2/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
 	mux.HandleFunc("/api/v2/oauth/grants", h.session(httpx.ResourceMethodNotAllowed(logger, "GET")))
 	mux.HandleFunc("POST /api/v1/oauth/grants/{id}/revoke", h.session(h.revoke))
@@ -70,26 +77,46 @@ type grantViewV2 struct {
 	LastUsedAt *time.Time `json:"lastUsedAt"`
 }
 
+type grantViewV3 struct {
+	grantViewV2
+	Description *string `json:"description"`
+}
+
 func (h *routes) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.listVersion(w, r, p, false)
+	h.listVersion(w, r, p, 1)
 }
 
 func (h *routes) listV2(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.listVersion(w, r, p, true)
+	h.listVersion(w, r, p, 2)
 }
 
-func (h *routes) listVersion(w http.ResponseWriter, r *http.Request, p model.Principal, v2 bool) {
-	if r.URL.RawQuery != "" {
+func (h *routes) listV3(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	h.listVersion(w, r, p, 3)
+}
+
+func (h *routes) listVersion(w http.ResponseWriter, r *http.Request, p model.Principal, version int) {
+	if r.URL.RawQuery != "" || version == 3 && r.URL.ForceQuery {
 		httpx.WriteError(w, r, h.logger, "oauth_grants", "list", httpx.InvalidInput("Query parameters are not supported."))
 		return
 	}
-	items, now, err := h.grants.ListSessionGrants(r.Context(), p)
+	ctx := r.Context()
+	if version == 3 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+	items, now, err := h.grants.ListSessionGrants(ctx, p)
 	if err != nil {
-		httpx.WriteError(w, r, h.logger, "oauth_grants", "list", err)
+		if version == 3 {
+			credential.WriteReadError(w, r, h.logger.With("user_id", p.UserID), "oauth_grants", "list", err)
+		} else {
+			httpx.WriteError(w, r, h.logger, "oauth_grants", "list", err)
+		}
 		return
 	}
 	views := make([]grantView, 0, len(items))
 	viewsV2 := make([]grantViewV2, 0, len(items))
+	viewsV3 := make([]grantViewV3, 0, len(items))
 	for _, item := range items {
 		var client core.ValidatedClient
 		if err := json.Unmarshal(item.ClientSnapshot, &client); err != nil || client.ClientID != item.ClientID {
@@ -108,18 +135,29 @@ func (h *routes) listVersion(w http.ResponseWriter, r *http.Request, p model.Pri
 			revokedAt = &stamp
 		}
 		view := grantView{ID: item.ID, ClientName: client.ClientName, ClientID: item.ClientID, Resource: item.Resource, Scope: item.Scope, CreatedAt: item.CreatedAt.UTC(), ExpiresAt: item.ExpiresAt.UTC(), RevokedAt: revokedAt, Status: status}
-		if v2 {
+		if version >= 2 {
 			var usedAt *time.Time
 			if item.LastUsedAt != nil {
 				stamp := item.LastUsedAt.UTC()
 				usedAt = &stamp
 			}
-			viewsV2 = append(viewsV2, grantViewV2{grantView: view, LastUsedAt: usedAt})
+			if version == 3 {
+				viewsV3 = append(viewsV3, grantViewV3{grantViewV2: grantViewV2{grantView: view, LastUsedAt: usedAt}, Description: item.Description})
+			} else {
+				viewsV2 = append(viewsV2, grantViewV2{grantView: view, LastUsedAt: usedAt})
+			}
 		} else {
 			views = append(views, view)
 		}
 	}
-	if v2 {
+	if version == 3 {
+		httpx.WriteJSON(w, r, h.logger, http.StatusOK, struct {
+			UserID string        `json:"userId"`
+			Grants []grantViewV3 `json:"grants"`
+		}{p.UserID, viewsV3})
+		return
+	}
+	if version == 2 {
 		httpx.WriteJSON(w, r, h.logger, http.StatusOK, struct {
 			UserID string        `json:"userId"`
 			Grants []grantViewV2 `json:"grants"`
@@ -168,4 +206,37 @@ func (h *routes) revoke(w http.ResponseWriter, r *http.Request, p model.Principa
 	httpx.WriteJSON(w, r, h.logger, http.StatusOK, struct {
 		Changed bool `json:"changed"`
 	}{changed})
+}
+
+func (h *routes) updateDescription(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	fields, err := credential.Fields(w, r, "expectedUserId", "expectedDescription", "description")
+	var expectedUser string
+	var expected, description *string
+	if err == nil {
+		expectedUser, err = credential.ExpectedUser(fields, p)
+	}
+	if err == nil {
+		expected, err = credential.NullableDescription(fields, "expectedDescription", true)
+	}
+	if err == nil {
+		description, err = credential.NullableDescription(fields, "description", true)
+	}
+	if err != nil {
+		httpx.WriteError(w, r, h.logger, "oauth_grants", "update_description", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	id := r.PathValue("id")
+	if err := credential.TargetID(id); err != nil {
+		httpx.WriteError(w, r, h.logger, "oauth_grants", "update_description", err)
+		return
+	}
+	result, err := h.grants.UpdateSessionGrantDescription(ctx, p, expectedUser, id, expected, description)
+	logger := h.logger.With("user_id", p.UserID, "grant_id", id)
+	if err != nil {
+		credential.WriteOperationError(w, r, logger, "oauth_grants", "update_description", err, errors.Is(err, core.ErrAuthorizationUnknown))
+		return
+	}
+	httpx.WriteMutationJSON(w, r, logger, "oauth_grants", http.StatusOK, credential.DescriptionResponse{ID: id, Description: result})
 }

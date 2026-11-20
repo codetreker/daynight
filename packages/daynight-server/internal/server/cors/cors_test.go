@@ -107,6 +107,7 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		{"/mcp", "https://client.example", ""}, {"/healthz", "https://client.example", ""},
 		{"/assets/app.js", "https://client.example", ""}, {"/api/v1/oauth/s2s/token", "https://client.example", ""},
 		{"/api/v1/native-callback", "https://client.example", ""}, {"/api/v1/controller-channel", "https://client.example", ""},
+		{"/api/v1/assistant-task-inbox/22222222-2222-4222-8222-222222222222", "https://client.example", ""},
 	} {
 		r := httptest.NewRequest(http.MethodOptions, tc.path, nil)
 		r.Header.Set("Origin", "https://client.example")
@@ -114,6 +115,32 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		Wrap(mux, mux, tc.origin, logger, "/api/v1/native-callback").ServeHTTP(w, r)
 		if w.Code != 202 || w.Header().Get("Access-Control-Allow-Origin") != tc.want {
 			t.Fatalf("independent %s response changed: %d %v", tc.path, w.Code, w.Header())
+		}
+	}
+}
+
+func TestCredentialRouteCORSExclusions(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	h := Wrap(mux, mux, "https://client.example", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		path     string
+		excluded bool
+	}{
+		{"/api/v2/me/tokens", true}, {"/api/v2/me/tokens/id/description", true},
+		{"/api/v3/oauth/grants", true}, {"/api/v3/oauth/grants/id/description", true},
+		{"/api/v2/me/tokens/id", false}, {"/api/v2/me/tokens/id/description/extra", false},
+		{"/api/v2/me/tokens-extra", false}, {"/api/v1/me/tokens", false}, {"/api/v2/oauth/grants", false},
+	} {
+		for _, method := range []string{"GET", "OPTIONS"} {
+			r := httptest.NewRequest(method, tc.path, nil)
+			r.Header.Set("Origin", "https://client.example")
+			r.Header.Set("Access-Control-Request-Method", "GET")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if got := w.Header().Get("Access-Control-Allow-Origin"); (got == "") != tc.excluded {
+				t.Errorf("%s %s CORS origin = %q", method, tc.path, got)
+			}
 		}
 	}
 }

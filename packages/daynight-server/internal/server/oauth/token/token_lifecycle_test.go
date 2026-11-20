@@ -472,6 +472,14 @@ func (d *oauthHTTPLifecycleDAO) OwnerGrants(context.Context, string) ([]store.OA
 	unexpectedHTTPCall(d.t, "Lifecycle.OwnerGrants")
 	return nil, nil
 }
+func (d *oauthHTTPLifecycleDAO) UpdateOwnerGrantDescription(context.Context, string, string, *string, *string) (bool, error) {
+	unexpectedHTTPCall(d.t, "Lifecycle.UpdateOwnerGrantDescription")
+	return false, nil
+}
+func (d *oauthHTTPLifecycleDAO) OwnerGrantExists(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "Lifecycle.OwnerGrantExists")
+	return false, nil
+}
 func (d *oauthHTTPLifecycleDAO) PruneCredentials(context.Context, time.Time, int) (int, error) {
 	unexpectedHTTPCall(d.t, "Lifecycle.PruneCredentials")
 	return 0, nil
