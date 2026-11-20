@@ -23,7 +23,8 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 | 属性 | 取值与默认值 | 职责 |
 | --- | --- | --- |
-| `density` | `compact`、`filter`、`form`；默认 `form` | 选择公共高度；文字使用共享 14px 档 |
+| `density` | `compact`、`filter`、`form`；默认 `form` | 选择公共高度 |
+| `textSize` | `sm`、`xs`；默认 `sm` | 独立于密度选择共享字号；触控规则仍可覆盖 |
 | `layout` | `content`、`fill`；默认 `content` | 按内容占位或填满可用宽度 |
 | `focusTone` | `default`、`task`；默认 `default` | 普通焦点或 Task/status 焦点颜色 |
 | `touchMode` | `none`、`responsive`、`responsive-target`、`container`；默认 `none` | 显式选择触控尺寸规则 |
@@ -40,7 +41,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 `SelectTrigger` 默认渲染真实 `button`，`as="summary"` 渲染真实 `summary` 并保持为 `details` 的直接子元素。区分元素的 props 类型透传真实 ref、ARIA 和事件；button 保留原生 `disabled`。组件排除任意 `className` 和 `style`，静态 `layoutClassName` 仅允许外部宽度、外边距及 flex/grid 定位。`children` 是入口内容，可选 `count` 由公共组件呈现徽标；完整可访问名称由调用者提供。
 
-`density`、`touchMode`、`focusTone` 与 NativeSelect 同名概念一致。公共 host 使用 `selection-control` 标识及对应 data 属性。默认外观为白底、`#344258` 文字、1px `#dce0e8` 边框、6px 圆角、0 10px 内边距、8px 内容间距、系统字体、400 字重和 1.5 行高。内容宽度随文字与计数决定并受容器约束；长负责人省略且保留完整可访问名称。徽标使用共享 12px 档，通常为 18px 高，响应式放大后为 20px 高。箭头共用 10px 装饰路径。
+`density`、`textSize`、`touchMode`、`focusTone` 与 NativeSelect 同名概念一致。公共 host 使用 `selection-control` 标识及对应 data 属性。默认外观为白底、`#344258` 文字、1px `#dce0e8` 边框、6px 圆角、0 10px 内边距、8px 内容间距、系统字体、400 字重和 1.5 行高。内容宽度随文字与计数决定并受容器约束；长负责人省略且保留完整可访问名称。徽标使用共享 12px 档，通常为 18px 高，响应式放大后为 20px 高。箭头共用 10px 装饰路径。
 
 调用者通过真实 `aria-expanded`、`aria-invalid`、禁用和公开 `pending` 提供状态。公共 owner 呈现中性 hover `#f0f3f7`、展开背景 `#eef1f8` 与边框 `#52649b`、禁用、错误和焦点；Task 焦点使用 3px 深色轮廓。summary marker 也由公共层隐藏。菜单 owner 继续管理开关、选中值、目录、网络、存储、定位和焦点恢复。
 
@@ -52,13 +53,13 @@ TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详
 
 容器使用 `inline-grid`、按内容宽度、可收缩的最小宽度和 `max-inline-size:100%`；`fill` 占满所在布局的可用宽度。容器与单选控件保持同一高度，起始对齐，避免表单说明文字拉伸容器后改变箭头中心。
 
-| 模式 | 高度 | 字号 |
-| --- | --- | --- |
-| `compact` | 24px | 共享 14px 档 |
-| `filter` | 32px | 共享 14px 档 |
-| `form` | 38px | 共享 14px 档 |
+| 模式 | 高度 |
+| --- | --- |
+| `compact` | 24px |
+| `filter` | 32px |
+| `form` | 38px |
 
-高度为基础最小值；控件根据自身实际字号的 1.5 行及边框容纳文字，计数徽标独立选择 `xs`，当浏览器字体偏好使文字行高超出时随之增长，避免裁切。共享控件容器直接选择 `sm`，真实 select 继承；公共触屏调整使用 `max(var(--text-base), 16px)`。单选起始文字空间为 10px，末端 padding 至少 30px；10×10px 箭头盒距末端 12px，文字至箭头盒至少 8px。箭头路径为 `m2 3.5 3 3 3-3`，使用 `currentColor` 并垂直居中。单选文字单行省略，完整 option 文本保持原样。基础外观为白底、中性 1px 边框与 6px 圆角。
+高度为基础最小值；控件根据自身实际字号的 1.5 行及边框容纳文字，计数徽标独立选择 `xs`，当浏览器字体偏好使文字行高超出时随之增长，避免裁切。共享控件容器默认选择 `sm`，可显式选择 `xs`，真实 select 继承；公共触屏调整使用 `max(var(--text-base), 16px)` 并优先于字号选档。单选起始文字空间为 10px，末端 padding 至少 30px；10×10px 箭头盒距末端 12px，文字至箭头盒至少 8px。箭头路径为 `m2 3.5 3 3 3-3`，使用 `currentColor` 并垂直居中。单选文字单行省略，完整 option 文本保持原样。基础外观为白底、中性 1px 边框与 6px 圆角。
 
 `multiple=true` 或原生 `size>1` 使用列表模式：没有箭头和箭头专属留白，不应用固定单行高度或省略。原生 `size`、滚动、单选列表及多选数组语义保持；公共层继续拥有字体、边框、焦点与禁用外观。
 

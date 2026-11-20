@@ -86,6 +86,18 @@ const single = detailFixture(projectId, singleId, { parentId: goalId, title: 'St
 const all = [goal, first, second, single];
 const graph = graphFixture(all);
 
+test('Goal status and assignee retain their shared typography', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const controls = page.locator('.goal-detail-surface .task-detail-status-assignee');
+  for (const root of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    for (const element of [controls.locator('.task-status-trigger'), controls.locator('.assignee-field-label'), controls.locator('.assignee-trigger'), controls.locator('.task-assignee-identity')]) {
+      await expect(element).toHaveCSS('font-size', `${root * 0.875}px`);
+    }
+  }
+});
+
 for (const width of [1440, 320]) test(`Goal successor inspection keeps keyboard focus and viewport at ${width}px`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 1000 });
   await install(page);

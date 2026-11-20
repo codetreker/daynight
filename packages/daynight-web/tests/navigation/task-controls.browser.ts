@@ -30,6 +30,8 @@ type FixtureOptions = {
   readonly snapshotTasks?: (details: readonly TaskDetail[]) => readonly TaskDetail[];
   readonly exposeDeleteTask?: (remove: () => void) => void;
   readonly dualPauseReceipt?: boolean;
+  readonly formerAssignee?: boolean;
+  readonly platformReceipt?: boolean;
 };
 
 async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
@@ -57,7 +59,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), ...(options.formerAssignee ? { assigneeVersions: [{ userId: TEST_VIEWER_ID, version: 'a'.repeat(64), hasProjectAccess: false }] } : {}), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
     if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
       expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, type: 'task', tagIds: [], tagMatch: 'all', untagged: false, limit: 15 });
@@ -70,8 +72,13 @@ async function install(page: Page, running = false, linked = false, large = fals
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
-      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: true };
+      const person = { version: 'a'.repeat(64), userId: TEST_VIEWER_ID, name: longName, avatarUrl: '/missing-assignee-avatar.png', hasProjectAccess: !options.formerAssignee };
       return send({ items: requested.length === 0 || requested.includes(TEST_VIEWER_ID) ? [person] : [], unresolvedUserIds: requested.filter(id => id !== TEST_VIEWER_ID) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.platformReceipt) {
+      expect(request.postDataJSON()).toEqual({ version: Number(task.version), requiredPlatform: 'windows' });
+      task = { ...task, requiredPlatform: 'windows', version: task.version + 1n, updatedAt: '2026-10-23T10:00:00Z' };
+      return send(task);
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/status` && request.method() === 'PUT') {
       const input = request.postDataJSON();
@@ -130,6 +137,99 @@ async function openDialog(page: Page) {
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const presentation of ['direct', 'dialog', 'fullscreen'] as const) {
+  test(`detail state typography scales in ${presentation} at ${width}px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, false, false, false, true, false, undefined, {}, { locale, formerAssignee: true });
+    await page.setViewportSize({ width, height: 900 });
+    if (presentation === 'direct') await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    else {
+      await openDialog(page);
+      if (presentation === 'fullscreen') await page.locator('.task-detail-dialog').getByRole('button', { name: /^(Enter fullscreen|进入全屏)$/ }).click();
+    }
+    const detail = page.locator(presentation === 'direct' ? '.task-detail-page' : '.task-detail-dialog');
+    const row = detail.locator('.task-detail-status-row');
+    const controls = row.locator('.task-detail-state-controls');
+    const status = controls.locator('.task-status-trigger');
+    const assignee = controls.locator('.assignee-trigger');
+    const identity = assignee.locator('.task-assignee-identity');
+    const platform = controls.locator('.native-select__control');
+    await expect(identity.locator('.assignee-name')).toHaveText(longName);
+    await expect(identity.locator('.assignee-former')).toBeVisible();
+    for (const root of [16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      for (const element of [status, controls.locator('.assignee-field-label'), assignee, identity, identity.locator('.assignee-name'), identity.locator('.assignee-former'), platform, controls.locator('.native-select')]) {
+        await expect(element).toHaveCSS('font-size', `${root * 0.75}px`);
+      }
+      await expect(row.locator('.task-detail-ready')).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(row.locator('.task-automation-control > span').first()).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect.poll(() => row.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const boxes = [...element.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select, .task-detail-ready, .task-automation-control')].map(node => node.getBoundingClientRect());
+        return document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+      })).toBe(true);
+      await expect.poll(() => assignee.evaluate(button => {
+        const bounds = button.getBoundingClientRect();
+        const boxes = [...button.querySelectorAll('.assignee-avatar, .assignee-name, .assignee-former, .assignee-chevron')].map(node => node.getBoundingClientRect());
+        return boxes.length === 4 && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+      })).toBe(true);
+    }
+    await status.focus(); await page.keyboard.press('Enter');
+    await expect(detail.locator('.task-status-option').first()).toHaveCSS('font-size', '21px');
+    await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+    await assignee.click();
+    await expect(detail.locator('.assignee-option-name').first()).toHaveCSS('font-size', '21px');
+    await page.keyboard.press('Escape'); await expect(assignee).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`unassigned and disabled detail controls keep xs at ${width}px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, true, false, false, false, false, undefined, {}, { locale });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    const controls = page.locator('.task-detail-state-controls');
+    const assignee = controls.locator('.assignee-trigger');
+    const platform = controls.locator('.native-select__control');
+    await expect(assignee).toBeDisabled(); await expect(platform).toBeDisabled();
+    await expect(assignee.locator('.assignee-name')).toHaveText(locale === 'en' ? 'Unassigned' : '未分配');
+    for (const root of [16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      for (const element of [assignee, assignee.locator('.assignee-name'), platform]) await expect(element).toHaveCSS('font-size', `${root * 0.75}px`);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    expect(writes).toEqual([]);
+  });
+}
+
+test('platform confirmation retains cancellation, focus and confirmed update', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, false, undefined, {}, { platformReceipt: true });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const platform = page.locator('.task-detail-state-controls .native-select__control');
+  await platform.focus();
+  await platform.selectOption('windows');
+  const confirmation = page.getByRole('alertdialog', { name: 'Change execution platform?' });
+  await expect(confirmation).toBeVisible(); await expect(platform).toHaveValue('');
+  await confirmation.getByRole('button', { name: 'Cancel' }).click();
+  await expect(platform).toBeFocused(); expect(writes).toEqual([]);
+  await platform.selectOption('windows');
+  await confirmation.getByRole('button', { name: 'Change platform' }).click();
+  await expect(platform).toHaveValue('windows');
+  expect(writes).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${taskId}`]);
+});
+
+test('shared platform filter retains its default typography', async ({ page }) => {
+  await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const filter = page.locator('.project-task-filters .native-select__control');
+  for (const root of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(filter).toHaveCSS('font-size', `${root * 0.875}px`);
+  }
+});
 
 test('task menu opens one native tab per Space press and preserves Enter and mouse activation', async ({ page, context }) => {
   await install(page);
