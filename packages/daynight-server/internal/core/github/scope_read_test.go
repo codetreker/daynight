@@ -152,3 +152,39 @@ func TestScopedCollectionsHideMissingRepositoryBeforeScope(t *testing.T) {
 		})
 	}
 }
+
+func TestPullRequestAuthorizedRejectsInvalidCredentialBeforeReading(t *testing.T) {
+	ctx := t.Context()
+	auth := readAuthorization(t, "project:read")
+	auth.Policy = nil
+	f := fixtureFor(ctx)
+	r := NewReader(f, true)
+	operations := map[string]func() error{
+		"list": func() error {
+			_, err := r.ListAuthorized(ctx, auth, projectID, ListRequest{State: "active", Limit: 1})
+			return err
+		},
+		"detail":     func() error { _, err := r.DetailAuthorized(ctx, auth, projectID, 42, nil); return err },
+		"assignment": func() error { _, err := r.ReviewAssignmentAuthorized(ctx, auth, projectID, 42, nil); return err },
+		"repositories": func() error {
+			_, err := r.RepositoriesAuthorized(ctx, auth, projectID, RepositoriesRequest{Limit: 1})
+			return err
+		},
+		"authors": func() error {
+			_, err := r.AuthorsAuthorized(ctx, auth, projectID, AuthorsRequest{Limit: 1})
+			return err
+		},
+		"statistics": func() error {
+			_, err := r.StatisticsAuthorized(ctx, auth, projectID, validStatisticsRequest())
+			return err
+		},
+	}
+	for name, operation := range operations {
+		if err := operation(); err == nil {
+			t.Errorf("%s accepted missing policy", name)
+		}
+	}
+	if len(f.trace) != 0 {
+		t.Fatalf("invalid credential read resources: %v", f.trace)
+	}
+}

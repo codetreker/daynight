@@ -13,6 +13,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type scopedHTTPAuth struct{ value model.CredentialAuthorization }
@@ -92,5 +95,86 @@ func TestScopedPromptHTTPAssembly(t *testing.T) {
 	mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/me/worker-prompt", nil))
 	if w.Code != 405 || p.gets != 3 || p.puts != 2 {
 		t.Fatalf("fallback %d", w.Code)
+	}
+}
+
+type scopedPromptRequestAuthentication struct {
+	request *authhttp.RequestAuthentication
+	value   model.CredentialAuthorization
+}
+
+func (a scopedPromptRequestAuthentication) RequireScoped(next func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)) http.HandlerFunc {
+	return a.request.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		if p != a.value.Principal {
+			httpx.WriteError(w, r, slog.Default(), "auth", "authenticate", authhttp.Failure())
+			return
+		}
+		next(w, r, a.value)
+	})
+}
+
+func TestScopedPromptRegistrationRejectsMissingDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tc := range []struct {
+		name    string
+		prompts ScopedPrompts
+		auth    ScopedAuthentication
+	}{
+		{name: "prompts", auth: &scopedHTTPAuth{}},
+		{name: "authentication", prompts: &scopedHTTPPrompts{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("registration accepted a missing dependency")
+				}
+			}()
+			RegisterScopedRoutes(http.NewServeMux(), tc.prompts, tc.auth, logger, nil)
+		})
+	}
+}
+
+func TestScopedPromptAuthenticationPrecedesBusinessAndFallback(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	principal := model.Principal{Kind: model.PATCredential, UserID: userID, CredentialID: resourceID}
+	reqAuth, err := authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, secret string) (model.Principal, error) {
+		if kind != model.PATCredential || secret != "valid" {
+			return model.Principal{}, authhttp.Failure()
+		}
+		return principal, nil
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"prompt:read"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := scopedPromptRequestAuthentication{request: reqAuth, value: model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}}
+	prompts := &scopedHTTPPrompts{}
+	mux := http.NewServeMux()
+	var observed []ScopeRoute
+	RegisterScopedRoutes(mux, prompts, auth, logger, func(route ScopeRoute) { observed = append(observed, route) })
+	if len(observed) != 24 {
+		t.Fatalf("registered %d classifications", len(observed))
+	}
+	for _, tc := range []struct {
+		name, method, token string
+		status, gets        int
+	}{
+		{"invalid authentication", "GET", "invalid", 401, 0},
+		{"valid read", "GET", "valid", 200, 1},
+		{"unauthenticated fallback", "POST", "invalid", 401, 1},
+		{"authenticated fallback", "POST", "valid", 405, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, "/api/v1/me/worker-prompt", nil)
+			r.Header.Set("Authorization", "Bearer "+tc.token)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != tc.status || prompts.gets != tc.gets || prompts.puts != 0 || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("status=%d gets=%d headers=%v body=%s", w.Code, prompts.gets, w.Header(), w.Body)
+			}
+		})
 	}
 }

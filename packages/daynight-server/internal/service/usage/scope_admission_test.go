@@ -144,3 +144,82 @@ func TestUsageVisibilityAndAggregateScopeErrors(t *testing.T) {
 		t.Fatal("read usage before admission")
 	}
 }
+
+func TestScopedUsageRejectsInvalidAuthorizationBeforeStorage(t *testing.T) {
+	s := newTestService(t, controlledStore{read: func(context.Context, func(store.UsageScope) error) error {
+		t.Fatal("invalid authorization reached storage")
+		return nil
+	}}, Options{})
+	invalid := model.CredentialAuthorization{}
+	for _, call := range []func() error{
+		func() error { _, err := s.TaskSummariesAuthorized(t.Context(), invalid, "project", nil); return err },
+		func() error { _, err := s.TestSummaryAuthorized(t.Context(), invalid, "session"); return err },
+		func() error {
+			_, err := s.RecordsAuthorized(t.Context(), invalid, "project", "task", "", PageRequest{})
+			return err
+		},
+		func() error {
+			_, err := s.AggregateAuthorized(t.Context(), invalid, "project", "chain", "task", "")
+			return err
+		},
+	} {
+		if err := call(); err == nil {
+			t.Fatal("invalid credential policy admitted")
+		}
+	}
+}
+
+type scopedTestSessionDAO struct {
+	*summaryDAO
+	session store.UsageSession
+	metrics int
+}
+
+func (d *scopedTestSessionDAO) Session(context.Context, string) (store.UsageSession, error) {
+	return d.session, nil
+}
+func (d *scopedTestSessionDAO) Metrics(context.Context, store.UsageFilter) (model.UsageSummary, error) {
+	d.metrics++
+	return emptySummary(), nil
+}
+
+type scopedTestSessionScope struct {
+	dao     *scopedTestSessionDAO
+	current model.CredentialAuthorization
+}
+
+func (s scopedTestSessionScope) UsageDAO() store.UsageDAO     { return s.dao }
+func (s scopedTestSessionScope) SessionDAO() store.SessionDAO { return summarySessionDAO{} }
+func (s scopedTestSessionScope) CurrentUsageAuthorization(context.Context, model.Principal, time.Time) (model.CredentialAuthorization, error) {
+	return s.current, nil
+}
+
+func TestScopedTestSessionReadsCheckOwnerAndPolicy(t *testing.T) {
+	auth := usageAuth(t, "usage:read")
+	other := usageAuth(t, "task:read")
+	dao := &scopedTestSessionDAO{summaryDAO: &summaryDAO{now: time.Now().UTC()}, session: store.UsageSession{Scope: "test", OwnerID: auth.Principal.UserID}}
+	current := other
+	s := newTestService(t, controlledStore{read: func(_ context.Context, f func(store.UsageScope) error) error {
+		return f(scopedTestSessionScope{dao: dao, current: current})
+	}}, Options{})
+	if _, err := s.TestSummaryAuthorized(t.Context(), auth, "session"); err == nil || dao.metrics != 0 {
+		t.Fatalf("revoked scope read usage: %v", err)
+	}
+	current = auth
+	if _, err := s.TestSummaryAuthorized(t.Context(), auth, "session"); err != nil || dao.metrics != 1 {
+		t.Fatalf("allowed test session: %v", err)
+	}
+	dao.session.OwnerID = "other"
+	if _, err := s.TestSummaryAuthorized(t.Context(), auth, "session"); err == nil || dao.metrics != 1 {
+		t.Fatalf("other owner read usage: %v", err)
+	}
+}
+
+func TestScopedUsageRecordsDelegatesValidatedInput(t *testing.T) {
+	s := newTestService(t, controlledStore{read: func(context.Context, func(store.UsageScope) error) error {
+		t.Fatal("invalid filter reached storage")
+		return nil
+	}}, Options{})
+	_, err := s.RecordsAuthorized(t.Context(), usageAuth(t, "usage:read"), "project", "task", "", PageRequest{})
+	code(t, err, "invalid_filter")
+}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/google/uuid"
 )
 
@@ -94,4 +95,29 @@ func TestGrantAndImpactVisibilitySnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
+}
+
+func TestGrantWriteAdmissionPropagatesMissingRoots(t *testing.T) {
+	db, actor := dbFixture(t)
+	ctx := t.Context()
+	teamID := uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Team')`, teamID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for _, tc := range []struct{ team, app string }{{uuid.NewString(), uuid.NewString()}, {teamID, uuid.NewString()}} {
+		w := github.NewGrantWriter(tx, tc.team, tc.app)
+		admission, ok := w.(store.GitHubGrantWriteAdmissionDAO)
+		if !ok {
+			t.Fatal("missing admission capability")
+		}
+		_, err := admission.GrantWriteAdmission(ctx, actor)
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing root team=%s: %v", tc.team, err)
+		}
+	}
 }

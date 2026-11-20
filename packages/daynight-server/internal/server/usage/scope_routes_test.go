@@ -242,3 +242,44 @@ func TestScopedUsageRoutesUseAuthorizedService(t *testing.T) {
 		t.Fatalf("scoped authentication calls = %d", calls)
 	}
 }
+
+func TestScopedUsageAdapterRejectsMissingOrMismatchedAuthorization(t *testing.T) {
+	auth := scopedUsageIdentity(t, "usage:read")
+	other := auth.Principal
+	other.CredentialID = "66666666-6666-4666-8666-666666666666"
+	spy := &scopedReadSpy{}
+	adapter := scopedOperations{reads: spy}
+	for _, ctx := range []context.Context{t.Context(), context.WithValue(t.Context(), scopeContextKey{}, auth)} {
+		principal := other
+		for _, call := range []func() error{
+			func() error { _, err := adapter.TaskSummaries(ctx, principal, "project", []string{"task"}); return err },
+			func() error { _, err := adapter.TestSummary(ctx, principal, "session"); return err },
+			func() error {
+				_, err := adapter.Records(ctx, principal, "project", "task", "", app.PageRequest{})
+				return err
+			},
+			func() error { _, err := adapter.Aggregate(ctx, principal, "project", "chain", "task", ""); return err },
+		} {
+			if err := call(); err == nil || spy.method != "" {
+				t.Fatalf("unbound authority reached operation: %v, %s", err, spy.method)
+			}
+		}
+	}
+}
+
+func TestScopedUsageRegistrationRequiresDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	RegisterScopedRoutesWithScopeObserver(mux, nil, fixedAuth{}, nil, logger, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/usage/v1/capabilities", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("nil service registered routes: %d", w.Code)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("missing scoped authentication admitted")
+		}
+	}()
+	registerScopedRoutes(http.NewServeMux(), &controlledOperations{t: t}, &scopedReadSpy{}, fixedAuth{}, nil, logger, nil)
+}

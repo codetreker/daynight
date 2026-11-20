@@ -43,7 +43,7 @@ func TestAdminVisibilityAndInvitationAvailability(t *testing.T) {
 			if err := v.AdminInvitationVisibility(ctx, app, invite); err != nil {
 				return err
 			}
-			for _, err := range []error{v.AppAdminVisibility(ctx, app, outsider), v.AdminMembershipVisibility(ctx, app, outsider), v.AdminInvitationVisibility(ctx, app, uuid.NewString())} {
+			for _, err := range []error{v.AppAdminVisibility(ctx, app, outsider), v.AppAdminVisibility(ctx, uuid.NewString(), actor), v.AdminMembershipVisibility(ctx, app, outsider), v.AdminInvitationVisibility(ctx, app, uuid.NewString())} {
 				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("missing target: %v", err)
 				}

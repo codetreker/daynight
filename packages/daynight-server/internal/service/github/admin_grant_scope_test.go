@@ -56,7 +56,17 @@ func TestScopedAdminServiceAdmitsActualOperations(t *testing.T) {
 	if _, err := m.ListAdminsAuthorized(ctx, read, svcAdminApp, core.ListAppsInput{}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.CreateAdminInvitationAuthorized(ctx, read, svcAdminApp, svcAdminUser)
+	if _, err := m.ListAdminInvitationsAuthorized(ctx, read, svcAdminApp, core.ListAppsInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InspectAdminInvitationAuthorized(ctx, read, token); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.ListAdminInvitationsAuthorized(ctx, manage, svcAdminApp, core.ListAppsInput{})
+	scopeFault(t, err, "insufficient_scope")
+	_, err = m.InspectAdminInvitationAuthorized(ctx, manage, token)
+	scopeFault(t, err, "insufficient_scope")
+	_, err = m.CreateAdminInvitationAuthorized(ctx, read, svcAdminApp, svcAdminUser)
 	scopeFault(t, err, "insufficient_scope")
 	_, err = m.RemoveAdminAuthorized(ctx, read, svcAdminApp, svcAdminUser, core.RemoveAdminInput{ExpectedUserID: svcAdminUser, MembershipVersion: 5})
 	scopeFault(t, err, "insufficient_scope")

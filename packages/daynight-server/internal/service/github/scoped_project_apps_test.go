@@ -59,6 +59,10 @@ func TestScopedProjectAppPreservesAccessAndStopsBeforeEffects(t *testing.T) {
 	}
 	_, err = m.SettingsAuthorized(t.Context(), auth, mgmtProject, 1, 15)
 	scopeAppFault(t, err, "insufficient_scope")
+	_, err = m.SyncAuthorized(t.Context(), auth, mgmtProject, 1, true)
+	scopeAppFault(t, err, "insufficient_scope")
+	_, err = m.DisconnectAuthorized(t.Context(), auth, mgmtProject, core.ProjectAppDisconnect{Version: 1, OwnershipVersion: facts.Project.Ownership.Version})
+	scopeAppFault(t, err, "insufficient_scope")
 	denied := scopeAppAuth(t, "github:manage")
 	denied.Principal = auth.Principal
 	_, err = m.GetAuthorized(t.Context(), denied, mgmtProject)
