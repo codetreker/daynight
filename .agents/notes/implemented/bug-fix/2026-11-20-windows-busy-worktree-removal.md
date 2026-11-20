@@ -44,9 +44,13 @@ directory removal reproves the directory. Outside the content walk,
 `removeEmptyDirectory` in `worktrees.ts` removes the task worktree root, the
 directory the agent's own working directory holds; it passes the surrounding
 `verifyOwnership`, which already proves the worktree is still empty with
-unchanged Git metadata. `removeEmptyReservation` passes a callback that repeats
-its captured directory identities, including the reservation leaf, and confirms
-no Git registration appeared.
+unchanged Git metadata. `removeEmptyReservation` verifies its reservation through a
+single function that the first attempt and every retry both call, so the two
+cannot diverge. That function checks its captured directory identities,
+including the reservation leaf, confirms no Git registration appeared, and
+checks the identities again afterwards: the registration scan is asynchronous,
+so a reservation replaced while it runs would otherwise leave the scan
+reporting on a directory the removal no longer owns.
 
 The retry is not platform-guarded. `EBUSY` is diagnostic on its own and a single
 code path keeps the behavior covered by tests on every platform.

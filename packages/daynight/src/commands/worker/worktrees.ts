@@ -350,18 +350,22 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     if (leaf === null) return;
     if ((await readdir(target)).length > 0) throw new Error("The unregistered task directory is not empty; it was retained.");
     directories.set(target, leaf);
-    for (const [entry, expected] of directories) if (await directory(entry) !== expected) throw new Error(`Worktree reservation directory ${entry} changed before cleanup.`);
-    if ((await registrations(repository, target, operation)).length > 0) throw new Error("A Git worktree registration appeared before reservation cleanup.");
-    for (const [entry, expected] of directories) if (await directory(entry) !== expected) throw new Error(`Worktree reservation directory ${entry} changed before cleanup.`);
-    // `directories` already carries the reservation leaf, so this repeats the
-    // exact ownership and registration evidence gathered above.
-    const reproveReservation = async (): Promise<void> => {
-      operation.check();
+    const verifyReservation = async (): Promise<void> => {
       for (const [entry, expected] of directories) if (await directory(entry) !== expected) throw new Error(`Worktree reservation directory ${entry} changed before cleanup.`);
       if ((await registrations(repository, target, operation)).length > 0) throw new Error("A Git worktree registration appeared before reservation cleanup.");
-      operation.check();
+      // The registration scan is asynchronous, so the reservation can be
+      // replaced while it runs and leave the scan reporting on a directory this
+      // cleanup no longer owns. Repeating the identities afterwards is what
+      // binds that result to the directory actually removed. The first attempt
+      // and every retry share this function so they cannot diverge.
+      for (const [entry, expected] of directories) if (await directory(entry) !== expected) throw new Error(`Worktree reservation directory ${entry} changed before cleanup.`);
     };
-    await removeEmptyDirectory(target, operation, reproveReservation);
+    await verifyReservation();
+    await removeEmptyDirectory(target, operation, async () => {
+      operation.check();
+      await verifyReservation();
+      operation.check();
+    });
     if (await directory(target) !== null || (await registrations(repository, target, operation)).length > 0) throw new Error("The unregistered task reservation removal is incomplete.");
   };
   const scanWorktrees = async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false, settled: readonly OwnedWorktree[] = []): Promise<WorktreeScan> => {

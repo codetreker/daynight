@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync, realpathSync } from "node:fs";
+import { cpSync, realpathSync, renameSync, rmdirSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -527,6 +527,36 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       throw busyError();
     });
     await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it("rejects a reservation replaced during the registration scan of a busy retry", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the retry's first identity check still passes and the
+      // swap lands inside its registration scan.
+      registrationBoundary.afterRead = () => {
+        if (swapped) return;
+        swapped = true;
+        rmdirSync(target);
+        renameSync(replacement, target);
+      };
+      throw busyError();
+    });
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(swapped).toBe(true);
     expect(attempts).toBe(1);
     expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
   });
