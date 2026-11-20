@@ -20,7 +20,7 @@ import type { ProjectGraphTarget } from '../projects/project-graph-target';
 import { TaskMemberRow } from './TaskMemberRow';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
 import { ScopedTaskChainRow } from './ScopedTaskChainRow';
-import { ChainUsageButton } from './ChainUsageButton';
+import { ChainActionLabel, ChainUsageButton } from './ChainUsageButton';
 import { scopedChainProgress } from './scoped-chain-progress';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import '../../styles/graph.css';
@@ -60,7 +60,7 @@ const RepresentativeDetail = ({ task, rootId, title, onOpenTask }: { readonly ta
   const { messages: { graph: m } } = useI18n();
   const completion = useCompletionTime(completedAtFor(task));
   const hint = useCompletionHint(completion);
-  return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.representativeTaskDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}>{m.representativeTaskDetails}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
+  return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.representativeTaskDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}><ChainActionLabel label={m.representativeTaskDetails} />{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
 };
 
 const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenChainUsage, onOpenTask, onOpenSession }: ChainRowProps) => {
