@@ -23,22 +23,26 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six' | 'tall-form';
+type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six' | 'tall-form' | 'typography-form';
 async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false, options: { timelineGate?: Promise<void>; timelineStarted?: () => void; failResponse?: boolean } = {}) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && (content.startsWith('interaction') || content === 'tall-form') } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: !archived && (content.startsWith('interaction') || content.endsWith('-form')) } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : content === 'tall-form' ? [{
+  const entries = content === 'empty' ? [] : content.endsWith('-form') ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
     interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'name', label: 'Workspace profile name', type: 'text', required: true, sensitive: false },
+      ...(content === 'typography-form' ? [
+        { fieldId: 'secret', label: 'Access code', type: 'text', required: true, sensitive: true },
+        { fieldId: 'count', label: 'Instance count', type: 'number', min: 1, max: 3, required: true },
+      ] : []),
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
       { fieldId: 'profile', label: 'Workspace profile', type: 'multiselect', required: false, options: [{ id: 'standard', label: 'Standard' }, { id: 'development', label: 'Development configuration with validation and local diagnostics enabled' }] },
     ] },
@@ -873,19 +877,50 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} composer foll
       const { observations } = await open(page, 'zh-CN', 'working', entry, 'long');
       const input = page.locator('.session-composer textarea');
       await input.fill('保留草稿 Retained draft');
+      const paragraph = page.locator('.session-entry .markdown-content p').first();
+      await expect(paragraph).toHaveCSS('font-size', '14px');
       await expect(input).toHaveCSS('font-size', touch ? '16px' : '14px');
       await expect(page.locator('.session-control-trigger').first()).toHaveCSS('font-size', '14px');
       await page.locator('.session-model-trigger').click();
       await expect(page.locator('.session-control-setting label').first()).toHaveCSS('font-size', '14px');
       await expect(page.locator('.session-controls-foot small')).toHaveCSS('font-size', '14px');
-      await page.evaluate(() => document.documentElement.style.fontSize = '20px');
-      await expect(input).toHaveCSS('font-size', touch ? '20px' : '17.5px');
-      await expect(page.locator('.session-control-trigger').first()).toHaveCSS('font-size', '17.5px');
-      await expect(input).toHaveValue('保留草稿 Retained draft');
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      for (const root of [12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await expect(input).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+        await expect(paragraph).toHaveCSS('font-size', `${root * 0.875}px`);
+        await expect(page.locator('.session-control-trigger').first()).toHaveCSS('font-size', `${root * 0.875}px`);
+        await expect(page.locator('.session-controls-foot small')).toHaveCSS('font-size', `${root * 0.875}px`);
+        await expect(input).toHaveValue('保留草稿 Retained draft');
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
       expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
     } finally { await context.close(); }
   }
+});
+
+test('coarse interaction text fields and multiselect labels follow the shared text floor', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 900 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    const { observations } = await open(page, 'en', 'waiting_input', 'test', 'typography-form');
+    const name = page.getByLabel('Workspace profile name', { exact: true });
+    const secret = page.getByLabel('Access code', { exact: true });
+    const count = page.getByLabel('Instance count', { exact: true });
+    await name.fill('Retained name'); await secret.fill('retained-secret'); await count.fill('2');
+    const choice = page.locator('.session-multiselect-choice').last();
+    await choice.click();
+    for (const [root, expected] of [[12, 16], [24, 24]] as const) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      for (const control of [name, secret, count, choice, choice.locator('span')]) await expect(control).toHaveCSS('font-size', `${expected}px`);
+      await choice.scrollIntoViewIfNeeded();
+      await expect(choice).toBeInViewport();
+      expect(await choice.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      expect(await choice.evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      await expect(choice.locator('input')).toBeChecked();
+      await expect(name).toHaveValue('Retained name'); await expect(secret).toHaveValue('retained-secret'); await expect(count).toHaveValue('2');
+    }
+    expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+  } finally { await context.close(); }
 });
 
 

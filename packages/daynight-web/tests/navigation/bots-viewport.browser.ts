@@ -47,6 +47,8 @@ test.describe('assistant create icon alignment', () => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto('/bots');
       await page.locator('.locale-control select').selectOption(locale);
+      await expect(page.locator('.bot-list-section h2').first()).toHaveCSS('font-size', '18px');
+      await expect(page.locator('.bot-list-count').first()).toHaveCSS('font-size', '18px');
       const button = page.locator('.bot-create');
       const label = locale === 'en' ? 'Create assistant' : '创建助手';
       await expect(button).toBeEnabled();
