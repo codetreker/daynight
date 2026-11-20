@@ -109,4 +109,19 @@ describe("credential descriptions", () => {
     const transport = { list: vi.fn().mockResolvedValue([{ ...grant, revokedAt: "2026-10-26T10:00:00Z", status: "revoked" }]), revoke: vi.fn(), describe: vi.fn().mockResolvedValue({ id: grant.id, description: "old laptop" }) };
     render(<OwnerGrantsPanel user={user} onIdentityMismatch={vi.fn()} transport={transport} />); await edit("App"); change("old laptop"); save(); await screen.findByText("Description updated."); expect(screen.getByText("Revoked")).toBeInTheDocument(); expect(screen.getByText("old laptop")).toHaveClass("credential-description"); expect(transport.revoke).not.toHaveBeenCalled();
   });
+  it("keeps creation unknown after failed reads and offers a keyboard-reachable read without replaying POST", async () => {
+    const transport = fixture(); transport.create.mockRejectedValue(new ApiError("server", 503, "write_outcome_unknown"));
+    transport.list.mockResolvedValueOnce([token]).mockRejectedValueOnce(new ApiError("server", 503, "internal", "create-read-failed")).mockResolvedValue([token, other]);
+    render(page(transport)); fireEvent.click(await screen.findByRole("button", { name: "Create token" }));
+    fireEvent.change(screen.getByLabelText(/Token name/), { target: { value: "Build" } }); fireEvent.submit(document.getElementById("create-token-form")!);
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Read current state" })); await act(async () => {});
+    expect(within(dialog).getByText("create-read-failed")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Token name/)).toHaveValue("Build");
+    expect(within(dialog).getByRole("button", { name: "Read current state" })).toBeEnabled();
+    fireEvent.submit(document.getElementById("create-token-form")!); expect(transport.create).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Read current state" }));
+    await screen.findByText("The current token list is shown. Check whether a token was issued before creating another.");
+    expect(within(dialog).getByRole("button", { name: "Create token" })).toBeEnabled(); expect(transport.create).toHaveBeenCalledTimes(1); expect(transport.list).toHaveBeenCalledTimes(3);
+  });
 });
