@@ -40,15 +40,9 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
   const qualified = (state: UsageState): boolean => capability(state)?.qualification === "verified";
   const pendingUpload = (state: UsageState, limit: number) => {
     const current = capability(state), kind = qualified(state) ? undefined : "execution_state";
-    for (;;) {
-      const flight = store.pending(state.stateId, limit, kind);
-      const obsolete = current === null ? [] : flight.filter(item => item.payload.kind === "execution_state" && !isDeepStrictEqual(item.payload.capability, current));
-      if (!obsolete.length) return flight;
-      // The service validates capability before stale/duplicate handling. Keep
-      // the original payload and hash, but isolate it before forming any batch.
-      for (const item of obsolete) store.quarantine(item.eventId, "profile_unverified");
-      diagnose("Usage state capability changed; the original event was retained locally.");
-    }
+    // Eligibility changes with the advertised profile. Keep the original event
+    // untouched so a later matching capability can admit its original seal.
+    return store.pending(state.stateId, limit, kind, item => item.payload.kind !== "execution_state" || current !== null && isDeepStrictEqual(item.payload.capability, current));
   };
   /** A failed capability read remains retryable; a known refusal or profile filter does not. */
   const canReplay = (state: UsageState): boolean => {

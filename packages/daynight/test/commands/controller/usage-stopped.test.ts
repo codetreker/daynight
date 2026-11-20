@@ -146,7 +146,7 @@ test.each(["claude", "copilot"] as const)("unqualified %s measurements remain re
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
 });
 
-test.each(["promoted", "demoted", "metrics-changed", "reordered"] as const)("stopped Claude isolates incompatible state snapshots before selecting eligible measurements (%s)", async change => {
+test.each(["promoted", "demoted", "metrics-changed", "reordered"] as const)("stopped Claude filters incompatible state snapshots without mutating retained evidence (%s)", async change => {
   const verified = { ...capability, profileId: "claude-message-input-0.3.247-v1" };
   const previous = change === "promoted" ? { ...verified, qualification: "unverified" } : verified;
   const current = change === "demoted" ? { ...verified, qualification: "unverified" }
@@ -179,9 +179,47 @@ test.each(["promoted", "demoted", "metrics-changed", "reordered"] as const)("sto
   const remaining = f.read();
   if (change !== "reordered") expect(remaining.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state")).toEqual(before.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state"));
   const db = new Database(f.journalPath, { readonly: true });
-  try { expect((db.prepare("SELECT count(*) AS count FROM usage_outbox WHERE quarantined=1").get() as { count: number }).count).toBe(change === "reordered" ? 0 : oldCount); }
+  try { expect((db.prepare("SELECT count(*) AS count FROM usage_outbox WHERE quarantined=1").get() as { count: number }).count).toBe(0); }
   finally { db.close(); }
   expect(remaining.execution).toEqual(before.execution); expect(remaining.outbox).toEqual(before.outbox);
+});
+
+test.each(["verified", "unverified"])("a temporarily incompatible capability preserves the original %s seal for later replay", async qualification => {
+  const original = { ...capability, profileId: "claude-message-input-0.3.247-v1", qualification };
+  let advertised = original, unavailable = true;
+  const f = await fixture(undefined, "claude", true, "valid", journal => {
+    const state = journal.usage.states()[0]!;
+    journal.usage.enqueueState(state.stateId, { collectionState: qualification === "verified" ? "partial" : "unavailable", capability: original, reasonCodes: ["profile_unverified", "native_recovery_gap", "subagent_scope_unknown"], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+  }), before = f.read(), batches: Record<string, unknown>[][] = [];
+  const retainedEvidence = () => {
+    const db = new Database(f.journalPath, { readonly: true });
+    try { return { events: db.prepare("SELECT * FROM usage_outbox ORDER BY local_sequence").all(), meta: db.prepare("SELECT * FROM usage_meta ORDER BY key").all() }; }
+    finally { db.close(); }
+  };
+  const evidence = retainedEvidence();
+  const request: typeof fetch = async (input, init) => {
+    if (new URL(String(input)).pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: original.profileId, provider: "claude", capability: advertised, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability: advertised }] }] });
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; batches.push(body.events);
+    expect(body.events.filter(event => event.kind === "execution_state").every(event => isDeepStrictEqual(event.capability, advertised))).toBe(true);
+    if (unavailable) return new Response(null, { status: 503 });
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
+  const first = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(first.retryable).toBe(true); expect(retainedEvidence()).toEqual(evidence);
+  advertised = { ...original, qualification: qualification === "verified" ? "unverified" : "verified" };
+  // Keep the original measurement pending while this attempt proves that the
+  // incompatible original seal cannot be sent or permanently quarantined.
+  const second = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(second.retryable).toBe(qualification === "unverified");
+  expect(retainedEvidence()).toEqual(evidence);
+  if (qualification === "verified") expect(batches).toHaveLength(1);
+  else expect(batches.at(-1)!.every(event => event.kind === "measurement")).toBe(true);
+  advertised = original; unavailable = false;
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: qualification === "verified" ? 0 : 1, retryable: false });
+  const originalSeal = before.usage.map(row => JSON.parse((row as { payload: string }).payload)).find(event => event.kind === "execution_state");
+  expect(batches.at(-1)).toContainEqual(originalSeal);
+  expect(f.read().usage.every(row => JSON.parse((row as { payload: string }).payload).kind === "measurement")).toBe(true);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
 });
 
 test.each([200, 401, 404, 501, 503])("known capability refusal differs from a transient failure (%s) with measurement-only retention", async status => {

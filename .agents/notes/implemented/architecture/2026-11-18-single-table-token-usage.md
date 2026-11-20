@@ -86,9 +86,12 @@ known unqualified measurements alone cannot become a retryable batch, while a
 transient capability lookup failure remains distinguishable. Its pending
 evidence count remains unchanged for retention. State events must match the
 complete current capability before joining a batch. A qualification or other
-capability change leaves incompatible old state bodies unacknowledged as
-evidence while eligible measurements upload and receive independent ACKs.
-Filtering precedes the batch limit so retained states cannot starve delivery.
+capability change excludes incompatible state bodies only from the current
+batch, without rewriting, quarantining or acknowledging them. Selection is
+reevaluated after each capability read: restoring the original capability with
+a valid original grant allows the original final seal to upload. Eligible
+measurements receive independent ACKs, and filtering precedes the batch limit
+so retained states cannot starve delivery.
 Pending or quarantined measurements
 and unresolved local source-conflict evidence retain their sole journal during
 explicit and automatic recording discard. Local conflicts have no uploadable
