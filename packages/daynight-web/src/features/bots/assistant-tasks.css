@@ -59,12 +59,40 @@
 .assistant-task-pending { max-height: 120px; overflow: auto; border-bottom: 1px solid var(--line); padding: 4px 8px; font-size: var(--text-interface); }
 .assistant-task-pending .button { white-space: normal; overflow-wrap: anywhere; text-align: left; font-size: var(--text-interface); }
 .assistant-task-detail :is(button,a,input,textarea):focus-visible, .assistant-task-section a:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+.assistant-task-inbox-details { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 0; }
+.assistant-task-inbox-details dt { font-size: var(--text-interface); color: var(--muted); margin-bottom: 6px; }
+.assistant-task-inbox-details dd { margin: 0; font-size: var(--text-interface); overflow-wrap: anywhere; min-width: 0; }
+.assistant-task-inbox-url { grid-column: 1 / -1; }
+.assistant-task-inbox-value { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.assistant-task-inbox-value code { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 7px; background: #f5f6fa; font-size: var(--text-interface); overflow-wrap: anywhere; word-break: break-all; }
+.assistant-task-inbox-token { display: grid; gap: 8px; margin-block: 12px; padding: 12px; border: 1px solid #d4a04a; border-radius: 8px; background: #fff7e8; color: #805b27; }
+.assistant-task-inbox-token p { margin: 0; }
+.assistant-task-inbox-token .button { justify-self: start; }
+.assistant-task-inbox-modes { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.assistant-task-inbox-modes legend { margin-bottom: 8px; font-size: var(--text-interface); }
+.assistant-task-form .assistant-task-inbox-modes label { display: flex; align-items: flex-start; gap: 8px; }
+.assistant-task-inbox-modes label > span { display: grid; gap: 2px; min-width: 0; }
+.assistant-task-inbox-modes .assistant-task-meta { margin: 0; }
 @container bots-workspace (max-width: 650px) {
   .assistant-task-heading { padding: 14px 12px 0; }
   .assistant-task-body { padding: 12px; }
-  .assistant-task-registry { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px 10px; }
+  .assistant-task-registry, .assistant-task-inbox-details { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px 10px; }
+  .assistant-task-inbox-copy { min-width: 44px; min-height: 44px; }
   .assistant-task-detail .button, .assistant-task-tabs button, .assistant-task-list-actions .button { min-height: 44px; }
   .assistant-task-tabs { gap: 0; }
   .assistant-task-tabs button { padding-inline: 8px; }
   .assistant-task-panel, .assistant-task-entry, .assistant-task-proposal, .assistant-task-record-section { padding: 12px; }
+}
+.assistant-task-subscriptions { display: grid; gap: 12px; }
+.assistant-task-subscriptions h4 { margin: 0; font-size: var(--text-section-heading); }
+.assistant-task-subscriptions .notice { margin: 0; }
+.assistant-task-subscription-form fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.assistant-task-subscription-form legend { margin-bottom: 8px; font-size: var(--text-interface); }
+.assistant-task-subscription-checks { display: grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap: 6px 12px; max-height: 220px; overflow: auto; }
+.assistant-task-subscription-checks label { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.assistant-task-subscription-endpoints { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.assistant-task-subscription-endpoints li { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.assistant-task-subscription-endpoints li > span:first-child { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+@container bots-workspace (max-width: 650px) {
+  .assistant-task-subscription-checks label { min-height: 44px; }
 }
