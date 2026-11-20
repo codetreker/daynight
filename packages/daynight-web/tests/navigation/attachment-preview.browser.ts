@@ -326,10 +326,10 @@ test.describe('deep attachment tree', () => {
       await disclosure.locator('summary').click();
       const upload = attachments.locator('input[type=file]');
       await upload.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('retained draft') });
-      const target = attachments.getByRole('textbox', { name: 'Target relative path' });
+      const target = attachments.locator('.attachment-upload input[type=text]');
       await target.fill('drafts/unsent.txt');
-      const originalFile = await file.elementHandle(), originalUpload = await upload.elementHandle();
       await attachments.getByRole('button', { name: 'Back to files', exact: true }).click();
+      const originalFile = await file.elementHandle(), originalUpload = await upload.elementHandle();
 
       for (const width of [320, 375, 390, 421, 480, 768, 1360]) {
         await page.setViewportSize({ width, height: width === 320 ? 640 : width === 375 ? 667 : width < 768 ? 844 : 900 });
