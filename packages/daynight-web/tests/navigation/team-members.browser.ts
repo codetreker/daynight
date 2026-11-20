@@ -784,3 +784,28 @@ test('member search retains its page during account-change waiting and sends no 
     expect(searches).toBe(before); await expect(input).toHaveValue('another'); await expect(input).toBeFocused();
   } finally { await other.close(); }
 });
+
+test('member search input follows browser text preferences at responsive widths', async ({ page }) => {
+  await install(page); await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+    }
+  }
+});
+
+test.describe('coarse pointer member search', () => {
+  test.use({ hasTouch: true });
+  test('keeps the input at the shared responsive size on a wide viewport', async ({ page }) => {
+    await install(page); await start(page);
+    const input = page.getByRole('searchbox', { name: 'Search and add members' });
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(input).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  });
+});

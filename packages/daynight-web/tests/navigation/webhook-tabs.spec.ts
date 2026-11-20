@@ -148,3 +148,80 @@ for (const kind of ['deleted', 'missing'] as const) {
     expect(state.writes).toEqual([]); expect(state.unexpected).toEqual([]);
   });
 }
+
+for (const [width, root, expectedInput] of [[320, 12, '16px'], [320, 24, '24px'], [1360, 12, '16px'], [1360, 24, '24px']] as const) {
+  test(`webhook text and touch fields follow the shared scale at ${width}px and ${root}px root`, async ({ page }) => {
+    await setup(page, 'en');
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/webhooks?owner=personal');
+    await page.addStyleTag({ content: `html { font-size: ${root}px; }` });
+    const search = page.locator('.search-wrap input');
+    await expect(search).toBeVisible();
+    await expect(search).toHaveCSS('font-size', expectedInput);
+    await expect(page.locator('.webhooks h1')).toHaveCSS('font-size', `${root * 1.75}px`);
+    await expect(page.locator('.panel-heading h2')).toHaveCSS('font-size', `${root * 1.125}px`);
+    await page.locator('.heading').getByRole('button').click();
+    const dialog = page.locator('.webhook-dialog');
+    await expect(dialog.locator('#webhook-name')).toHaveCSS('font-size', expectedInput);
+    await expect(dialog.locator('#webhook-url')).toHaveCSS('font-size', expectedInput);
+    await expect(dialog.locator('.dialog-header h2')).toHaveCSS('font-size', `${root * 1.375}px`);
+    await page.keyboard.press('Escape');
+    await page.goto(address('personal', 'deliveries'));
+    await page.addStyleTag({ content: `html { font-size: ${root}px; }` });
+    await page.locator('.deliveries-heading button').first().click();
+    const filters = page.locator('.delivery-filters input');
+    await expect(filters).toHaveCount(4);
+    for (const field of await filters.all()) await expect(field).toHaveCSS('font-size', expectedInput);
+  });
+}
+
+test('webhook request IDs use the metadata size', async ({ page }) => {
+  await setup(page, 'en', { failOnce: true });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(address('personal'));
+  const requestId = page.locator('.webhook-error-id').first();
+  await expect(requestId).toBeVisible();
+  await expect(requestId).toHaveText('tabs-fixture');
+  await expect(requestId).toHaveCSS('font-size', '12px');
+});
+
+test.describe('fine pointer desktop', () => {
+  test.use({ hasTouch: false });
+  for (const root of [12, 24]) {
+    test(`webhook inputs retain sm at a ${root}px root`, async ({ page }) => {
+      await setup(page, 'en');
+      await page.setViewportSize({ width: 1360, height: 900 });
+      await page.goto('/webhooks?owner=personal');
+      await page.addStyleTag({ content: `html { font-size: ${root}px; }` });
+      await expect(page.locator('.search-wrap input')).toHaveCSS('font-size', `${root * 0.875}px`);
+      await page.locator('.heading').getByRole('button').click();
+      await expect(page.locator('#webhook-name')).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(page.locator('#webhook-url')).toHaveCSS('font-size', `${root * 0.875}px`);
+    });
+  }
+});
+
+test('delivery generation filter scales in the actual dialog', async ({ page }) => {
+  await setup(page, 'en');
+  const deliveryId = id(30);
+  const delivery = {
+    id: deliveryId, endpointId, eventId: id(31), owner: { kind: 'personal', id: userId }, eventType: 'task.created',
+    resource: { projectId: id(4), taskId: id(32), stepId: null, messageId: null, displayName: 'Long task title' },
+    occurredAt: now, resourceVersion: '1', target: { destinationRevision: '1', url: 'https://receiver.example/path', displayUrl: 'https://receiver.example/path' },
+    generation: '1', state: 'failed', attemptCount: 1, automaticAttemptCount: 1, manualOperationCount: 0,
+    nextAttemptAt: null, lastAttemptAt: now, expiresAt: '2099-01-01T00:00:00Z', automaticExpiresAt: '2099-01-01T00:00:00Z',
+    payloadExpiresAt: '2099-01-01T00:00:00Z', lastAcknowledgedAt: null,
+    lastResult: { category: 'http_error', code: 'receiver_rejected', httpStatus: 503, durationMs: 20 }, payloadAvailable: true, disclosure: 'full',
+  };
+  await page.route(/\/api\/v1\/me\/webhooks\/[^/]+\/deliveries(?:\/[^/?]+(?:\/attempts)?)?(?:\?.*)?$/, route => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith('/deliveries') ? { items: [delivery], nextCursor: null, historyMayBeIncomplete: true, retention: { payloadRetentionSeconds: 604800, metadataRetentionSeconds: 2592000 } }
+      : path.endsWith('/attempts') ? { items: [], nextCursor: null, historyMayBeIncomplete: true, retention: { payloadRetentionSeconds: 604800, metadataRetentionSeconds: 2592000 } } : delivery;
+    return route.fulfill({ contentType: 'application/json', headers: { 'Daynight-User-ID': userId }, body: JSON.stringify(body) });
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(address('personal', 'deliveries'));
+  await page.addStyleTag({ content: 'html { font-size: 24px; }' });
+  await page.locator('.delivery-row').click();
+  await expect(page.locator('.delivery-generation-filter input')).toHaveCSS('font-size', '24px');
+});

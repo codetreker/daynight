@@ -33,9 +33,11 @@ Retired identifiers are tracked independently of font declarations, including
 CSS geometry and statically readable TypeScript strings and style operations.
 Mermaid's current configuration receives individual entries, so its surrounding
 files and configuration objects retain normal inspection. The workspace shell and
-shared selection controls use the public sizes directly; the shared selection CSS
-owns touch text adjustments and sizes controls from their actual text instead of
-private font aliases. The zero-legacy mode refuses the bridge and all remaining baseline
+shared selection controls use the public sizes directly; Team member search,
+GitHub management and Webhook consumers also select public sizes. The shared
+selection CSS owns touch text adjustments and sizes controls from their actual
+text instead of private font aliases. Its marked field rule overrides transitional
+form typography so responsive inputs retain the minimum size. The zero-legacy mode refuses the bridge and all remaining baseline
 uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
