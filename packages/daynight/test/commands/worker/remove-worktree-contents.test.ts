@@ -319,6 +319,35 @@ describe("owned worktree content removal", () => {
     expect(await readFile(held, "utf8")).toBe("retained");
   });
 
+  it("rejects an entry replaced during the busy backoff instead of removing its replacement", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "original");
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async target => {
+      if (String(target) !== held) throw new Error(`Unexpected removal target: ${String(target)}`);
+      attempts++;
+      await actualFs.rm(held);
+      await writeFile(held, "replacement");
+      throw busy();
+    })).rejects.toThrow(/identity changed/);
+    expect(attempts).toBe(1);
+    expect(await readFile(held, "utf8")).toBe("replacement");
+  });
+
+  it("re-admits the mutation before each busy retry", async () => {
+    const f = await fixture();
+    await writeFile(path.join(f.target, "held"), "remove");
+    let admitted = 0;
+    let attempts = 0;
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation(), beforeMutation: async () => { admitted++; } }, async (target, options) => {
+      if (++attempts < 3) throw busy();
+      await rm(target, options);
+    });
+    expect(attempts).toBe(3);
+    expect(admitted).toBe(3);
+  });
+
   it("stops retrying a busy removal after cancellation and starts no further mutations", async () => {
     const f = await fixture();
     const held = path.join(f.target, "held");

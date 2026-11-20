@@ -20,16 +20,28 @@ same window again.
 
 ## Decision
 
-`removeWorktreeContents` retries an entry or directory removal that fails with
-`EBUSY`, waiting 20, 40, 80, 160 and 320 milliseconds between attempts. Any
-other error code propagates on the first failure, so `EACCES` and `EPERM` still
-become a `WorktreePermissionError` and reach the existing privileged recovery
-unchanged. The retry calls `operation.check()` before and after each delay, so
-cancellation and deadline stop it without starting another mutation.
+`retryWhileBusy` reattempts a removal that fails with `EBUSY`, waiting 20, 40,
+80, 160 and 320 milliseconds between attempts. Any other error code propagates
+on the first failure, so `EACCES` and `EPERM` still become a
+`WorktreePermissionError` and reach the existing privileged recovery unchanged.
 
-The retry is not platform-guarded. `EBUSY` is diagnostic on its own, the
-surrounding identity verification is unchanged, and a single code path keeps the
-behavior covered by tests on every platform.
+Each delay is a window in which another writer can replace the target, so the
+caller supplies a `reprove` callback that runs after every delay. It re-verifies
+the same ownership evidence the caller established before its first attempt and
+re-admits the mutation; a changed identity aborts instead of deleting whatever
+now occupies the path. `operation.check()` around each delay covers cancellation
+and deadline, which identity verification does not.
+
+Both removal sites use it. Inside `removeWorktreeContents`, entry removal
+reproves the parent directory and the entry's own inode and type, and nested
+directory removal reproves the directory. The task worktree root is removed by
+`removeEmptyDirectory` in `worktrees.ts` instead, outside the content walk, and
+that call is the one the agent's working directory actually holds; it passes the
+surrounding `verifyOwnership`, which already proves the worktree is still empty
+and its Git metadata unchanged.
+
+The retry is not platform-guarded. `EBUSY` is diagnostic on its own and a single
+code path keeps the behavior covered by tests on every platform.
 
 ## Alternatives
 
@@ -55,12 +67,25 @@ where the holder is still alive, which retrying cannot. It also terminates
 processes the worker does not own, so it needs explicit operator consent rather
 than being unconditional, and belongs to its own configuration option.
 
+**Retry without reproving ownership.** Relying on `operation.check()` alone is
+cheaper and was the first implementation, but that call tests cancellation and
+the deadline, not identity. An entry replaced during the backoff would then be
+deleted in place of the one whose ownership was proven, turning a cleanup
+failure into deletion of an unrelated file.
+
+**Retry only inside the content walk.** This covers nested entries but leaves
+out the worktree root, which `visit(target, root, true)` deliberately preserves
+and `removeEmptyDirectory` removes afterwards. The root is the agent's own
+working directory and therefore the single path most likely to be busy, so
+omitting it would have left the original failure in place.
+
 ## Consequences
 
 Cleanup now succeeds across the handle-release window that follows a terminated
-agent, at a cost of at most 620 milliseconds of added latency on the failing
-path and none on the succeeding one. A directory held by a live process still
-fails, with its original `EBUSY` error preserved for diagnosis; recovering that
-case requires the separate termination option described above. The retry adds no
-new permission or ownership assumption, because every identity check around the
-removal is unchanged.
+agent, at both the nested entries and the worktree root, at a cost of at most
+620 milliseconds of added latency per busy removal and none on the succeeding
+path. A directory held by a live process still fails, with its original `EBUSY`
+preserved for diagnosis and its Git registration retained; recovering that case
+requires the separate termination option described above. Ownership guarantees
+are unchanged: every attempt acts only on a target whose identity was proven
+immediately beforehand.

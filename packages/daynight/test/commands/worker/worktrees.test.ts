@@ -2,7 +2,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { cpSync, realpathSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -17,6 +17,13 @@ import { openExecutionResourceJournal } from "../../../src/commands/worker/execu
 import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import * as files from "../../../src/platform/files.js";
+
+// Only the selected removal is replaced; every other directory removal runs the
+// real implementation.
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rmdir: vi.fn(actual.rmdir) };
+});
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -60,6 +67,9 @@ type RefFormat = "files" | "reftable";
 let seedRoot: string | undefined;
 const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
+const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const busyError = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
 const pendingReservations = new Set<Promise<unknown>>();
@@ -186,6 +196,7 @@ afterAll(async () => {
 });
 afterEach(async () => {
   controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
+  vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -1164,6 +1175,38 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("completes cleanup when the task worktree root is transiently busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) === root && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it("retains the task worktree root and its registration when it stays busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      attempts++;
+      throw busyError();
+    });
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(attempts).toBe(6);
+    expect(worktreePaths(f.repository)).toContain(root);
   });
 
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {

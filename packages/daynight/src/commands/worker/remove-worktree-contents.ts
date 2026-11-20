@@ -15,7 +15,13 @@ const identity = (entry: BigIntStats): string => `${entry.dev}:${entry.ino}`;
 // fails with its original error once they are exhausted.
 const busyRetryDelaysMs = [20, 40, 80, 160, 320];
 
-const whileBusy = async <T>(operation: Operation, action: () => Promise<T>): Promise<T> => {
+/**
+ * Each delay is a window in which another writer can replace the target, so
+ * `reprove` must re-establish the same ownership the caller verified before its
+ * first attempt and re-admit the mutation. Cancellation and deadline alone do
+ * not make a later attempt safe.
+ */
+export const retryWhileBusy = async <T>(operation: Operation, reprove: () => Promise<void>, action: () => Promise<T>): Promise<T> => {
   for (let attempt = 0; ; attempt++) {
     try { return await action(); }
     catch (error) {
@@ -24,6 +30,7 @@ const whileBusy = async <T>(operation: Operation, action: () => Promise<T>): Pro
       operation.check();
       await delay(busyRetryDelaysMs[attempt]!);
       operation.check();
+      await reprove();
     }
   }
 };
@@ -117,7 +124,12 @@ export const removeWorktreeContents = async (
           await admitMutation();
           // Nonrecursive removal unlinks symlinks and hard links without
           // changing the target inode's permissions or following its contents.
-          await filesystem(() => whileBusy(operation, () => removeEntry(child, { recursive: false })));
+          await filesystem(() => retryWhileBusy(operation, async () => {
+            await verifyDirectory(directory, entry, handle);
+            const retained = await lstat(child, { bigint: true });
+            if (retained.isDirectory() || identity(retained) !== identity(observed) || (retained.mode & 0o170000n) !== (observed.mode & 0o170000n)) throw new Error(`Worktree entry identity changed: ${child}`);
+            await admitMutation();
+          }, () => removeEntry(child, { recursive: false })));
           operation.check();
         }
         await verifyDirectory(directory, entry, handle);
@@ -125,7 +137,10 @@ export const removeWorktreeContents = async (
       await verifyDirectory(directory, entry, handle);
       if (!keepRoot) {
         await admitMutation();
-        await filesystem(() => whileBusy(operation, () => rmdir(directory)));
+        await filesystem(() => retryWhileBusy(operation, async () => {
+          await verifyDirectory(directory, entry, handle);
+          await admitMutation();
+        }, () => rmdir(directory)));
         operation.check();
       }
     } catch (error) {

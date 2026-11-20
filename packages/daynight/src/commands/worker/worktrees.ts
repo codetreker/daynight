@@ -12,7 +12,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
-import { removeWorktreeContents, WorktreePermissionError } from "./remove-worktree-contents.js";
+import { removeWorktreeContents, retryWhileBusy, WorktreePermissionError } from "./remove-worktree-contents.js";
 import { runShellWorktreeRemoval } from "./shell-worktree-removal.js";
 import { assertNoWorktreeMounts } from "./worktree-mounts.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
@@ -324,9 +324,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     operation.check();
     return { manifest, binding, leaf, registration: matches[0]! };
   };
-  const removeEmptyDirectory = async (target: string, operation: Operation): Promise<void> => {
+  // The agent runs with its task worktree as the working directory, so this
+  // final removal is the one that meets a Windows handle still held by the
+  // process the worker just terminated. Callers that own identity evidence
+  // supply `reprove` so a later attempt cannot act on a replaced directory.
+  const removeEmptyDirectory = async (target: string, operation: Operation, reprove?: () => Promise<void>): Promise<void> => {
     operation.check();
-    try { await rmdir(target); }
+    try { await retryWhileBusy(operation, reprove ?? (() => Promise.resolve()), () => rmdir(target)); }
     catch (error) { if (!missing(error) || await directory(target) !== null) throw error; }
     operation.check();
   };
@@ -597,7 +601,14 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 return;
               }
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
-                try { await removeEmptyDirectory(result.binding.worktreePath, operation); }
+                const emptyPath = result.binding.worktreePath, emptyLeaf = result.leaf;
+                const reproveEmpty = async (): Promise<void> => {
+                  operation.check();
+                  if (await directory(emptyPath) !== emptyLeaf) throw new Error("The empty worktree directory changed during cleanup.");
+                  if (await ordinaryFile(path.join(emptyPath, ".git")) !== null) throw new Error("The empty worktree reacquired its Git pointer during cleanup.");
+                  operation.check();
+                };
+                try { await removeEmptyDirectory(emptyPath, operation, reproveEmpty); }
                 catch (ordinaryError) {
                   if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
                   try {
@@ -662,7 +673,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   pointerRemoved = true;
                   operation.check();
                   for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-                  try { await removeEmptyDirectory(binding.worktreePath, operation); }
+                  try { await removeEmptyDirectory(binding.worktreePath, operation, verifyOwnership); }
                   catch (error) {
                     if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree directory removal was denied.", { cause: error });
                     throw error;
