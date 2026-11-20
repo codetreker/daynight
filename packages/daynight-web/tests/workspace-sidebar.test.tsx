@@ -79,6 +79,30 @@ describe("workspace sidebar", () => {
     expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
   });
 
+  it.each(["/github-apps", "/github-apps/00000000-0000-4000-8000-000000000001/admins", "/github-apps/00000000-0000-4000-8000-000000000001/teams"])("keeps account GitHub Apps named and selected for %s", (routeKey) => {
+    const personalId = "00000000-0000-4000-8000-000000000701";
+    const view = render(<Harness routeKey={routeKey} />);
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    const groups = nav.querySelectorAll(".sidebar-group");
+    const account = within(groups[1] as HTMLElement).getByRole("link", { name: "My GitHub Apps" });
+    const team = within(groups[0] as HTMLElement).getByRole("link", { name: "GitHub Apps" });
+    expect(within(groups[1] as HTMLElement).getByText("My")).toBeInTheDocument();
+    expect(account).toHaveTextContent("My GitHub Apps");
+    expect(account).toHaveAttribute("title", "My GitHub Apps");
+    expect(account).toHaveAttribute("href", "/github-apps");
+    expect(account).toHaveAttribute("aria-current", "page");
+    expect(team).toHaveAttribute("href", `/teams/${personalId}/github-apps`);
+    expect(team).not.toHaveAttribute("aria-current");
+    view.setLocale("zh-CN");
+    expect(within(groups[1] as HTMLElement).getByText("我的")).toBeInTheDocument();
+    expect(within(groups[1] as HTMLElement).getByRole("link", { name: "GitHub Apps" })).toBe(account);
+    expect(account).toHaveTextContent("GitHub Apps");
+    expect(account).toHaveAttribute("title", "GitHub Apps");
+    expect(account).toHaveAttribute("aria-current", "page");
+    expect(within(groups[0] as HTMLElement).getByRole("link", { name: "GitHub Apps" })).toBe(team);
+    expect(within(groups[1] as HTMLElement).getByRole("link", { name: "我的 Worker" })).toHaveAttribute("href", "/workers");
+  });
+
   it("keeps the account task overview available independently of Team selection", () => {
     render(<Harness selectedTeamId={null} visibilityTeamId={null} route={{ kind: "myTasks" }} />);
     expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("href", "/my-tasks");

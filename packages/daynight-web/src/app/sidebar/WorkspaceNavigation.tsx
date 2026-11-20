@@ -30,6 +30,7 @@ export const WorkspaceNavigation = ({ route, team, expanded, webhooksAvailable, 
   const teamLink = (target: (teamId: string) => string) => team.readyTeamId === null
     ? { role: "link", "aria-disabled": true as const }
     : { href: target(team.readyTeamId), onClick: follow };
+  const githubAppsLabel = locale === "zh-CN" ? "GitHub Apps" : "My GitHub Apps";
   const activeProjectId = route.kind === "project" || route.kind === "settings" ? route.projectId : null;
   return <nav aria-label={app.mainNavigation}>
     <div className="sidebar-group">
@@ -42,7 +43,7 @@ export const WorkspaceNavigation = ({ route, team, expanded, webhooksAvailable, 
     </div>
     <div className="sidebar-group">
       <p className="nav-label">{app.my}</p>
-      <a className="nav-button" href="/github-apps" onClick={follow} aria-label={locale === "zh-CN" ? "我的 GitHub Apps" : "My GitHub Apps"} title={locale === "zh-CN" ? "我的 GitHub Apps" : "My GitHub Apps"} aria-current={(route.kind === "githubApps" || (route.kind === "githubAppAdmins" || route.kind === "githubAppTeams")) ? "page" : undefined}><SidebarIcon name="githubApps" /><span className="nav-text">{locale === "zh-CN" ? "我的 GitHub Apps" : "My GitHub Apps"}</span></a>
+      <a className="nav-button" href="/github-apps" onClick={follow} aria-label={githubAppsLabel} title={githubAppsLabel} aria-current={(route.kind === "githubApps" || (route.kind === "githubAppAdmins" || route.kind === "githubAppTeams")) ? "page" : undefined}><SidebarIcon name="githubApps" /><span className="nav-text">{githubAppsLabel}</span></a>
       <a className="nav-button" href="/shared-projects" onClick={follow} aria-label={teamMessages.shared} title={teamMessages.shared} aria-current={route.kind === "sharedProjects" ? "page" : undefined}><SidebarIcon name="shared" /><span className="nav-text">{teamMessages.shared}</span></a>
       <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={route.kind === "workers" || route.kind === "worker" ? "page" : undefined}><SidebarIcon name="workers" /><span className="nav-text">{m.workers}</span></a>
       <a className="nav-button" href="/bots" onClick={follow} aria-label={botMessages.title} title={botMessages.title} aria-current={route.kind === "bots" || route.kind === "bot" || route.kind === "assistantTask" ? "page" : undefined}><SidebarIcon name="bots" /><span className="nav-text">{botMessages.title}</span></a>
