@@ -255,7 +255,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
             </div> : !attachments.complete ? <p className="attachment-state" role="status">{m.loading}</p> : <div className="attachment-state" role="alert"><p>{m.missing}</p><button className="button" type="button" disabled={busy || paused} onClick={attachments.reload}>{m.retry}</button></div>}
           </div> : null}
             <section className="attachment-preview" aria-label={m.preview} hidden={selected === undefined || navigation?.invalid === true} style={selected === undefined || navigation?.invalid === true ? { display: 'none' } : undefined}>
-              {selected !== undefined && <header className="attachment-preview-header">
+              {selected !== undefined && <header className="attachment-preview-header" tabIndex={0} aria-label={m.preview}>
                 <div className="attachment-file-information"><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
                 <dl className="attachment-timestamps">
                   <dt>{m.created}</dt><dd><time dateTime={selected.createdAt}>{format.dateTime(selected.createdAt)}</time></dd>

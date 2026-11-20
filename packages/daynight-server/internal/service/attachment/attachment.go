@@ -27,6 +27,7 @@ type attachmentOperations struct {
 
 type Attachments struct {
 	operations  attachmentOperations
+	admit       func(context.Context) error
 	store       store.SnapshotReader
 	mutations   store.AttachmentMutationWriter
 	files       filestorage.Storage
@@ -83,6 +84,11 @@ func (s *Attachments) mutate(ctx context.Context, principal model.Principal, add
 		if presence.DeletedAt != nil {
 			return taskcore.NotFound(model.ErrTaskDeleted)
 		}
+		if s.admit != nil {
+			if err := s.admit(ctx); err != nil {
+				return err
+			}
+		}
 		return operation(scope.AttachmentDAO())
 	})
 	if err != nil {
@@ -118,6 +124,14 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 		if presence.DeletedAt != nil {
 			missing = taskcore.NotFound(model.ErrTaskDeleted)
 			return nil
+		}
+		if s.admit != nil {
+			if err := s.admit(ctx); err != nil {
+				if errors.As(err, &missing) {
+					return nil
+				}
+				return err
+			}
 		}
 		err = operation(snapshot.AttachmentDAO())
 		if errors.As(err, &missing) {
