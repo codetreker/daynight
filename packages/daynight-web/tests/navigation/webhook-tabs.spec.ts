@@ -39,7 +39,12 @@ const geometry = (list: Locator) => list.evaluate(element => {
 });
 async function selectedVisible(page: Page, key: typeof keys[number]) {
   await expect(tab(page, key)).toHaveAttribute('aria-selected', 'true');
-  await expect.poll(async () => tab(page, key).evaluate(element => { const rect = element.getBoundingClientRect(), box = element.closest('[role=tablist]')!.getBoundingClientRect(); return rect.left >= box.left - 1 && rect.right <= box.right + 1; })).toBe(true);
+  await expect.poll(async () => tab(page, key).evaluateAll(elements => {
+    const element = elements[0], parent = element?.closest('[role=tablist]');
+    if (parent === null || parent === undefined) return false;
+    const rect = element!.getBoundingClientRect(), box = parent.getBoundingClientRect();
+    return rect.left >= box.left - 1 && rect.right <= box.right + 1;
+  })).toBe(true);
 }
 
 for (const owner of ['personal', 'team'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390, 768, 1360]) {
