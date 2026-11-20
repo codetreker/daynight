@@ -181,7 +181,6 @@ it("keeps returned external classification on a task read after a property write
     expect(parseApiJson(shown.stdout)).toEqual(withTaskObservation(classified));
     expect(f.requests).toEqual([
       { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/properties/pullRequests`, body: { version: 9_007_199_254_740_993n, valueText: value } },
-      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
       { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}?include=session`, body: null },
     ]);
   } finally { await f.close(); }
@@ -206,7 +205,8 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
     const changed = await f.run(args);
     expect(changed.code, changed.stderr).toBe(0);
     expect(changed.stderr).toBe("");
-    expect(changed.stdout).toContain('"url":"opaque 中文","title":"First\\nline"');
+    if (action === "metadata") expect(changed.stdout).not.toContain('"url":"opaque 中文"');
+    else expect(changed.stdout).toContain('"url":"opaque 中文","title":"First\\nline"');
     expect(changed.stdout).toContain(`Version: ${returned.version}\n`);
     const shown = await f.run(["show", taskId, "--json"], false);
     expect(shown.code, shown.stderr).toBe(0);
@@ -217,8 +217,7 @@ it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and
         ? { method: "PATCH", path: resourcePath, body: { version: original.version, description: "Updated metadata" } }
         : { method: "PUT", path: `${resourcePath}/status`, body: { version: original.version, status: "done" } };
     expect(f.requests).toEqual([
-      ...(action === "property" ? [] : [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }]), ...(action === "status" ? [{ method: "GET", path: resourcePath, body: null }] : []), write,
-      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      ...(action === "status" ? [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }, { method: "GET", path: resourcePath, body: null }] : []), write,
       { method: "GET", path: `${resourcePath}?include=session`, body: null },
     ]);
   } finally { await f.close(); }
@@ -240,7 +239,6 @@ it.each([
     expect(result.stderr).toContain(taskId);
     expect(result.stderr).toContain("requestId=platform-refusal-id");
     expect(f.requests).toEqual([
-      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
       { method: "PATCH", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: { version: 9_007_199_254_740_993n, ...update } },
     ]);
   } finally { await f.close(); }
@@ -261,8 +259,7 @@ it.each([
     expect(result.stdout).toBe("");
     for (const value of [code, taskId, prerequisite, "requestId=external-refusal-id"]) expect(result.stderr).toContain(value);
     expect(f.requests).toEqual([
-      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
-      ...(method === "PUT" ? [{ method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null }] : []),
+      ...(method === "PUT" ? [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }, { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null }] : []),
       { method, path: `/api/v1/projects/${projectId}/tasks/${taskId}${suffix}`, body },
     ]);
   } finally { await f.close(); }

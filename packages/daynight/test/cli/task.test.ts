@@ -388,8 +388,8 @@ describe("compiled task commands", () => {
         const before = requests.length;
         const result = await f.invoke(["update", taskId, "--allow-agents", String(allowAgents), "--if-version", version.toString(), ...explicit]);
         expect(result.code, result.stderr).toBe(0);
-        expect(result.stdout).toContain(`Automatic execution: ${allowAgents}`);
-        expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
+        expect(result.stdout).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: ${version + 1n}\n`);
+        expect(requests.slice(before).map(({ method }) => method)).toEqual(["PATCH"]);
         expect(requests.at(-1)!.body).toEqual({ version, allowAgents });
         const listed = await f.invoke(["list", "--allow-agents", String(allowAgents), "--ready", "--json", ...explicit]);
         expect(listed.code, listed.stderr).toBe(0);
@@ -720,14 +720,14 @@ describe("compiled task commands", () => {
         { args: ["--status", "cancelled", "--ready"], expected: [], query: { status: "cancelled", ready: "true", limit: "100" } },
       ];
       const output = await f.invokeBatch(cases.map(({ args }) => ["list", ...args, "--json", ...explicit]));
-      expect(requests.map(({ pathname }) => pathname)).toEqual(cases.flatMap(() => [projectPath, taskPath]));
+      expect(requests.map(({ pathname }) => pathname)).toEqual(cases.map(() => taskPath));
       for (const [index, { expected, query }] of cases.entries()) {
         const result = output[index]!;
         expect(result.code, result.stderr).toBe(0);
         const listed = parseApiJson(result.stdout) as Record<string, unknown>[];
         expect(listed).toEqual(expected.map(taskListItem));
         for (const item of listed) expect(item).not.toHaveProperty("description");
-        expect(Object.fromEntries(requests[index * 2 + 1]!.query)).toEqual({ ...query, include: "session" });
+        expect(Object.fromEntries(requests[index]!.query)).toEqual({ ...query, include: "session" });
       }
     } finally { await f.close(); }
   }, 60_000);
@@ -901,7 +901,7 @@ describe("compiled task commands", () => {
       expect(graphed.code, graphed.stderr).toBe(0);
       expect(parseApiJson(graphed.stdout)).toEqual(withGraphObservations(graph(), taskId));
       expect([created, shown, listed, graphed].every(({ stderr }) => stderr === "")).toBe(true);
-      expect(requests.filter(({ pathname }) => pathname === projectPath)).toHaveLength(4);
+      expect(requests.filter(({ pathname }) => pathname === projectPath)).toHaveLength(1);
       expect(await readdir(f.caller)).toEqual([]);
       expect(await readdir(path.join(f.home, ".daynight"))).toEqual(["config.yml"]);
     } finally { await f.close(); }
@@ -911,7 +911,7 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const current = task({ version: 9_007_199_254_740_993n, dependsOn: [secondId], externalDependsOn: [secondId] });
-      const { requests } = await f.serve((request, response) => respond(response, request.method === "GET" ? current : { ...current, ...(request.method === "POST" ? { status: "proposed", ready: false } : {}), ...(request.body as object), version: current.version + 1n }, request.method === "POST" ? 201 : 200));
+      const { requests } = await f.serve((request, response) => respond(response, request.method === "GET" ? current : { ...current, ...(request.method === "POST" ? { status: "proposed", ready: false } : {}), ...(request.body as object), version: request.method === "PATCH" ? 9_223_372_036_854_775_807n : current.version + 1n }, request.method === "POST" ? 201 : 200));
       const cases = [
         { args: ["create", "--title", "Mixed", "--depends-on", thirdId.toUpperCase(), "--external-depends-on", secondId], body: { title: "Mixed", assignedTo: accountId, dependsOn: [secondId, thirdId], externalDependsOn: [secondId] } },
         { args: ["update", taskId, "--external-depends-on", thirdId], body: { dependsOn: [thirdId], externalDependsOn: [thirdId] } },
@@ -924,7 +924,7 @@ describe("compiled task commands", () => {
         const update = args[0] === "update";
         const result = await f.invoke([...args, ...(update ? ["--if-version", "9223372036854775807"] : []), ...explicit]);
         expect(result.code, result.stderr).toBe(0);
-        expect(requests.map(({ method }) => method)).toEqual(["GET", ...(update ? [] : ["GET"]), update ? "PATCH" : "POST"]);
+        expect(requests.map(({ method }) => method)).toEqual(update ? ["PATCH"] : ["GET", "GET", "POST"]);
         expect(requests.at(-1)!.body).toEqual({ ...(update ? { version: 9_223_372_036_854_775_807n } : {}), ...body });
       }
     } finally { await f.close(); }
@@ -960,8 +960,8 @@ describe("compiled task commands", () => {
       const rejected = await f.invoke(["update", taskId, "--if-version", "2", "--depends-on", thirdId, "--depends-on", secondId, ...explicit]);
       expect(rejected.code).toBe(1); expect(rejected.stdout).toBe("");
       expect(rejected.stderr).toContain("task-dependency-input");
-      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `PATCH ${taskPath}/${taskId}`]);
-      expect(requests[1]!.body).toEqual({ dependsOn: [secondId, thirdId], externalDependsOn: [], version: 2n });
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`PATCH ${taskPath}/${taskId}`]);
+      expect(requests[0]!.body).toEqual({ dependsOn: [secondId, thirdId], externalDependsOn: [], version: 2n });
     } finally { await f.close(); }
   }, 60_000);
 
