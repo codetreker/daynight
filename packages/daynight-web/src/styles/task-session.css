@@ -15,7 +15,7 @@
 /* Share shrinking space with expanded composer panels without a hard minimum. */
 .session-timeline-shell { flex: 1 1 100px; min-height: 0; min-width: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; container: session-timeline-shell / size; }
 .session-timeline { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 22px 26px; }
-.session-timeline-content { max-width: 960px; margin: auto; min-width: 0; }
+.session-timeline-content { max-width: 960px; margin: auto; min-width: 0; container: session-timeline / inline-size; }
 .session-entry { margin: 0 0 18px; min-width: 0; overflow-wrap: anywhere; }
 .session-message { line-height: 1.75; }
 .session-message.user_message { margin-left: min(10%, 60px); background: #f0f0fb; border: 1px solid #e5e4f6; border-radius: 12px 12px 3px 12px; padding: 10px 15px; }
