@@ -406,13 +406,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108)`); err != nil || result.RowsAffected() != 30 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109)`); err != nil || result.RowsAffected() != 31 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

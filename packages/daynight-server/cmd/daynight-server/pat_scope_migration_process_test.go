@@ -30,11 +30,12 @@ func TestPATScopePreparationProcessStartup(t *testing.T) {
 	if err := initial.stop(); err != nil {
 		t.Fatalf("stop empty-schema process: %v", err)
 	}
-	// Migration 108 only adds these columns, so removing its ledger entry and
-	// columns reconstructs the exact 107 schema with the original checksums.
+	// These additive migrations can be removed to reconstruct the 107 schema.
 	if _, err := pool.Exec(ctx, `ALTER TABLE personal_access_tokens DROP COLUMN business_scopes, DROP COLUMN scope_version;
 ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes;
-DELETE FROM schema_migrations WHERE version=108`); err != nil {
+ALTER TABLE oauth_grants DROP COLUMN business_scopes, DROP COLUMN scope_version;
+ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes;
+DELETE FROM schema_migrations WHERE version IN (108,109)`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64
@@ -42,6 +43,7 @@ DELETE FROM schema_migrations WHERE version=108`); err != nil {
 		t.Fatalf("historical ledger: version=%d err=%v", latest, err)
 	}
 	user, team, tokenID, deviceID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	grantID, accessID, authorizationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	token := secret.Random("dnpat_")
 	for _, statement := range []struct {
 		sql  string
@@ -52,6 +54,9 @@ DELETE FROM schema_migrations WHERE version=108`); err != nil {
 		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, []any{team, user}},
 		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'historical',now()-interval '1 hour',now()+interval '1 hour')`, []any{tokenID, user, secret.Hash(token)}},
 		{`INSERT INTO device_authorizations(id,device_code_hash,user_code,status,user_id,created_at,expires_at,next_poll_at,poll_interval_seconds) VALUES($1,$2,'BCDFGHJKLM','approved',$3,now()-interval '1 minute',now()+interval '1 hour',now(),5)`, []any{deviceID, secret.Hash("device"), user}},
+		{`INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'client','{}','https://example.test/mcp','daynight:mcp',now()-interval '1 hour',now()+interval '1 hour')`, []any{grantID, user}},
+		{`INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,now()-interval '1 minute',now()+interval '30 minutes')`, []any{accessID, grantID, user, secret.Hash("historical-access")}},
+		{`INSERT INTO oauth_authorizations(id,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,created_at,expires_at,retain_until) VALUES($1,$2,'{}','client','https://client.test/callback','https://example.test/mcp','daynight:mcp','challenge','',false,'pending',now(),now()+interval '1 hour',now()+interval '1 day')`, []any{authorizationID, secret.Hash("binding")}},
 	} {
 		if _, err := pool.Exec(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(err)
@@ -60,9 +65,11 @@ DELETE FROM schema_migrations WHERE version=108`); err != nil {
 
 	upgraded := startPersistenceProcess(t, values)
 	var preserved bool
-	err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM schema_migrations WHERE version=108) AND
+	err = pool.QueryRow(ctx, `SELECT (SELECT count(*)=2 FROM schema_migrations WHERE version IN (108,109)) AND
 EXISTS(SELECT FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND token_hash=$3 AND name='historical' AND expires_at>clock_timestamp() AND business_scopes IS NULL AND scope_version IS NULL) AND
-EXISTS(SELECT FROM device_authorizations WHERE id=$4 AND user_id=$2 AND status='approved' AND approved_business_scopes IS NULL)`, tokenID, user, secret.Hash(token), deviceID).Scan(&preserved)
+EXISTS(SELECT FROM device_authorizations WHERE id=$4 AND user_id=$2 AND status='approved' AND approved_business_scopes IS NULL) AND
+EXISTS(SELECT FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id WHERE g.id=$5 AND a.id=$6 AND g.user_id=$2 AND g.business_scopes IS NULL AND g.scope_version IS NULL) AND
+EXISTS(SELECT FROM oauth_authorizations WHERE id=$7 AND status='pending' AND approved_business_scopes IS NULL)`, tokenID, user, secret.Hash(token), deviceID, grantID, accessID, authorizationID).Scan(&preserved)
 	if err != nil || !preserved {
 		t.Fatalf("historical credential or migration ledger was not preserved: %v %v", preserved, err)
 	}
