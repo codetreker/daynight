@@ -37,6 +37,14 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     return value;
   };
   const qualified = (state: UsageState): boolean => capability(state)?.qualification === "verified";
+  const pendingUpload = (state: UsageState, limit: number) => store.pending(state.stateId, limit, qualified(state) ? undefined : "execution_state");
+  /** A failed capability read remains retryable; a known refusal or profile filter does not. */
+  const canReplay = (state: UsageState): boolean => {
+    if (disabled || blocked.has(state.stateId)) return false;
+    if (profiles === null) return !state.stopped || store.pending(state.stateId, 1).length > 0;
+    if (capability(state) === null) return false;
+    return !state.stopped || pendingUpload(state, 1).length > 0;
+  };
   const delay = (retryAfter?: string | null) => {
     failures++;
     const seconds = retryAfter !== undefined && retryAfter !== null && /^\d+$/.test(retryAfter) ? Math.min(300, Math.max(1, Number(retryAfter))) : null;
@@ -140,7 +148,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     });
   };
   const upload = async (state: UsageState) => {
-    let flight = store.pending(state.stateId, 100, qualified(state) ? undefined : "execution_state");
+    let flight = pendingUpload(state, 100);
     while (flight.length && Buffer.byteLength(JSON.stringify({ protocol: PROTOCOL, batchId: "00000000-0000-0000-0000-000000000000", events: flight.map(item => item.payload) })) > 262_144) flight.pop();
     if (!flight.length) return;
     const batchId = randomUUID();
@@ -188,7 +196,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     const active = run().finally(() => { if (work === active) work = null; }); work = active; return active;
   };
   return {
-    tick, capability, qualified,
+    tick, capability, qualified, canReplay,
     /** Admit a final drain without extending native shutdown beyond five seconds. */
     close: async (): Promise<void> => {
       if (closed || draining) return;

@@ -81,7 +81,10 @@ proof, independently of server stop receipts and history upload outcomes.
 Retryable usage keeps an archive retry entry even when history succeeds.
 Retained evidence without a valid original grant, or only quarantined conflicts,
 reports a usage limitation without turning successful history archival into a
-permanent failure. Its pending evidence count remains unchanged for retention.
+permanent failure. Retry advice uses the uploader's current event-kind filter:
+known unqualified measurements alone cannot become a retryable batch, while a
+transient capability lookup failure remains distinguishable. Its pending
+evidence count remains unchanged for retention.
 Pending or quarantined measurements
 and unresolved local source-conflict evidence retain their sole journal during
 explicit and automatic recording discard. Local conflicts have no uploadable
@@ -114,7 +117,9 @@ Anthropic backend are known, retaining that combination in providerVersion.
 The actual SDK initialization result must identify apiProvider=firstParty,
 in addition to consistent effective settings and endpoint checks. Mantle and
 the separate Anthropic AWS and Google Cloud providers cannot inherit the
-Anthropic profile merely because older environment selectors are absent. Only
+Anthropic profile merely because older environment selectors are absent.
+Windows environment keys are compared without case; ambiguous duplicate
+spellings cannot establish first-party endpoint provenance. Only
 the provider discriminator crosses the profile channel; account details stay
 native-private. Process proof and version probing do not wait for native
 initialization. A pending profile cannot establish a usage identity; the final

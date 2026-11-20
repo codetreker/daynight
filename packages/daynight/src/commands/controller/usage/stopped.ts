@@ -72,6 +72,6 @@ export const replayStoppedControllerUsage = async (options: {
   // unregistered states and quarantined conflicts which another upload cannot fix.
   const retryable = states.some(state => state.grant !== null && Date.parse(state.grant.expiresAt) > Date.now()
     && !state.reasons.some(reason => ["permission_revoked", "upload_expired"].includes(reason))
-    && (!state.stopped || access.store.pending(state.stateId, 1).length > 0));
+    && uploader.canReplay(state));
   return { pending: Math.max(access.pending(), states.filter(state => !state.stopped).length), retryable };
 };

@@ -227,9 +227,11 @@ Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失
 按已确认停止证据补 missing_final，而不是推断 complete。
 独立 Test 在本地确认停止后尝试原 journal/grant 的有界补传；
 controller archive 重试同样重放原执行。用量与服务端停止回执、历史上传及历史 ACK
-独立，任一路失败仍尝试另一路。未确认用量保留 journal；有效原 grant 仍有待传事件时
+独立，任一路失败仍尝试另一路。未确认用量保留 journal；有效原 grant 仍有当前服务能力
+允许上传的待传事件时
 提供同一 archive 重试入口。无 grant、已过期/撤销或仅剩冲突证据时明确报告不可补传
-的覆盖缺口，历史成功不因这些保留证据而被判为归档失败。
+的覆盖缺口，历史成功不因这些保留证据而被判为归档失败。已知未资格 profile 仅允许
+execution_state，滞留 measurement 不承诺补传；能力请求暂时失败则保留可重试语义。
 
 ## Codex Controller 能力上报
 
@@ -250,7 +252,8 @@ Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止
 后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
 firstParty 且生效环境、settings 与官方 endpoint 检查一致时才映射 anthropic。
 Mantle、Anthropic AWS、Anthropic Google Cloud 等选择器和缺失/矛盾的原生读回
-均不能借用 Anthropic qualification；账户其他字段不进入 profile。原生初始化不属于
+均不能借用 Anthropic qualification；Windows 的环境变量名按大小写不敏感语义核验，
+同名不同大小写的歧义环境不授予资格；账户其他字段不进入 profile。原生初始化不属于
 进程证明及版本探针的期限：helper 先完成后者，pending profile 不建立用量身份，
 实际初始化读回完成后发布最终 backend，再返回初始化结果。原生启动期限保持由
 Provider 的既有初始化入口负责，计量资格等待不能缩短它。
