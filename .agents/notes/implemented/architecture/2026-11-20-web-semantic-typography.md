@@ -10,11 +10,12 @@ preferences must remain effective without unexpectedly enlarging existing layout
 
 This note records the role-based implementation. The [shared size scale
 proposal](../../proposed/architecture/2026-11-20-web-font-size-scale.md) keeps the
-single owner and changes how consumers select a size.
+single owner and changes how consumers select a size. The [migration policy](2026-11-20-web-typography-migration-policy.md)
+introduces its six numeric definitions and equal transitional role mappings.
 
 ## Decision
 
-The Web entry stylesheet loads six shared `rem` roles defined in
+The Web entry stylesheet loads six shared size values and transitional roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
 baseline. The shared shell, selection controls, task filters and rows, personal
@@ -66,11 +67,11 @@ records the preparatory changes.
 
 The Web harness enforces size ownership using the existing CSS and TypeScript
 parsers across the complete production source tree. The central stylesheet owns
-role values; the shared selection components own their registered size aliases.
-The checker rejects local role overrides, fixed font sizes, numeric fallbacks,
-unknown aliases and invalid font shorthands, with source locations. Terminal
-base-size multiplication and typed Mermaid theme configuration are rendering
-mechanisms with explicit rules; their files remain subject to normal checks.
+size values and fixed transitional mappings. The migration policy replaces the
+original selection-alias and typed Mermaid theme permissions with exact legacy
+occurrences and counts. Strict checks reject local overrides, fixed font sizes,
+numeric fallbacks, unknown aliases and invalid font shorthands, with source
+locations; only recorded legacy occurrences retain transitional permission.
 The [Web validation guide](../../../../packages/daynight-web/README.md#typography-validation)
 describes checker coverage and static evaluation limits.
 
