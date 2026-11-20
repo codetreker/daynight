@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { formatError } from "../../platform/diagnostics.js";
 import { createCopilotRunner } from "./adapters/copilot.js";
 import { runCoordinator } from "./coordinator.js";
@@ -11,6 +12,8 @@ import { prepareReviewSkill } from "./skill.js";
 import type { ReviewConfiguration } from "./config.js";
 import type { CoordinatorEvent } from "./coordinator.js";
 import type { ReviewPaths } from "./paths.js";
+import { configurationDefaults } from "./config.js";
+import type { AssignmentSource } from "./assignment.js";
 
 export { acquireInstanceLock } from "./instance-lock.js";
 
@@ -39,7 +42,7 @@ export const formatCoordinatorEvent = (event: CoordinatorEvent): string => {
 export const runForegroundReview = async (
   configuration: ReviewConfiguration,
   paths: ReviewPaths,
-  options: { packageDirectory: string; signal?: AbortSignal; log?: (event: CoordinatorEvent) => void; dependencies?: RuntimeDependencies },
+  options: { packageDirectory: string; signal?: AbortSignal; log?: (event: CoordinatorEvent) => void; dependencies?: RuntimeDependencies; source?: AssignmentSource },
 ): Promise<void> => {
   const dependencies = options.dependencies === undefined ? defaultDependencies : options.dependencies;
   const log = options.log === undefined ? (event: CoordinatorEvent) => { process.stderr.write(`${formatCoordinatorEvent(event)}\n`); } : options.log;
@@ -70,7 +73,8 @@ export const runForegroundReview = async (
       ...(configuration.copilotReasoningEffort === undefined ? {} : { reasoningEffort: configuration.copilotReasoningEffort }) });
     log({ level: "info", phase: "startup", message: `Foreground review started; state=${paths.stateDirectory}; skill=${skill.name} digest=${skill.digest}.` });
     safe = false;
-    const result = await dependencies.coordinate({ configuration, store, client, git, runner, processes, signal, log });
+    const result = await dependencies.coordinate({ configuration, store, client, git, runner, processes, signal, log,
+      ...(options.source === undefined ? {} : { assignment: { source: options.source, repositoryDirectory: path.join(paths.stateDirectory, "repositories") } }) });
     safe = result.safeToReleaseLock && processes.safeToReleaseLock;
     if (!safe) throw new Error(`Review execution could not be confirmed stopped. Instance lock ${paths.lockFile} and interrupted state were retained; confirm the CLI and all review agents have stopped before manually removing the lock.`);
   } catch (error) { failure = error; }
@@ -81,3 +85,6 @@ export const runForegroundReview = async (
   if (options.signal === undefined) for (const signal of signals) process.off(signal, stop);
   if (failure !== undefined) throw failure;
 };
+
+export const runWorkerReview = (paths: ReviewPaths, options: { packageDirectory: string; signal: AbortSignal; source: AssignmentSource; log?: (event: CoordinatorEvent) => void }): Promise<void> =>
+  runForegroundReview({ ...configurationDefaults, repositories: [] }, paths, options);

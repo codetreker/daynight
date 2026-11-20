@@ -10,6 +10,14 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 独立 Bot 的本地库存与启动意图由[Bot 库存需求](worker-bot-inventory.md)拥有，使用相同 Worker 锁和 SQLite 格式，不参与 Task 容量计算。[Bot 运行需求](worker-bot-runtime.md)拥有原会话恢复和退出停证：取消管理工作后逐项停止并汇总错误，保留 Bot、原 Session 和私有恢复资料，不调用 StopTest 或归档作为退出前置。正式 `runWorker` Bot 调度与能力广告尚未启用。
 
+## Worker Reviewer
+
+Worker 在账号和 Worker 身份核验后，独立轮询服务端分配给该 Worker 的待审 PR。只有完整分页成功才能采用名单；明确停用立即撤销资格并停止准备或运行中的审查。读取失败不视为 PR 关闭或归属撤销，不取消已开始的审查；开发 Task 和心跳继续。GitHub 状态、CI、反馈和发布结果仍由 reviewer 核对，旧独立 reviewer 的初始化编号下限不适用于服务端候选。重复候选不得重复同一轮发布，目标变化和反馈解决沿用复审规则。
+
+Reviewer 在预留前取得 user、project、worker 三层独立 prompt；首次未知或明确失权时等待，临时读取失败可复用最近确认的值。启动意图和实际 Copilot spawn 前复核候选来源与捕获的有效代际。已持久化的未知发布必须先排除原进程并只读核对，停用和重启不消除这项责任。Reviewer 不注册 Daynight Session。Worker 退出前结束 reviewer；无法确认进程停止时保留锁与证据。
+
+Worker reviewer 使用 `~/.daynight/reviewer/`，`DN_CONFIG_DIR` 重定向时使用其 `reviewer/` 子目录。旧独立 reviewer 的状态和 worktree 不读取、不迁移、不清理。详细机制见 [Worker Reviewer 设计](../design/worker-reviewer.md)。
+
 ## 本地模型与推理强度覆盖
 
 `worker.agentModel` 与 `worker.agentReasoningEffort` 独立可选，仅接受非空且不含控制字符的字符串，长度分别最多 256、64 个 UTF-8 字节。null、空串与错误类型明确拒绝，并指导删除字段恢复继承。旧 `worker.model` 保留首次导入语义；同层旧非空值与 agentModel 相同可用、不同拒绝，旧 model:null 不阻止新值。

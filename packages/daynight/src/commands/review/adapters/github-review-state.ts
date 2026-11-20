@@ -1,9 +1,10 @@
 import type { PullRequestReviewSnapshot, RemoteReview, RemoteReviewThread } from "../model.js";
+import { fullDatabaseId } from "./github-id.js";
 
 export const pullRequestReviewSnapshotQuery = `query PullRequestReviewSnapshot($owner: String!, $name: String!, $number: Int!, $reviewCursor: String, $threadCursor: String) {
   viewer { id }
   repository(owner: $owner, name: $name) {
-    databaseId
+    fullDatabaseId
     pullRequest(number: $number) {
       number state isDraft headRefOid baseRefName
       reviews(first: 100, after: $reviewCursor) {
@@ -74,7 +75,7 @@ export type ReviewSnapshotPage = Omit<PullRequestReviewSnapshot, "reviews" | "th
 export const parsePullRequestReviewSnapshot = (value: unknown, repositoryId: string, number: number): ReviewSnapshotPage => {
   const data = object(object(value, "GraphQL response").data, "GraphQL data");
   const repository = object(data.repository, "GitHub repository");
-  if (String(count(repository.databaseId, "GitHub repository ID")) !== repositoryId) throw new Error("GitHub returned a different repository than requested.");
+  if (fullDatabaseId(repository.fullDatabaseId) !== repositoryId) throw new Error("GitHub returned a different repository than requested.");
   const pullRequest = object(repository.pullRequest, "PR");
   if (pullRequest.number !== number) throw new Error("GitHub returned a different PR than requested.");
   if (pullRequest.state !== "OPEN" && pullRequest.state !== "CLOSED" && pullRequest.state !== "MERGED") throw new Error("PR has an invalid state.");

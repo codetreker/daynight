@@ -37,7 +37,7 @@ import (
 
 // The process uses its production fixed-origin client through a controlled TLS
 // proxy. This keeps the complete server, worker and database path in the flow.
-func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), func(string), func(string), func(string)) {
+func githubIntegrationRemote(t *testing.T, commits reviewerFixtureCommits) (*githubFixtureConfig, func(string), func(string), func(string), func(string)) {
 	t.Helper()
 	dir := filepath.Join(integrationRunRoot(t), "github-fixture")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -106,7 +106,7 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), 
 			current, firstBranch, second, state, revision := title, firstBase, secondBase, secondState, secondRevision
 			mu.Unlock()
 			pull := func(number, id int, name, base string) map[string]any {
-				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": "abc", "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
+				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "sha": commits.base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": commits.head, "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
 			}
 			first, other := pull(1, 101, current, firstBranch), pull(2, 102, "Second PR", second)
 			other["draft"] = true
@@ -173,7 +173,8 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), 
 }
 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
-	config, change, changeFirstBase, changeSecondBase, changeSecondState := githubIntegrationRemote(t)
+	commits := prepareReviewerFixtureGit(t)
+	config, change, changeFirstBase, changeSecondBase, changeSecondState := githubIntegrationRemote(t, commits)
 	f := newFixtureConfigured(t, false, config)
 	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
@@ -259,7 +260,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			t.Fatalf("repository switch: %+v", receipt)
 		}
 	}
-	serverAPIReviewAssignmentFlow(t, f, project.ID, func() {
+	serverAPIReviewAssignmentFlow(t, f, project.ID, commits, func() {
 		changeSecondBase("trunk")
 		sendPullWebhook(t, f, appBase, 2)
 	}, func(branch string) {

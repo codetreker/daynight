@@ -1,3 +1,5 @@
+import type { ReviewerPage } from "./reviewer.js";
+import type { WorkerPromptKey, WorkerPromptResource } from "./worker-configuration.js";
 import { parseGoalDependencies, parseGoalDependencyReceipt, validGoalRevision } from "./goal-dependencies.js";
 import type { GoalDependencies, GoalDependencyEdit, GoalDependencyReceipt } from "./goal-dependencies.js";
 import { normalizeTaskTagFilter } from "./task-tag-filter.js";
@@ -203,6 +205,8 @@ export type ApiClient = TaskSessionClient & {
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   writeWorkerMonitoring(workerId: string, observation: DirectObservation, requestId: string): Promise<DirectReceipt>;
+  listReviewerPage(workerId: string, cursor?: string): Promise<ReviewerPage>;
+  getReviewerPrompt(key: WorkerPromptKey, userId: string, workerId: string): Promise<WorkerPromptResource>;
   getWorkerConfiguration(workerId: string): Promise<ReceivedWorkerConfigurationResource>;
   reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
@@ -1322,6 +1326,27 @@ export const createApiClient = (options: {
         decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringReceipt,
         confirmedFailure: (status, error) => status === 503 && error.code === "monitoring_unavailable",
       }, [200], { kind: "json", value: observation, maxBytes: 256 * 1024 }, true);
+    },
+    listReviewerPage: async (workerId, cursor) => {
+      const worker = resourceId(workerId);
+      if (cursor !== undefined && (typeof cursor !== "string" || cursor === "")) throw new Error("Invalid reviewer cursor.");
+      const query = new URLSearchParams({ limit: "100", ...(cursor === undefined ? {} : { cursor }) });
+      const { parseReviewerPage } = await import("./reviewer.js");
+      let authenticated = false;
+      try {
+        return await exchange({ operation: "reviewer.list" }, `/me/workers/${encodeURIComponent(worker)}/review-pull-requests?${query}`, "GET", {
+          kind: "json", requirePrincipal: true, checkPrincipalOnError: true, onPrincipal: () => { authenticated = true; }, parse: parseReviewerPage,
+        }, [200], undefined, true);
+      } catch (error) {
+        if (error instanceof ApiError && error.phase === "response" && error.status === 404 && !authenticated) throw new Error("The server does not support reviewer polling.", { cause: error });
+        throw error;
+      }
+    },
+    getReviewerPrompt: async (key, userId, workerId) => {
+      const { parseReviewerPrompt } = await import("./reviewer.js");
+      const user = resourceId(userId), worker = resourceId(workerId);
+      const pathname = key.scope === "project" ? `/me/projects/${encodeURIComponent(resourceId(key.projectId))}/reviewer-prompt` : key.scope === "worker" ? `/me/workers/${encodeURIComponent(worker)}/reviewer-prompt` : "/me/reviewer-prompt";
+      return exchange({ operation: "reviewer.prompt" }, pathname, "GET", { kind: "json", requirePrincipal: true, checkPrincipalOnError: true, parse: value => parseReviewerPrompt(value, key, user, worker) }, [200], undefined, true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);

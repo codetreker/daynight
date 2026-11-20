@@ -72,6 +72,77 @@ describe("local Git repositories and review snapshots", () => {
     expect(readdirSync(empty)).toEqual([]);
   }, 60_000);
 
+  it.each(["unavailable", "reused"])("keeps owned worktrees and pending publication when a repository is renamed and its old coordinate is %s", async oldState => {
+    const f = fixture();
+    const local = await f.manager.ensureRepository(f.configuration);
+    const review = f.reserve();
+    const worktree = f.stageOwnedWorktree(local.root, review);
+    writeFileSync(path.join(worktree, "retained.txt"), "preserve me");
+    f.store.captureReviewPublisher(review.id, "viewer");
+    f.store.startAttempt(review.id, { processOwner: uuid(700), stdoutLogPath: path.join(f.directory, "out"), stderrLogPath: path.join(f.directory, "err") }, 30);
+    f.store.retainPossiblePublication(review.id, "restart", 31);
+    const oldRemote = f.configuration.remote;
+    const renamed = { ...f.configuration, coordinate: "github.com/owner/renamed", name: "renamed", remote: "https://github.com/owner/renamed.git" };
+    let oldReads = 0;
+    f.client.resolveRepository = async config => {
+      if (config.coordinate === f.configuration.coordinate) {
+        oldReads++;
+        if (oldState === "unavailable") throw new Error("old coordinate is gone");
+        return { ...f.repository, githubId: "99" };
+      }
+      return { ...f.repository, name: "renamed" };
+    };
+    const execute: CommandExecutor = (file, args, options) => file === "git"
+      ? f.execute(file, ["-c", `url.${pathToFileURL(f.upstream).href}.insteadOf=${renamed.remote}`, ...args], options)
+      : f.execute(file, args, options);
+    const manager = createGitManager({ temporaryDirectory: path.join(f.directory, "rename-tmp"), client: f.client, execute, now: () => 40 });
+    const registration = f.store.getRepository(f.repository)!;
+    const resumed = await manager.ensureRepository(renamed, undefined, "42", registration);
+    expect(oldReads).toBe(0);
+    expect(rawGit(local.root, ["config", "--local", "--get", "remote.origin.url"])).toBe(renamed.remote);
+    expect(readFileSync(path.join(worktree, "retained.txt"), "utf8")).toBe("preserve me");
+    expect(f.store.getReviewPublication(review.id)?.phase).toBe("pending");
+    // A restart between Git's update and SQLite's update must adopt the new coordinate.
+    expect((await manager.ensureRepository(renamed, undefined, "42", registration)).root).toBe(local.root);
+    f.store.registerRepository({ ...f.repository, remote: renamed.remote, localPath: local.root });
+    f.store.recoverPossiblePublication(review.id, proof, 41);
+    f.store.confirmReviewPublication({ reviewId: review.id, attempt: 1 }, { publisherId: "viewer", outcome: "approved", remoteReviewId: "result", threadIds: [] }, proof, 42);
+    f.update({ state: "closed" });
+    expect(await manager.cleanupWorktree(f.store, resumed, review, proof)).toEqual({ kind: "cleaned" });
+    expect(existsSync(worktree)).toBe(false);
+    expect(f.store.getRepository(f.repository)?.remote).toBe(renamed.remote);
+    expect(oldRemote).not.toBe(renamed.remote);
+  }, 60_000);
+
+  it("does not adopt an unregistered or unexpected origin for a renamed repository", async () => {
+    const f = fixture();
+    const local = await f.manager.ensureRepository(f.configuration);
+    const renamed = { ...f.configuration, coordinate: "github.com/owner/renamed", name: "renamed", remote: "https://github.com/owner/renamed.git" };
+    f.client.resolveRepository = async config => ({ ...f.repository, githubId: config.name === "renamed" ? "42" : "99" });
+    await expect(f.manager.ensureRepository(renamed, undefined, "42")).rejects.toThrow("different GitHub repository");
+    rawGit(local.root, ["config", "remote.origin.url", "https://github.com/other/unowned.git"]);
+    await expect(f.manager.ensureRepository(renamed, undefined, "42", f.store.getRepository(f.repository))).rejects.toThrow("different GitHub repository");
+    expect(rawGit(local.root, ["config", "remote.origin.url"])).toBe("https://github.com/other/unowned.git");
+  }, 60_000);
+
+  it("retains an uncertain rename result and can inspect it after restart", async () => {
+    const f = fixture();
+    const local = await f.manager.ensureRepository(f.configuration);
+    const renamed = { ...f.configuration, coordinate: "github.com/owner/renamed", name: "renamed", remote: "https://github.com/owner/renamed.git" };
+    f.client.resolveRepository = async config => ({ ...f.repository, githubId: config.name === "renamed" ? "42" : "99" });
+    const execute: CommandExecutor = async (file, args, options) => {
+      const result = await f.execute(file, args, options);
+      if (file === "git" && args.includes("--replace-all")) return { ...result, error: Object.assign(new Error("lost result"), { code: 128 }) };
+      return result;
+    };
+    const manager = createGitManager({ temporaryDirectory: path.join(f.directory, "rename-tmp"), client: f.client, execute });
+    const registration = f.store.getRepository(f.repository)!;
+    await expect(manager.ensureRepository(renamed, undefined, "42", registration)).rejects.toMatchObject({ completed: false });
+    expect(rawGit(local.root, ["config", "remote.origin.url"])).toBe(renamed.remote);
+    expect(f.store.getRepository(f.repository)?.remote).toBe(f.configuration.remote);
+    await expect(f.manager.ensureRepository(renamed, undefined, "42", registration)).resolves.toMatchObject({ root: local.root });
+  }, 60_000);
+
   it("accepts SSH origin identity without requiring SSH transport and preserves HTTPS API ports", async () => {
     const f = fixture();
     const local = await f.manager.ensureRepository(f.configuration);
@@ -80,7 +151,7 @@ describe("local Git repositories and review snapshots", () => {
     expect(f.calls.filter((call) => call.args.includes("clone")).every((call) => call.args.includes(f.configuration.remote))).toBe(true);
     const ported = { ...f.configuration, host: "github.example:8443", coordinate: "github.example:8443/owner/repo", remote: "https://github.example:8443/owner/repo.git", path: path.join(f.directory, "ported") };
     const mapped: CommandExecutor = async (file, args, options) => file === "gh" ? { stdout: "fixture-secret\n", stderr: "", error: null } : executeCommand(file, ["-c", "protocol.file.allow=always", "-c", `url.${pathToFileURL(f.upstream).href}.insteadOf=${ported.remote}`, ...args], options);
-    const manager = createGitManager({ temporaryDirectory: path.join(f.directory, "tmp"), client: { resolveRepository: async () => ({ ...f.repository, host: ported.host }), listPullRequestNumbers: async () => [], listOpenPullRequests: async () => [], getPullRequest: async () => { throw new Error("unused"); }, getPullRequestReviewSnapshot: async () => { throw new Error("Unexpected review snapshot request in worktree fixture."); }, getPullRequestChecks: async () => { throw new Error("unused"); } }, execute: mapped });
+    const manager = createGitManager({ temporaryDirectory: path.join(f.directory, "tmp"), client: { resolveRepository: async () => ({ ...f.repository, host: ported.host }), resolveRepositoryById: async () => ({ ...f.repository, host: ported.host }), listPullRequestNumbers: async () => [], listOpenPullRequests: async () => [], getPullRequest: async () => { throw new Error("unused"); }, getPullRequestReviewSnapshot: async () => { throw new Error("Unexpected review snapshot request in worktree fixture."); }, getPullRequestChecks: async () => { throw new Error("unused"); } }, execute: mapped });
     expect((await manager.ensureRepository(ported)).configuration.host).toBe("github.example:8443");
     expect(rawGit(ported.path, ["config", "--local", "--get", "remote.origin.url"])).toBe(ported.remote);
   }, 60_000);
