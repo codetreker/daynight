@@ -1,6 +1,6 @@
 # Agent Note: Assistant Task Inbox
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -10,22 +10,38 @@ systems have no way to notify an assistant, and Daynight's own outbound
 Webhooks can only reach public HTTPS receivers, while assistants run on Worker
 machines that are usually unreachable from the internet.
 
-## Proposal
+## Decision
 
-Give each assistant task an optional inbox with a public URL on the Daynight
+Each assistant task has an optional inbox with a public URL on the Daynight
 server, as specified in
 [the inbox specification](../../../../docs/spec/assistant-task-inbox.md) and
-[its design](../../../../docs/design/assistant-task-inbox.md). Requests become
-`inbound` assistant task events for the current holder Bot and travel through
-the existing Worker event delivery. A Project event subscription is an ordinary
-personal outbound Webhook endpoint whose URL is the token-free inbox URL.
-Daynight events are authenticated by comparing the request bytes with the
-captured event fact on the server and confirming that one of the owner's
-personal endpoints delivered it to this inbox; external senders use a bearer
-token. Captured events store their authenticated actor on the server, and
-Task, Step and Thread writes accept an optional Bot identity, so an inbox
-suppresses events caused by its holder Bot and events caused by another of the
-owner's Bots shortly after that Bot was notified about the same Task.
+[its design](../../../../docs/design/assistant-task-inbox.md). Requests to
+`POST /api/v1/assistant-task-inbox/{inboxId}` become `inbound` assistant task
+events for the current holder Bot and travel through the existing Worker event
+delivery, which renders them as compact `origin=daynight` notifications and
+fences external content as untrusted data.
+
+A Project event subscription is an ordinary personal outbound Webhook endpoint
+whose URL is the token-free inbox URL. Daynight events are authenticated by
+comparing the request bytes with the captured event fact on the server and
+confirming that one of the owner's personal endpoints delivered it to this
+inbox; external senders use a bearer token that only the owner can enable,
+rotate or disable. Receipts make repeated deliveries of one event idempotent.
+
+Captured Webhook events store their authenticated actor server-side
+(migration `097_webhook_event_actor.sql`), and Task, Step and Thread writes
+accept an optional `X-Daynight-Bot-Id`, which the CLI sends when
+`DAYNIGHT_BOT_ID` is set. The inbox suppresses events caused by its holder Bot
+and events caused by another of the owner's Bots shortly after that Bot was
+notified about the same Task. Inbox storage is migration
+`099_assistant_task_inboxes.sql`.
+
+The Web subscription panel only creates or edits the user's own subscription
+for the inbox. Concurrency and policy correctness stay with the Webhook
+service: the panel submits the observed `ifVersion`, shows `version_conflict`
+with a Reload action, displays server error codes as returned, and links to the
+Webhook page for endpoint lifecycle. The inbox management panel follows the
+same rule for enable, disable and rotate.
 
 ## Alternatives
 
@@ -83,19 +99,20 @@ a primary thing a monitoring assistant needs to see. Suppressing another Bot's
 event only when that Bot was notified about the same Task within ten minutes
 targets the reaction that forms a loop and keeps independent work visible.
 
-## Acceptance Criteria
+**Client-side concurrency and policy handling in the panels.** Earlier panel
+revisions tracked draft base versions, pre-read endpoints before creation,
+adopted just-created endpoints, mirrored the outbound address policy and the
+maintenance-mode gate, and coordinated token, receipt and refresh ordering
+after lost responses. Each added state produced new multi-tab and ordering
+races and duplicated server rules that could drift. The server already owns
+optimistic locking, operation receipts, inbox idempotency, eligibility and
+address policy, so the panels only use those contracts and show their errors.
 
-- The inbox, receiving endpoint, server-side actor capture, suppression,
-  Worker rendering and subscription UI behave as the specification requires,
-  verified by the tests named in the design.
-- A real outbound Webhook on a public deployment delivers to its own token-free
-  inbox URL; retries and manual redeliveries create no duplicates and survive a
-  token rotation; the holder Bot receives a compact notification when idle.
-- Tokens never appear in logs, errors, events or inbox read results, and appear
-  only in enable and rotate responses.
+## Consequences
 
-## Risks
-
+- Assistants receive Project events and external notifications without a
+  reachable Worker address, and a replaced holder Bot receives pending
+  inbound events through the existing retargeting on transfer and takeover.
 - A public URL is a prompt injection channel into an agent with local
   execution rights; fencing, labeling and manual-bounded actions reduce but do
   not eliminate the risk.
@@ -104,8 +121,13 @@ targets the reaction that forms a loop and keeps independent work visible.
   notifications for conversation retention.
 - Per-instance rate limiting is approximate across server instances; the
   database backlog limit is the hard bound.
-- Local deployments cannot exercise the self-subscription path end to end.
+- Local deployments cannot exercise the self-subscription path end to end;
+  that path is accepted on a public deployment.
 - Bot identity on Task, Step and Thread writes is a same-user declaration, not
   a security boundary; a same-user process can omit it and avoid suppression.
 - The ten-minute reaction window is a heuristic: a reaction after the window
   is delivered, and an unrelated write inside the window is suppressed.
+- Two concurrent creations can still produce two personal endpoints targeting
+  one inbox. Inbox idempotency prevents duplicate inbound events, but removing
+  the duplicate endpoint needs an atomic create-if-absent in the Webhook
+  endpoint contract, which is not implemented.
