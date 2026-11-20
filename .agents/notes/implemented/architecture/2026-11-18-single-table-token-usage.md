@@ -75,7 +75,11 @@ plane enters this journal before history buffering; only the exact advertised
 SDK/runtime qualification permits measurement uploads. A bounded HTTP uploader
 checks complete per-event receipts before deletion. Stopped Worker maintenance
 uses the original journal and retained grant without reopening native execution,
-and runs independently of history archiving. Pending or quarantined measurements
+and runs independently of history archiving. Standalone Test shutdown and its
+archive retry use the same bounded original-journal replay after local stop
+proof, independently of server stop receipts and history upload outcomes.
+Pending usage keeps a retry entry even when history succeeds. Pending or
+quarantined measurements
 and unresolved local source-conflict evidence retain their sole journal during
 explicit and automatic recording discard. Local conflicts have no uploadable
 event; acknowledging the accepted measurement and partial state cannot resolve
@@ -87,9 +91,14 @@ standalone launcher writes usageScope=standalone_test on fresh and resumed
 tickets; the optional field is restricted to testExecutionId tickets without a
 Bot recovery binding. Bot and Test tickets otherwise share the same identity
 kind, and retained Bot tickets can lack recovery bindings. Legacy ambiguous
-tickets therefore continue native execution without collecting usage. Normal
-standalone Test resume creates a new, identified execution; immutable retained
-tickets are not rewritten to infer a purpose they never recorded.
+tickets therefore continue native execution without collecting usage.
+Standalone Test resume creates a new, identified execution; immutable retained
+tickets are not rewritten to infer a purpose they never recorded. This admits
+local collection only. The existing server rejects a native anchor already
+registered to another Test Session with source_conflict. The resumed native
+execution continues, but cannot obtain a new usage grant or move old sources.
+Cross-Test usage recovery requires a server-verifiable resume relationship;
+sharing a native ID alone cannot authorize it.
 
 Provider identity is fixed at journal state admission and checked across recovery.
 The uploader selects the fixed profile by that identity. Qualified connected
@@ -99,7 +108,13 @@ Unverified handshakes do not acquire a supported-version capability.
 
 Claude admits immutable root-message input only when the actual SDK, CLI and
 Anthropic backend are known, retaining that combination in providerVersion.
-Unknown backends never lend their values to the Anthropic plane. Missing
+The actual SDK initialization result must identify apiProvider=firstParty,
+in addition to consistent effective settings and endpoint checks. Mantle and
+the separate Anthropic AWS and Google Cloud providers cannot inherit the
+Anthropic profile merely because older environment selectors are absent. Only
+the provider discriminator crosses the profile channel; account details stay
+native-private. Unknown backends never lend their values to the Anthropic plane.
+Missing
 profile evidence cannot create a temporary identity that would later conflict
 with the same generation. Transcript rows lack original version provenance, so
 recovery replays retained ledger facts instead of requalifying historical rows
@@ -135,6 +150,13 @@ and suppress the old message immediately, including when no notice arrives.
 
 ## Alternatives
 
+**Relaxing native anchor ownership for independently resumed Tests.** Resume
+creates a new platform Session by product contract. Reusing the old Session
+would change that contract, while accepting the same native ID across Sessions
+without verified provenance would widen grant and source ownership. The
+existing explicit registration refusal remains; cross-Test metering requires
+a separate provenance design rather than a Provider-local identity rewrite.
+
 **Recognizing Bots only by their recovery bindings.** These fields are absent
 from some retained Bot tickets, and the launcher can reuse those tickets
 directly. A botId added only to new tickets would leave the same ambiguity.
@@ -143,7 +165,8 @@ for all Providers without reconstructing Bot history or changing Bot recovery.
 
 **Disabling all testExecutionId collection.** This would exclude standalone
 Tests together with Bots. An explicit local ticket marker preserves newly
-launched and normally resumed Test collection; the deliberate cost is no new
+launched Test collection and identifies resumed tickets without bypassing
+server registration authority; the deliberate cost is no new
 usage from legacy ambiguous tickets until a classified execution is created.
 
 **Committing each completed Claude content block.** A completed text or tool

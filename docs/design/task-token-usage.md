@@ -181,8 +181,12 @@ Task 沿用已有 claim 身份；独立 Test 启动器在新建和 resume 的新
 `usageScope=standalone_test`。该可选字段仅允许在 testExecutionId 票据上出现，
 并与 Bot recovery 绑定互斥。Bot 同样使用 testExecutionId，且旧票据未必带 recovery
 绑定，不能仅凭 ID 类型或恢复目录判断用途。缺少明确用途的旧 Test/Bot 票据不创建
-usage runtime、不向 Provider 传递采集器；原生执行继续。独立 Test 通过正常 resume
-生成带用途的新执行后恢复采集，不补写或改造不可变旧票据。
+usage runtime、不向 Provider 传递采集器；原生执行继续。resume 生成的新票据只建立
+本地用途准入，不补写旧票据，也不授予跨 Test 的用量来源归属。独立 Test resume
+按既有产品合同创建新 Session/URL并复用 nativeSessionId；如果该原生身份已在旧 Test
+登记 anchor，现有服务端返回 source_conflict，新 Test 不取得 grant、不上传计量。
+旧来源保持原归属，原生恢复继续，不能将这项注册缺口视为零用量或 unsupported。
+跨 Test 的恢复计量需要服务端可验证的恢复关系及来源授权，不能仅放宽 anchor 检查。
 
 Copilot SDK `1.0.11` 的实时 `assistant.usage` 在历史恢复缓冲之前进入独立用量入口。
 Provider 先公布原生 Session 和 `SDK/runtime` 精确版本；事件映射仅保留 UUID、
@@ -221,6 +225,9 @@ Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失
 不把 assistant.idle 或 Task done 当作完整计量凭据。未知整数不能变成已知零；
 不安全 JS number 记录 native_integer_unrepresentable。停止后的未 seal state
 按已确认停止证据补 missing_final，而不是推断 complete。
+独立 Test 在本地确认停止后尝试原 journal/grant 的有界补传；
+controller archive 重试同样重放原执行。用量与服务端停止回执、历史上传及历史 ACK
+独立，任一路失败仍尝试另一路，未确认用量保留 journal 并提供同一 archive 重试入口。
 
 ## Codex Controller 能力上报
 
@@ -238,6 +245,10 @@ measurement。停止和恢复保留 unsupported，不把无计量误写成零或
 ## Claude Controller 输入计量
 
 Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
+后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
+firstParty 且生效环境、settings 与官方 endpoint 检查一致时才映射 anthropic。
+Mantle、Anthropic AWS、Anthropic Google Cloud 等选择器和缺失/矛盾的原生读回
+均不能借用 Anthropic qualification；账户其他字段不进入 profile。
 `claude-message-input-0.3.247-v1` 仅接收实际 SDK=0.3.247、实际 CLI 版本已知、
 backend=anthropic 的实时 root 消息完成流；providerVersion 编码为
 `<sdk>/<cli>/<backend>`，服务端还必须精确公布该组合的 qualification。

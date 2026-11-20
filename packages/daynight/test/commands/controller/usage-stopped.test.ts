@@ -19,10 +19,12 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
-const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot") => {
+const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot", standalone = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/usage-stopped-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider, cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: provider, agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const executionId = randomUUID();
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", provider, cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: provider, agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: standalone ? "" : "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString(),
+    ...(standalone ? { testExecutionId: executionId, ownerUserId: randomUUID(), usageScope: "standalone_test", initialInput: "none" } as const : { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID() }) };
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
   const journalPath = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0", provider);
@@ -43,8 +45,8 @@ const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifec
   return { home, journalPath, ticket, state, read };
 };
 
-test("replays original grants after native stop, seals crash gaps, and never holds storage across HTTP", async () => {
-  const f = await fixture(), before = f.read(), paths: string[] = [], events: Record<string, unknown>[] = [];
+test.each([false, true])("replays original grants after native stop without sharing history ACKs (standalone %s)", async standalone => {
+  const f = await fixture(undefined, "copilot", standalone), before = f.read(), paths: string[] = [], events: Record<string, unknown>[] = [];
   const request: typeof fetch = async (input, init) => {
     // A real permit acquisition proves each network operation is outside local storage admission.
     const permit = acquireControllerStoragePermit(f.journalPath, undefined, { fileMustExist: true }); permit.release();
@@ -68,11 +70,24 @@ test("rejects changed execution identity before network or acknowledgement", asy
   expect(request).not.toHaveBeenCalled(); expect(countStoppedControllerUsage(f)).toBe(1);
 });
 
-test("retains pending evidence after a failed late upload without changing Session ACK", async () => {
-  const f = await fixture(), before = f.read();
-  const request: typeof fetch = async () => { throw new Error("offline"); };
+test.each([false, true])("retains pending evidence after a failed late upload without changing Session ACK (standalone %s)", async standalone => {
+  const f = await fixture(undefined, "copilot", standalone), before = f.read();
+  let unavailable = true;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: capability.profileId, provider: "copilot", capability: { ...capability, qualification: "unverified" }, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${"g".repeat(43)}`);
+    if (unavailable) return new Response(null, { status: 503 });
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] };
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
   const result = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
-  expect(result.pending).toBeGreaterThan(0); expect(countStoppedControllerUsage(f)).toBe(1);
+  expect(result.pending).toBeGreaterThan(0); expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+  unavailable = false;
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0 });
+  expect(f.read().usage).toEqual([]);
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
 });
 

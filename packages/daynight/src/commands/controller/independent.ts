@@ -1,5 +1,6 @@
 import { isProcessBirth } from "./linux-process-proof.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
+import { replayStoppedControllerUsage } from "./usage/stopped.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -436,6 +437,15 @@ export const runIndependentController = async (input: IndependentControllerInput
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };
         await persist("stop-proof.json", body);
+        // Usage has its own ACK and must remain retryable even if history fails.
+        let usagePending = false;
+        try {
+          usagePending = (await replayStoppedControllerUsage({ journalPath: journal, ticket, serverToken: config.serverToken })).pending > 0;
+        } catch (error) {
+          usagePending = true;
+          if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and usage replay failed.");
+        }
+        if (usagePending) context.stderr(`Native execution stopped; usage upload is pending. Original journal retained in ${directory}.\nRetry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
         // Publish the upload intent before closing the live page so observers keep polling.
         await request(`/api/v1/test-sessions/${ticket.sessionId}/archive`, { ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, state: "pending", errorCode: null }, true).catch(() => {});
         try {

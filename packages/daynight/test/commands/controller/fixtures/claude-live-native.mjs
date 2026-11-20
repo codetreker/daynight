@@ -11,7 +11,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (request.type === "control_request") {
     const subtype = request.request.subtype;
-    const response = subtype === "initialize" ? { commands: [], models: [{ value: "claude-sonnet-5-5", displayName: "Controlled vision", description: "Fixture", resolvedModel: "claude-sonnet-5-5" }], account: {} }
+    const response = subtype === "initialize" ? { commands: [], models: [{ value: "claude-sonnet-5-5", displayName: "Controlled vision", description: "Fixture", resolvedModel: "claude-sonnet-5-5" }], account: process.env.DAYNIGHT_TEST_CLAUDE_API_PROVIDER ? { apiProvider: process.env.DAYNIGHT_TEST_CLAUDE_API_PROVIDER } : {} }
       : subtype === "get_settings" ? { applied: { model: "claude-sonnet-5-5", effort: null } } : {};
     send({ type: "control_response", response: { subtype: "success", request_id: request.request_id, response } }); return;
   }

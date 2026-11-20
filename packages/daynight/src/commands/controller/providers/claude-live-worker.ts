@@ -50,7 +50,6 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
       } satisfies NonNullable<Options["sessionStore"]>, sessionStoreFlush: "batched" as const } : {}),
       hooks: { SessionStart: [{ hooks: [async event => { await channel.call("sessionStart", event); return {}; }] }] },
       spawnClaudeCodeProcess: args => {
-        const backend = claudeBackend(args.env, effectiveSettings, options.settings);
         const child = spawn(args.command, args.args, { cwd: args.cwd ?? options.cwd, env: args.env, signal: args.signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false }); children.push(child);
         const proof = new Promise<void>((resolve, reject) => {
           child.once("error", reject);
@@ -62,6 +61,10 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
             const executable = script >= 0 ? args.args[script]! : args.command;
             const versionArgs = script >= 0 ? [...args.args.slice(0, script + 1), "--version"] : ["--version"];
             const cliVersion = await new Promise<string>(accept => execFile(args.command, versionArgs, { timeout: 10_000, maxBuffer: 4096, encoding: "utf8", windowsHide: true, env: args.env }, (error, stdout) => accept(error ? "unknown" : /\b\d+\.\d+\.\d+\b/.exec(stdout)?.[0] ?? "unknown")));
+            // Only the provider discriminator crosses the profile channel; the
+            // account's identity and credential metadata remain native-private.
+            const apiProvider = await native!.initializationResult().then(value => value.account?.apiProvider, () => undefined);
+            const backend = claudeBackend(args.env, effectiveSettings, options.settings, apiProvider);
             await channel.call("profile", { sdkVersion, cliVersion, executable, backend }); profileResolve();
           })().then(() => resolve(), reject); });
         }); proofs.push(proof); void proof.catch(error => { profileReject(error); fatal(error); });
