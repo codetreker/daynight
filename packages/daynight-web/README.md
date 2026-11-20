@@ -610,9 +610,9 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Runtime monitoring shows scheduling and admission, actual capacity, tasks in
-cleanup, current failures and the latest recovery. The cleanup section retains
-only permission-projected activities with `kind === 'cleanup'` and
+Runtime monitoring shows scheduling and admission, actual capacity and its
+reported active/retained breakdown, and tasks in cleanup. The cleanup section
+retains only permission-projected activities with `kind === 'cleanup'` and
 `scope.kind === 'claim'`, in observation order. It retains phases, activity
 states, waits, retry times and task links, including ID labels when names are
 omitted. An empty filtered section remains visible: complete observations show
@@ -621,8 +621,10 @@ cleanup tasks in this observation.” The same rule applies to an unexpired reta
 observation after a failed refresh. Execution, maintenance and non-task cleanup
 activities remain part of the monitoring protocol without appearing in this
 section. System monitoring separately shows host resources, environment and
-software. Task associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
+software. Cleanup and admission task associations open the existing task detail;
+known retry times are displayed without inventing external waits or deadlines.
+Current failures, recent recovery and monitoring delivery have no panels or
+replacement entries in the Web view.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and

@@ -55,7 +55,7 @@ describe.each(['en', 'zh-CN'] as const)('tasks in cleanup in %s', locale => {
     expect(rows[0]).toHaveTextContent(locale === 'en' ? 'Retry backoff' : '重试退避');
     expect(rows[3]).toHaveTextContent(locale === 'en' ? 'Labels omitted' : '标签已省略');
     expect(panel()).not.toHaveTextContent('Execution waiting'); expect(panel()).not.toHaveTextContent('Project cleanup');
-    expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getAllByRole('heading')).toHaveLength(7);
+    expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getAllByRole('heading')).toHaveLength(4);
     view.rerender(<WorkerMonitoring state={{ ...state(snapshot), status: 'error', error: new ApiError('network') }} readEnabled />);
     expect(within(panel()).getAllByRole('listitem')).toHaveLength(4);
     expect(screen.getByRole('alert')).toHaveTextContent(locale === 'en' ? 'The last confirmed observation remains visible.' : '保留上次确认的观测。');
@@ -72,82 +72,60 @@ describe.each(['en', 'zh-CN'] as const)('tasks in cleanup in %s', locale => {
   });
 });
 
-it.each(['en', 'zh-CN'] as const)('shows actionable Markdown repair guidance in %s', locale => {
-  const snapshot = structuredClone(detail);
-  snapshot.data.currentFailures[0]!.error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
-  renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale });
-  expect(screen.getAllByText(/daynight worker repair-markdown --help/).length).toBeGreaterThan(0);
-});
-
-it('shows retained capacity, original claim and safe recovery guidance without deriving totals from visible details', () => {
+it.each(['en', 'zh-CN'] as const)('omits diagnostic panels and their data in %s', locale => {
+  const hiddenScope = { ...scope, claimId: id(8) };
+  const hiddenAssociation = { ...association, title: 'Diagnostic-only task' };
   const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data,
     capacity: { ...detail.data.capacity!, limit: 6, occupied: 6, breakdown: { active: 1, retained: 5 } },
-    currentFailures: [{ ...detail.data.currentFailures[0]!, component: 'resources', phase: 'resource-observation', retryState: 'manual', nextAttemptAt: null,
-      worktree: { kind: 'project-relative', path: '.worktrees/daynight/old' },
+    admission: { ...detail.data.admission, reasons: [detail.data.admission.reasons[0]!, { ...detail.data.admission.reasons[0]!, code: 'claim-unconfirmed', scope, association: { ...association, title: 'Admission task' } }] },
+    currentFailures: [{ ...detail.data.currentFailures[0]!, scope: hiddenScope, association: hiddenAssociation,
+      component: 'resources', phase: 'resource-observation', retryState: 'manual', nextAttemptAt: null,
+      worktree: { kind: 'project-relative', path: '.worktrees/daynight/hidden' },
       error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false } }],
+    lastRecovery: { operationId: id(9), component: 'execution', scope: hiddenScope, association: hiddenAssociation, observedAt: receivedAt, explanation: 'The operation recovered.', explanationTruncated: false },
+    delivery: { lastSucceededAt: receivedAt, lastFailure: { observedAt: receivedAt, phase: 'write', error: detail.data.currentFailures[0]!.error, requestId: id(9) } },
   } };
-  const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale: 'zh-CN' });
-  expect(screen.getByText('活动任务占用').nextElementSibling).toHaveTextContent('1');
-  expect(screen.getByText('保留资源占用').nextElementSibling).toHaveTextContent('5');
-  const issue = screen.getByText('资源 · 资源观测', { selector: 'summary strong' }).closest('details')!;
-  fireEvent.click(issue.querySelector('summary')!);
-  expect(within(issue).getByText(scope.claimId)).toBeInTheDocument();
-  expect(within(issue).getByText(/任务已完成本身不足以证明可回收/)).toBeInTheDocument();
-  expect(within(issue).getByText(`daynight worker resources recover ${scope.taskId} --project ${scope.projectId} --claim-id ${scope.claimId}`)).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state({ ...snapshot, permissionProjection: 'restricted', detailCoverage: 'partial', data: { ...snapshot.data, reservations: [], activities: [], currentFailures: [] } })} readEnabled />);
-  expect(screen.getByText('保留资源占用').nextElementSibling).toHaveTextContent('5');
-  expect(screen.getByText('本次观测没有可见异常。')).toBeInTheDocument();
-  expect(screen.queryByText(scope.claimId)).toBeNull(); expect(screen.queryByText('恢复指引')).toBeNull();
-  view.rerender(<WorkerMonitoring state={state()} readEnabled />);
-  expect(screen.getByText('此 Worker 尚未报告容量分解。')).toBeInTheDocument();
+  const view = renderWithLocale(<><WorkerMonitoringTime state={state(snapshot)} /><WorkerMonitoring state={state(snapshot)} readEnabled /></>, { locale });
+  const assertAbsent = () => {
+    for (const name of ['Current failures', 'Most recent recovery', 'Monitoring delivery', '当前异常', '最近恢复', '监控上报']) expect(screen.queryByRole('heading', { name })).toBeNull();
+    for (const value of ['Diagnostic-only task', hiddenScope.claimId, '.worktrees/daynight/hidden', id(9), 'daynight worker resources recover', 'No current failures reported.', 'No recovery reported.', 'No visible failures in this observation.', 'No visible recovery in this observation.', '未报告当前异常。', '未报告恢复。', '本次观测没有可见异常。', '本次观测没有可见恢复摘要。']) expect(screen.queryByText(value, { exact: false })).toBeNull();
+    expect(view.container.querySelectorAll('.monitoring-content > section')).toHaveLength(1);
+    expect(view.container.querySelector('.monitoring-issue, .monitoring-delivery')).toBeNull();
+  };
+  assertAbsent();
+  expect(screen.getByText('6 / 6')).toBeInTheDocument();
+  expect(screen.getByText(locale === 'en' ? 'Active task occupancy' : '活动任务占用').nextElementSibling).toHaveTextContent('1');
+  expect(screen.getByText(locale === 'en' ? 'Retained resource occupancy' : '保留资源占用').nextElementSibling).toHaveTextContent('5');
+  expect(screen.getByRole('heading', { name: locale === 'en' ? 'Admission reasons' : '准入原因' }).parentElement).toHaveTextContent(locale === 'en' ? 'Cleanup occupies capacity' : '清理占用容量');
+  for (const name of ['Private task', 'Admission task']) expect(screen.getByRole('link', { name })).toHaveAttribute('href', taskDetailUrl(id(1), id(2), { tab: 'overview', path: null }));
+  expect(view.container.querySelector('.monitoring-time')).toHaveTextContent(locale === 'en' ? 'Captured' : '采集时间');
+  const empty = { ...snapshot, data: { ...snapshot.data, currentFailures: [], lastRecovery: null, delivery: { lastSucceededAt: null, lastFailure: null } } };
+  view.rerender(<><WorkerMonitoringTime state={state(empty)} /><WorkerMonitoring state={state(empty)} readEnabled /></>); assertAbsent();
+  view.rerender(<><WorkerMonitoringTime state={state({ ...empty, permissionProjection: 'restricted', detailCoverage: 'partial' })} /><WorkerMonitoring state={state({ ...empty, permissionProjection: 'restricted', detailCoverage: 'partial' })} readEnabled /></>); assertAbsent();
+  expect(screen.getByText(locale === 'en' ? 'Some task details are not visible.' : '部分任务详情不可见。')).toBeInTheDocument();
 });
 
-it('renders real capacity and cleanup details and preserves an expanded failure during background reads', () => {
-  const view = renderWithLocale(<WorkerMonitoring state={state()} readEnabled />, { locale: 'en' });
-  expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getByText(/Cleanup occupies capacity/)).toBeInTheDocument();
-  const issue = screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')!;
-  fireEvent.click(issue.querySelector('summary')!); expect(issue).toHaveAttribute('open');
-  expect(within(issue).getAllByText('A required command failed.')).toHaveLength(2);
-  expect(within(issue).getByRole('link', { name: 'Private task' })).toHaveAttribute('href', taskDetailUrl(id(1), id(2), { tab: 'overview', path: null }));
-  view.rerender(<WorkerMonitoring state={{ ...state(), refreshing: true }} readEnabled />);
-  expect(issue).toHaveAttribute('open'); expect(screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')).toBe(issue);
-  const restricted: WorkerMonitoringDetail = { ...detail, permissionProjection: 'restricted', data: { ...detail.data, admission: { ...detail.data.admission, coverage: 'partial', reasons: [] }, reservations: [], activities: [], currentFailures: [], lastRecovery: null } };
-  view.rerender(<WorkerMonitoring state={state(restricted)} readEnabled />);
-  expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument(); expect(screen.queryByText('Private task')).toBeNull();
-  expect(screen.queryByText('A required command failed.')).toBeNull(); expect(screen.getByText('No visible cleanup tasks in this observation.')).toBeInTheDocument();
-  expect(screen.getByText('No visible failures in this observation.')).toBeInTheDocument(); expect(screen.getByText('No visible recovery in this observation.')).toBeInTheDocument(); expect(screen.getByText('2 / 2')).toBeInTheDocument();
-});
-
-it('shows worktree locations only on their failure and withdraws them with restricted details', () => {
-  const withPath: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, currentFailures: [{ ...detail.data.currentFailures[0]!, worktree: { kind: 'project-relative', path: '../retained/工作 区' } }] } };
-  const view = renderWithLocale(<WorkerMonitoring state={state(withPath)} readEnabled />, { locale: 'en' });
-  const issue = screen.getByText('Cleanup · Worktree removal', { selector: 'summary strong' }).closest('details')!;
-  fireEvent.click(issue.querySelector('summary')!);
-  expect(within(issue).getByText('Worktree path').nextElementSibling?.querySelector('code')).toHaveTextContent('../retained/工作 区');
-  expect(screen.queryAllByText('../retained/工作 区')).toHaveLength(1);
-  view.setLocale('zh-CN'); expect(within(issue).getByText('工作区路径')).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state({ ...withPath, permissionProjection: 'restricted', data: { ...withPath.data, currentFailures: [] } })} readEnabled />);
-  expect(screen.queryByText('../retained/工作 区')).toBeNull();
-  view.rerender(<WorkerMonitoring state={state()} readEnabled />);
-  expect(screen.queryByText('工作区路径')).toBeNull();
-});
-
-it.each([
-  ['different-volume', 'On a different drive or share.', '位于不同磁盘或共享位置。'],
-  ['invalid-path', 'The path is invalid.', '路径无效。'],
-  ['limit-exceeded', 'The path exceeds the reporting limit.', '路径超出上报限额。'],
-] as const)('localizes unavailable worktree reason %s', (reason, english, chinese) => {
-  const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, currentFailures: [{ ...detail.data.currentFailures[0]!, worktree: { kind: 'unavailable', reason } }] } };
-  const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale: 'en' });
-  expect(screen.getByText('Worktree path').nextElementSibling).toHaveTextContent(english);
-  view.setLocale('zh-CN'); expect(screen.getByText('工作区路径').nextElementSibling).toHaveTextContent(chinese);
+it('retains the last observation on read failure and retries', () => {
+  const refresh = vi.fn();
+  const failed = { ...state(), status: 'error' as const, error: new ApiError('server', 503, 'unavailable', 'request-123'), refresh };
+  renderWithLocale(<><WorkerMonitoringTime state={failed} /><WorkerMonitoring state={failed} readEnabled /></>, { locale: 'en' });
+  const alert = screen.getByRole('alert');
+  expect(alert).toHaveTextContent('Runtime monitoring could not be updated');
+  expect(alert).toHaveTextContent('The last confirmed observation remains visible.');
+  expect(alert).toHaveTextContent('request-123');
+  expect(screen.getByText('2 / 2')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Private task' })).toBeInTheDocument();
+  expect(document.querySelector('.monitoring-time')).toHaveTextContent('Captured');
+  fireEvent.click(within(alert).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
 });
 
 it('distinguishes loading, absent, read error, stale and expiry at their boundaries', () => {
   const refresh = vi.fn();
   const failed = { ...state(null, null), status: 'error' as const, error: new ApiError('network'), refresh };
   const content = (observation: Parameters<typeof WorkerMonitoring>[0]['state']) => <><WorkerMonitoringTime state={observation} /><WorkerMonitoring state={observation} readEnabled /></>;
-  const view = renderWithLocale(content(failed), { locale: 'en' });
+  const view = renderWithLocale(content({ ...state(null, null), status: 'loading' }), { locale: 'en' });
+  expect(screen.getByRole('heading', { name: 'Loading runtime monitoring' })).toBeInTheDocument();
+  view.rerender(content(failed));
   expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated'); expect(screen.queryByText('No recent runtime observation')).toBeNull();
   expect(document.querySelector('.monitoring-time')).toBeNull();
   fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
