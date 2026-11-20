@@ -32,7 +32,9 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), reviewer: vi.fn<(options: { signal: AbortSignal }) => Promise<void>>(), reviewerStopped: vi.fn(), nextUUID: null as (() => string) | null }));
+// The startup fixture controls Task dependencies; the independent reviewer host has its own tests.
+vi.mock("../../../src/commands/worker/reviewer-host.js", () => ({ runReviewerHost: mocks.reviewer }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
@@ -144,6 +146,10 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.reviewer.mockImplementation(async ({ signal }) => {
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    mocks.reviewerStopped();
+  });
   mocks.nextUUID = null;
   mocks.emit.mockReset();
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
@@ -168,6 +174,34 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("starts the reviewer with the Worker identity and waits for its shutdown", async () => {
+    const f = await fixture();
+    let release!: () => void, observedAbort!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const aborted = new Promise<void>(resolve => { observedAbort = resolve; });
+    mocks.reviewer.mockImplementation(async ({ signal }) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      observedAbort();
+      await held;
+      mocks.reviewerStopped();
+    });
+    const { cancellation, running } = start(f);
+    let finished = false;
+    void running.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(mocks.reviewer).toHaveBeenCalledOnce());
+      expect(mocks.reviewer.mock.calls[0]![0]).toMatchObject({ homeDirectory: f.homeDirectory, packageDirectory: f.packageDirectory,
+        serverOrigin: origin, userId: uuid(6), workerId, signal: expect.any(AbortSignal) });
+      cancellation.abort();
+      await aborted;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(mocks.reviewerStopped).not.toHaveBeenCalled();
+      expect(finished).toBe(false);
+      release();
+      await running;
+      expect(mocks.reviewerStopped).toHaveBeenCalledOnce();
+    } finally { release(); cancellation.abort(); await Promise.allSettled([running]); }
+  });
   it.each(["configuration", "telemetry"] as const)("keeps Bot recovery closed until a matching machine %s report is confirmed", async channel => {
     const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
     let options: ReporterOptions | undefined, canSubmit: (() => boolean) | undefined;

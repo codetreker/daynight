@@ -28,6 +28,19 @@ Scope 检查与现有凭据有效性、资源访问、角色和业务条件共�
 旧批准入口在 scoped 装配中不能绕过显式选择；旧生产装配仍保留原行为。
 目录及 v2 设备入口在真实路由注册时声明 browser-only 分类，方法回退单独登记。
 
+## 凭据存储与复核
+
+PAT 与 MCP grant 分别保存规范化业务 Scope 和独立版本，同值写入不推进版本。
+OAuth access 与 refresh 不复制权限；按 access hash 读取原 grant 的当前策略，
+事务复核按 grant、access 顺序加共享锁。授权请求可保存明确批准的集合；
+固定 API profile 不保存集合，继续使用原资源和客户端绑定。读取已保存的非法
+策略会失败，scoped MCP 读取也拒绝缺失策略。编辑和 refresh 使用同一 grant 锁，
+编辑按账户、有效状态及预期版本更新，最近使用时间独立。
+
+准备迁移保留历史及旧写入者的空字段；现有产品签发、批准和装配维持原行为。
+历史回填及 scoped 认证装配须在启用时协调；不能把尚未回填的 MCP 空字段
+当作无限权限。迁移复用既有 access hash 和 grant 索引，不增加热路径索引。
+
 ## Tag 目录准入
 
 `service/tag.NewScoped` 提供显式接收 `model.CredentialAuthorization` 的目录
@@ -134,8 +147,8 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
-放行。PAT 已具备策略存储与复核能力；MCP 持久化、认证时读取最新策略、
-完整入口分类、历史回填和公开启用由相应实现接入。Tag 的直接操作使用调用方
+放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
+启用由相应实现接入。Tag 的直接操作使用调用方
 已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。

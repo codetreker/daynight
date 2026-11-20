@@ -28,3 +28,12 @@ export const resolveReviewPaths = (
     logsDirectory: pathApi.join(stateDirectory, "logs"),
   };
 };
+
+export const resolveWorkerReviewPaths = (homeDirectory: string, pathApi: PathApi = path): ReviewPaths => {
+  const paths = resolveReviewPaths(homeDirectory, pathApi);
+  const stateDirectory = pathApi.join(paths.stateDirectory, "reviewer");
+  return { ...paths, stateDirectory, databaseFile: pathApi.join(stateDirectory, "state.sqlite"),
+    lockFile: pathApi.join(stateDirectory, "instance.lock"), copilotDirectory: pathApi.join(stateDirectory, "copilot"),
+    cacheDirectory: pathApi.join(stateDirectory, "cache"), temporaryDirectory: pathApi.join(stateDirectory, "tmp"),
+    logsDirectory: pathApi.join(stateDirectory, "logs") };
+};

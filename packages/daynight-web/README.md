@@ -2592,14 +2592,11 @@ geometry or system-menu behavior.
 
 The [Web typography specification](../../docs/spec/web-typography.md) owns the
 allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
-`src/styles/typography.css` owns the six numeric scale values. Its fixed transitional
-role mappings preserve unmigrated consumers. The retained terminal bridge still
-maps to `xs`, but recording output directly selects `sm` and multiplies it by
-its unitless user zoom. Surrounding controls, timestamps and errors use ordinary
-shared sizes independently of that zoom. The touch-field bridge retains
-`max(var(--text-base), 16px)`; migrated Session fields use the shared coarse-pointer
-adjustment, and Bot creation and directory inputs use the responsive adjustment.
-The [Session and Bot typography decision](../../.agents/notes/implemented/architecture/2026-11-20-session-bot-typography.md)
+`src/styles/typography.css` owns the six numeric scale values. Terminal recording
+output selects `sm` and multiplies it by its unitless user zoom. Surrounding
+controls, timestamps and errors use ordinary shared sizes independently of that
+zoom. Session fields use the shared coarse-pointer adjustment, and Bot creation
+and directory inputs use the responsive adjustment. The [Session and Bot typography decision](../../.agents/notes/implemented/architecture/2026-11-20-session-bot-typography.md)
 records these renderer and input responsibilities.
 
 The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
@@ -2610,37 +2607,17 @@ pnpm --filter @codetreker/daynight-web test:typography-policy
 ```
 
 Strict rules accept the six shared sizes and inheritance, reject fixed sizes,
-fallbacks, unauthorized aliases, local overrides and invalid font shorthands,
-and inspect declarations even when later rules supersede them. Shared rendering
-adjustments are restricted to their owning stylesheet. CSS AST inspection tracks
-retired identifiers in every declaration, including geometry. TypeScript AST
-inspection covers statically recognizable constants, strings, JSX, DOM style
-assignments, `setProperty`, `cssText`, `setAttribute` and renderer configuration.
-
-`scripts/typography-policy-baseline.json` grants temporary permission to exact
-legacy occurrences by path, diagnostic category, normalized value, syntax context
-and count, with a module owner for each entry. Selection aliases receive individual
-entries. Mermaid font settings and theme CSS use the measured-size adapter's
-supported paths. Unrecorded uses, increased
-counts and stale entries fail. A module migration must remove or reduce its own
-entries in the same change; review baseline diffs to ensure they only shrink.
-Retired definitions must remain present while collected consumers reference
-them, even if their definition entries are removed from the baseline.
-The production check never regenerates or expands the baseline. Formatting and
-line-number changes do not change occurrence identity.
-
-The closing migration gate is:
-
-```bash
-pnpm --filter @codetreker/daynight-web exec node scripts/typography-policy.mts --zero-legacy
-```
-
-It refuses remaining transitional definitions and legacy references without
-consulting the baseline. After consumers migrate, remove the bridges, baseline
-and transitional matching code together. The [migration decision](../../.agents/notes/implemented/architecture/2026-11-20-web-typography-migration-policy.md)
-records why these permissions are bounded. Static analysis cannot execute arbitrary
-runtime code; browser checks remain responsible for actual font sizes, renderer
-output, resizing, reflow, clipping and interaction continuity.
+fallbacks, retired names, unauthorized aliases, local overrides and invalid font
+shorthands, and inspect declarations even when later rules supersede them. Shared
+rendering adjustments are restricted to their owning stylesheet. CSS AST
+inspection tracks retired identifiers in every declaration, including geometry.
+TypeScript AST inspection covers statically recognizable constants, strings, JSX,
+DOM style assignments, `setProperty`, `cssText`, `setAttribute` and renderer
+configuration. Mermaid font settings and theme CSS use the measured-size adapter's
+supported paths. No legacy exemption baseline is used. The [migration decision](../../.agents/notes/implemented/architecture/2026-11-20-web-typography-migration-policy.md)
+records the former bounded compatibility window. Static analysis cannot execute
+arbitrary runtime code; browser checks remain responsible for actual font sizes,
+renderer output, resizing, reflow, clipping and interaction continuity.
 The `typography-ownership-playwright.config.ts` configuration exercises remaining
 shared notices, task controls, attachment metadata and Bot creation against the
 production shell, with controlled API responses. It checks English and Chinese,
@@ -2659,8 +2636,7 @@ Its reports and captures belong to `.tmp/typography-h/`.
 Team, GitHub management and Webhook browser fixtures exercise the shared size
 scale at their actual routes. They cover responsive member and configuration
 inputs, Team invitation secrets, request IDs, narrow layouts and Webhook tab
-navigation with controlled API responses. The responsive field rule also takes
-precedence over transitional form typography for marked inputs.
+navigation with controlled API responses. The responsive field rule takes precedence over generic field typography for marked inputs.
 
 ### Workspace quality checks
 

@@ -95,9 +95,9 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     }
     return;
   };
-  const report = (node: Node, message: string, category: TypographyOccurrence['category'] = 'invalid', value = node.getText(source).replace(/\s+/g, ' '), identifiers = retiredIn(value), inlineContext?: string): void => {
+  const report = (node: Node, message: string, category: TypographyOccurrence['category'] = 'invalid', value = node.getText(source).replace(/\s+/g, ' '), inlineContext?: string): void => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    diagnostics.push({ path, category, context: inlineContext === undefined ? context : `${context} > inline ${inlineContext}`, value, line: line + 1, column: character + 1, message, identifiers });
+    diagnostics.push({ path, category, context: inlineContext === undefined ? context : `${context} > inline ${inlineContext}`, value, line: line + 1, column: character + 1, message });
   };
   const name = (node: Node): string[] | undefined => isComputedPropertyName(node) ? strings(node.expression)
     : isIdentifier(node) ? [node.text] : strings(node);
@@ -121,7 +121,7 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     if (values === undefined) return;
     for (const text of values) {
       for (const item of collectTypographyCss(text, path, roles, true)) {
-        report(node, item.message, item.category, item.value, item.identifiers, item.context);
+        report(node, item.message, item.category, item.value, item.context);
       }
     }
   };
@@ -198,8 +198,7 @@ export const collectTypographyTypeScript = (source: SourceFile, path: string, ro
     }).concat(SyntaxKind[node.kind]).join(' > ');
     const values = isTrackedExpression(node) ? strings(node) : undefined;
     if (values !== undefined && values.some(value => retiredIn(value).length > 0)) {
-      // Record resolved values once at their outer expression; whitespace and
-      // quotation changes do not create a new legacy allowance.
+      // Report resolved values once at their outer expression.
       const parent = ancestors.at(-1);
       const parentValues = parent === undefined || !isTrackedExpression(parent) ? undefined : strings(parent);
       if (parentValues === undefined) {

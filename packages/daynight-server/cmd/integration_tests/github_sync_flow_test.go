@@ -37,7 +37,7 @@ import (
 
 // The process uses its production fixed-origin client through a controlled TLS
 // proxy. This keeps the complete server, worker and database path in the flow.
-func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), func(string), func(string), func(string)) {
+func githubIntegrationRemote(t *testing.T, commits reviewerFixtureCommits) (*githubFixtureConfig, func(string), func(string), func(string), func(string)) {
 	t.Helper()
 	dir := filepath.Join(integrationRunRoot(t), "github-fixture")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -106,7 +106,7 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), 
 			current, firstBranch, second, state, revision := title, firstBase, secondBase, secondState, secondRevision
 			mu.Unlock()
 			pull := func(number, id int, name, base string) map[string]any {
-				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": "abc", "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
+				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "sha": commits.base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": commits.head, "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
 			}
 			first, other := pull(1, 101, current, firstBranch), pull(2, 102, "Second PR", second)
 			other["draft"] = true
@@ -173,7 +173,8 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), 
 }
 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
-	config, change, changeFirstBase, changeSecondBase, changeSecondState := githubIntegrationRemote(t)
+	commits := prepareReviewerFixtureGit(t)
+	config, change, changeFirstBase, changeSecondBase, changeSecondState := githubIntegrationRemote(t, commits)
 	f := newFixtureConfigured(t, false, config)
 	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
@@ -259,7 +260,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			t.Fatalf("repository switch: %+v", receipt)
 		}
 	}
-	serverAPIReviewAssignmentFlow(t, f, project.ID, func() {
+	serverAPIReviewAssignmentFlow(t, f, project.ID, commits, func() {
 		changeSecondBase("trunk")
 		sendPullWebhook(t, f, appBase, 2)
 	}, func(branch string) {
@@ -405,13 +406,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE device_authorizations DROP COLUMN approved_business_scopes; ALTER TABLE oauth_grants DROP COLUMN description, DROP COLUMN business_scopes, DROP COLUMN scope_version; ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108)`); err != nil || result.RowsAffected() != 30 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109)`); err != nil || result.RowsAffected() != 31 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

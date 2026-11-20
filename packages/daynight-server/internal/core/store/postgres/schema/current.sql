@@ -1,4 +1,4 @@
--- Schema snapshot version: 108
+-- Schema snapshot version: 109
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -450,6 +450,7 @@ CREATE TABLE "oauth_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "code_expires_at" timestamp with time zone,
     "retain_until" timestamp with time zone NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "oauth_authorizations_binding_hash_check" CHECK (("octet_length"("binding_hash") = 32)),
     CONSTRAINT "oauth_authorizations_code_hash_check" CHECK ((("code_hash" IS NULL) OR ("octet_length"("code_hash") = 32))),
     CONSTRAINT "oauth_authorizations_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'denied'::"text", 'consumed'::"text", 'expired'::"text"])))
@@ -484,6 +485,8 @@ CREATE TABLE "oauth_grants" (
     "revoked_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "oauth_grants_client_id_check" CHECK (("length"("client_id") > 0)),
     CONSTRAINT "oauth_grants_lifetime_check" CHECK ((("expires_at" > "created_at") AND ((("scope" = 'daynight:api'::"text") AND ("client_id" = 'societas-bot'::"text")) OR ("expires_at" <= ("created_at" + '720:00:00'::interval))))),
     CONSTRAINT "oauth_grants_resource_check" CHECK (("length"("resource") > 0)),

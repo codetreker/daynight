@@ -5,13 +5,11 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { collectTypographyCss, inspectTypographyCss, readTypographyRoles } from './typography-policy-css.mts';
-import { compareTypographyBaseline, inventoryTypography, readTypographyBaseline } from './typography-policy-baseline.mts';
-import { checkTypographyPolicy, collectTypographyPolicy } from './typography-policy.mts';
+import { checkTypographyPolicy } from './typography-policy.mts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const owner = ':root { --text-xs: .75rem; --text-sm: .875rem; --text-base: 1rem; --text-lg: 1.125rem; --text-xl: 1.375rem; --text-2xl: 1.75rem; }';
 const roles = readTypographyRoles(owner);
-const bridgedOwner = owner.replace('}', '--text-interface:var(--text-sm); }');
 const fixture = async (run: (directory: string, put: (path: string, text: string) => Promise<void>) => Promise<void>): Promise<void> => {
   await mkdir(join(root, '.tmp'), { recursive: true });
   const directory = await mkdtemp(join(root, '.tmp/typography-test-'));
@@ -22,20 +20,19 @@ const fixture = async (run: (directory: string, put: (path: string, text: string
   try {
     await put('src/styles/typography.css', owner);
     await put('src/index.ts', 'export {};');
-    await put('scripts/typography-policy-baseline.json', '[]');
     await run(directory, put);
   } finally { await rm(directory, { recursive: true, force: true }); }
 };
 
-test('requires exactly six sizes in one unconditional owner and fixed optional bridges', () => {
+test('requires exactly six sizes in one unconditional owner without bridges', () => {
   assert.equal(roles.size, 6);
-  assert.equal(readTypographyRoles(`${owner.slice(0, -1)} --text-interface: var(--text-sm); --text-touch-field: max(var(--text-base), 16px); }`).size, 6);
   for (const invalid of [
     owner.replace(':root', '.local'), `${owner} :root { --text-extra: 2rem; }`,
     owner.replace('.875rem', '.9rem'), owner.replace('.875rem', '14px'),
     `@media (width > 10px) { ${owner} }`, `${owner} :root {}`,
     owner.replace('--text-xs: .75rem;', ''),
-    owner.replace('}', '--text-interface: var(--text-base); }'),
+    owner.replace('}', '--text-interface: var(--text-sm); }'),
+    owner.replace('}', '--text-touch-field: max(var(--text-base), 16px); }'),
     owner.replace('}', '--text-terminal: .75rem; }'),
   ]) assert.throws(() => readTypographyRoles(invalid), invalid);
   assert.throws(() => readTypographyRoles(owner.replace('}', String.raw`--te\78 t-sm: .875rem; }`)), /duplicate/);
@@ -80,24 +77,7 @@ test('tracks retired identifiers in all geometry, definitions and escaped refere
   }
 });
 
-test('baseline matches normalized AST context and exact occurrence counts', () => {
-  const items = collectTypographyCss('@media (width < 800px) {.a {height:var(--text-metadata)}}', 'src/view.css', roles);
-  const baseline = inventoryTypography(items, () => 'I');
-  assert.deepEqual(readTypographyBaseline(JSON.stringify(baseline)), baseline);
-  assert.deepEqual(compareTypographyBaseline(items, baseline, false), []);
-  const formatted = collectTypographyCss('@media (width < 800px) {\n .a { height: var( --text-metadata ); }\n}', 'src/view.css', roles);
-  assert.deepEqual(compareTypographyBaseline(formatted, baseline, false), []);
-  assert.match(compareTypographyBaseline([...items, ...items], baseline, false).join('\n'), /increased legacy/);
-  assert.match(compareTypographyBaseline([], baseline, false).join('\n'), /stale legacy/);
-  assert.match(compareTypographyBaseline(collectTypographyCss('.b {height:var(--text-metadata)}', 'src/view.css', roles), baseline, false).join('\n'), /Unrecorded/);
-  assert.ok(compareTypographyBaseline(items, baseline, true).length > 0);
-  const invalid = collectTypographyCss('.a {font-size:14px}', 'src/view.css', roles);
-  assert.ok(compareTypographyBaseline(invalid, inventoryTypography(invalid, () => 'B'), false).length > 0);
-  assert.throws(() => readTypographyBaseline(JSON.stringify([...baseline, ...baseline])), /Duplicate/);
-  assert.throws(() => readTypographyBaseline(JSON.stringify([{ ...baseline[0], count: 0 }])), /Invalid/);
-});
-
-test('checks unimported production files and static TS writes with precise legacy allowances', async () => {
+test('checks unimported production files and static TS writes', async () => {
   await fixture(async (directory, put) => {
     await put('src/unimported.css', '.old {font-size:9px}');
     await put('src/deep/view.tsx', `
@@ -118,10 +98,8 @@ test('checks unimported production files and static TS writes with precise legac
   });
 });
 
-test('tracks retired static strings, runtime reads and writes including concatenation', async () => {
+test('rejects retired static strings, runtime reads and writes including concatenation', async () => {
   await fixture(async (directory, put) => {
-    await put('src/styles/typography.css', owner.replace('}', '--text-interface:var(--text-sm); --text-metadata:var(--text-xs); --text-reading:var(--text-base); }'));
-    await put('src/ui/native-select/native-select.css', '.native-select {--native-select-font-size:var(--text-sm)}');
     await put('src/legacy.ts', `
       const name = '--text-' + 'interface';
       const alias = name;
@@ -131,27 +109,19 @@ test('tracks retired static strings, runtime reads and writes including concaten
       element.setAttribute('style', 'width:var(--text-reading)');
       const key = '--native-select-font-size';
     `);
-    const collected = await collectTypographyPolicy(directory);
-    const baseline = inventoryTypography(collected.occurrences, () => 'B');
-    assert.ok(baseline.length >= 7, JSON.stringify(baseline));
-    assert.ok(baseline.some(item => item.value === '--text-interface'));
-    assert.ok(baseline.some(item => item.value.includes('--text-metadata')));
-    assert.deepEqual((await checkTypographyPolicy(directory, { baseline })).diagnostics, []);
-    assert.ok((await checkTypographyPolicy(directory, { zeroLegacy: true })).diagnostics.length >= 7);
-    await put('src/another.ts', "element.style.setProperty('--text-interface', '1rem');");
-    assert.ok((await checkTypographyPolicy(directory, { baseline })).diagnostics.some(value => value.includes('src/another.ts')));
+    const result = await checkTypographyPolicy(directory);
+    for (const identifier of ['--text-interface', '--text-metadata', '--text-reading', '--native-select-font-size']) {
+      assert.ok(result.diagnostics.some(value => value.includes(identifier)), identifier);
+    }
   });
 });
 
 test('constrains Mermaid font settings to measured adapter paths', async () => {
   await fixture(async (directory, put) => {
-    const css = '.selection-control {--selection-control-font-size:var(--text-sm);font-size:var(--selection-control-font-size)}';
-    await put('src/ui/selection-control/selection-control.css', css);
-    const baseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'E');
     const adapter = 'src/ui/markdown/mermaid/MermaidRenderer.ts';
     const wrap = (body: string) => `const buildMermaidConfiguration = (sizes: MermaidSizes): MermaidConfig => (${body});`;
     await put(adapter, wrap('{themeVariables:{fontSize:`${sizes.sm}px`,pieTitleTextSize:`${sizes.lg}px`,packet:{byteFontSize:`${sizes.xs}px`}}, sequence:{actorFontSize:sizes.sm}, themeCSS:`.title {font-size:${sizes.lg}px}`}'));
-    assert.deepEqual((await checkTypographyPolicy(directory, { baseline })).diagnostics, []);
+    assert.deepEqual((await checkTypographyPolicy(directory)).diagnostics, []);
     for (const bad of [
       '{sequence:{actorFontSize:13}}', '{themeVariables:{pieTitleTextSize:"18px"}}',
       '{themeVariables:{packet:{byteFontSize:"12px"}}}', '{sequence:{actorFontSize:getSize()}}',
@@ -160,15 +130,13 @@ test('constrains Mermaid font settings to measured adapter paths', async () => {
       '{sequence: other}', '{...other}',
     ]) {
       await put(adapter, wrap(bad));
-      assert.ok((await checkTypographyPolicy(directory, { baseline })).diagnostics.some(value => value.includes('Mermaid')), bad);
+      assert.ok((await checkTypographyPolicy(directory)).diagnostics.some(value => value.includes('Mermaid')), bad);
     }
     await put(adapter, '');
     await put('src/mermaid.ts', 'const sequence = { actorFontSize: 13 }; const configuration: MermaidConfig = { sequence }; const alias = configuration.sequence; alias.actorFontSize = 14; configuration.packet = {byteFontSize: 13}; mermaid.initialize({sequence:{actorFontSize:13}});');
-    await put('src/ui/selection-control/selection-control.css', css + '.new {font-size:var(--selection-control-font-size)}');
-    const diagnostics = (await checkTypographyPolicy(directory, { baseline })).diagnostics.join('\n');
+    const diagnostics = (await checkTypographyPolicy(directory)).diagnostics.join('\n');
     assert.match(diagnostics, /actorFontSize/);
     assert.match(diagnostics, /cannot be written dynamically/);
-    assert.match(diagnostics, /\.new/);
     for (const bad of [
       'type Config = MermaidConfig; const c: Config = {sequence:{actorFontSize:13}};',
       'const c = {} as MermaidConfig; c.sequence.actorFontSize = 13;',
@@ -179,7 +147,7 @@ test('constrains Mermaid font settings to measured adapter paths', async () => {
       'import type { MermaidConfig as C } from "mermaid"; const c: C = {sequence:{actorFontSize:13}};',
     ]) {
       await put('src/mermaid.ts', bad);
-      assert.ok((await checkTypographyPolicy(directory, { baseline })).diagnostics.some(value => value.includes('Mermaid')), bad);
+      assert.ok((await checkTypographyPolicy(directory)).diagnostics.some(value => value.includes('Mermaid')), bad);
     }
   });
 });
@@ -216,6 +184,20 @@ test('allows new inline sizes and rejects neighboring fixed or dynamic values an
   });
 });
 
+test('rejects unknown runtime font values at recognized writes', async () => {
+  await fixture(async (directory, put) => {
+    await put('src/runtime.tsx', `
+      element.style.fontSize = getSize();
+      element.style.setProperty('font-size', getSize());
+      element.style.font = getFont();
+      const view = <span fontSize={getSize()} />;
+    `);
+    const diagnostics = (await checkTypographyPolicy(directory)).diagnostics;
+    assert.equal(diagnostics.length, 4, diagnostics.join('\n'));
+    assert.ok(diagnostics.every(value => value.includes('statically readable')));
+  });
+});
+
 test('reports malformed unimported TypeScript', async () => {
   await fixture(async (directory, put) => {
     await put('src/bad.tsx', 'const broken = <span');
@@ -223,29 +205,22 @@ test('reports malformed unimported TypeScript', async () => {
   });
 });
 
-test('requires a legacy definition until its final consumer migrates even when its budget is removed', async () => {
+test('rejects every retired identifier in definitions, font values and geometry', async () => {
   await fixture(async (directory, put) => {
-    for (const reference of ['var(--text-interface)', String.raw`var(--te\78 t-interface)`]) {
-      await put('src/styles/typography.css', bridgedOwner);
-      await put('src/view.css', `.a {font-size:${reference}}`);
-      const baseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'B');
-      assert.deepEqual((await checkTypographyPolicy(directory, { baseline })).diagnostics, []);
-      await put('src/styles/typography.css', owner);
-      const consumers = baseline.filter(item => item.category !== 'legacy-definition');
-      assert.ok((await checkTypographyPolicy(directory, { baseline: consumers })).diagnostics.some(value => value.includes('has no definition')));
-    }
-    await put('src/ui/selection-control/selection-control.css', '.selection-control {--selection-control-font-size:var(--text-sm)}');
-    await put('src/view.css', '.a {font-size:var(--selection-control-font-size)}');
-    const selectionBaseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'B');
-    await put('src/ui/selection-control/selection-control.css', '');
-    assert.ok((await checkTypographyPolicy(directory, { baseline: selectionBaseline.filter(item => item.category !== 'legacy-definition') })).diagnostics.some(value => value.includes('--selection-control-font-size has no definition')));
+    const identifiers = [
+      '--text-metadata', '--text-interface', '--text-reading', '--text-section-heading',
+      '--text-detail-heading', '--text-page-heading', '--text-terminal', '--text-touch-field',
+      '--selection-control-font-size', '--selection-control-count-font-size', '--native-select-font-size',
+    ];
+    await put('src/view.css', identifiers.map(name => `.a {height:var(${name});font-size:var(${name});${name}:var(--text-sm)}`).join('\n'));
+    const diagnostics = (await checkTypographyPolicy(directory)).diagnostics;
+    for (const name of identifiers) assert.equal(diagnostics.filter(value => value.includes(name)).length, 3, name);
     await put('src/view.css', '.a {font-size:var(--text-sm)}');
-    assert.deepEqual((await checkTypographyPolicy(directory, { baseline: [] })).diagnostics, []);
-    assert.deepEqual((await checkTypographyPolicy(directory, { zeroLegacy: true })).diagnostics, []);
+    assert.deepEqual((await checkTypographyPolicy(directory)).diagnostics, []);
   });
 });
 
-test('rejects wrapped retired values at inline writes in both migration modes', async () => {
+test('rejects wrapped retired values at inline writes', async () => {
   await fixture(async (directory, put) => {
     for (const expression of [
       "('var(--text-interface)' as const)", "('var(--text-interface)')",
@@ -253,9 +228,7 @@ test('rejects wrapped retired values at inline writes in both migration modes', 
       "condition ? 'var(--text-interface)' : 'inherit'",
     ]) {
       await put('src/wrapped.ts', `element.style.fontSize = ${expression};`);
-      for (const options of [{ baseline: [] }, { zeroLegacy: true }]) {
-        assert.ok((await checkTypographyPolicy(directory, options)).diagnostics.some(value => value.includes('retired typography')), expression);
-      }
+      assert.ok((await checkTypographyPolicy(directory)).diagnostics.some(value => value.includes('retired typography')), expression);
     }
   });
 });
@@ -270,28 +243,21 @@ test('preserves escaped CSS dependencies in cssText, setAttribute and JSX declar
       `<div style={${JSON.stringify(css)}} />;`,
     ]) {
       await put('src/escaped.tsx', statement);
-      for (const options of [{ baseline: [] }, { zeroLegacy: true }]) {
-        const diagnostics = (await checkTypographyPolicy(directory, options)).diagnostics;
-        assert.ok(diagnostics.some(value => value.includes('retired typography')), statement);
-        assert.ok(diagnostics.every(value => !value.includes('undefined')));
-      }
+      const diagnostics = (await checkTypographyPolicy(directory)).diagnostics;
+      assert.ok(diagnostics.some(value => value.includes('retired typography')), statement);
+      assert.ok(diagnostics.every(value => !value.includes('undefined')));
     }
   });
 });
 
-test('production tree and direct CLI enforce the same migration policy', async () => {
+test('production tree and direct CLI enforce the same strict policy', async () => {
   const result = await checkTypographyPolicy(root);
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.roles.length, 6);
   assert.ok(result.files > 100);
-  const baseline = readTypographyBaseline(await readFile(join(root, 'scripts/typography-policy-baseline.json'), 'utf8'));
-  assert.equal(result.legacy, baseline.reduce((total, entry) => total + entry.count, 0));
   const command = spawnSync(process.execPath, ['scripts/typography-policy.mts'], { cwd: root, encoding: 'utf8', timeout: 60_000 });
   assert.equal(command.status, 0, command.stderr);
   assert.match(command.stdout, /Typography ownership passed/);
-  const zero = spawnSync(process.execPath, ['scripts/typography-policy.mts', '--zero-legacy'], { cwd: root, encoding: 'utf8', timeout: 60_000 });
-  assert.equal(zero.status, 1);
-  assert.match(zero.stderr, /retired typography|retired definition/);
   const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.match(packageJson.scripts['test:harness'], /typography-policy/);
 });

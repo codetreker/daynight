@@ -47,13 +47,17 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
+		case "insufficient_scope":
+			// A second independent failure makes the refusal's outcome uncertain.
+			if !containsJoinedError(err) {
+				return fault, true
+			}
+			return nil, false
 		case "project_repository_conflict", "project_repository_identity_unavailable":
 			return fault, true
 		case "goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch", "goal_dependency_target_unavailable":
 			return fault, true
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
-			return fault, true
-		case "insufficient_scope":
 			return fault, true
 		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
 			return fault, true
@@ -70,6 +74,16 @@ func KnownFault(err error) (*model.Fault, bool) {
 		}
 	}
 	return nil, false
+}
+
+func containsJoinedError(err error) bool {
+	for err != nil {
+		if _, ok := err.(interface{ Unwrap() []error }); ok {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func onlyPropertyValidation(err error) bool {

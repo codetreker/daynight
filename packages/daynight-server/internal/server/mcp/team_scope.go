@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
@@ -96,4 +97,24 @@ func requireTeamToolScopes(ctx context.Context, provider teamservice.Authorizati
 		return fmt.Errorf("credential authorization principal mismatch")
 	}
 	return coreteam.RequireScope(authorization, operations...)
+}
+
+// When scoped authentication is active, both domain adapters must use the
+// same request authority. Transaction-bound service rechecks remain independent.
+func verifyTeamRequestPolicy(ctx context.Context, provider teamservice.AuthorizationProvider, actor RequestActor) error {
+	if actor.Authorization == nil {
+		return nil
+	}
+	current, err := provider(ctx, actor.Principal)
+	if err != nil {
+		return err
+	}
+	if err = current.Validate(); err != nil {
+		return err
+	}
+	expected := actor.Authorization
+	if current.Principal != actor.Principal || current.Profile != expected.Profile || current.Policy == nil || expected.Policy == nil || current.Policy.Kind() != expected.Policy.Kind() || current.Policy.Version() != expected.Policy.Version() || !slices.Equal(current.Policy.Scopes(), expected.Policy.Scopes()) {
+		return fmt.Errorf("Team credential authorization mismatch")
+	}
+	return nil
 }

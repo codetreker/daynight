@@ -23,7 +23,12 @@ on scoped reads. The preparation migration leaves historical and legacy-writer
 rows unscoped until the coordinated backfill and cutover. The opt-in device flow
 records the approved selection with the decision and uses that exact selection
 when redemption creates the PAT. Device decisions and redemptions check expiry
-using database time after locking the device record.
+using database time after locking the device record. OAuth stores an MCP policy
+and its independent version on the grant; access and refresh credentials retain
+their original family identity. Scoped reads reject missing or malformed MCP
+policy while fixed API grants have no policy. OAuth authorization records can
+retain an explicit approved selection without changing the existing approval or
+code-exchange entry points.
 
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
@@ -80,12 +85,15 @@ resource membership, override profile bindings, or enforce public operations by
 itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) also
 consumes the policy through opt-in service and transport entry points. Scope
 updates compare the owner and observed version and only advance it for a changed
-selection; usage timestamps remain independent. PAT management rechecks expiry
-against database time after acquiring the target lock. Bot
+selection; usage timestamps remain independent. OAuth grant edits and refresh
+serialize on the same grant, and transaction-bound credential reads lock the grant
+before access. PAT management rechecks expiry against database time after acquiring
+the target lock. Bot
 definition permission does not confer Session or runtime control. A scoped
 authorization source must read current authority at each supplied boundary and
 preserve the principal; it cannot substitute a stale request snapshot for an
 existing transactional recheck. The current production assembly retains the
 existing credential paths; scoped assembly requires authenticated policy
-snapshots and transaction-bound policy readers. MCP persistence, historical backfill and production activation remain independent
-work; the original production device assembly remains in place until cutover.
+snapshots and transaction-bound policy readers. Historical backfill and
+production activation remain independent work; the original production device
+assembly remains in place until cutover.

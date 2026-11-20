@@ -5,8 +5,7 @@ import { API } from 'typescript/unstable/sync';
 import { withPolicyCleanup } from './native-select-policy.mts';
 import { collectTypographyCss, readTypographyRoles, typographyOwner } from './typography-policy-css.mts';
 import { collectTypographyTypeScript } from './typography-policy-typescript.mts';
-import { compareTypographyBaseline, readTypographyBaseline, typographyBaselinePath, type TypographyBaselineEntry } from './typography-policy-baseline.mts';
-import { typographyDependencyDiagnostics, type TypographyOccurrence } from './typography-policy-contract.mts';
+import { occurrenceDiagnostic, type TypographyOccurrence } from './typography-policy-contract.mts';
 
 const sourceFiles = async (directory: string): Promise<string[]> => {
   const paths: string[] = [];
@@ -57,20 +56,19 @@ export const collectTypographyPolicy = async (packageDirectory: string): Promise
       if (errors.length === 0) occurrences.push(...collectTypographyTypeScript(source, label(path), roles, project.checker));
     }
   });
-  return { files: paths.length, roles: [...roles].sort(), occurrences, diagnostics: [...diagnostics, ...typographyDependencyDiagnostics(occurrences)] };
+  return { files: paths.length, roles: [...roles].sort(), occurrences, diagnostics };
 };
 
-export const checkTypographyPolicy = async (packageDirectory: string, options: { baseline?: readonly TypographyBaselineEntry[]; zeroLegacy?: boolean } = {}): Promise<{ files: number; roles: string[]; legacy: number; diagnostics: string[] }> => {
+export const checkTypographyPolicy = async (packageDirectory: string): Promise<{ files: number; roles: string[]; diagnostics: string[] }> => {
   const result = await collectTypographyPolicy(packageDirectory);
-  const baseline = options.zeroLegacy === true ? [] : options.baseline ?? readTypographyBaseline(await readFile(join(packageDirectory, typographyBaselinePath), 'utf8'));
-  return { files: result.files, roles: result.roles, legacy: result.occurrences.filter(item => item.category !== 'invalid').length, diagnostics: [...result.diagnostics, ...compareTypographyBaseline(result.occurrences, baseline, options.zeroLegacy === true)] };
+  return { files: result.files, roles: result.roles, diagnostics: [...result.diagnostics, ...result.occurrences.map(occurrenceDiagnostic)] };
 };
 
 if (import.meta.main) {
   try {
-    if (process.argv.length > 3 || (process.argv.length === 3 && process.argv[2] !== '--zero-legacy')) throw new Error('Usage: node scripts/typography-policy.mts [--zero-legacy]');
-    const result = await checkTypographyPolicy(fileURLToPath(new URL('../', import.meta.url)), { zeroLegacy: process.argv[2] === '--zero-legacy' });
+    if (process.argv.length !== 2) throw new Error('Usage: node scripts/typography-policy.mts');
+    const result = await checkTypographyPolicy(fileURLToPath(new URL('../', import.meta.url)));
     if (result.diagnostics.length > 0) throw new Error(result.diagnostics.join('\n'));
-    console.log(`Typography ownership passed across ${result.files} source files, ${result.roles.length} public sizes and ${result.legacy} recorded legacy occurrences.`);
+    console.log(`Typography ownership passed across ${result.files} source files and ${result.roles.length} public sizes.`);
   } catch (error) { console.error(error); process.exitCode = 1; }
 }

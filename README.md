@@ -275,18 +275,15 @@ explains version checks, remote-result handling and resource cleanup.
 
 ## Review configuration and startup
 
-PR review requires Git, authenticated GitHub CLI and Copilot CLI on `PATH`:
+PR review requires Git, authenticated GitHub CLI and Copilot CLI on `PATH`.
+Enable review participation for the Worker and run `daynight worker run`. The
+Worker polls its assigned PRs and confirms published reviews on GitHub.
 
-```bash
-daynight review add-repo https://github.com/OWNER/REPO.git
-daynight review run
-```
-
-The reviewer runs in the foreground. Its first observation records the current
-PR boundary; it tracks newly opened eligible PRs after that boundary. Use
-`daynight review list` to inspect persisted local state. The
-[review guide](packages/daynight/README.md#review-configuration-and-startup)
-covers eligibility, reviewer identity, retries, retained sessions and shutdown.
+To switch from the standalone reviewer, stop `daynight review run` first. The
+Worker uses independent state in `~/.daynight/reviewer/` and leaves the old
+state and worktrees in place. Eligible PRs may be reviewed again after switching.
+The [review guide](packages/daynight/README.md#review-configuration-and-startup)
+covers both entry points, eligibility and recovery.
 
 ## Self-hosting
 

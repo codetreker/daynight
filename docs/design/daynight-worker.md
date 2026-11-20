@@ -2,6 +2,8 @@
 
 `daynight worker run` 是持续对账的前台进程：领取配置仓库中的合格任务，在稳定 Git worktree 中通过冻结的 Web 执行身份运行 Copilot、Codex 或 Claude，并在原 claim 结束后按 backend 的停止、文件和独立归档责任收尾。[需求](../spec/daynight-worker.md)拥有产品行为，[认领架构](daynight-worker-claims.md)拥有服务端归属协议，[本机记录决策](../../.agents/notes/archived/simplification/2026-10-27-worker-claim-records.md)记录存储简化的理由与代价。账号级运行观测的[客户端采集与调度](daynight-worker-reporting.md)及[服务端存储与查询](daynight-worker-snapshots.md)各有独立职责，与本机执行协调及 claim 归属分离；它不授权资源清理或任务状态变更。Worker 沿用[客户端要求](../spec/daynight.md#c1-包与平台)的 Linux、Windows 和 macOS ARM64 支持范围；完整平台验收仍需独立的运行证据。
 
+Worker 内的独立 PR 审查宿主与 Task 调度并行运行，其名单、状态隔离、启动门禁和发布恢复见 [Worker Reviewer 设计](worker-reviewer.md)。
+
 ## 总体结构
 
 ```mermaid

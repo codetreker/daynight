@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { remoteIdentity } from "../config.js";
 import type { RepositoryConfiguration } from "../config.js";
 import type { PullRequestObservation, PullRequestReviewSnapshot, RemoteReview, RemoteReviewThread, RepositoryIdentity } from "../model.js";
 import { parsePullRequestReviewSnapshot, pullRequestReviewSnapshotQuery, reviewSnapshotCollection, type ReviewSnapshotPage } from "./github-review-state.js";
+import { parseGitHubJson, repositoryId } from "./github-id.js";
 
 export type CommandOptions = {
   timeoutMs: number;
@@ -15,6 +17,7 @@ export type GitHubRepository = RepositoryIdentity & { owner: string; name: strin
 export type PullRequestChecks = { headSha: string; baseRef: string; ready: boolean };
 export type GitHubClient = {
   resolveRepository: (configuration: RepositoryConfiguration, signal?: AbortSignal) => Promise<GitHubRepository>;
+  resolveRepositoryById: (identity: RepositoryIdentity, signal?: AbortSignal) => Promise<GitHubRepository>;
   listPullRequestNumbers: (repository: GitHubRepository, signal?: AbortSignal) => Promise<number[]>;
   listOpenPullRequests: (repository: GitHubRepository, cutoff: number, signal?: AbortSignal) => Promise<PullRequestObservation[]>;
   getPullRequest: (repository: GitHubRepository, number: number, signal?: AbortSignal) => Promise<PullRequestObservation>;
@@ -44,7 +47,7 @@ export const executeCommand: CommandExecutor = (file, args, options) => new Prom
 });
 
 type HttpFrame = { status: number; headers: Map<string, string[]>; body: string };
-type HttpResponse = Omit<HttpFrame, "body"> & { body: unknown };
+type HttpResponse = Omit<HttpFrame, "body"> & { body: unknown; bodyBytes: number };
 const object = (value: unknown, subject: string): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${subject} must be an object.`);
   return value as Record<string, unknown>;
@@ -493,7 +496,7 @@ export const createGitHubClient = (options: {
     }
     if (publicFailure !== null && query === undefined) throw new GitHubApiError(`GitHub CLI exited unsuccessfully after HTTP ${response.status} for ${host}/${endpoint}.`, { cause: publicFailure });
     let body: unknown;
-    try { body = JSON.parse(response.body) as unknown; } catch (cause) {
+    try { body = parseGitHubJson(response.body); } catch (cause) {
       throw new GitHubApiError(`Cannot parse GitHub response for ${host}/${endpoint}.`, { cause: ported ? sanitizedProcessError(cause) : cause });
     }
     if (query !== undefined) {
@@ -517,7 +520,7 @@ export const createGitHubClient = (options: {
       }
     }
     if (publicFailure !== null) throw new GitHubApiError(`GitHub CLI exited unsuccessfully after HTTP ${response.status} for ${host}/${endpoint}.`, { cause: publicFailure });
-    return { ...response, body };
+    return { ...response, body, bodyBytes: Buffer.byteLength(response.body, "utf8") };
   };
   const scan = async <T>(repository: GitHubRepository, state: "all" | "open", project: (item: unknown) => T, signal?: AbortSignal): Promise<T[]> => {
     const base = apiBase(repository.host);
@@ -540,7 +543,17 @@ export const createGitHubClient = (options: {
     resolveRepository: async (configuration, signal) => {
       const response = await request(configuration.host, `repos/${configuration.owner}/${configuration.name}`, signal);
       const data = object(response.body, "GitHub repository");
-      return { host: configuration.host, githubId: String(positiveInteger(data.id, "GitHub repository ID")), owner: configuration.owner, name: configuration.name };
+      return { host: configuration.host, githubId: repositoryId(data.id, "GitHub repository ID"), owner: configuration.owner, name: configuration.name };
+    },
+    resolveRepositoryById: async (identity, signal) => {
+      if (!/^[1-9]\d*$/.test(identity.githubId)) throw new Error("GitHub repository ID must be a positive decimal integer.");
+      const response = await request(identity.host, `repositories/${identity.githubId}`, signal);
+      const data = object(response.body, "GitHub repository");
+      if (repositoryId(data.id, "GitHub repository ID") !== identity.githubId) throw new Error("GitHub returned a different repository than requested.");
+      const name = text(data.full_name, "GitHub repository full name");
+      const coordinate = remoteIdentity(`https://${identity.host}/${name}.git`, "GitHub repository full name");
+      if (coordinate.host !== identity.host) throw new Error("GitHub returned a repository on a different host.");
+      return { host: identity.host, githubId: identity.githubId, owner: coordinate.owner, name: coordinate.name };
     },
     listPullRequestNumbers: (repository, signal) => scan(repository, "all", pullRequestNumber, signal),
     listOpenPullRequests: async (repository, cutoff, signal) => {
@@ -551,6 +564,8 @@ export const createGitHubClient = (options: {
     getPullRequest: async (repository, number, signal) => {
       positiveInteger(number, "PR number");
       const response = await request(repository.host, `repos/${repository.owner}/${repository.name}/pulls/${number}`, signal);
+      const base = object(object(response.body, "PR").base, "PR base");
+      if (repositoryId(object(base.repo, "PR base repository").id, "PR base repository ID") !== repository.githubId) throw new Error("GitHub returned a PR from a different repository.");
       const result = observation(response.body);
       if (result.number !== number) throw new Error("GitHub returned a different PR than requested.");
       return result;
@@ -586,7 +601,7 @@ export const createGitHubClient = (options: {
       do {
         if (++pages > 1_000) throw new Error("PR review snapshot exceeded its pagination limit.");
         const response = await request(repository.host, "graphql", signal, { document: pullRequestReviewSnapshotQuery, variables });
-        bytes += Buffer.byteLength(JSON.stringify(response.body), "utf8");
+        bytes += response.bodyBytes;
         if (bytes > maxBufferBytes) throw new Error("PR review snapshot exceeded its response size limit.");
         const snapshot = parsePullRequestReviewSnapshot(response.body, repository.githubId, number);
         if (first === null) first = snapshot;
