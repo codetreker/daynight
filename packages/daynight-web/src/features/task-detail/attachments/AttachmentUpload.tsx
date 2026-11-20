@@ -1,4 +1,4 @@
-import { useContext, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { authRequestsPaused, authRequestsPauseRevision } from '../../../api/client';
 import { isTopOverlay, OverlayOwnerContext } from '../../../app/overlay';
 import { useI18n } from '../../../i18n/LocaleProvider';
@@ -53,7 +53,10 @@ export const AttachmentUpload = ({ attachments, compact, open, active, error, on
     restoreOpener.current = true;
     onOpenChange(false);
   };
-  useLayoutEffect(() => {
+  useEffect(() => {
+    if (!active || !open) return;
+    // Ancestor DOM refs attach after descendant layout effects. The owner's
+    // bubbling listener still precedes the detail's document-level listener.
     const root = owner === null ? slot.current! : owner.current!;
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
