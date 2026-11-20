@@ -124,13 +124,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const usageFenceRef = useRef(usageFence); usageFenceRef.current = usageFence;
   const usageRoot = useRef<HTMLElement>(null);
   const usageChild = useRef<{ instance: symbol; trigger: HTMLElement } | null>(null);
+  // The admitted member can outlive its temporary overlay parent.
+  const usageDetail = useRef<{ id: string; viewer: typeof viewer } | null>(null);
   const usageCloseRequested = useRef(false);
   const usageCurrent = useRef(usage);
   usageCurrent.current = usage;
   const isDisplayedChainUsage = useCallback((detailId: string | null) => {
     const selected = usageCurrent.current;
-    return selected !== null && selected.viewer === viewer && !account?.requiresRefresh && usageRoot.current?.isConnected === true &&
-      (detailId === null || usageChild.current?.instance === selected.instance);
+    if (account?.requiresRefresh) return false;
+    if (detailId !== null) return usageDetail.current?.id === detailId && usageDetail.current.viewer === viewer;
+    return selected !== null && selected.viewer === viewer && usageRoot.current?.isConnected === true;
   }, [viewer, account?.requiresRefresh]);
   const navigationBusy = useSyncExternalStore(navigation.subscribeDecision, navigation.isBusy);
   const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer, isDisplayedGoal, isDisplayedChainUsage);
@@ -138,6 +141,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   historyRef.current = history;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
+  if (usageDetail.current !== null && (usageDetail.current.viewer !== viewer || detailSelection?.id !== usageDetail.current.id || detailSelection.insideProjectGraph)) usageDetail.current = null;
   const prSources = usePullRequestRepositories({ userId: viewer.userId, projectId,
     active: (section === "prs" || section === "statistics") && !history.error,
     canRead: projectRead.project !== null && !viewer.isInvalidated,
@@ -209,6 +213,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   useLayoutEffect(() => viewer.subscribe((event) => {
     if (event.projectId !== projectId) return;
     if (event.accessRevoked) {
+      usageDetail.current = null;
       retiredReading.current = null;
       const current = currentLocation.current;
       if (parseGoalGraphUrl(current.pathname, current.search).kind !== "none") {
@@ -396,6 +401,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     history.select({ ...selection, detail: { id, source: currentSnapshot?.index.nodes.has(id) ? "summary" : "direct", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
       acceptUsageNavigation(); usageChild.current = { instance: selected.instance, trigger };
+      usageDetail.current = { id, viewer };
       restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
     });
   };
@@ -810,7 +816,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const detailInsideUsage = usageVisible && usageAnchorAvailable && detailSelection !== null && usageChild.current?.instance === usage?.instance;
   const detailOwner = useMemo(() => detailInsideUsage ? usageRoot : detailInsideGraph && chainOverlay !== null
     ? { current: chainOverlay } : null, [detailInsideUsage, detailInsideGraph, chainOverlay]);
-  const detailDialog = detailSelection === null ? null : <ProjectDraftHost projectId={projectId} taskId={detailSelection.id} source={detailSelection.source} summaryType={currentSnapshot === null ? undefined : currentSnapshot.summaries.get(detailSelection.id)?.type ?? null} insideProjectGraph={detailSelection.insideProjectGraph} graphWitness={selection.projectGraphWitness}><TaskDetailDialog projectId={projectId} taskId={detailSelection.id} snapshot={currentSnapshot} observation={detailSelection.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: currentSnapshot?.revision ?? 0, task: currentSnapshot?.index.nodes.get(detailSelection.id) }} onSelectTask={onSelectRelation} retainHistoryDraft={usageVisible && usageChild.current?.instance === usage?.instance}
+  const detailDialog = detailSelection === null ? null : <ProjectDraftHost projectId={projectId} taskId={detailSelection.id} source={detailSelection.source} summaryType={currentSnapshot === null ? undefined : currentSnapshot.summaries.get(detailSelection.id)?.type ?? null} insideProjectGraph={detailSelection.insideProjectGraph} graphWitness={selection.projectGraphWitness}><TaskDetailDialog projectId={projectId} taskId={detailSelection.id} snapshot={currentSnapshot} observation={detailSelection.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: currentSnapshot?.revision ?? 0, task: currentSnapshot?.index.nodes.get(detailSelection.id) }} onSelectTask={onSelectRelation} retainHistoryDraft={usageDetail.current?.id === detailSelection.id && usageDetail.current.viewer === viewer}
     navigation={detailSelection.navigation} onNavigate={(navigation) => history.select({ ...selection, detail: { ...detailSelection, navigation } }, false, acceptUsageNavigation)}
     goalChildren={detailSelection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...selection, detail: { ...detailSelection, goalChildren } }, options?.replace, acceptUsageNavigation)}
     onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} goalGraphError={graph.error} onNavigateExternalTask={onNavigateExternalTask} onNavigateExternalChain={onNavigateExternalChain} /></ProjectDraftHost>;

@@ -1629,6 +1629,53 @@ test('chain usage member details retain draft protection and return focus', asyn
   expect(writes).toEqual([]);
 });
 
+test('chain usage member Step draft survives Back from Overview', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await draft.fill('Draft across Back');
+  const original = await draft.elementHandle();
+  await detail.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(detail.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(detail.getByRole('tab', { name: 'Steps', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(draft).toHaveValue('Draft across Back');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  await expect(usage).toHaveCount(0); expect(writes).toEqual([]);
+});
+
+test('temporary project metadata failure preserves chain member draft and rejected navigation', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  let failing = false;
+  await page.route(`**/api/v1/projects/${projectId}`, route => failing ? route.fulfill({ status: 503, json: { error: { code: 'unavailable', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }) : route.fallback());
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await draft.fill('Draft through project failure');
+  const original = await draft.elementHandle();
+  failing = true;
+  const failed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}` && response.status() === 503);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await failed;
+  await expect(page.locator('.snapshot-error')).toBeVisible();
+  await expect(draft).toHaveValue('Draft through project failure');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  failing = false;
+  await page.locator('.snapshot-error button').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator('.snapshot-error')).toHaveCount(0);
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  expect(writes).toEqual([]);
+});
+
 test('a cross-Goal scoped chain uses its visible member as an anchor for the whole chain', async ({ page }) => {
   const goalId = '00000000-0000-4000-8000-000000000061';
   await install(page, false, true, false, false, false, undefined, {}, {
