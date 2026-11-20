@@ -7,9 +7,9 @@ import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { formatUsageInteger, TaskUsageSummaryContent, UsageError, usageWords, usageReasonLabel, usageCompletenessLabel } from './UsageSummaryView';
 import { useTaskUsage } from './useTaskUsage';
 
-export const TaskUsagePanel = ({ projectId, taskId, active }: { readonly projectId: string; readonly taskId: string; readonly active: boolean }) => {
+export const TaskUsagePanel = ({ projectId, taskId, active, isolated = false }: { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly isolated?: boolean }) => {
   const { locale, format } = useI18n(), zh = locale === 'zh-CN', m = usageWords(zh), scope = useTaskCacheScope();
-  const usage = useTaskUsage(projectId, taskId, active);
+  const usage = useTaskUsage(projectId, taskId, active, isolated);
   const [query, setQuery] = useState<UsageRecordQuery>({ kind: 'execution_state' });
   const [draft, setDraft] = useState({ model: '', provider: '', stateId: '' });
   const [page, setPage] = useState<UsageRecordsPage | null>(null);

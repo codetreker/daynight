@@ -319,26 +319,30 @@ func testSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T, db *postg
 		"bot stop proof":         func() error { _, e := dao.LockBotSessionStop(ctx, id, other, id); return e },
 		"bot cleanup":            func() error { return dao.DeleteBotSession(ctx, id, other) },
 		"bot redact":             func() error { return dao.RedactDeletedBot(ctx, id) },
-		"operation read":         func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
-		"operation insert":       func() error { return dao.InsertSessionOperation(ctx, op) },
-		"operation receipt":      func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
-		"operation epoch":        func() error { return dao.SetSessionOperationEpoch(ctx, id, other, 1) },
-		"first input":            func() error { _, e := dao.HasOtherFirstInput(ctx, id, other); return e },
-		"interaction":            func() error { _, e := dao.HasInteractionResponse(ctx, id, other, id); return e },
-		"pending count":          func() error { _, e := dao.PendingSessionOperationCount(ctx, id); return e },
-		"accepted list":          func() error { _, e := dao.AcceptedSessionOperations(ctx, id); return e },
-		"stop list":              func() error { _, e := dao.StoppingTestOperations(ctx, id); return e },
-		"unreconciled list":      func() error { _, e := dao.UnreconciledSessionOperations(ctx, id, 1); return e },
-		"unreconciled count":     func() error { _, e := dao.UnreconciledSessionOperationCount(ctx, id, 1); return e },
-		"archive task":           func() error { _, _, e := dao.LockArchiveTask(ctx, id, other); return e },
-		"archive read":           func() error { _, _, e := dao.SessionArchive(ctx, id); return e },
-		"archive state":          func() error { return dao.SetSessionArchiveState(ctx, id, "pending", nil) },
-		"archive ready":          func() error { return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("a", 64), 1, "path") },
-		"test list":              func() error { _, e := dao.ListTestSessions(ctx, id, now, 1, false, now, nil, ""); return e },
-		"terminal lock":          func() error { _, e := dao.LockTerminal(ctx, id); return e },
-		"terminal archive":       func() error { _, _, _, e := dao.TerminalArchive(ctx, id); return e },
-		"terminal current":       func() error { _, e := dao.CurrentTerminalSession(ctx, id, other, id); return e },
-		"terminal history":       func() error { _, e := dao.TerminalHistory(ctx, id, other, nil, nil, 1); return e },
+		"operation exists": func() error {
+			_, e := dao.(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, id, other)
+			return e
+		},
+		"operation read":     func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
+		"operation insert":   func() error { return dao.InsertSessionOperation(ctx, op) },
+		"operation receipt":  func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
+		"operation epoch":    func() error { return dao.SetSessionOperationEpoch(ctx, id, other, 1) },
+		"first input":        func() error { _, e := dao.HasOtherFirstInput(ctx, id, other); return e },
+		"interaction":        func() error { _, e := dao.HasInteractionResponse(ctx, id, other, id); return e },
+		"pending count":      func() error { _, e := dao.PendingSessionOperationCount(ctx, id); return e },
+		"accepted list":      func() error { _, e := dao.AcceptedSessionOperations(ctx, id); return e },
+		"stop list":          func() error { _, e := dao.StoppingTestOperations(ctx, id); return e },
+		"unreconciled list":  func() error { _, e := dao.UnreconciledSessionOperations(ctx, id, 1); return e },
+		"unreconciled count": func() error { _, e := dao.UnreconciledSessionOperationCount(ctx, id, 1); return e },
+		"archive task":       func() error { _, _, e := dao.LockArchiveTask(ctx, id, other); return e },
+		"archive read":       func() error { _, _, e := dao.SessionArchive(ctx, id); return e },
+		"archive state":      func() error { return dao.SetSessionArchiveState(ctx, id, "pending", nil) },
+		"archive ready":      func() error { return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("a", 64), 1, "path") },
+		"test list":          func() error { _, e := dao.ListTestSessions(ctx, id, now, 1, false, now, nil, ""); return e },
+		"terminal lock":      func() error { _, e := dao.LockTerminal(ctx, id); return e },
+		"terminal archive":   func() error { _, _, _, e := dao.TerminalArchive(ctx, id); return e },
+		"terminal current":   func() error { _, e := dao.CurrentTerminalSession(ctx, id, other, id); return e },
+		"terminal history":   func() error { _, e := dao.TerminalHistory(ctx, id, other, nil, nil, 1); return e },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := run(); !errors.Is(err, pgx.ErrTxClosed) {
@@ -430,6 +434,15 @@ func testSessionReadsRejectCorruptPersistedJSON(t *testing.T, db *postgres.Store
 	for _, column := range []string{"command", "receipt"} {
 		mustQueryExec(t, db, `UPDATE session_operations SET `+column+`='[]' WHERE session_id=$1`, id)
 		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+			for _, check := range []struct {
+				session, operation string
+				want               bool
+			}{{id, operation, true}, {id, uuid.NewString(), false}, {uuid.NewString(), operation, false}} {
+				exists, err := dao.(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, check.session, check.operation)
+				if err != nil || exists != check.want {
+					t.Fatalf("operation existence: got %v, want %v: %v", exists, check.want, err)
+				}
+			}
 			if _, err := dao.SessionOperation(ctx, id, operation); err == nil {
 				t.Fatalf("corrupt %s accepted", column)
 			}

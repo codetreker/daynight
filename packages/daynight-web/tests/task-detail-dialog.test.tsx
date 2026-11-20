@@ -340,6 +340,45 @@ describe('task detail dialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add step' })).toBeEnabled());
   });
 
+  it.each(['resource', 'access'] as const)('retains a direct member draft across history revalidation and clears it on %s loss', async loss => {
+    const anchor = detail(2), member = detail(1);
+    await world.sync([anchor]);
+    const pending = deferred<Response>();
+    let mode: 'ready' | 'pending' | 'missing' = 'ready';
+    let detailReads = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/thread/messages')) return new Response(JSON.stringify({ items: [], hasMoreBefore: false, hasMoreAfter: false }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      detailReads++;
+      return mode === 'pending' ? pending.promise : mode === 'missing' ? failure('not_found') : response(member);
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const options = props({ snapshot: snapshot([anchor]), observation: { kind: 'direct' }, retainHistoryDraft: true, navigation: { tab: 'discussion', path: null }, onNavigate: vi.fn() });
+    const view = renderWithLocale(<ProjectDraftHost projectId={projectId} taskId={member.id} source="direct" summaryType={null} insideProjectGraph={false} graphWitness={null}><TaskDetailDialog {...options} /></ProjectDraftHost>, { locale: 'en', container: host, taskCache: { scope: world.scope } });
+    await screen.findByText('No discussion yet');
+    const draft = screen.getByRole('textbox', { name: 'Discussion message' });
+    fireEvent.change(draft, { target: { value: 'Member draft' } });
+    const previousReads = detailReads; mode = 'pending';
+    act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+    await waitFor(() => expect(detailReads).toBeGreaterThan(previousReads));
+    expect(document.querySelector('[aria-label="Discussion message"]')).toBe(draft);
+    expect(draft).toHaveValue('Member draft');
+    expect(screen.queryByText(member.description)).toBeNull();
+    await act(async () => pending.resolve(failure()));
+    expect(await screen.findByText('Unable to read task details. Please try again.')).toBeVisible();
+    expect(document.querySelector('[aria-label="Discussion message"]')).toBe(draft);
+    mode = 'ready'; fireEvent.click(screen.getByRole('button', { name: 'Retry details' }));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Discussion message' })).toBe(draft));
+    expect(draft).toHaveValue('Member draft');
+    if (loss === 'access') act(() => world.scope.suspendProject(projectId));
+    else {
+      mode = 'missing';
+      act(() => world.scope.fenceGoalHistory(projectId, fixtureTaskEpoch(projectId)));
+      await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());
+    }
+    await waitFor(() => expect(document.querySelector('[aria-label="Discussion message"]')).toBeNull());
+    view.unmount();
+  });
+
   it('waits for the live summary receipt and ignores a late direct response after changing source', async () => {
     const reviewed = detail();
     const old = detail(1, { title: 'Late direct response' });

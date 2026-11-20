@@ -11,6 +11,7 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -19,12 +20,13 @@ import (
 
 // Identity coordinates the identity module, upstream claims, and transactions.
 type Identity struct {
-	writer      store.IdentityWriter
-	ops         identityOperations
-	client      *uniauth.Client
-	callbackURL string
-	preview     *PreviewSSO
-	now         func() time.Time
+	writer        store.IdentityWriter
+	ops           identityOperations
+	client        *uniauth.Client
+	callbackURL   string
+	preview       *PreviewSSO
+	deviceCatalog *scopepolicy.CatalogSnapshot
+	now           func() time.Time
 }
 
 type identityOperations struct {
@@ -123,6 +125,33 @@ func New(writer store.IdentityWriter, client *uniauth.Client, callbackURL string
 		validatePersonalTeam:     team.ValidatePersonalTeam,
 	}}
 }
+
+// NewWithDeviceScopes prepares scoped device authorization without changing the
+// existing production constructor. The catalog is shared with the HTTP view.
+func NewWithDeviceScopes(writer store.IdentityWriter, client *uniauth.Client, callbackURL string, catalog scopepolicy.CatalogSnapshot) *Identity {
+	s := New(writer, client, callbackURL)
+	snapshot := catalog.Clone()
+	s.deviceCatalog = &snapshot
+	module := core.NewIdentity(callbackURL)
+	s.ops.decideDevice = func(ctx context.Context, dao store.IdentityDAO, p model.Principal, code, decision, userID string, now time.Time) error {
+		if decision == "approve" {
+			return &model.Fault{Code: "invalid_input", Message: "Select scopes before approving this device."}
+		}
+		scoped, ok := dao.(store.DeviceScopeDAO)
+		if !ok {
+			return errors.New("identity scope lacks scoped device capability")
+		}
+		return module.DecideDeviceScoped(ctx, dao, scoped, p, code, decision, userID, nil, now)
+	}
+	s.ops.redeemDevice = func(ctx context.Context, dao store.IdentityDAO, clientID, grantType, code, name string, now time.Time) (core.MintedPAT, error) {
+		scoped, ok := dao.(store.DeviceScopeDAO)
+		if !ok {
+			return core.MintedPAT{}, errors.New("identity scope lacks scoped device capability")
+		}
+		return module.RedeemDeviceScoped(ctx, dao, scoped, clientID, grantType, code, name, now)
+	}
+	return s
+}
 func (s *Identity) CallbackURL() string { return s.callbackURL }
 
 // A domain rejection can accompany useful writes (such as a poll delay). The
@@ -146,6 +175,13 @@ func (s *Identity) run(ctx context.Context, operation func(store.IdentityScope) 
 		}
 		return err
 	})
+	if completion.Outcome == store.TransactionUnknown {
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return err
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: err}
+	}
 	if err != nil {
 		return err
 	}

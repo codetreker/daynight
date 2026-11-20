@@ -44,8 +44,8 @@ export const UsageSummaryView = ({ summary, compact = false }: { readonly summar
 
   </div>;
 };
-const UsageProjectContext = createContext<string | null>(null);
-export const UsageProjectProvider = ({ projectId, children }: { readonly projectId: string; readonly children: ReactNode }) => <UsageProjectContext value={projectId}>{children}</UsageProjectContext>;
+const UsageProjectContext = createContext<{ readonly projectId: string; readonly graphUsage: boolean } | null>(null);
+export const UsageProjectProvider = ({ projectId, graphUsage, children }: { readonly projectId: string; readonly graphUsage: boolean; readonly children: ReactNode }) => <UsageProjectContext value={{ projectId, graphUsage }}>{children}</UsageProjectContext>;
 const graphTokenNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 export const formatGraphTokens = (value: string): string => {
   const tokens = BigInt(value);
@@ -55,10 +55,10 @@ export const formatGraphTokens = (value: string): string => {
 };
 
 export const useGraphTaskUsage = (taskId: string): { readonly short: string; readonly full: string } | null => {
-  const projectId = useContext(UsageProjectContext);
-  const { summary } = useTaskUsage(projectId, taskId);
+  const context = useContext(UsageProjectContext);
+  const { summary } = useTaskUsage(context?.projectId ?? null, taskId, context?.graphUsage ?? false);
   const { locale } = useI18n();
-  if (summary === null) return null;
+  if (!context?.graphUsage || summary === null) return null;
   const key = usageCompactMetric(summary);
   if (key === null) return null;
   const reading = usageCompactReading(summary, locale);
