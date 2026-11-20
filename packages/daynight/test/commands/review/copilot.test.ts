@@ -1,5 +1,5 @@
 import path from "node:path";
-import { withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
@@ -158,10 +158,12 @@ describe("Worker-owned reviewer processes", () => {
       expect(existsSync(`${f.report}.discovery`)).toBe(false);
       expect(f.store.getReview(f.review.id)?.status).toBe("running");
       cancellation.abort(); release.resolve();
-      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, interruption: "aborted" });
+      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, captureComplete: true, interruption: "aborted", processExclusionFailure: null });
       expect(existsSync(`${f.report}.discovery`)).toBe(false);
       expect(existsSync(f.report)).toBe(false);
       expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === events[0]!.resourceId)).toBe(false);
+      await vi.waitFor(async () => expect(await inspectProcessProof(events[1]!.proof!)).toBe("stopped"), { timeout: 5000 });
     } finally { cancellation.abort(); release.resolve(); await pending; }
   }, 35_000);
 

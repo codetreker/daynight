@@ -289,6 +289,10 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => expect(controls).toHaveLength(1));
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
       const firstOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      // The coordinator can recover existing work while repository admission is still pending.
+      await vi.waitFor(() => expect(firstOptions.store.getProject({ projectId: uuid(1) })).toMatchObject({
+        projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path,
+      }), { timeout: 5000, interval: 10 });
       const originalTask = firstOptions.store.registerPending({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), agent: "codex", agentControlMode: "web" });
       expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
       expect(cancellation.signal.aborted).toBe(false);

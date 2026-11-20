@@ -7,7 +7,11 @@ import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifec
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as windowsJob from "../../../src/commands/controller/windows-job.js";
+import * as childProcesses from "node:child_process";
+import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
+
+vi.mock("node:child_process", { spy: true });
 
 const roots: string[] = [];
 const root = async () => {
@@ -19,6 +23,38 @@ const command = (source: string) => ({ file: process.execPath, args: ["--input-t
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
+  it("joins the created launcher when reading the dispatch budget observes cancellation", async () => {
+    const cancellation = new AbortController();
+    const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const remaining = operation.remainingMs;
+    const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
+    const events: OwnedCommandLifecycleEvent[] = [];
+    vi.spyOn(operation, "remainingMs").mockImplementationOnce(() => {
+      cancellation.abort(new Error("cancel before dispatch budget"));
+      return remaining();
+    });
+    try {
+      const error = await runLifecycleOwnedCommand(command("process.exit(0)"), operation, async event => { events.push(event); }).catch(cause => cause);
+      expect(error).toBe(operation.signal.reason);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "stopped"]);
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    } finally {
+      // Retain direct handles in the fixture so a regression cannot leave its
+      // never-dispatched launcher alive after the failed assertion.
+      if (retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === events[0]?.resourceId)) {
+        const native = await suspended.mock.results[0]?.value;
+        const child = native?.child ?? spawned.mock.results[0]?.value;
+        if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+          const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+          child.kill("SIGKILL");
+          await closed;
+        }
+        native?.closeHandles();
+      }
+      operation.dispose();
+    }
+  }, 35_000);
+
   it("closes a reservation when the operating system rejects process creation", async () => {
     const directory = await root();
     const events: OwnedCommandLifecycleEvent[] = [];

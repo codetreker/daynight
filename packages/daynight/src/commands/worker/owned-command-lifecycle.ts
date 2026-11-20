@@ -166,8 +166,15 @@ export const runLifecycleOwnedCommand = async (command: OwnedCommand, operation:
       suspended.resume();
     } catch (error) { failure ??= error; }
   }
-  const available = operation.remainingMs(), reserve = cleanupDeadline === undefined ? 0 : Math.min(available / 2, process.platform === "win32" ? 2500 : 1000);
-  const timeout = Date.now() + Math.min(options.timeoutMs ?? Math.min(10_000, operation.limits.requestMs), Math.max(1, available - reserve));
+  let timeout = Date.now();
+  try {
+    // The boundary already exists. Cancellation or expiry while binding it must
+    // enter native cleanup, including failures from the operation's budget read.
+    if (failure === undefined) {
+      const available = operation.remainingMs(), reserve = cleanupDeadline === undefined ? 0 : Math.min(available / 2, process.platform === "win32" ? 2500 : 1000);
+      timeout += Math.min(options.timeoutMs ?? Math.min(10_000, operation.limits.requestMs), Math.max(1, available - reserve));
+    }
+  } catch (error) { failure ??= error; }
   try {
     while (!closed && failure === undefined && !operation.signal.aborted && Date.now() < timeout) await new Promise(resolve => setTimeout(resolve, 10));
     if (operation.signal.aborted) failure ??= operation.signal.reason;
