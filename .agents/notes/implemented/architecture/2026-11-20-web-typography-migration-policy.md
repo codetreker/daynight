@@ -36,7 +36,11 @@ source contract; other font configuration values are rejected. The workspace she
 public landing and setup pages, authentication styles, shared selection controls,
 Worker pages and configuration, Worker Prompt editors, project settings, Team
 member search, GitHub management, Webhook consumers, Project and personal Task
-lists, Goal cards, tags and search use public sizes directly.
+lists, Goal cards, tags and search use public sizes directly. Dependency graphs,
+charts, project statistics, Usage and pull request views also select the public
+scale. Chart plot geometry scales from `xs` and label rows use their computed
+line height; graph geometry retains its independent root-size adaptation and view
+zoom. Usage and pull request search inputs use the shared responsive adjustment.
 
 The shared selection CSS owns touch text adjustments and sizes controls from
 their actual text instead of private font aliases. Responsive input attributes use

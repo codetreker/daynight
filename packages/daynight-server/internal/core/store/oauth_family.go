@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
 // CredentialFamilyWriter binds family operations to the caller's transaction.
@@ -20,6 +21,8 @@ type CredentialFamilyScope interface {
 
 // OAuthGrant is the durable authorization and the frozen validated client facts.
 type OAuthGrant struct {
+	// ScopePolicy belongs to MCP grants; fixed OAuth profiles have no policy.
+	ScopePolicy                           *scopepolicy.Policy
 	ID, UserID, ClientID, Resource, Scope string
 	ClientSnapshot                        json.RawMessage
 	CreatedAt, ExpiresAt                  time.Time
@@ -43,8 +46,10 @@ type OAuthBinding struct {
 }
 
 type OAuthAccessIdentity struct {
-	Principal model.Principal
-	GrantID   string
+	// ScopePolicy is the current grant snapshot, not an access-token copy.
+	ScopePolicy *scopepolicy.Policy
+	Principal   model.Principal
+	GrantID     string
 	// ExpiresAt is the earlier of the persisted access and grant deadlines.
 	ExpiresAt time.Time
 }

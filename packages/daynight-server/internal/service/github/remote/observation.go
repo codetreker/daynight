@@ -3,6 +3,7 @@ package remote
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
@@ -14,9 +15,10 @@ import (
 var errInvalidObservation = errors.New("invalid GitHub observation")
 
 type repositoryDTO struct {
-	ID       *int64  `json:"id"`
-	FullName *string `json:"full_name"`
-	Private  *bool   `json:"private"`
+	ID            *int64          `json:"id"`
+	FullName      *string         `json:"full_name"`
+	Private       *bool           `json:"private"`
+	DefaultBranch json.RawMessage `json:"default_branch"`
 }
 
 func decodeObservation(data json.RawMessage, target any) error {
@@ -31,7 +33,30 @@ func decodeRepository(data json.RawMessage) (githubpr.RepositoryObservation, err
 	if decodeObservation(data, &dto) != nil || dto.ID == nil || *dto.ID <= 0 || dto.FullName == nil || *dto.FullName == "" || dto.Private == nil {
 		return githubpr.RepositoryObservation{}, errInvalidObservation
 	}
-	return githubpr.RepositoryObservation{ID: *dto.ID, FullName: *dto.FullName, Private: *dto.Private}, nil
+	var branch string
+	var defaultBranch *string
+	if json.Unmarshal(dto.DefaultBranch, &branch) == nil && validBranch(branch) {
+		defaultBranch = &branch
+	}
+	return githubpr.RepositoryObservation{ID: *dto.ID, FullName: *dto.FullName, Private: *dto.Private, DefaultBranch: defaultBranch}, nil
+}
+
+// Branches are Git ref names; reject invalid names instead of guessing a default.
+func validBranch(branch string) bool {
+	if branch == "" || branch == "@" || strings.HasPrefix(branch, "-") || strings.HasSuffix(branch, ".") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, r := range branch {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	for _, part := range strings.Split(branch, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeInstallation(data json.RawMessage) (githubpr.InstallationObservation, error) {

@@ -8,13 +8,16 @@ import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-ca
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
 
+const directories = vi.hoisted(() => ({ projects: [] as unknown[] }));
+vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: directories.projects, nextCursor: null })) }));
+
 const taskId = botId(90), inboxId = botId(91), operationId = botId(92);
 const token = `dnib_${'A'.repeat(43)}`, rotated = `dnib_${'B'.repeat(43)}`;
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Inbox task', purpose: '', scope: '', application: '', kind: 'continuous', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '1', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
 const off: Inbox = { inboxId: null, enabled: false, createdAt: null, rotatedAt: null, overlapUntil: null, suppressedCount: '0' };
 const on: Inbox = { inboxId, enabled: true, createdAt: BOT_TIME, rotatedAt: null, overlapUntil: null, suppressedCount: '3' };
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
-afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); });
+afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); directories.projects = []; });
 
 const receipt = (kind: string, inbox: Inbox, id: string, issued?: string | null) => ({
   operation: { operationId: id, kind, taskId, requestFingerprint: 'a'.repeat(64), admittedAt: BOT_TIME, resultingVersion: '8' }, inbox, ...(issued === undefined ? {} : { token: issued }),
@@ -31,6 +34,7 @@ function server(initial: Inbox) {
       state.inbox = off; return botResponse(receipt('inbox_disable', off, id));
     }
     if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(state.inbox);
+    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [], nextCursor: null });
     return botError(404, 'not_found');
   });
   vi.stubGlobal('fetch', fetch);
@@ -148,6 +152,28 @@ it('hides an issued token once the displayed inbox ID changes', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Reload' }));
   expect(await screen.findByText(assistantTaskInboxUrl(botId(93)))).toBeVisible();
   expect(screen.queryByText(token)).toBeNull();
+});
+
+it('remounts the subscription panel with a fresh form when the inbox id changes', async () => {
+  directories.projects = [{ id: botId(95), name: 'Alpha' }];
+  const s = server(on); mount();
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Alpha' }));
+  expect(screen.getByRole('group', { name: 'Event types for Alpha' })).toBeVisible();
+  const replacement = botId(93), serve = vi.mocked(fetch).getMockImplementation()!;
+  let release = () => undefined as void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(fetch).mockImplementation(async (url, options) => { if (String(url) === '/api/v1/me/webhooks?limit=100') await held; return serve(url, options); });
+  vi.mocked(fetch).mockImplementationOnce(async () => botError(409, 'version_conflict'));
+  s.state.inbox = { ...on, inboxId: replacement };
+  fireEvent.click(screen.getByRole('button', { name: 'Disable inbox' }));
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Disable inbox' })).getByRole('button', { name: 'Disable inbox' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Reload' }));
+  expect(await screen.findByText(assistantTaskInboxUrl(replacement))).toBeVisible();
+  // The form for the previous inbox is gone before the new inbox's subscription is read.
+  expect(screen.queryByRole('checkbox', { name: 'Alpha' })).toBeNull();
+  release();
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
+  expect(screen.queryByRole('group', { name: 'Event types for Alpha' })).toBeNull();
 });
 
 it('reports inbox read failures with a retry', async () => {

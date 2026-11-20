@@ -105,19 +105,19 @@ func (w *writer) Publish(ctx context.Context, l store.GitHubLease, items []githu
 }
 
 // PublishRepository retains the bound identities and advances revision only
-// when an observed presentation fact changes.
+// when an observed repository fact changes.
 func (w *writer) PublishRepository(ctx context.Context, l store.GitHubLease, o store.GitHubRepositoryObservation) (bool, error) {
 	valid, err := w.ValidLease(ctx, l)
 	if err != nil || !valid {
 		return false, err
 	}
 	tag, err := w.tx.Exec(ctx, `WITH updated AS (UPDATE project_github SET
- revision=revision+CASE WHEN installation_account_login IS DISTINCT FROM $6 OR repository_full_name IS DISTINCT FROM $7 OR repository_private IS DISTINCT FROM $8 THEN 1 ELSE 0 END,
- installation_account_login=$6,repository_full_name=$7,repository_private=$8,legacy_repository_id=COALESCE(legacy_repository_id,repository_id),updated_at=clock_timestamp()
+ revision=revision+CASE WHEN installation_account_login IS DISTINCT FROM $6 OR repository_full_name IS DISTINCT FROM $7 OR repository_private IS DISTINCT FROM $8 OR repository_default_branch IS DISTINCT FROM $9 THEN 1 ELSE 0 END,
+ installation_account_login=$6,repository_full_name=$7,repository_private=$8,repository_default_branch=$9,legacy_repository_id=COALESCE(legacy_repository_id,repository_id),updated_at=clock_timestamp()
  WHERE `+leasePredicate+` AND installation_id=$4 AND repository_id=$5 RETURNING project_id,repository_id,repository_full_name)
  INSERT INTO project_github_repositories(project_id,repository_id,full_name)
  SELECT project_id,repository_id,repository_full_name FROM updated
- ON CONFLICT(project_id,repository_id) DO UPDATE SET full_name=EXCLUDED.full_name`, w.projectID, l.Generation, l.Token, o.InstallationID, o.RepositoryID, o.InstallationAccountLogin, o.RepositoryFullName, o.RepositoryPrivate)
+ ON CONFLICT(project_id,repository_id) DO UPDATE SET full_name=EXCLUDED.full_name`, w.projectID, l.Generation, l.Token, o.InstallationID, o.RepositoryID, o.InstallationAccountLogin, o.RepositoryFullName, o.RepositoryPrivate, o.RepositoryDefaultBranch)
 	return affected(tag.RowsAffected(), "publish github repository observation", err)
 }
 

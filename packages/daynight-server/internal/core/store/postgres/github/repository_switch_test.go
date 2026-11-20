@@ -20,7 +20,7 @@ func TestRepositorySwitchRetiresConnectionAndFencesWork(t *testing.T) {
 	f := newAppWorkFixture(t)
 	ctx := t.Context()
 	start := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET repository_full_name='owner/old',legacy_repository_id=30,poll_interval_minutes=17,claim_token=$2,claim_kind='poll',claim_until=now()+interval '1 hour',poll_error_code='failed',last_full_success_at=now() WHERE project_id=$1`, f.project, uuid.NewString()); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET repository_full_name='owner/old',repository_default_branch='trunk',legacy_repository_id=30,poll_interval_minutes=17,claim_token=$2,claim_kind='poll',claim_until=now()+interval '1 hour',poll_error_code='failed',last_full_success_at=now() WHERE project_id=$1`, f.project, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
@@ -61,7 +61,7 @@ func TestRepositorySwitchRetiresConnectionAndFencesWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	var clean bool
-	err = f.db.Pool.QueryRow(ctx, `SELECT NOT enabled AND NOT sync_enabled AND version=3 AND generation=2 AND revision=8 AND app_resource_id IS NULL AND team_grant_id IS NULL AND credential_version IS NULL AND installation_id IS NULL AND repository_id=31 AND repository_full_name='owner/new' AND repository_private AND legacy_repository_id=30 AND poll_interval_minutes=17 AND claim_token IS NULL AND access_hint_id IS NULL AND next_poll_at IS NULL AND poll_error_code IS NULL AND last_full_success_at IS NULL AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1)=0 AND (SELECT impact_version FROM github_apps WHERE id=$2)=2 AND EXISTS(SELECT 1 FROM project_github_coverage WHERE project_id=$1 AND repository_id=30 AND ended_at IS NOT NULL) FROM project_github WHERE project_id=$1`, f.project, f.app).Scan(&clean)
+	err = f.db.Pool.QueryRow(ctx, `SELECT NOT enabled AND NOT sync_enabled AND version=3 AND generation=2 AND revision=8 AND app_resource_id IS NULL AND team_grant_id IS NULL AND credential_version IS NULL AND installation_id IS NULL AND repository_id=31 AND repository_full_name='owner/new' AND repository_private AND repository_default_branch IS NULL AND legacy_repository_id=30 AND poll_interval_minutes=17 AND claim_token IS NULL AND access_hint_id IS NULL AND next_poll_at IS NULL AND poll_error_code IS NULL AND last_full_success_at IS NULL AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1)=0 AND (SELECT impact_version FROM github_apps WHERE id=$2)=2 AND EXISTS(SELECT 1 FROM project_github_coverage WHERE project_id=$1 AND repository_id=30 AND ended_at IS NOT NULL) FROM project_github WHERE project_id=$1`, f.project, f.app).Scan(&clean)
 	if err != nil || !clean {
 		t.Fatalf("retired state=%v %v", clean, err)
 	}

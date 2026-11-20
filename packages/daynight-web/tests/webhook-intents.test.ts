@@ -537,11 +537,11 @@ describe("Webhook fixed redelivery intents", () => {
     const fetch = vi.fn(async (_url: string, options: RequestInit) => { await barrier; return response({ operation: await submittedRedeliveryReceipt(options), delivery: currentDelivery() }, 202); }); vi.stubGlobal("fetch", fetch);
     const intent = controller(), first = intent.submit(redeliveryInput()), second = intent.submit(redeliveryInput()); expect(second).toBe(first); release(); await first; expect(fetch).toHaveBeenCalledOnce();
   });
-  it.each([[409, "generation_conflict"], [409, "version_conflict"], [409, "delivery_busy"], [409, "target_changed"], [409, "delivery_stopped"], [403, "forbidden"], [410, "payload_expired"]] as const)("keeps explicit %i %s refusal without new generation or automatic reads", async (status, code) => {
+  it.each([[409, "generation_conflict"], [409, "version_conflict"], [409, "delivery_busy"], [409, "target_changed"], [409, "delivery_stopped"], [403, "forbidden"], [410, "payload_expired"], [503, "webhooks_unavailable"]] as const)("keeps explicit %i %s refusal without new generation or automatic reads", async (status, code) => {
     const fetch = vi.fn().mockResolvedValue(failure(status, code)); vi.stubGlobal("fetch", fetch);
     const rejected = await controller().submit(redeliveryInput()); expect(rejected.phase).toBe("rejected"); expect(rejected.error).toMatchObject({ status, code }); expect(rejected.result).toBeNull(); expect(fetch).toHaveBeenCalledOnce(); expect(sessionStorage.length).toBe(0);
   });
-  it.each(["dependency_unavailable", "write_outcome_unknown", "webhooks_unavailable"])("uses only receipt GET after an ambiguous 503 %s", async code => {
+  it.each(["dependency_unavailable", "write_outcome_unknown"])("uses only receipt GET after an ambiguous 503 %s", async code => {
     const fetch = vi.fn().mockResolvedValueOnce(failure(503, code)).mockResolvedValue(failure()); vi.stubGlobal("fetch", fetch);
     const unknown = await controller().submit(redeliveryInput()); expect(unknown.phase).toBe("unknown"); expect(unknown.prepared?.deliveryId).toBe(deliveryId); expect(fetch.mock.calls.map(call => call[1].method)).toEqual(["POST", undefined]);
   });

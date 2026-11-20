@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { AssistantTaskDialog } from './AssistantTaskDialog';
+import { AssistantTaskSubscriptions } from './AssistantTaskSubscriptions';
 import { assistantTaskAdmission } from './assistant-task-data';
 import { useBotRead } from './useBotRead';
 
@@ -61,7 +62,7 @@ type Outcome =
  * operation receipt. The token exists only in this mounted panel, taken from the enable or rotate response that generated it,
  * and is shown only while the displayed inbox ID is the one it was issued for.
  */
-export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
+export function AssistantTaskInbox({ task, enabled, disabled, onChanged, serviceOrigin }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown>; readonly serviceOrigin?: string }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), taskId = task.id, heading = useId(), modeName = useId();
   const load = useCallback((owner: TaskCacheScope, signal: AbortSignal) => getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(owner)), [taskId]);
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load), inbox = read.value;
@@ -121,6 +122,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode('overlap'); setDialog({ kind: 'rotate', version: task.version }); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog({ kind: 'disable', version: task.version })} /></div>
     </> : null}
+    {inbox?.enabled && inbox.inboxId !== null ? <AssistantTaskSubscriptions key={inbox.inboxId} task={task} inboxId={inbox.inboxId} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => { if (!pending) setDialog(null); }}><form onSubmit={event => {
       event.preventDefault();
       const ifVersion = dialog.version, admission = assistantTaskAdmission(scope);

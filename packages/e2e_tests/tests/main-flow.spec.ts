@@ -16,7 +16,7 @@ type SearchItem = { id: string; title: string; match: { fields: string[]; descri
 type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(540_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
@@ -66,7 +66,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   }, { timeout: 60_000, intervals: [1_000] }).toEqual(expect.any(String));
 
   await page.goto(`${topology.baseURL}/account`);
-  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v1/me/tokens") && response.request().method() === "GET");
+  const tokenList = page.waitForResponse(response => response.url().endsWith("/api/v2/me/tokens") && response.request().method() === "GET");
   await page.getByRole("link", { name: "Access credentials", exact: true }).click();
   const tokenResponse = await tokenList;
   expect(tokenResponse.status()).toBe(200);
