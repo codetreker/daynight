@@ -80,14 +80,8 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged, service
   useEffect(() => { if (superseded) setIssuedToken(null); }, [superseded]);
   const token = issuedToken !== null && !superseded && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
   const [dialog, setDialog] = useState<{ readonly kind: 'rotate' | 'disable'; readonly version: string } | null>(null);
-  // A disabled inbox no longer reports its id. The id disabled by this mount narrows the cleanup list to that inbox, but
-  // only while the disabled snapshot can be attributed to that disable: neither the task nor the snapshot is newer than
-  // the version it produced. A later re-enable and disable elsewhere advances the version, and the subscription panel
-  // then lists every personal endpoint aimed at an inbox of this site.
-  const [retiredInbox, setRetiredInbox] = useState<{ readonly inboxId: string; readonly version: string } | null>(null);
   const owner = useRef({ scope, taskId }); owner.current = { scope, taskId };
   const inbox = read.value?.inbox ?? null, snapshotVersion = read.value?.version ?? task.version, overlapActive = inbox?.overlapUntil != null;
-  const retiredInboxId = retiredInbox !== null && inbox !== null && !inbox.enabled && BigInt(task.version) <= BigInt(retiredInbox.version) && BigInt(snapshotVersion) <= BigInt(retiredInbox.version) ? retiredInbox.inboxId : null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
   const blocked = disabled || mutation.blocked || !current, changed = dialog !== null && dialog.version !== task.version;
   // Hiding the tab stops new writes, but a token from a completed request is unrecoverable elsewhere,
@@ -127,16 +121,13 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged, service
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog({ kind: 'rotate', version: snapshotVersion }); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog({ kind: 'disable', version: snapshotVersion })} /></div>
     </> : null}
-    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.enabled ? inbox.inboxId : retiredInboxId} inboxEnabled={inbox.enabled} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
+    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.inboxId} inboxEnabled={inbox.enabled} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); if (changed) return; void (async () => {
-      const operationId = crypto.randomUUID(), ifVersion = dialog.version, disabledInboxId = inbox?.inboxId ?? null, disabled = { version: null as string | null };
+      const operationId = crypto.randomUUID(), ifVersion = dialog.version;
       const ok = dialog.kind === 'rotate'
         ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion, mode }, signal, access), () => setDialog(null))
-        : await mutation.run(async signal => { disabled.version = (await disableAssistantTaskInbox(taskId, { operationId, ifVersion }, signal, admission)).operation.resultingVersion; });
-      if (ok) {
-        setDialog(null);
-        if (dialog.kind === 'disable') { setIssuedToken(null); setRetiredInbox(disabledInboxId !== null && disabled.version !== null ? { inboxId: disabledInboxId, version: disabled.version } : null); }
-      }
+        : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion }, signal, admission); });
+      if (ok) { setDialog(null); if (dialog.kind === 'disable') setIssuedToken(null); }
     })(); }}>
       <div className="dialog-body assistant-task-form">{dialog.kind === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
         <label><input type="radio" name={modeName} value="overlap" checked={mode === 'overlap'} disabled={overlapActive} onChange={() => setMode('overlap')} /><span><strong>{m.overlapMode}</strong><span className="assistant-task-meta">{overlapActive ? m.overlapBlocked : m.overlapHint}</span></span></label>

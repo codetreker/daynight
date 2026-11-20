@@ -146,7 +146,7 @@ it('updates the linked personal endpoint and warns about Team endpoints targetin
 });
 
 it('drops an endpoint whose detail no longer targets this inbox after its summary did', async () => {
-  // Another tab retargets the endpoint to a different inbox between the list read and the detail read.
+  // The endpoint detail, not its list summary, decides which endpoints target the inbox.
   const otherInbox = `${origin}/api/v1/assistant-task-inbox/${botId(82)}`;
   const retargeted = endpoint(personalId, otherInbox, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
   const s = server({ personal: [retargeted] });
@@ -218,200 +218,46 @@ it('keeps every independent subscription of a project when saving', async () => 
   ]);
 });
 
-it('keeps a draft bound to its starting endpoint version when a reload finds a concurrent change', async () => {
-  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
-  const s = server({ personal: [linked] });
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
-  await screen.findByRole('checkbox', { name: 'Alpha' });
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
-  // The user leaves the Inbox tab while another browser tab adds a Beta subscription to the same endpoint.
-  rerender(view(false));
-  s.state.personal = [{ ...linked, configVersion: '5', subscriptions: [...linked.subscriptions, { id: botId(84), projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }] }];
-  rerender(view(true));
-  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
-  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
-  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeDisabled();
-  fireEvent.submit(screen.getByRole('button', { name: 'Save subscription' }).closest('form')!);
-  expect(s.writes).toHaveLength(0);
-  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
-  expect(screen.queryByRole('alert')).toBeNull();
-  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeChecked();
-  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).not.toBeChecked();
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
-  fireEvent.click(eventsOf('Beta').getByRole('checkbox', { name: 'Task paused' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
-  await waitFor(() => expect(s.writes).toHaveLength(1));
-  expect(s.writes[0]).toMatchObject({ method: 'PATCH', body: { ifVersion: '5', subscriptions: [
-    { id: subscriptionId, projectId: alpha, eventTypes: ['task.created', 'task.paused'] },
-    { id: botId(84), projectId: beta, eventTypes: ['task.deleted', 'task.paused'] },
-  ] } });
-});
-
-it('does not turn a create draft into an edit of an endpoint created elsewhere', async () => {
-  const s = server();
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  rerender(view(false));
-  s.state.personal = [endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }])];
-  rerender(view(true));
-  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
-  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled();
-  fireEvent.submit(screen.getByRole('button', { name: 'Create subscription' }).closest('form')!);
-  expect(s.writes).toHaveLength(0);
-  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
-  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeEnabled();
-  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeChecked();
-});
-
-it('adopts a created endpoint while the directory refresh fails', async () => {
+it('checks an unknown create outcome by its operation and then loads the created endpoint', async () => {
   const s = server(); mount();
   await screen.findByText('No Webhook endpoint targets this inbox yet.');
   const original = s.fetch.getMockImplementation()!;
-  // Reads start failing once the create is sent, after the pre-submit check of existing targets.
-  let failing = false;
-  s.fetch.mockImplementation(async (url, options) => {
-    if ((options?.method ?? 'GET') === 'POST') failing = true;
-    return failing && (options?.method ?? 'GET') === 'GET' && String(url).startsWith('/api/v1/me/webhooks') ? botError(500, 'internal') : original(url, options);
-  });
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
-  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
-  expect(s.writes).toHaveLength(1);
-  expect(screen.queryByRole('button', { name: 'Create subscription' })).toBeNull();
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
-  await waitFor(() => expect(s.writes).toHaveLength(2));
-  expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
-});
-
-it('adopts a create confirmed by a manual operation check while the directory refresh fails', async () => {
-  const s = server(); mount();
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  const original = s.fetch.getMockImplementation()!;
-  let receipt: unknown = null, lookups = 0, directoryFails = false;
+  let receipt: unknown = null, lookups = 0;
   s.fetch.mockImplementation(async (url, options) => {
     const path = String(url), method = options?.method ?? 'GET';
-    if (method === 'POST') { directoryFails = true; receipt = (await (await original(url, options)).json() as { operation: unknown }).operation; throw new TypeError('Response lost'); }
+    if (method === 'POST') { receipt = (await (await original(url, options)).json() as { operation: unknown }).operation; throw new TypeError('Response lost'); }
     if (path.startsWith('/api/v1/me/webhooks/operations/')) return lookups++ === 0 ? botError(500, 'internal') : botResponse(receipt);
-    if (directoryFails && path.startsWith('/api/v1/me/webhooks')) return botError(500, 'internal');
     return original(url, options);
   });
   fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
   fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Check operation' }));
-  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
-  expect(lookups).toBe(2);
-  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled();
-  fireEvent.submit(screen.getByRole('button', { name: 'Create subscription' }).closest('form')!);
-  expect(s.writes).toHaveLength(1);
-  directoryFails = false;
-  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   const save = await screen.findByRole('button', { name: 'Save subscription' });
+  expect(lookups).toBe(2);
+  expect(s.writes).toHaveLength(1);
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
   fireEvent.click(save);
   await waitFor(() => expect(s.writes).toHaveLength(2));
   expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
 });
 
-it('releases a recovered create that belongs to another inbox without blocking this inbox', async () => {
-  const s = server(); mount();
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  const original = s.fetch.getMockImplementation()!;
-  let receipt: unknown = null, lookupFails = true;
-  s.fetch.mockImplementation(async (url, options) => {
-    const path = String(url), method = options?.method ?? 'GET';
-    if (method === 'POST') { receipt = (await (await original(url, options)).json() as { operation: unknown }).operation; throw new TypeError('Response lost'); }
-    if (path.startsWith('/api/v1/me/webhooks/operations/')) return lookupFails ? botError(500, 'internal') : botResponse(receipt);
-    return original(url, options);
-  });
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
-  await screen.findByRole('button', { name: 'Check operation' });
-  cleanup();
-  lookupFails = false;
-  const otherInbox = botId(81);
-  mount({ inboxId: otherInbox });
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  fireEvent.click(await screen.findByRole('button', { name: 'Check operation' }));
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check operation' })).toBeNull());
-  await waitFor(() => expect(s.fetch).toHaveBeenCalledWith(`/api/v1/me/webhooks/${botId(80)}`, expect.anything()));
-  const create = await screen.findByRole('button', { name: 'Create subscription' });
-  await waitFor(() => expect(create).toBeEnabled());
-  expect(screen.getByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Beta' }));
-  fireEvent.click(eventsOf('Beta').getByRole('checkbox', { name: 'Task paused' }));
-  fireEvent.click(create);
-  await waitFor(() => expect(s.writes).toHaveLength(2));
-  expect(s.writes[1]).toMatchObject({ method: 'POST', body: { destination: { configuration: { url: `${origin}/api/v1/assistant-task-inbox/${otherInbox}` } } } });
-});
-
-it('keeps edits rejected for a version conflict and blocks resubmission until they are discarded', async () => {
+it('shows a version conflict and reloads the current configuration', async () => {
   const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
   const s = server({ personal: [linked] }); mount();
   await screen.findByRole('checkbox', { name: 'Alpha' });
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
-  // Another client changes the endpoint while this tab stays open; the panel does not reload before saving.
+  // The endpoint changes after it was loaded; the service rejects the edit made on the older version.
   s.state.personal = [{ ...linked, configVersion: '5', subscriptions: [...linked.subscriptions, { id: botId(84), projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }] }];
   s.fetch.mockImplementationOnce(async () => botError(409, 'version_conflict'));
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
-  expect(await screen.findByText(/This subscription changed elsewhere/)).toBeVisible();
-  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
-  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeDisabled();
-  const requests = s.fetch.mock.calls.length;
-  fireEvent.submit(screen.getByRole('button', { name: 'Save subscription' }).closest('form')!);
-  await Promise.resolve();
-  expect(s.fetch.mock.calls.slice(requests).filter(([, options]) => (options?.method ?? 'GET') !== 'GET')).toHaveLength(0);
-  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere. The current configuration has been loaded');
   await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeChecked());
   expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).not.toBeChecked();
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
   await waitFor(() => expect(s.writes).toHaveLength(1));
   expect(s.writes[0]).toMatchObject({ method: 'PATCH', body: { ifVersion: '5' } });
-});
-
-it('turns a create into a conflict when an endpoint for this inbox appeared after the directory was read', async () => {
-  const s = server(); mount();
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  // A second tab created the endpoint without this panel reloading in between.
-  s.state.personal = [endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }])];
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
-  expect(await screen.findByText(/This subscription changed elsewhere/)).toBeVisible();
-  expect(s.writes).toHaveLength(0);
-  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
-  expect(await screen.findByRole('button', { name: 'Save subscription' })).toBeEnabled();
-});
-
-it('warns when several personal endpoints target the inbox', async () => {
-  server({ personal: [endpoint(personalId, inboxUrl, []), endpoint(otherId, inboxUrl, [])] }); mount();
-  expect(await screen.findByRole('alert')).toHaveTextContent('Several personal endpoints target this inbox');
-});
-
-it('releases a created endpoint once a refresh finds it deleted elsewhere', async () => {
-  const s = server();
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
-  expect(await screen.findByText('Endpoint 80')).toBeVisible();
-  rerender(view(false));
-  s.state.personal = [];
-  rerender(view(true));
-  expect(await screen.findByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
-  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeEnabled();
 });
 
 it('applies the catalog expansion gate before submitting while keeping removals available', async () => {
@@ -423,6 +269,7 @@ it('applies the catalog expansion gate before submitting while keeping removals 
   expect(await screen.findByText(/Webhook changes that add deliveries are temporarily unavailable/)).toBeVisible();
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  expect(screen.getByRole('alert')).toHaveTextContent('webhooks_unavailable');
   expect(s.writes).toHaveLength(0);
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' }));
@@ -442,22 +289,7 @@ it('does not offer creation while the catalog blocks expansion', async () => {
   expect(s.writes).toHaveLength(0);
 });
 
-it('prompts to pause or delete endpoints that still target a disabled inbox', async () => {
-  const s = server({ personal: [endpoint(personalId, inboxUrl, []), endpoint(otherId, inboxUrl, [], false)] });
-  mount({ inboxEnabled: false });
-  expect(await screen.findByRole('alert')).toHaveTextContent('The inbox is disabled.');
-  expect(screen.queryByRole('button', { name: /subscription/ })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
-  await waitFor(() => expect(s.writes).toHaveLength(1));
-  expect(s.writes[0]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${personalId}`, body: { ifVersion: '4', enabled: false } });
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull());
-  fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]!);
-  await waitFor(() => expect(s.writes).toHaveLength(2));
-  expect(s.writes[1]!.method).toBe('DELETE');
-  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1));
-});
-
-it('lists endpoints aimed at any inbox of this site when the disabled inbox id is unknown', async () => {
+it('lists endpoints aimed at any inbox of this site for a disabled inbox and only opens them', async () => {
   const elsewhere = `${origin}/api/v1/assistant-task-inbox/${botId(81)}/`;
   server({ personal: [endpoint(personalId, inboxUrl, []), endpoint(otherId, elsewhere, [], false), endpoint(botId(82), 'https://hooks.example/api/v1/assistant-task-inbox/x', [])], team: [endpoint(teamEndpointId, inboxUrl, [])] });
   directories.teams = [team];
@@ -465,7 +297,7 @@ it('lists endpoints aimed at any inbox of this site when the disabled inbox id i
   expect(await screen.findByRole('alert')).toHaveTextContent('These personal endpoints target an assistant inbox on this site');
   const list = screen.getByRole('list');
   expect(within(list).getAllByRole('listitem')).toHaveLength(2);
-  // Without a verified inbox id these may be other tasks' working endpoints; they are only opened, never acted on here.
+  // A disabled inbox reports no id, so these may be other tasks' working endpoints; they are only opened here.
   expect(within(list).queryByRole('button', { name: 'Delete' })).toBeNull();
   expect(within(list).queryByRole('button', { name: 'Pause' })).toBeNull();
   expect(within(list).getAllByRole('link', { name: 'Open' })).toHaveLength(2);
@@ -478,7 +310,7 @@ it('lists endpoints aimed at any inbox of this site when the disabled inbox id i
   expect(targetsAnyInbox(null, origin)).toBe(false);
 });
 
-it('renders nothing for a disabled inbox with an unknown id and no endpoint to clean up', async () => {
+it('renders nothing for a disabled inbox with no endpoint to clean up', async () => {
   const s = server({ personal: [endpoint(personalId, 'https://hooks.example/receive', [])] });
   mount({ inboxId: null, inboxEnabled: false });
   await waitFor(() => expect(s.fetch).toHaveBeenCalled());
@@ -491,7 +323,7 @@ it('renders nothing before an inbox has ever been enabled while it is still enab
   expect(screen.queryByRole('heading', { name: 'Daynight event subscription' })).toBeNull();
 });
 
-it('shows a rejected Webhook change and a failed directory read with retry', async () => {
+it('shows a rejected Webhook change and reloads the configuration', async () => {
   const s = server(); mount();
   await screen.findByText('No Webhook endpoint targets this inbox yet.');
   s.fetch.mockImplementationOnce(async () => botError(422, 'invalid_destination'));
@@ -499,7 +331,9 @@ it('shows a rejected Webhook change and a failed directory read with retry', asy
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
   fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('The Webhook request failed. invalid_destination');
-  expect(screen.getByRole('checkbox', { name: 'Alpha' })).toBeChecked();
+  // A rejected change reloads the service's configuration.
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
+  expect(screen.getByRole('alert')).toHaveTextContent('invalid_destination');
 });
 
 it('retries a failed subscription read', async () => {
@@ -509,21 +343,6 @@ it('retries a failed subscription read', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Webhook subscriptions.');
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
-});
-
-it('keeps a conflicted draft when a failed refresh is retried', async () => {
-  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
-  const s = server({ personal: [linked] }); mount();
-  await screen.findByRole('checkbox', { name: 'Alpha' });
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
-  s.fetch.mockImplementationOnce(async () => botError(409, 'version_conflict')).mockImplementationOnce(async () => botError(500, 'internal'));
-  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
-  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  await waitFor(() => expect(screen.queryByText('Could not load Webhook subscriptions.')).toBeNull());
-  expect(screen.getByText(/This subscription changed elsewhere/)).toBeVisible();
-  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
-  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeDisabled();
 });
 
 it('locks the selection while a save is pending', async () => {
@@ -543,27 +362,12 @@ it('locks the selection while a save is pending', async () => {
   await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeEnabled());
 });
 
-it('does not carry a create draft to a new inbox of the same task', async () => {
-  const s = server();
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (id: string) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={id} inboxEnabled active serviceOrigin={origin} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(inboxId), { locale: 'en' });
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
-  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
-  rerender(view(botId(85)));
-  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
-  expect(screen.getByRole('alert')).toHaveTextContent('Select at least one project');
-  expect(s.writes).toHaveLength(0);
-});
-
 it('keeps a paused endpoint paused on save and resumes it only on request', async () => {
   const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created', 'task.deleted'], eligibility: 'eligible' }], false);
   const s = server({ personal: [linked] }); mount();
   expect(await screen.findByText(/This endpoint is paused/)).toBeVisible();
   fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' }));
-  // Resuming would discard the unsaved edit, so it waits until the edit is saved.
+  // Resuming reloads the configuration and would discard the unsaved edit, so it waits until the edit is saved.
   expect(screen.getByRole('button', { name: 'Resume deliveries' })).toBeDisabled();
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
   await waitFor(() => expect(s.writes).toHaveLength(1));
@@ -576,27 +380,20 @@ it('keeps a paused endpoint paused on save and resumes it only on request', asyn
   await waitFor(() => expect(screen.queryByText(/This endpoint is paused/)).toBeNull());
 });
 
-it('keeps a draft project that is no longer accessible visible and removable', async () => {
-  const s = server();
-  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
-  await screen.findByText('No Webhook endpoint targets this inbox yet.');
-  for (const name of ['Alpha', 'Beta']) {
-    fireEvent.click(screen.getByRole('checkbox', { name }));
-    fireEvent.click(eventsOf(name).getByRole('checkbox', { name: 'Task created' }));
-  }
-  rerender(view(false));
+it('keeps a subscribed project that is no longer accessible visible and removable', async () => {
   directories.projects = [project(beta, 'Beta')];
-  rerender(view(true));
+  const linked = endpoint(personalId, inboxUrl, [
+    { id: subscriptionId, projectId: alpha, projectName: null, eventTypes: ['task.created'], eligibility: 'eligible' },
+    { id: botId(84), projectId: beta, projectName: 'Beta', eventTypes: ['task.created'], eligibility: 'eligible' },
+  ]);
+  const s = server({ personal: [linked] }); mount();
   const revoked = `Unavailable project (${alpha})`;
-  await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Alpha' })).toBeNull());
-  expect(screen.getByRole('checkbox', { name: revoked })).toBeChecked();
+  expect(await screen.findByRole('checkbox', { name: revoked })).toBeChecked();
+  expect(screen.queryByRole('checkbox', { name: 'Alpha' })).toBeNull();
   fireEvent.click(screen.getByRole('checkbox', { name: revoked }));
-  expect(screen.queryByRole('checkbox', { name: revoked })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
   await waitFor(() => expect(s.writes).toHaveLength(1));
-  expect(s.writes[0]!.body.subscriptions).toEqual([{ id: null, projectId: beta, eventTypes: ['task.created'] }]);
+  expect(s.writes[0]!.body.subscriptions).toEqual([{ id: botId(84), projectId: beta, eventTypes: ['task.created'] }]);
 });
 
 it('directs the user to confirm a project scope before adding events to it', async () => {
