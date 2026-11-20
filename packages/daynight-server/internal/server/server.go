@@ -30,7 +30,6 @@ import (
 	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -328,44 +327,6 @@ func healthRoutes(mux httpx.RouteRegistrar, readiness func(context.Context) erro
 			httpx.MethodNotAllowed(logger, "GET, HEAD")(w, request)
 		})
 	}
-}
-
-// registerMCPTools is the composition point for complete domain adapters.
-func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin string) error {
-	return registerMCPAdapters(
-		func() error { return mcphttp.RegisterProjectTools(entry, app.Projects, app.Identity, origin) },
-		func() error { return mcphttp.RegisterTeamTools(entry, app.Teams, app.Projects, app.Identity) },
-		func() error {
-			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
-		},
-		func() error { return mcphttp.RegisterBotTools(entry, app.Bots, app.BotDeletions) },
-		func() error { return mcphttp.RegisterTagTools(entry, app.Tags) },
-		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
-		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
-		func() error { return mcphttp.RegisterGoalDependencyTools(entry, app.Tasks) },
-		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
-		func() error {
-			return mcphttp.RegisterTaskSearchTool(entry, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
-				return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
-			})
-		},
-		func() error { return mcphttp.RegisterTaskWorkTools(entry, app.TaskObservations) },
-		func() error {
-			return mcphttp.RegisterSessionTools(entry, func(e *mcphttp.Entry) error {
-				return mcphttp.RegisterSessionReadTools(e, app.TaskHistory, app.TaskInspection)
-			}, mcphttp.SessionSendModule(app.Sessions))
-		},
-		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
-		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
-		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },
-		func() error { return mcphttp.RegisterDownloadTool(entry, app.Downloads) },
-		func() error {
-			if app.Uploads == nil {
-				return errors.New("upload service is required")
-			}
-			return mcphttp.RegisterUploadTools(entry, app.Uploads)
-		},
-	)
 }
 
 // Stop registration at the first failure so incomplete adapters are never served.
