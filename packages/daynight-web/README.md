@@ -1515,7 +1515,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
+features retain their own asynchronous flows. See the [shared copy button design](../../docs/design/web-copy-button.md)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -2557,7 +2557,7 @@ and reports both causes if rollback also fails.
 The shared decorative `BrandMark` uses the actual light or dark surface palette;
 its parent owns its name and navigation. The matching favicon is emitted as a
 hashed SVG in `/assets/` and adapts to the browser color scheme. See the
-[brand rules](../../docs/ui-design.md#brand-mark).
+[brand specification](../../docs/design/web-visual-tokens.md#品牌标志).
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean production server builds require this explicit build first.
 The Go module check uses its own unit-test Web resource overlay; see the
@@ -2578,22 +2578,31 @@ including unreferenced inputs; failures include relative paths and line numbers.
 No legacy exemption list is used. Static ownership does not establish rendered
 geometry or system-menu behavior.
 
+### Typography validation
+
+The [Web typography specification](../../docs/spec/web-typography.md) owns the
+allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
 `scripts/typography-policy.test.mts` checks valid and invalid stylesheet and inline
 font declarations, location diagnostics, source enumeration and the production
 tree. The harness also runs `scripts/typography-policy.mts` against every CSS,
 TS and TSX file under `src/`. Run that scan independently with
-`pnpm --filter @codetreker/daynight-web test:typography-policy`. The
-[UI standard](../../docs/ui-design.md#web-typography) owns shared role definitions,
-registered selection parameters, terminal scaling, the external diagram boundary
-and static-analysis limits. Fixed sizes, numeric fallbacks, unknown aliases and
-local role overrides fail, including declarations superseded by later rules.
-Browser checks remain responsible for reflow, clipping and interaction continuity.
+`pnpm --filter @codetreker/daynight-web test:typography-policy`. The checker must
+reject fixed sizes, numeric fallbacks, unauthorized aliases, and local overrides,
+including declarations superseded by later rules. Verification must cover statically
+recognizable inline declarations, constants, JSX, DOM style assignments,
+`setProperty`, `cssText`, `setAttribute`, and renderer size configuration. Dynamic
+values at recognized declarations must be traceable to approved selections or
+shared rendering adjustments. Static analysis cannot evaluate arbitrary runtime
+code. Browser checks cover actual font sizes, resizing, reflow, clipping, and
+interaction continuity.
 The `typography-ownership-playwright.config.ts` configuration exercises remaining
 shared notices, task controls, attachment metadata and Bot creation against the
 production shell, with controlled API responses. It checks English and Chinese,
 desktop and 320px layouts, larger browser fonts, draft selection, dialog focus and
 readable metadata. Its generated reports and captures belong to
 `.tmp/typography-j/`; they are not product resources.
+
+### Workspace quality checks
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,

@@ -15,8 +15,9 @@ could misrepresent waiting for input as active execution.
 `task-state-colors.css` is the shared CSS value owner loaded by the application
 style entry. Existing row and graph variables, status chips, menu dots, progress,
 metadata and task-scoped outlines consume its roles. The
-[UI standard](../../../../docs/ui-design.md#semantic-color-roles) owns the required
-palette and semantic hierarchy; the
+[Web visual tokens](../../../../docs/design/web-visual-tokens.md#任务状态与交互色)
+own the required palette, and the [UI principles](../../../../docs/ui-design.md#semantic-color-roles)
+own semantic hierarchy; the
 [standard ownership decision](../process/2026-11-13-semantic-ui-color-standard.md)
 records that documentation boundary.
 
