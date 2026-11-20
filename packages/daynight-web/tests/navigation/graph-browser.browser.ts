@@ -5,6 +5,47 @@ import { completeContextGraph } from '../helpers/graphData';
 const rootId = '00000000-0000-4000-8000-000000000030';
 const expected = expectedDependencyTopology(completeContextGraph.tasks, rootId);
 
+for (const width of [1600, 320]) test(`successor inspection preserves the real chain viewport at ${width}px`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 1100 });
+  await page.goto('/tests/navigation/graph-browser.html');
+  await page.getByRole('button', { name: 'Open graph' }).click();
+  const selected = page.locator(`.react-flow__node[data-id="${rootId}"] .task-node-body`);
+  const successor = page.locator('.react-flow__node[data-id="00000000-0000-4000-8000-000000000031"] .task-node');
+  await expect(page.locator('.react-flow__node')).toHaveCount(expected.nodes.length);
+  await expect(selected).toBeVisible();
+  await selected.focus();
+  const viewport = page.locator('.react-flow__viewport');
+  const before = await viewport.getAttribute('style');
+  await selected.press('Enter');
+  await expect(successor).toHaveAttribute('data-inspection', 'successor');
+  await expect(successor).toHaveCSS('outline-color', 'rgb(8, 127, 140)');
+  await expect(successor.locator('.task-node-body')).toHaveAccessibleName(/所选任务的后继/);
+  const edge = page.locator(`.task-dependency-edge[data-source="${rootId}"]`);
+  await expect(edge).toHaveAttribute('data-inspection', 'successor');
+  await expect(edge.locator('.task-dependency-body')).toHaveCSS('stroke', 'rgb(8, 127, 140)');
+  const marker = await edge.locator('.react-flow__edge-path').getAttribute('marker-end');
+  await expect(page.locator(`[id="${marker!.slice(5, -1)}"] polyline`)).toHaveCSS('fill', 'rgb(8, 127, 140)');
+  await expect(viewport).toHaveAttribute('style', before!);
+  await expect(page.locator('.graph-successor-legend')).toHaveText('后继');
+  await page.screenshot({ path: info.outputPath('successor-chain.png') });
+  await selected.press('Enter');
+  await expect(successor).toHaveAttribute('data-inspection', 'normal');
+  await expect(viewport).toHaveAttribute('style', before!);
+  const external = page.locator('.react-flow__node[data-id="00000000-0000-4000-8000-000000000017"] .task-node-body');
+  await external.focus();
+  const externalView = await viewport.getAttribute('style');
+  await external.press('Enter');
+  const dashed = page.locator('.task-dependency-edge[data-source="00000000-0000-4000-8000-000000000017"]');
+  await expect(dashed).toHaveAttribute('data-inspection', 'successor');
+  await expect(dashed).toHaveAttribute('data-external', 'true');
+  await expect(dashed.locator('.task-dependency-paint-piece').first()).toHaveCSS('stroke-dasharray', /\d/);
+  await expect(page.locator('.react-flow__node')).toHaveCount(expected.nodes.length);
+  await expect(viewport).toHaveAttribute('style', externalView!);
+  await external.press('Enter');
+  await expect(successor).toHaveAttribute('data-inspection', 'normal');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test('retains real dependency geometry and viewport through direction, zoom, pan and fullscreen', async ({ page }, info) => {
   await page.goto('/tests/navigation/graph-browser.html');
   await page.getByRole('button', { name: 'Open graph' }).click();

@@ -6,7 +6,7 @@
   --indigo: #5c5ce0;
   --shadow: 0 8px 28px #1c285808;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  font-size: var(--text-interface);
+  font-size: var(--text-sm);
   line-height: 1.55;
   color: var(--ink);
   font-synthesis: none;
@@ -17,11 +17,8 @@
 .webhooks *,
 .webhook-dialog * { box-sizing:border-box }
 .webhooks button:not(.copy-button),
-.webhook-dialog button,
-.webhooks input,
-.webhook-dialog input,
-.webhooks textarea,
-.webhook-dialog textarea { font:inherit;color:inherit }
+.webhook-dialog button { font:inherit;color:inherit }
+:where(.webhooks, .webhook-dialog) :is(input, textarea) { font:inherit;color:inherit }
 .webhooks button,
 .webhook-dialog button { cursor:pointer }
 .webhooks button:disabled,
@@ -59,14 +56,14 @@
 .webhooks .heading-text,
 .webhook-dialog .heading-text { min-width:0 }
 .webhooks h1,
-.webhook-dialog h1 { font-size:var(--text-page-heading);line-height:1.3;letter-spacing:-.7px;font-weight:650;margin-bottom:8px }
+.webhook-dialog h1 { font-size:var(--text-2xl);line-height:1.3;letter-spacing:-.7px;font-weight:650;margin-bottom:8px }
 .webhooks .heading-text h1,
 .webhooks .panel-heading h2,
 .webhooks .count { overflow-wrap:anywhere }
 .webhooks .subtitle,
-.webhook-dialog .subtitle { font-size:var(--text-interface);color:var(--muted) }
+.webhook-dialog .subtitle { font-size:var(--text-sm);color:var(--muted) }
 .webhooks .button,
-.webhook-dialog .button { border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:8px 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:var(--text-interface);line-height:1.45;box-shadow:0 1px 2px #1c285803;white-space:nowrap }
+.webhook-dialog .button { border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:8px 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:var(--text-sm);line-height:1.45;box-shadow:0 1px 2px #1c285803;white-space:nowrap }
 .webhooks .button:hover,
 .webhook-dialog .button:hover { background:#f5f5fd;border-color:#c9c9ec }
 .webhooks .button.primary,
@@ -78,7 +75,7 @@
 .webhooks .button.danger,
 .webhook-dialog .button.danger { background:#bd4d5a;border-color:#bd4d5a;color:#fff }
 .webhooks .button.small,
-.webhook-dialog .button.small { font-size:var(--text-interface);padding:6px 10px }
+.webhook-dialog .button.small { font-size:var(--text-sm);padding:6px 10px }
 .webhooks .button.ghost,
 .webhook-dialog .button.ghost { box-shadow:none;background:transparent;border-color:transparent }
 .webhooks .button.ghost:hover,
@@ -88,7 +85,7 @@
 .webhooks .button.ghost.danger-text,
 .webhook-dialog .button.ghost.danger-text { color:#ad4b57 }
 .webhooks .text-button,
-.webhook-dialog .text-button { border:0;background:none;color:var(--indigo);font-size:var(--text-interface);padding:3px 0;display:inline-flex;align-items:center;gap:5px }
+.webhook-dialog .text-button { border:0;background:none;color:var(--indigo);font-size:var(--text-sm);padding:3px 0;display:inline-flex;align-items:center;gap:5px }
 .webhooks .text-button:disabled,
 .webhook-dialog .text-button:disabled { color:#98a0af }
 .webhooks .scope-bar,
@@ -96,19 +93,19 @@
 .webhooks .scope-group,
 .webhook-dialog .scope-group { display:flex;padding:3px;gap:3px;background:#eceef3;border:1px solid #e6e8ef;border-radius:8px }
 .webhooks .scope-button,
-.webhook-dialog .scope-button { display:flex;align-items:center;gap:7px;border:0;background:transparent;border-radius:5px;padding:8px 13px;color:#69758b;font-size:var(--text-interface) }
+.webhook-dialog .scope-button { display:flex;align-items:center;gap:7px;border:0;background:transparent;border-radius:5px;padding:8px 13px;color:#69758b;font-size:var(--text-sm) }
 .webhooks .scope-button.selected,
 .webhook-dialog .scope-button.selected { background:#fff;color:#343e55;box-shadow:0 1px 5px #24304a10 }
 .webhooks .scope-button.selected svg,
 .webhook-dialog .scope-button.selected svg { color:var(--indigo) }
 .webhooks .scope-context,
-.webhook-dialog .scope-context { display:flex;align-items:center;gap:8px;color:#7a8495;font-size:var(--text-interface) }
+.webhook-dialog .scope-context { display:flex;align-items:center;gap:8px;color:#7a8495;font-size:var(--text-sm) }
 .webhooks .scope-context strong,
 .webhook-dialog .scope-context strong { color:#526079;font-weight:500 }
 .webhooks .context-divider,
 .webhook-dialog .context-divider { height:13px;width:1px;background:#dce1ea }
 .webhooks .role-label,
-.webhook-dialog .role-label { font-size:var(--text-interface);padding:2px 6px;border-radius:4px;background:#eff0fa;color:#7474a9 }
+.webhook-dialog .role-label { font-size:var(--text-sm);padding:2px 6px;border-radius:4px;background:#eff0fa;color:#7474a9 }
 .webhooks .management-grid,
 .webhook-dialog .management-grid { display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:22px;align-items:start }
 .webhooks .panel,
@@ -116,9 +113,9 @@
 .webhooks .panel-heading,
 .webhook-dialog .panel-heading { padding:20px 23px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:0 }
 .webhooks .panel-heading h2,
-.webhook-dialog .panel-heading h2 { font-size:var(--text-section-heading);font-weight:650 }
+.webhook-dialog .panel-heading h2 { font-size:var(--text-lg);font-weight:650 }
 .webhooks .count,
-.webhook-dialog .count { margin-left:7px;color:#99a1b0;font-size:var(--text-metadata);font-weight:400 }
+.webhook-dialog .count { margin-left:7px;color:#99a1b0;font-size:var(--text-xs);font-weight:400 }
 .webhooks .panel-tools,
 .webhook-dialog .panel-tools { padding:0 23px 17px;display:flex;gap:9px }
 .webhooks .search-wrap,
@@ -126,7 +123,7 @@
 .webhooks .search-wrap svg,
 .webhook-dialog .search-wrap svg { position:absolute;left:11px;top:11px;color:#939cac }
 .webhooks .search-wrap input,
-.webhook-dialog .search-wrap input { width:100%;border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:9px 10px 9px 34px;font-size:var(--text-interface);min-width:0 }
+.webhook-dialog .search-wrap input { width:100%;border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:9px 10px 9px 34px;min-width:0 }
 .webhooks .webhook-status-select { flex-shrink:0;max-width:122px }
 .webhooks .endpoint-list,
 .webhook-dialog .endpoint-list { border-top:1px solid var(--line) }
@@ -147,15 +144,15 @@
 .webhooks .row-words,
 .webhook-dialog .row-words { min-width:0 }
 .webhooks .row-name,
-.webhook-dialog .row-name { font-size:var(--text-interface);font-weight:600;line-height:1.5;overflow-wrap:anywhere;display:flex;align-items:center;gap:7px;flex-wrap:wrap }
+.webhook-dialog .row-name { font-size:var(--text-sm);font-weight:600;line-height:1.5;overflow-wrap:anywhere;display:flex;align-items:center;gap:7px;flex-wrap:wrap }
 .webhooks .row-url,
-.webhook-dialog .row-url { font-size:var(--text-interface);color:#8490a2;margin-top:3px;overflow-wrap:anywhere;max-width:100% }
+.webhook-dialog .row-url { font-size:var(--text-sm);color:#8490a2;margin-top:3px;overflow-wrap:anywhere;max-width:100% }
 .webhooks .row-subscriptions,
-.webhook-dialog .row-subscriptions { display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:11px 0 10px 44px;color:#8490a2;font-size:var(--text-interface) }
+.webhook-dialog .row-subscriptions { display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:11px 0 10px 44px;color:#8490a2;font-size:var(--text-sm) }
 .webhooks .quiet-chip,
-.webhook-dialog .quiet-chip { display:inline-flex;align-items:center;gap:4px;border:1px solid #e8ebf2;background:#fff;border-radius:4px;padding:2px 6px;color:#6b7890;font-size:var(--text-interface);max-width:100%;overflow-wrap:anywhere }
+.webhook-dialog .quiet-chip { display:inline-flex;align-items:center;gap:4px;border:1px solid #e8ebf2;background:#fff;border-radius:4px;padding:2px 6px;color:#6b7890;font-size:var(--text-sm);max-width:100%;overflow-wrap:anywhere }
 .webhooks .row-bottom,
-.webhook-dialog .row-bottom { display:flex;align-items:center;justify-content:space-between;gap:9px;margin-left:44px;font-size:var(--text-interface);color:#8a94a5 }
+.webhook-dialog .row-bottom { display:flex;align-items:center;justify-content:space-between;gap:9px;margin-left:44px;font-size:var(--text-sm);color:#8a94a5 }
 .webhooks .result-inline,
 .webhook-dialog .result-inline { display:flex;align-items:center;gap:5px;min-width:0 }
 .webhooks .result-inline span,
@@ -173,7 +170,7 @@
 .webhooks .status-dot.paused,
 .webhook-dialog .status-dot.paused { background:#a7afbd }
 .webhooks .badge,
-.webhook-dialog .badge { display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border-radius:5px;font-size:var(--text-interface);font-weight:500;line-height:1.45;white-space:normal }
+.webhook-dialog .badge { display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border-radius:5px;font-size:var(--text-sm);font-weight:500;line-height:1.45;white-space:normal }
 .webhooks .badge.success,
 .webhook-dialog .badge.success { background:#eaf5ef;color:#398567 }
 .webhooks .badge.retrying,
@@ -191,13 +188,13 @@
 .webhooks .row-menu,
 .webhook-dialog .row-menu { position:absolute;right:0;top:32px;min-width:134px;z-index:10;border:1px solid #e2e5ed;background:#fff;box-shadow:0 7px 25px #1b29451a;border-radius:7px;padding:4px }
 .webhooks .row-menu button,
-.webhook-dialog .row-menu button { display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;border-radius:4px;padding:8px 10px;text-align:left;font-size:var(--text-interface);white-space:nowrap }
+.webhook-dialog .row-menu button { display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;border-radius:4px;padding:8px 10px;text-align:left;font-size:var(--text-sm);white-space:nowrap }
 .webhooks .row-menu button:hover,
 .webhook-dialog .row-menu button:hover { background:#f4f4fd }
 .webhooks .row-menu button.danger-text,
 .webhook-dialog .row-menu button.danger-text { color:#ad4b57 }
 .webhooks .list-note,
-.webhook-dialog .list-note { padding:15px 23px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--line);font-size:var(--text-interface);color:#9aa2b0 }
+.webhook-dialog .list-note { padding:15px 23px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--line);font-size:var(--text-sm);color:#9aa2b0 }
 .webhooks .detail-panel,
 .webhook-dialog .detail-panel { overflow:hidden;position:sticky;top:20px }
 .webhooks .detail-heading,
@@ -207,17 +204,17 @@
 .webhooks .detail-name,
 .webhook-dialog .detail-name { min-width:0 }
 .webhooks .detail-name h2,
-.webhook-dialog .detail-name h2 { font-size:var(--text-detail-heading);font-weight:650;overflow-wrap:anywhere;line-height:1.5 }
+.webhook-dialog .detail-name h2 { font-size:var(--text-xl);font-weight:650;overflow-wrap:anywhere;line-height:1.5 }
 .webhooks .detail-id,
-.webhook-dialog .detail-id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-metadata);color:#a0a8b7;margin-top:6px;overflow-wrap:anywhere }
+.webhook-dialog .detail-id { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-xs);color:#a0a8b7;margin-top:6px;overflow-wrap:anywhere }
 .webhooks .detail-status,
 .webhook-dialog .detail-status { display:flex;align-items:center;gap:7px;margin-top:10px }
 .webhooks .detail-status .quiet,
-.webhook-dialog .detail-status .quiet { color:#8a93a4;font-size:var(--text-interface) }
+.webhook-dialog .detail-status .quiet { color:#8a93a4;font-size:var(--text-sm) }
 .webhooks .tabs,
 .webhook-dialog .tabs { display:flex;flex-wrap:nowrap;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 18px;gap:0 20px }
 .webhooks .tab,
-.webhook-dialog .tab { background:none;border:0;border-bottom:2px solid transparent;padding:12px 4px 11px;color:#7e899b;font-size:var(--text-interface);min-width:max-content;max-width:none;white-space:nowrap;flex:none }
+.webhook-dialog .tab { background:none;border:0;border-bottom:2px solid transparent;padding:12px 4px 11px;color:#7e899b;font-size:var(--text-sm);min-width:max-content;max-width:none;white-space:nowrap;flex:none }
 .webhooks .tab[aria-selected="true"],
 .webhook-dialog .tab[aria-selected="true"] { border-bottom-color:var(--indigo);color:var(--indigo);font-weight:600 }
 .webhooks .endpoint-tabs .tab:focus-visible { outline-offset:-3px }
@@ -233,13 +230,13 @@
 .webhooks .field-view:last-child,
 .webhook-dialog .field-view:last-child { margin-bottom:0 }
 .webhooks .field-label,
-.webhook-dialog .field-label { font-size:var(--text-interface);color:#8490a1;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:9px }
+.webhook-dialog .field-label { font-size:var(--text-sm);color:#8490a1;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:9px }
 .webhooks .field-value,
-.webhook-dialog .field-value { font-size:var(--text-interface);color:#46536b;overflow-wrap:anywhere }
+.webhook-dialog .field-value { font-size:var(--text-sm);color:#46536b;overflow-wrap:anywhere }
 .webhooks .type-value,
 .webhook-dialog .type-value { display:flex;align-items:center;gap:7px }
 .webhooks .value-box,
-.webhook-dialog .value-box { display:flex;align-items:flex-start;gap:8px;border:1px solid #e6e9f0;background:#fafbfc;border-radius:6px;padding:10px 11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface);color:#728097;overflow-wrap:anywhere }
+.webhook-dialog .value-box { display:flex;align-items:flex-start;gap:8px;border:1px solid #e6e9f0;background:#fafbfc;border-radius:6px;padding:10px 11px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm);color:#728097;overflow-wrap:anywhere }
 .webhooks .value-box>span,
 .webhook-dialog .value-box>span { min-width:0;flex:1 }
 .webhooks .protocol-line,
@@ -247,13 +244,13 @@
 .webhooks .muted,
 .webhook-dialog .muted { color:var(--muted) }
 .webhooks .hint,
-.webhook-dialog .hint { font-size:var(--text-interface);color:#8b96a7;line-height:1.7;margin-top:7px }
+.webhook-dialog .hint { font-size:var(--text-sm);color:#8b96a7;line-height:1.7;margin-top:7px }
 .webhooks .settings-top,
 .webhook-dialog .settings-top { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid #edf0f4 }
 .webhooks .settings-top strong,
-.webhook-dialog .settings-top strong { display:block;font-size:var(--text-interface);font-weight:500;color:#526078 }
+.webhook-dialog .settings-top strong { display:block;font-size:var(--text-sm);font-weight:500;color:#526078 }
 .webhooks .settings-top small,
-.webhook-dialog .settings-top small { font-size:var(--text-interface);color:#8d97a7 }
+.webhook-dialog .settings-top small { font-size:var(--text-sm);color:#8d97a7 }
 .webhooks .switch,
 .webhook-dialog .switch { display:inline-flex;align-items:center;width:32px;height:19px;flex:none;border:0;border-radius:20px;background:#bec5d0;padding:2px;box-shadow:inset 0 0 0 1px #00000002 }
 .webhooks .switch[aria-checked="true"],
@@ -267,7 +264,7 @@
 .webhooks .secret-row,
 .webhook-dialog .secret-row { display:flex;align-items:center;gap:6px }
 .webhooks .secret-value,
-.webhook-dialog .secret-value { min-width:0;flex:1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface);line-height:1.8;overflow-wrap:anywhere;user-select:all;letter-spacing:.5px }
+.webhook-dialog .secret-value { min-width:0;flex:1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm);line-height:1.8;overflow-wrap:anywhere;user-select:all;letter-spacing:.5px }
 .webhooks .secret-actions,
 .webhook-dialog .secret-actions { display:flex;gap:2px;flex:none }
 .webhooks .section-divider,
@@ -275,23 +272,23 @@
 .webhooks .detail-footer,
 .webhook-dialog .detail-footer { display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:22px;padding-top:18px;border-top:1px solid #edf0f4 }
 .webhooks .tiny,
-.webhook-dialog .tiny { font-size:var(--text-interface);color:#98a2b3 }
+.webhook-dialog .tiny { font-size:var(--text-sm);color:#98a2b3 }
 .webhooks .subscription-heading,
 .webhook-dialog .subscription-heading { display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px }
 .webhooks .subscription-heading h3,
-.webhook-dialog .subscription-heading h3 { font-size:var(--text-section-heading);font-weight:600;color:#55637b }
+.webhook-dialog .subscription-heading h3 { font-size:var(--text-lg);font-weight:600;color:#55637b }
 .webhooks .subscription-card,
 .webhook-dialog .subscription-card { border:1px solid #e5e8f0;border-radius:7px;margin-bottom:10px;padding:13px;min-width:0 }
 .webhooks .subscription-top,
 .webhook-dialog .subscription-top { display:flex;align-items:flex-start;gap:9px;justify-content:space-between }
 .webhooks .project-name,
-.webhook-dialog .project-name { font-size:var(--text-interface);font-weight:600;color:#516079;overflow-wrap:anywhere }
+.webhook-dialog .project-name { font-size:var(--text-sm);font-weight:600;color:#516079;overflow-wrap:anywhere }
 .webhooks .project-owner,
-.webhook-dialog .project-owner { font-size:var(--text-interface);color:#9aa3b1;margin-top:2px }
+.webhook-dialog .project-owner { font-size:var(--text-sm);color:#9aa3b1;margin-top:2px }
 .webhooks .subscription-events,
 .webhook-dialog .subscription-events { display:flex;gap:5px;flex-wrap:wrap;margin-top:10px }
 .webhooks .event-chip,
-.webhook-dialog .event-chip { font-size:var(--text-interface);border-radius:4px;padding:3px 5px;color:#7777ab;background:#f3f3fc;overflow-wrap:anywhere }
+.webhook-dialog .event-chip { font-size:var(--text-sm);border-radius:4px;padding:3px 5px;color:#7777ab;background:#f3f3fc;overflow-wrap:anywhere }
 .webhooks .subscription-controls,
 .webhook-dialog .subscription-controls { display:flex;gap:2px }
 .webhooks .revoked-card,
@@ -299,11 +296,11 @@
 .webhooks .revoked-card .event-chip,
 .webhook-dialog .revoked-card .event-chip { color:#ae8990;background:#f9eef0 }
 .webhooks .inline-error,
-.webhook-dialog .inline-error { padding:11px 12px;border:1px solid #efd9dd;background:#fff8f9;border-radius:6px;color:#a65b67;font-size:var(--text-interface);overflow-wrap:anywhere;margin-bottom:14px;display:flex;gap:8px;align-items:flex-start }
+.webhook-dialog .inline-error { padding:11px 12px;border:1px solid #efd9dd;background:#fff8f9;border-radius:6px;color:#a65b67;font-size:var(--text-sm);overflow-wrap:anywhere;margin-bottom:14px;display:flex;gap:8px;align-items:flex-start }
 .webhooks .detail-back,
 .webhook-dialog .detail-back { display:none }
 .webhooks .empty-detail,
-.webhook-dialog .empty-detail { min-height:380px;display:grid;place-items:center;color:#97a0b0;font-size:var(--text-interface);text-align:center;padding:30px }
+.webhook-dialog .empty-detail { min-height:380px;display:grid;place-items:center;color:#97a0b0;font-size:var(--text-sm);text-align:center;padding:30px }
 .webhooks .empty-detail svg,
 .webhook-dialog .empty-detail svg { color:#c5cada;margin-bottom:12px }
 .webhooks .state-box,
@@ -311,9 +308,9 @@
 .webhooks .state-icon,
 .webhook-dialog .state-icon { width:48px;height:48px;background:#f2f2fb;color:#8383c5;border-radius:12px;display:grid;justify-content:normal;place-items:center;margin-bottom:4px }
 .webhooks .state-box h3,
-.webhook-dialog .state-box h3 { font-size:var(--text-interface);font-weight:600;color:#53617b }
+.webhook-dialog .state-box h3 { font-size:var(--text-sm);font-weight:600;color:#53617b }
 .webhooks .state-box p,
-.webhook-dialog .state-box p { font-size:var(--text-interface);max-width:270px;line-height:1.8 }
+.webhook-dialog .state-box p { font-size:var(--text-sm);max-width:270px;line-height:1.8 }
 .webhooks .state-box .button,
 .webhook-dialog .state-box .button { margin-top:4px }
 .webhooks .spinner,
@@ -338,9 +335,9 @@
 .webhooks .dialog-header,
 .webhook-dialog .dialog-header { padding:22px 25px 17px;display:flex;justify-content:space-between;gap:15px;align-items:flex-start;border-bottom:1px solid #edf0f4;flex:none }
 .webhooks .dialog-header h2,
-.webhook-dialog .dialog-header h2 { font-size:var(--text-detail-heading);font-weight:650;line-height:1.4;overflow-wrap:anywhere }
+.webhook-dialog .dialog-header h2 { font-size:var(--text-xl);font-weight:650;line-height:1.4;overflow-wrap:anywhere }
 .webhooks .close-button,
-.webhook-dialog .close-button { width:28px;height:28px;flex:none;background:none;border:0;border-radius:5px;color:#8d97a8;display:grid;place-items:center;font-size:var(--text-interface);line-height:1 }
+.webhook-dialog .close-button { width:28px;height:28px;flex:none;background:none;border:0;border-radius:5px;color:#8d97a8;display:grid;place-items:center;font-size:var(--text-sm);line-height:1 }
 .webhooks .close-button:hover,
 .webhook-dialog .close-button:hover { background:#f1f3f8;color:#53627c }
 .webhooks .dialog-body,
@@ -354,17 +351,17 @@
 .webhooks .form-field>label,
 .webhook-dialog .form-field>label,
 .webhooks .field-title,
-.webhook-dialog .field-title { display:block;font-size:var(--text-interface);font-weight:600;color:#4c5870;margin-bottom:8px }
+.webhook-dialog .field-title { display:block;font-size:var(--text-sm);font-weight:600;color:#4c5870;margin-bottom:8px }
 .webhooks .required,
-.webhook-dialog .required { color:#a6aebc;font-weight:400;font-size:var(--text-interface);margin-left:5px }
+.webhook-dialog .required { color:#a6aebc;font-weight:400;font-size:var(--text-sm);margin-left:5px }
 .webhooks .input,
-.webhook-dialog .input { display:block;width:100%;min-width:0;border:1px solid #dce0e8;border-radius:7px;padding:10px 12px;background:#fff;font-size:var(--text-interface);line-height:1.5 }
+.webhook-dialog .input { display:block;width:100%;min-width:0;border:1px solid #dce0e8;border-radius:7px;padding:10px 12px;background:#fff;line-height:1.5 }
 .webhooks .input::placeholder,
 .webhook-dialog .input::placeholder { color:#a6afbd }
 .webhooks .input:disabled,
 .webhook-dialog .input:disabled { background:#f7f8fb;color:#929bab }
 .webhooks .field-helper,
-.webhook-dialog .field-helper { font-size:var(--text-interface);color:#8b96a7;line-height:1.8;margin-top:6px }
+.webhook-dialog .field-helper { font-size:var(--text-sm);color:#8b96a7;line-height:1.8;margin-top:6px }
 .webhooks .form-divider,
 .webhook-dialog .form-divider { height:1px;background:#edf0f4;margin:23px 0 }
 .webhooks .checkbox-list,
@@ -378,31 +375,31 @@
 .webhooks .check-main,
 .webhook-dialog .check-main { min-width:0 }
 .webhooks .check-main strong,
-.webhook-dialog .check-main strong { font-size:var(--text-interface);font-weight:500;color:#526079;overflow-wrap:anywhere;display:block }
+.webhook-dialog .check-main strong { font-size:var(--text-sm);font-weight:500;color:#526079;overflow-wrap:anywhere;display:block }
 .webhooks .check-main small,
-.webhook-dialog .check-main small { display:block;color:#9aa3b1;font-size:var(--text-interface);margin-top:2px;overflow-wrap:anywhere }
+.webhook-dialog .check-main small { display:block;color:#9aa3b1;font-size:var(--text-sm);margin-top:2px;overflow-wrap:anywhere }
 .webhooks .event-checks,
 .webhook-dialog .event-checks { display:grid;grid-template-columns:1fr 1fr;gap:7px }
 .webhooks .event-checks .check-row,
 .webhook-dialog .event-checks .check-row { padding:8px 9px }
 .webhooks .event-checks .check-main strong,
-.webhook-dialog .event-checks .check-main strong { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface) }
+.webhook-dialog .event-checks .check-main strong { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm) }
 .webhooks .selected-type,
 .webhook-dialog .selected-type { display:flex;align-items:center;gap:10px;border:1px solid #dadaf2;border-radius:7px;background:#fafaff;padding:11px 12px;color:#6969bd }
 .webhooks .selected-type strong,
-.webhook-dialog .selected-type strong { display:block;color:#4e5b74;font-size:var(--text-interface);font-weight:500 }
+.webhook-dialog .selected-type strong { display:block;color:#4e5b74;font-size:var(--text-sm);font-weight:500 }
 .webhooks .selected-type small,
-.webhook-dialog .selected-type small { font-size:var(--text-interface);color:#9a9fb2 }
+.webhook-dialog .selected-type small { font-size:var(--text-sm);color:#9a9fb2 }
 .webhooks .dialog-copy,
-.webhook-dialog .dialog-copy { font-size:var(--text-interface);color:#768298;line-height:1.8;overflow-wrap:anywhere }
+.webhook-dialog .dialog-copy { font-size:var(--text-sm);color:#768298;line-height:1.8;overflow-wrap:anywhere }
 .webhooks .dialog-copy strong,
 .webhook-dialog .dialog-copy strong { color:#45516a;font-weight:600 }
 .webhooks .warning-box,
-.webhook-dialog .warning-box { padding:12px 13px;margin-top:16px;border:1px solid #f0dfc2;background:#fffbf3;border-radius:6px;font-size:var(--text-interface);color:#947541;line-height:1.8;overflow-wrap:anywhere }
+.webhook-dialog .warning-box { padding:12px 13px;margin-top:16px;border:1px solid #f0dfc2;background:#fffbf3;border-radius:6px;font-size:var(--text-sm);color:#947541;line-height:1.8;overflow-wrap:anywhere }
 .webhooks .radio-options,
 .webhook-dialog .radio-options { display:grid;gap:8px;margin-top:18px }
 .webhooks .radio-options label,
-.webhook-dialog .radio-options label { display:flex;align-items:flex-start;gap:9px;border:1px solid #e4e8f0;border-radius:7px;padding:11px;font-size:var(--text-interface);color:#67758c }
+.webhook-dialog .radio-options label { display:flex;align-items:flex-start;gap:9px;border:1px solid #e4e8f0;border-radius:7px;padding:11px;font-size:var(--text-sm);color:#67758c }
 .webhooks .radio-options input,
 .webhook-dialog .radio-options input { accent-color:var(--indigo);margin-top:2px }
 .webhooks .mobile-list-back,
@@ -576,7 +573,7 @@
 .webhooks .webhook-maintenance { margin-bottom: 14px; }
 .webhooks .webhook-team-select { max-width: 220px; }
 .webhooks .webhook-list-retry { margin: 0 23px 14px; }
-.webhooks .webhook-error-id, .webhook-dialog .webhook-error-id { display: block; overflow-wrap: anywhere; }
+.webhooks .webhook-error-id, .webhook-dialog .webhook-error-id { display: block; overflow-wrap: anywhere; font-size: var(--text-xs); }
 .webhooks .button .spinner, .webhook-dialog .button .spinner { width: 14px; height: 14px; }
 .webhooks .list-note .text-button { margin-left: auto; }
 .webhook-dialog .webhook-confirm-copy { margin-top: 10px; }
@@ -597,19 +594,19 @@
 
 .webhooks .delivery-tools { display:flex;gap:2px }
 .webhooks .deliveries-heading { display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px }
-.webhooks .deliveries-heading h3 { font-size:var(--text-section-heading);font-weight:600;color:#55637b }
+.webhooks .deliveries-heading h3 { font-size:var(--text-lg);font-weight:600;color:#55637b }
 .webhooks .delivery-list { margin:0 -23px -23px }
 .webhooks .delivery-row { width:100%;display:block;padding:15px 23px;border:0;background:#fff;text-align:left;border-top:1px solid #edf0f4 }
 .webhooks .delivery-row:hover { background:#fafbfe }
 .webhooks .delivery-row-top { display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap;min-width:0 }
-.webhooks .delivery-event, .webhook-dialog .delivery-event { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface);color:#5a6780;overflow-wrap:anywhere }
-.webhooks .delivery-meta { display:flex;align-items:center;justify-content:space-between;gap:7px;color:#929bad;font-size:var(--text-interface) }
+.webhooks .delivery-event, .webhook-dialog .delivery-event { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm);color:#5a6780;overflow-wrap:anywhere }
+.webhooks .delivery-meta { display:flex;align-items:center;justify-content:space-between;gap:7px;color:#929bad;font-size:var(--text-sm) }
 .webhooks .delivery-meta span { min-width:0;overflow-wrap:anywhere }
 .webhooks .delivery-meta time { flex:none }
-.webhooks .delivery-response { font-size:var(--text-interface);color:#939cae;margin-top:7px;display:flex;align-items:flex-start;gap:5px }
+.webhooks .delivery-response { font-size:var(--text-sm);color:#939cae;margin-top:7px;display:flex;align-items:flex-start;gap:5px }
 .webhooks .delivery-response svg { margin-top:3px }
-.webhooks .delivery-history-note { padding:15px 0 0;margin-top:23px;border-top:1px solid var(--line);font-size:var(--text-interface);color:#9aa2b0;line-height:1.7 }
-.webhooks .delivery-loading { min-height:120px;display:grid;place-items:center;color:#97a0b0;font-size:var(--text-interface) }
+.webhooks .delivery-history-note { padding:15px 0 0;margin-top:23px;border-top:1px solid var(--line);font-size:var(--text-sm);color:#9aa2b0;line-height:1.7 }
+.webhooks .delivery-loading { min-height:120px;display:grid;place-items:center;color:#97a0b0;font-size:var(--text-sm) }
 .webhooks .delivery-filters { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;padding:12px;border:1px solid #e5e8f0;border-radius:7px }
 .webhooks .delivery-filters .form-field { min-width:0 }
 .webhooks .delivery-filter-actions, .webhook-dialog .delivery-filter-actions { display:flex;gap:9px;align-items:center;grid-column:1/-1 }
@@ -617,12 +614,12 @@
 .webhook-dialog:has(.delivery-details) { width:min(720px,calc(100vw - 40px)) }
 .webhook-dialog .delivery-summary { display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap }
 .webhook-dialog .delivery-summary > div { min-width:0 }
-.webhook-dialog .delivery-resource { font-size:var(--text-interface);color:#7d899d;margin-top:6px }
-.webhook-dialog .record-grid { display:grid;gap:10px;padding:15px 0 20px;margin:0;font-size:var(--text-interface) }
+.webhook-dialog .delivery-resource { font-size:var(--text-sm);color:#7d899d;margin-top:6px }
+.webhook-dialog .record-grid { display:grid;gap:10px;padding:15px 0 20px;margin:0;font-size:var(--text-sm) }
 .webhook-dialog .record-entry { display:grid;grid-template-columns:100px minmax(0,1fr);gap:14px }
 .webhook-dialog .record-grid dt { color:#919bad }
-.webhook-dialog .record-grid dd { margin:0;color:#59677f;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface);min-width:0 }
-.webhook-dialog .section-title { font-size:var(--text-section-heading);font-weight:600;color:#5a6780;margin:20px 0 12px }
+.webhook-dialog .record-grid dd { margin:0;color:#59677f;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm);min-width:0 }
+.webhook-dialog .section-title { font-size:var(--text-lg);font-weight:600;color:#5a6780;margin:20px 0 12px }
 .webhook-dialog .delivery-attempt-heading { display:flex;justify-content:space-between;align-items:baseline;gap:8px }
 .webhook-dialog .delivery-generation-filter { display:flex;gap:9px;align-items:flex-end;margin-bottom:17px }
 .webhook-dialog .delivery-generation-filter form { max-width:210px;min-width:0;flex:1 }
@@ -632,19 +629,19 @@
 .webhook-dialog .attempt::before { content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#c9cfda;left:-4px;top:5px;box-shadow:0 0 0 3px #fff }
 .webhook-dialog .attempt.success::before { background:#69ac8a }
 .webhook-dialog .attempt.failed::before { background:#d09d64 }
-.webhook-dialog .attempt-title { font-size:var(--text-interface);color:#626f87;display:flex;justify-content:space-between;gap:9px;align-items:flex-start }
+.webhook-dialog .attempt-title { font-size:var(--text-sm);color:#626f87;display:flex;justify-content:space-between;gap:9px;align-items:flex-start }
 .webhook-dialog .attempt-title strong { font-weight:500 }
-.webhook-dialog .attempt-title time { font-size:var(--text-metadata);color:#98a2b3;white-space:nowrap }
-.webhook-dialog .attempt p { font-size:var(--text-interface);color:#949eaf;margin-top:5px;overflow-wrap:anywhere }
+.webhook-dialog .attempt-title time { font-size:var(--text-xs);color:#98a2b3;white-space:nowrap }
+.webhook-dialog .attempt p { font-size:var(--text-sm);color:#949eaf;margin-top:5px;overflow-wrap:anywhere }
 .webhook-dialog .attempt .record-grid { padding:10px 0;gap:6px }
-.webhook-dialog .delivery-late-result { border:1px solid #e4e8f0;border-radius:6px;padding:9px 11px;margin-top:9px;font-size:var(--text-interface);color:#68778f }
-.webhook-dialog .code-block { padding:13px 15px;border:1px solid #e5e9f0;border-radius:7px;background:#f8fafc;color:#68778f;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-interface);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;margin:0 }
+.webhook-dialog .delivery-late-result { border:1px solid #e4e8f0;border-radius:6px;padding:9px 11px;margin-top:9px;font-size:var(--text-sm);color:#68778f }
+.webhook-dialog .code-block { padding:13px 15px;border:1px solid #e5e9f0;border-radius:7px;background:#f8fafc;color:#68778f;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--text-sm);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;margin:0 }
 .webhook-dialog .payload-summary { display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px }
-.webhook-dialog .payload-summary h3 { font-size:var(--text-section-heading);color:#5a6780;font-weight:600 }
+.webhook-dialog .payload-summary h3 { font-size:var(--text-lg);color:#5a6780;font-weight:600 }
 .webhook-dialog .delivery-payload-hash { overflow-wrap:anywhere }
 .webhook-dialog .dialog-footer-spacer { margin-right:auto;max-width:350px }
 .webhook-dialog .delivery-receipt { margin-bottom:18px }
-.webhook-dialog .delivery-redelivery-confirm h3 { font-size:var(--text-section-heading);margin-bottom:7px }
+.webhook-dialog .delivery-redelivery-confirm h3 { font-size:var(--text-lg);margin-bottom:7px }
 .webhook-dialog .delivery-redelivery-confirm .delivery-filter-actions { justify-content:flex-end;margin-top:12px }
 @media(max-width:450px) {
   .webhooks .delivery-list { margin:0 -16px -18px }
@@ -664,8 +661,4 @@
 .webhooks .row-bottom time,
 .webhook-dialog .row-bottom time,
 .webhooks .delivery-meta time,
-.webhook-dialog .detail-status time { font-size:var(--text-metadata) }
-@media (max-width:800px), (pointer:coarse) {
-  .webhooks .search-wrap input, .webhook-dialog .search-wrap input,
-  .webhooks .input, .webhook-dialog .input { font-size:var(--text-touch-field) }
-}
+.webhook-dialog .detail-status time { font-size:var(--text-xs) }

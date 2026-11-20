@@ -3,10 +3,10 @@
 .team-github-app-list { list-style: none; margin: 0; padding: 0; }
 .team-github-app-list li { display: flex; gap: 12px; min-width: 0; padding: 18px 23px; border-bottom: 1px solid var(--line); }
 .team-github-app-list li > div:last-child { min-width: 0; overflow-wrap: anywhere; }
-.team-github-app-list h3 { font-size: var(--text-interface); font-weight: 650; }
-.team-github-app-list p { color: var(--muted); font-size: var(--text-interface); margin-top: 5px; }
-.team-github-app-icon { flex: 0 0 36px; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; background: #f0f1fc; color: #52649b; font-size: var(--text-section-heading); }
+.team-github-app-list h3 { font-size: var(--text-sm); font-weight: 650; }
+.team-github-app-list p { color: var(--muted); font-size: var(--text-sm); margin-top: 5px; }
+.team-github-app-icon { flex: 0 0 36px; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; background: #f0f1fc; color: #52649b; font-size: var(--text-lg); }
 .team-github-apps .empty-inline p { margin-top: 7px; }
 .team-github-app-more { padding: 14px 23px; }
-.team-github-app-hint { padding: 16px 23px; color: var(--muted); font-size: var(--text-interface); overflow-wrap: anywhere; }
+.team-github-app-hint { padding: 16px 23px; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 @media (max-width: 800px) { .team-github-app-list li, .team-github-app-more, .team-github-app-hint { padding-left: 17px; padding-right: 17px; } }

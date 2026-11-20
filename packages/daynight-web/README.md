@@ -2627,6 +2627,12 @@ desktop and 320px layouts, larger browser fonts, draft selection, dialog focus a
 readable metadata. Its generated reports and captures belong to
 `.tmp/typography-j/`; they are not product resources.
 
+Team, GitHub management and Webhook browser fixtures exercise the shared size
+scale at their actual routes. They cover responsive member and configuration
+inputs, Team invitation secrets, request IDs, narrow layouts and Webhook tab
+navigation with controlled API responses. The responsive field rule also takes
+precedence over transitional form typography for marked inputs.
+
 ### Workspace quality checks
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,

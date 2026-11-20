@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { GraphTask, TaskGraph, TaskStatus } from "../src/api/types";
-import { buildGraphIndex, GraphDataError, projectChain, tracePrerequisites } from "../src/features/task-graph/model";
+import { buildGraphIndex, GraphDataError, projectChain, tracePrerequisites, traceSuccessors } from "../src/features/task-graph/model";
 import { graph } from "./graph-model-fixture";
+import { getTaskInspectionState, getDependencyInspectionState } from "../src/features/task-graph/inspection";
 
 const id = (letter: string): string => `00000000-0000-0000-0000-${letter.charCodeAt(0).toString(16).padStart(12, "0")}`;
 const [A, B, C, D, E, F, G, H, I] = ["A", "B", "C", "D", "E", "F", "G", "H", "I"].map(id) as [string, string, string, string, string, string, string, string, string];
@@ -299,6 +300,34 @@ describe("direct external prerequisite projection", () => {
 });
 
 describe("complete prerequisite inspection", () => {
+  it("traces complete successors across mixed edges and deduplicates forks, joins and shortcuts", () => {
+    const input = deepFreeze(graph([
+      { id: A }, { id: B, dependsOn: [A] },
+      { id: C, dependsOn: [A], externalDependsOn: [A] },
+      { id: D, dependsOn: [A, B, C] }, { id: E, dependsOn: [D] }, { id: F },
+    ]));
+    const index = buildGraphIndex(input);
+    expect(traceSuccessors(index, A)).toEqual(new Set([A, B, C, D, E]));
+    expect(traceSuccessors(index, B)).toEqual(new Set([B, D, E]));
+    expect(traceSuccessors(index, E)).toEqual(new Set([E]));
+    expect(traceSuccessors(index, F)).toEqual(new Set([F]));
+    expect(traceSuccessors(index, A)).not.toBe(traceSuccessors(index, A));
+    expect(() => traceSuccessors(index, G)).toThrow(GraphDataError);
+    expect(input.tasks[3]!.dependsOn).toEqual([A, B, C]);
+  });
+
+  it("terminates successor traversal through an abnormal external cycle", () => {
+    const index = buildGraphIndex(graph([
+      { id: A, dependsOn: [C], externalDependsOn: [C] },
+      { id: B, dependsOn: [A] }, { id: C, dependsOn: [B] },
+    ]));
+    expect(traceSuccessors(index, B)).toEqual(new Set([A, B, C]));
+    const inspection = { selectedTaskId: B, highlightedIds: tracePrerequisites(index, B), successorIds: traceSuccessors(index, B) };
+    expect(getTaskInspectionState(inspection, B)).toBe('selected');
+    expect(getTaskInspectionState(inspection, A)).toBe('prerequisite');
+    expect(getDependencyInspectionState(inspection, B, C)).toBe('highlighted');
+  });
+
   it("deduplicates shared completed and waiting prerequisites without following successors", () => {
     const input = deepFreeze(graph([
       { id: A, status: "done" }, { id: B, status: "done", dependsOn: [A] },

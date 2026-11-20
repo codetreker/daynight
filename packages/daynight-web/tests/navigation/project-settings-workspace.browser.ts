@@ -401,3 +401,20 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(writes).toEqual([]);
   });
 }
+
+test('project member search uses shared responsive text at both member routes', async ({ page }) => {
+  await install(page);
+  for (const path of [`${base}?tab=members`, `/projects/${projectId}/members`]) {
+    await page.goto(path);
+    const input = page.getByRole('searchbox', { name: 'Search and add members' });
+    await expect(input).toBeVisible();
+    for (const width of [1280, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const root of [12, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await expect(input).toHaveCSS('font-size', `${width === 320 ? Math.max(root, 16) : root * 0.875}px`);
+      }
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  }
+});

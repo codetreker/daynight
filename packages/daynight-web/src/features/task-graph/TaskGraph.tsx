@@ -3,11 +3,12 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskSummary } from '../../api/types';
 import { getTaskNodeHeight, layoutGraph, type CanvasLayout, type GraphDirection } from './layout';
 import { scaleGraph, useGraphFontScale } from './graph-scale';
-import { projectChain, tracePrerequisites, type GraphIndex, type ChainProjection } from './model';
+import { projectChain, tracePrerequisites, traceSuccessors, type GraphIndex, type ChainProjection } from './model';
 import type { TaskFlowNode } from './TaskNode';
 import { getInitialTaskViewport } from './chain-viewport';
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
 import { TaskGraphToolbar } from './TaskGraphToolbar';
+import { InspectionLegend } from './inspection';
 import { createGraphOverview, getTaskExpansion, projectVisibleTasks, reconcileVisibleTasks, type TaskExpansionDirection, type TaskExpansions } from './visibility';
 
 type TaskGraphProps = {
@@ -34,7 +35,8 @@ const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpen
   const getFocusFallback = useCallback(() => fullscreen?.buttonRef.current ?? resetButton.current, [fullscreen]);
   const { containerRef, onFocusCapture } = useGraphFocusRecovery(geometry, getFocusFallback);
   const highlightedIds = useMemo(() => selectedTaskId === null ? emptyHighlight : tracePrerequisites(index, selectedTaskId), [index, selectedTaskId]);
-  const inspection = useMemo(() => ({ selectedTaskId, highlightedIds }), [selectedTaskId, highlightedIds]);
+  const successorIds = useMemo(() => selectedTaskId === null ? emptyHighlight : traceSuccessors(index, selectedTaskId), [index, selectedTaskId]);
+  const inspection = useMemo(() => ({ selectedTaskId, highlightedIds, successorIds }), [selectedTaskId, highlightedIds, successorIds]);
   const hiddenUpstreamCount = useMemo(() => [...highlightedIds].filter((id) => !visibleIds.has(id)).length, [highlightedIds, visibleIds]);
   const totalTasks = projection.mainIds.size + projection.externalIds.size;
   const folded = visibleIds.size < totalTasks;
@@ -68,7 +70,7 @@ const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpen
         onClearInspection={clearInspection} viewportFactory={viewportFactory} framingKey={`${topologyKey}:${direction}`}
         framingRevision={action?.kind === 'reset' ? action.sequence : null} onFramingReset={onFramingReset}
         minZoom={0.2} maxZoom={1.8} fitViewOptions={viewportFitOptions} />
-      <div className="graph-foot"><span>{m.directionLegend}</span><span>{m.externalLegend}</span></div>
+      <div className="graph-foot"><span>{m.directionLegend}</span><InspectionLegend /><span>{m.externalLegend}</span></div>
     </div>
   );
 };
