@@ -63,7 +63,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "githubApps"; readonly appId: string | null }
   | { readonly kind: "githubAppAdmins" | "githubAppTeams"; readonly appId: string }
   | { readonly kind: "bots" }
-  | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
+  | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals" | "inbox"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
   | { readonly kind: "workers" }
   | { readonly kind: "worker"; readonly workerId: string }
@@ -189,8 +189,8 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (assistantTask) {
     try {
       const taskId = canonicalId(decodeURIComponent(assistantTask[1]!)), query = new URLSearchParams(search), tab = query.get('tab') ?? 'manual', rawRecord = query.get('recordId'), recordId = rawRecord === null ? null : canonicalId(rawRecord), rawEvent = query.get('eventId'), eventId = rawEvent === null ? null : canonicalId(rawEvent);
-      if (!taskId || !['manual','records','proposals'].includes(tab) || rawRecord !== null && !recordId || rawEvent !== null && !eventId || [...query.keys()].some(key => !['tab','recordId','eventId'].includes(key) || query.getAll(key).length !== 1)) return {kind:'notFound'};
-      return {kind:'assistantTask',taskId,tab:tab as 'manual'|'records'|'proposals',...(recordId ? {recordId} : {}),...(eventId ? {eventId} : {})};
+      if (!taskId || !['manual','records','proposals','inbox'].includes(tab) || rawRecord !== null && !recordId || rawEvent !== null && !eventId || [...query.keys()].some(key => !['tab','recordId','eventId'].includes(key) || query.getAll(key).length !== 1)) return {kind:'notFound'};
+      return {kind:'assistantTask',taskId,tab:tab as 'manual'|'records'|'proposals'|'inbox',...(recordId ? {recordId} : {}),...(eventId ? {eventId} : {})};
     } catch { return {kind:'notFound'}; }
   }
   const bot = /^\/bots\/([^/]+)$/.exec(pathname);

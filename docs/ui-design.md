@@ -20,7 +20,10 @@ how it applies to different renderers and accessibility settings.
 
 Use the same visual role for the same meaning. Preserve visible labels and any
 counts or icons needed to understand state without color. Selection and keyboard
-focus must be recognizable together without obscuring underlying state. Use the
+focus must be recognizable together without obscuring underlying state. Dependency
+graphs distinguish prerequisites and successors with their shared palette roles,
+text legends and accessible relationship descriptions; retain lifecycle fills and
+independent selection and keyboard focus cues. Use the
 [shared palette](design/web-visual-tokens.md#任务状态与交互色) for exact values.
 
 ### Attention, activity, health, and policy
