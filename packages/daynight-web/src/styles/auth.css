@@ -404,6 +404,7 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-member-row:last-child { border-bottom: 0; }
 .team-member-row .person { grid-column: 1; grid-row: 1; }
 .team-member-role { grid-column: 2; grid-row: 1; min-width: 0; }
+.team-member-role .role-select { width: 9.75em; }
 .team-member-actions { grid-column: 3; grid-row: 1; justify-self: end; }
 .team-member-actions .button { min-height: 32px; }
 .team-member-actions .button.quiet[aria-disabled="true"] { color: #9299a9; background: none; cursor: not-allowed; }
