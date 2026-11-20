@@ -27,6 +27,31 @@ OAuth access 与 refresh 不复制权限；按 access hash 读取原 grant 的�
 历史回填及 scoped 认证装配须在启用时协调；不能把尚未回填的 MCP 空字段
 当作无限权限。迁移复用既有 access hash 和 grant 索引，不增加热路径索引。
 
+## 任务读取准入与投影
+
+Task/Goal 的详情、列表、ready、搜索、属性、schema、依赖、分组、Graph 和 Sync
+读取要求 `task:read`。服务在原有凭据及项目可见性检查后、受保护数据读取前执行
+准入。搜索在自己的 TaskSearch 快照内执行同一规则。明确的 scoped 构造和路由
+注册复用原查询及分页；原生产装配维持既有行为。
+
+普通任务读取不要求 `project:read`。包含完整 Project 的 Graph 与 Sync 同时要求
+该权限；REST Graph 携带 `Daynight-Projection: task-only-v1` 时，服务回显该头并
+只返回 `project.id`。MCP task_graph 缺少项目读取权限时采用相同最小投影，包含
+`dependsOnly`，其余节点、依赖、统计和 projection 声明保持原合同。
+
+缺少 `session:read` 时，普通组合查询不读取任何 Session 来源或采样 live 状态。
+Task 属性中的执行记录 `worker`、`sessionStartup` 被排除；普通自定义属性保留。
+`include=session` 的旧线协议仍返回可解析的 `unavailable/unknown` 观察，reason 为
+`insufficient_scope`，会话关联标识、存在性、状态、时间和发送资格均为空，且结果
+标记 partial。Graph 和工作分组保留真实任务查询时间，工作、提示、告警数量为零，
+unknownCount 只由各聚合范围内可见、进行中的普通 Task 计算，complete=false。
+分组先按完整任务集合形成投影，再进行原目标分页及响应预算处理。
+
+Sync 在同一任务快照保留所有可见、进行中普通 Task 的 taskObservations 键，
+每项带真实 taskVersion 与 unavailable；不受增量任务窗口限制。旧 sessions map
+为空、sessionPartial=true，Task 水位与观察完成时间仍使用任务查询的合法时间。
+完整机制分别由[观察设计](task-session-observation.md)与[同步设计](daynight-task-sync.md)维护。
+
 ## Tag 目录准入
 
 `service/tag.NewScoped` 提供显式接收 `model.CredentialAuthorization` 的目录
@@ -131,7 +156,7 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Task、Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方

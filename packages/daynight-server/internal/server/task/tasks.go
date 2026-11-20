@@ -26,6 +26,7 @@ type taskHandler struct {
 	sync         SyncOperation
 	window       time.Duration
 	logger       *slog.Logger
+	taskOnly     bool
 }
 
 func TaskRoutes(mux *http.ServeMux, tasks TaskService, observations ObservationService, auth RouteAuthentication, logger *slog.Logger) {

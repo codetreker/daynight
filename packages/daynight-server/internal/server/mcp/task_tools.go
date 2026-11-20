@@ -9,6 +9,8 @@ import (
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -64,6 +66,10 @@ type taskArguments struct {
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
 func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
+	return registerTaskResourceTools(e, tasks, observations, false)
+}
+
+func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter, readOnly bool) error {
 	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
@@ -73,6 +79,9 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		if readOnly && name != "task_show" && name != "task_properties" {
+			continue
+		}
 		budget := func(raw json.RawMessage) BudgetClass {
 			if name == "task_properties" {
 				var input struct {
@@ -229,6 +238,11 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		return ToolResult{Data: data, Observation: &ReadObservation{ObservedAt: stamp, Partial: observed.Session.Observation != "observed"}, Refs: map[string]any{"projectId": in.ProjectID, "taskId": in.TaskID}}, nil
 	case "task_properties":
 		if in.Mode == "schema" {
+			if actor.Authorization != nil {
+				if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TaskRead); err != nil {
+					return ToolResult{}, err
+				}
+			}
 			return ToolResult{Data: map[string]any{"properties": taskprotocol.PropertyDefinitions()}}, nil
 		}
 		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)

@@ -25,6 +25,10 @@ type goalDependencyOperations interface {
 
 // RegisterGoalDependencyTools publishes bounded Goal relationship reads and edits.
 func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations) error {
+	return registerGoalDependencyTools(entry, service, false)
+}
+
+func registerGoalDependencyTools(entry *Entry, service goalDependencyOperations, readOnly bool) error {
 	if entry == nil || service == nil || service == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP Goal dependency tools require an entry and Tasks service")
 	}
@@ -34,6 +38,9 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 	}
 	for _, tool := range definitions {
 		name := tool.Name
+		if readOnly && name != "goal_dependencies_show" {
+			continue
+		}
 		handler := func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 			return goalDependencyTool(ctx, actor, name, raw, service)
 		}

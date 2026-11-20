@@ -19,6 +19,14 @@
 
 同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map 和进行中普通 Task 的完整观测；Task 水位不筛选这两个集合。`useTaskGraph` 在同一次同步接纳后将四态 map 与完整观测分别交给独立的页面内存 store；隐藏时拒绝发布 Session 观察，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
 
+显式 scoped TaskSync 在项目可见性通过后检查 task:read 与 project:read，完整
+Project 投影需要两者。缺少 session:read 时跳过两次 TaskSessionSources 和实时
+采样，按同一快照中的全部可见进行中普通 Task 构造 taskObservations，逐项保留
+真实 taskVersion 与 unavailable。该键集合不受 since 筛选影响；sessions 为空、
+sessionPartial=true，执行相关 worker/sessionStartup 属性被排除。观察完成时间
+和 Task 水位取自任务快照，不能从会话补齐。原生产装配保持既有行为，限定入口
+遵循[凭据准入合同](credential-scope-internal.md#任务读取准入与投影)。
+
 客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
 
 | 现有机制 | 用途及证据 |
