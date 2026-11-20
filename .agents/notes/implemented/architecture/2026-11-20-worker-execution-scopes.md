@@ -66,7 +66,11 @@ grace period. A command result or closed output pipe cannot prove that a descend
 which closed its inherited streams has exited. Loss of parent IPC makes the verified group leader
 close its own group instead of abandoning its descendants.
 
-Controller bootstrap also waits for its original launch record and birth proof;
+Controller bootstrap also waits for its original launch record and birth proof.
+A POSIX Controller can outlive its original Host and be reparented. If its command
+identity becomes uncertain while birth and group still match, shutdown only
+observes it within the original deadline, regardless of its current parent.
+Signaling still requires complete identity, and uncertainty cannot prove closure.
 Windows Job and process
 handles transfer explicitly to that execution owner before its thread resumes.
 Failed pre-dispatch cleanup also remains in that owner, so a failed birth-record
