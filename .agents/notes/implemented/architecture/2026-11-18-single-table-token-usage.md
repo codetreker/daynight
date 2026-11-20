@@ -136,6 +136,8 @@ without changing database settings or performance thresholds.
 top of the totals query. These facts only require existence, so indexed probes
 avoid materializing or regrouping the full measurement set.
 
+The [unsigned pagination decision](../simplification/2026-11-20-unsigned-usage-pagination.md) changes the cursor format and startup dependency while preserving these read boundaries.
+
 ## Consequences
 
 Only one business table is added, and usage does not change Task versions or

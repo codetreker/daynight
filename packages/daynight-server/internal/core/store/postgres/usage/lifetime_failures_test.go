@@ -2,7 +2,6 @@ package usage_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -187,7 +186,7 @@ func TestUsageAggregateReflectsUnsupportedAndUnverifiedExecutions(t *testing.T) 
 		if !t.Run(provider, func(t *testing.T) {
 			f := workflowInStore(t, database, 400+index)
 			ctx := t.Context()
-			service, err := app.New(f.db, app.Options{WriteEnabled: true, CursorKey: []byte(strings.Repeat("k", 32))})
+			service, err := app.New(f.db, app.Options{WriteEnabled: true})
 			if err != nil {
 				t.Fatal(err)
 			}

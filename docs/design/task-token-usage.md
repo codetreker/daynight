@@ -102,12 +102,8 @@ seal 只代表原生停止并排空采集，不等同 Task done。
 能力接口的 `profiles[].qualifiedVersions` 列出精确版本及其 capability；
 基准 capability 与未列出的版本仍未验证，登记和能力协商使用相同版本判定。
 
-游标签名使用所有副本共享、重启稳定的三十二字节 key。
-`DAYNIGHT_USAGE_CURSOR_KEY` 显式配置为规范、无 padding 的 base64url；
-未配置时从既有 S2S shared key 以 `daynight.usage.cursor.v1` 做 HMAC-SHA256
-用途分离。两种 key 都没有时不挂载用量接口；若同时请求开启写入则启动失败。
-非法显式配置也启动失败，不静默降级。key 更换使原游标失效，不使用进程随机 key
-伪装重启一致性。
+用量路由在装配成功后挂载，不需要分页密钥或 S2S shared key。写入开关和
+Provider 资格配置仍须有效；S2S 认证和上报授权独立于分页。
 
 ## 查询
 
@@ -136,8 +132,13 @@ revision 包含稳定顺序的行 ID/rowVersion；页面可能含 state 时，�
 没有改写 usage 行，也不能使旧页与新投影混合。只散列时钟影响的可见结果，
 不因每次请求的时间不同而无条件 reset；measurement-only 页面保持原集合语义。
 revision 不使用 Task.version 或单个最大时间代替这些事实。
-签名游标绑定查询、权限、集合与最后键，不保留跨请求事务、快照表或进程内游标缓存。
-集合变化要求 reset，不能悄悄把新值接到旧页。
+游标是无填充 Base64URL 编码的 JSON，保留 `binding`、`revision`、`lastTime`、
+`lastId` 和 `expiresAt`。它不签名，也不赋予权限；每页在同一快照重新授权并
+比较查询绑定与集合版本。首次使用数据库时钟设定 15 分钟期限，续页不续期；
+过期或集合变化要求重读，不保留跨请求事务、快照表或进程内游标缓存。
+识别到旧版双段游标时，授权后返回 `reset_required`，让客户端从第一页重读。
+版本切换期间单次连续分页应访问相同后端版本；回退到旧版时，刷新网页清除新游标，
+且旧版若需提供用量服务仍须具备其有效分页密钥。
 
 Chain 用普通依赖双向连通分量，Goal 用 parent_id 的直接普通子 Task。
 先 distinct 当前成员，排除删除，再一次关联账本；不将 Task summary 与其链二次加总。

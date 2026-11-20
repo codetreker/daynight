@@ -117,7 +117,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	if inbound, ok := database.(store.AssistantTaskInboundWriter); ok {
 		app.AssistantTaskInbox = assistanttask.NewInbox(inbound, c.Server.PublicOrigin)
 	}
-	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
+	app.Usage, app.UsageError = usageapp.FromEnvironment(database)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
 	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")

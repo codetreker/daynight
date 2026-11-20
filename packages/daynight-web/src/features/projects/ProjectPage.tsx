@@ -25,6 +25,7 @@ import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectSettingsActionContent } from "./ProjectHeaderActions";
+import { ProjectActionsMenu } from "./ProjectActionsMenu";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { focusProjectList, focusVisible, type ProjectListOrigin } from "./project-list-focus";
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from "./project-graph-target";
@@ -96,7 +97,7 @@ const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilte
   return { assignee: { kind: "all" } as const, status: ALL_TASK_STATUSES };
 };
 
-const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
+const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project, menu: boolean) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
   const projectRead = useProjectPageRead(projectId);
   const projectAccess = useProjectAccess(projectId);
@@ -157,6 +158,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [listTarget, setListTarget] = useState<OverviewTaskTarget | null>(null);
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const headingContainer = useRef<HTMLDivElement>(null);
+  const restoreCreationFocus = (action: 'task' | 'goal') => {
+    const container = headingContainer.current;
+    if (container === null || !container.isConnected || container.closest('[inert], [hidden]')) return;
+    const targets = [container.querySelector<HTMLElement>('.project-actions-trigger'), container.querySelector<HTMLElement>(`[data-project-action="${action}"]`), heading.current];
+    const target = targets.find(element => element !== null && element.getClientRects().length > 0 && !element.matches(':disabled') && !element.closest('[inert], [hidden]'));
+    // Environments without layout cannot report rectangles; preserve the direct entry there.
+    const fallback = heading.current?.getClientRects().length === 0 ? targets[1] : null;
+    (target ?? (fallback?.matches(':disabled') ? heading.current : fallback))?.focus({ preventScroll: true });
+  };
   const originalTrigger = useRef<HTMLElement | null>(null);
   const pausedOrigin = useRef<HTMLElement | null>(null);
   const listOrigin = useRef<ProjectListOrigin | null>(null);
@@ -766,7 +777,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
       </div>
-      <div className="project-heading-container"><div className="page-heading project-heading">
+      <div className="project-heading-container" ref={headingContainer}><div className="page-heading project-heading">
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
@@ -778,9 +789,23 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             </div>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button project-header-secondary"><ProjectSettingsActionContent label={auth.projectSettings} /></span></span>}<button className="button project-header-secondary" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing} aria-busy={graph.refreshing} aria-label={graph.refreshing ? m.refreshing : projects.refresh} title={graph.refreshing ? m.refreshing : projects.refresh}><svg className={`project-header-action-icon${graph.refreshing ? " project-header-refreshing" : ""}`} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="project-header-action-label">{graph.refreshing ? m.refreshing : projects.refresh}</span><span className="project-header-action-tooltip" aria-hidden="true">{graph.refreshing ? m.refreshing : projects.refresh}</span></button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
+        <TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh}
+          onRestoreFocus={() => restoreCreationFocus('task')} renderCreateAction={taskAction => <>
+            <div className="project-title-actions">
+              {projectRead.project !== null ? renderActions?.(projectRead.project, false) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button project-header-secondary"><ProjectSettingsActionContent label={auth.projectSettings} /></span></span>}
+              <button className="button project-header-secondary" data-project-action="refresh" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing} aria-busy={graph.refreshing} aria-label={graph.refreshing ? m.refreshing : projects.refresh} title={graph.refreshing ? m.refreshing : projects.refresh}>{graph.refreshing ? m.refreshing : projects.refresh}</button>
+              <span className="project-creation-actions"><button className="button primary" data-project-action="task" type="button" disabled={taskAction.disabled} onClick={taskAction.open}>{taskAction.label}</button><button className="button primary" data-project-action="goal" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span>
+            </div>
+            <ProjectActionsMenu projectId={projectId} label={locale === "zh-CN" ? "项目操作" : "Project actions"}
+              settings={projectRead.project !== null ? renderActions?.(projectRead.project, true) : null}
+              refreshLabel={graph.refreshing ? m.refreshing : projects.refresh} refreshing={graph.refreshing}
+              onRefresh={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }}
+              taskLabel={taskAction.label} taskDisabled={taskAction.disabled} onCreateTask={taskAction.open}
+              goalLabel={locale === "zh-CN" ? "新建 Goal" : "New Goal"} onCreateGoal={() => setCreatingGoal(true)}
+              headingContainer={headingContainer} heading={heading} />
+          </>} />
       </div></div>
-      {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} />}
+      {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} onRestoreFocus={() => restoreCreationFocus('goal')} />}
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
         <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>
         <button className="button" type="button" onClick={projectRead.retry}>{projects.retry}</button>
@@ -855,4 +880,4 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   );
 };
 
-export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => <ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;
+export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project, menu: boolean) => ReactNode }) => <ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

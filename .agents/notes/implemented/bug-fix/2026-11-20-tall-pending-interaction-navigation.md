@@ -31,6 +31,6 @@ request. Navigation normally occupies a separate row so it does not cover form
 controls. In a timeline shell at most 120px high, it overlays the right side
 instead of consuming the remaining reading area; compact labels leave room for
 the request title while preserving the controls' accessible names. Its threshold follows the
-container rather than device width. A heading
+container rather than device width; [history layout containment](2026-11-20-session-history-layout-containment.md) records how that height is measured. A heading
 taller than the visible timeline itself cannot be fully shown; such an extreme
 layout can retain the locator after navigation.

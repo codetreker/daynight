@@ -1762,21 +1762,57 @@ async function expectFormSkin(page: Page, dialog: Locator) {
   return geometry;
 }
 
+const projectFormOpener = async (page: Page, entry: FormEntry, locale: 'en' | 'zh-CN') => {
+  const zh = locale === 'zh-CN';
+  const trigger = page.locator('.project-actions-trigger');
+  await trigger.waitFor({ state: 'attached' });
+  return await trigger.isVisible()
+    ? trigger
+    : page.locator('.project-title-actions').getByRole('button', { name: entry === 'project-task' ? (zh ? '新建 Task' : 'New Task') : (zh ? '新建 Goal' : 'New Goal'), exact: true });
+};
+async function openProjectFormEntry(page: Page, entry: FormEntry, locale: 'en' | 'zh-CN') {
+  const zh = locale === 'zh-CN', opener = await projectFormOpener(page, entry, locale);
+  const compact = await opener.evaluate(element => element.classList.contains('project-actions-trigger'));
+  await opener.click();
+  if (compact) await page.getByRole('menuitem', { name: entry === 'project-task' ? (zh ? '新建 Task' : 'New Task') : (zh ? '新建 Goal' : 'New Goal'), exact: true }).click();
+}
+
 type FormEntry = 'project-task' | 'project-goal';
 async function openForm(page: Page, entry: FormEntry, locale: 'en' | 'zh-CN') {
-  const zh = locale === 'zh-CN';
   await page.goto(`/projects/${projectId}`);
   if (entry === 'project-task') {
     await page.evaluate(() => { document.documentElement.dataset.formBaseWidth = String(document.documentElement.scrollWidth); });
-    await page.locator('.project-title-actions').getByRole('button', { name: zh ? '新建 Task' : 'New Task' }).click();
+    await openProjectFormEntry(page, entry, locale);
   } else {
     await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
     await page.getByRole('tab', { name: /^Goal/ }).click();
     await page.evaluate(() => { document.documentElement.dataset.formBaseWidth = String(document.documentElement.scrollWidth); });
-    await page.getByRole('button', { name: zh ? '新建 Goal' : 'New Goal' }).click();
+    await openProjectFormEntry(page, entry, locale);
   }
   return page.locator('.task-organization-dialog');
 }
+
+for (const width of [320, 390]) test(`project Task opens from the mobile menu after delayed identity at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  await install(page);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  await page.route('**/api/v1/me', async route => { started.resolve(); await release.promise; await route.fallback(); });
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await started.promise;
+    let selected = false;
+    const selecting = projectFormOpener(page, 'project-task', 'en').then(opener => { selected = true; return opener; });
+    await expect(page.locator('.project-actions-trigger')).toHaveCount(0);
+    expect(selected).toBe(false);
+    release.resolve();
+    await expect(await selecting).toHaveClass(/project-actions-trigger/);
+    await openProjectFormEntry(page, 'project-task', 'en');
+    const dialog = page.locator('.task-organization-dialog');
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Project actions', exact: true })).toBeFocused();
+  } finally { release.resolve(); }
+});
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
   for (const entry of ['project-task', 'project-goal'] as const) test(`shared form skin: ${entry} at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {
@@ -1797,7 +1833,7 @@ for (const width of [1440, 320]) test(`native Task form menu cancels before its 
   const longGoal = 'Long Goal name '.repeat(24);
   fixture.setGoalTitle(longGoal);
   const dialog = await openForm(page, 'project-task', 'en');
-  const opener = page.locator('.project-title-actions').getByRole('button', { name: 'New Task' });
+  const opener = await projectFormOpener(page, 'project-task', 'en');
   const title = dialog.getByLabel('Title', { exact: true });
   const goal = dialog.getByRole('combobox', { name: 'Goal', exact: true });
   const assignee = dialog.getByRole('combobox', { name: 'Assignee', exact: true });
@@ -1816,7 +1852,7 @@ for (const width of [1440, 320]) test(`native Task form menu cancels before its 
   await expectFormSkin(page, dialog);
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
-  await opener.click(); await expect(title).toHaveValue('Retained draft');
+  await openProjectFormEntry(page, 'project-task', 'en'); await expect(title).toHaveValue('Retained draft');
   expect(fixture.creates()).toEqual([]);
 });
 
@@ -1826,7 +1862,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`Project Task short viewport
   const fixture = await install(page, locale);
   fixture.setGoalTitle('LongGoal名称'.repeat(30)); fixture.failPeople();
   const dialog = await openForm(page, 'project-task', locale);
-  const opener = page.locator('.project-title-actions').getByRole('button', { name: zh ? '新建 Task' : 'New Task' });
+  const opener = await projectFormOpener(page, 'project-task', locale);
   const title = dialog.getByLabel(zh ? '标题' : 'Title', { exact: true });
   await title.fill('Retained Task draft');
   await dialog.getByRole('combobox', { name: 'Goal', exact: true }).selectOption(goalId);
@@ -1844,7 +1880,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`Project Task short viewport
   expect(outline.style).not.toBe('none'); expect(outline.width).toBeGreaterThan(0);
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
-  await opener.click();
+  await openProjectFormEntry(page, 'project-task', locale);
   await expect(title).toHaveValue('Retained Task draft');
   await expect(dialog.getByRole('combobox', { name: 'Goal', exact: true })).toHaveValue(goalId);
   await dialog.getByRole('button', { name: zh ? '创建' : 'Create', exact: true }).click();
