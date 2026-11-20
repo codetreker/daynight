@@ -290,7 +290,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       {publicationError && <div className="notice error" role="alert">{locale === "zh-CN" ? "项目已创建，但无法显示创建结果。" : "The project was created, but its result could not be displayed."}</div>}
       {error !== null && <div className="notice error" role="alert"><p>{unknown ? m.unknown : error instanceof ApiError && error.kind === "server" && error.status === 409 && error.code === "project_repository_conflict" ? m.repositoryConflict : m.error}</p>{errorDetail instanceof ApiError && errorDetail.requestId !== null && <p>{common.requestId}<code>{errorDetail.requestId}</code></p>}</div>}
       {unknown && check.status !== "idle" && <section aria-label={m.observedProjects}>
-        <h3>{m.observedProjects}</h3>
+        <h3 className="observed-projects-title">{m.observedProjects}</h3>
         {check.items.length > 0 && <ul>{check.items.map((item) => <li key={item.id}><a href={`/projects/${item.id}`}>{item.name}</a> <code>{item.id}</code> <span>{item.repoUrl}</span></li>)}</ul>}
         {check.error instanceof TaskCacheError && check.status !== "error" && <div role="alert"><p>{m.checkFailed}</p></div>}
         {check.status === "loading" ? <p>{m.checking}</p> : check.status === "error" ? <div role="alert"><p>{m.checkFailed}</p>{check.error instanceof ApiError && check.error.requestId !== null && <p>{common.requestId}<code>{check.error.requestId}</code></p>}</div> : check.items.length === 0 ? <p>{m.noProjects}</p> : null}

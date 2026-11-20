@@ -51,6 +51,9 @@ export type AssistantTaskMetrics = {
   outcomes: Record<AssistantTaskOutcome, number>; escalationCount: number; resultUnknownCount: number;
   closureCount: number; untimedClosureCount: number; averageResolutionMs: number | null; recurringItemCount: number;
 };
+// An omitted dimension is unknown to the caller and neutral in the ranking.
+export type AssistantTaskRelatedQuery = { projectId?: string; eventType?: string; itemCategory?: string };
+export type AssistantTaskRelatedAppendices = { items: AssistantTaskAppendix[]; observedAt: string };
 export type AssistantTaskPage<T> = { items: T[]; nextCursor: string | null; observedAt: string };
 export type AssistantTaskQuery = { limit?: number; cursor?: string; state?: string; itemId?: string; targetBotId?: string };
 /** Event pages accept one type filter: `type` keeps that type and `excludeType` drops it. Selecting `inbound` also omits events of paused tasks. */

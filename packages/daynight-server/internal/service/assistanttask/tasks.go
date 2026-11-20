@@ -117,6 +117,12 @@ func (s *Tasks) ListAppendix(ctx context.Context, actor core.Actor, taskID strin
 	})
 }
 
+func (s *Tasks) RelatedAppendix(ctx context.Context, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	return execute(ctx, s, "RelatedAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskRelatedAppendices, error) {
+		return s.operations.RelatedAppendix(ctx, dao, actor, taskID, input)
+	})
+}
+
 func (s *Tasks) AddAppendix(ctx context.Context, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error) {
 	return execute(ctx, s, "AddAppendix", func(dao store.AssistantTaskDAO) (model.AssistantTaskAppendix, error) {
 		return s.operations.AddAppendix(ctx, dao, actor, input)
@@ -280,6 +286,7 @@ type operations interface {
 	GetManual(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, version int64) (model.AssistantTaskManual, error)
 	ListManuals(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskManual], error)
 	ListAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskAppendix], error)
+	RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error)
 	AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
 	UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixInput) (model.AssistantTaskAppendix, error)
 	ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error)
