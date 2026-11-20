@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
@@ -41,7 +40,7 @@ func (s *Tasks) read(ctx context.Context, principal model.Principal, projectID, 
 	var result TaskObservation
 	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.requireRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
@@ -57,7 +56,7 @@ func (s *Tasks) read(ctx context.Context, principal model.Principal, projectID, 
 		if err = decorateGoalProgress(ctx, reader, projectID, values); err != nil {
 			return err
 		}
-		result.Task = values[0]
+		result.Task = s.projectTask(values[0])
 		if !withEpoch {
 			return err
 		}
@@ -88,7 +87,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	var result store.TaskPage
 	var missing *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := s.listOperations.requireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := s.requireRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
@@ -111,7 +110,13 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 		if err != nil || missing != nil {
 			return err
 		}
-		return decorateGoalProgress(ctx, reader, projectID, result.Items)
+		if err := decorateGoalProgress(ctx, reader, projectID, result.Items); err != nil {
+			return err
+		}
+		for i := range result.Items {
+			result.Items[i] = s.projectTask(result.Items[i])
+		}
+		return nil
 	})
 	if err != nil {
 		return TaskPage{}, fmt.Errorf("list tasks: %w", err)

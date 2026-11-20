@@ -47,6 +47,9 @@ const Host = () => {
       <NativeSelect multiple size={4} defaultValue={['a', 'b']} aria-label="Multiple list" data-testid="multiple-list">{options}</NativeSelect>
       <NativeSelect touchMode="responsive" aria-label="Responsive touch" data-testid="responsive">{options}</NativeSelect>
       <NativeSelect touchMode="responsive-target" aria-label="Responsive target" data-testid="responsive-target">{options}</NativeSelect>
+      <NativeSelect textSize="xs" touchMode="responsive" aria-label="Small responsive" data-testid="xs-responsive">{options}</NativeSelect>
+      <NativeSelect textSize="xs" touchMode="responsive-target" aria-label="Small responsive target" data-testid="xs-responsive-target">{options}</NativeSelect>
+      <div className="container-case narrow"><NativeSelect textSize="xs" touchMode="container" aria-label="Small container" data-testid="xs-container">{options}</NativeSelect></div>
       <div className="container-case wide" data-testid="container-wide"><div className="inner-container"><NativeSelect layout="fill" touchMode="container" aria-label="Wide container" data-testid="wide-container">{options}</NativeSelect></div></div>
       <div className="container-case narrow" data-testid="container-narrow"><div className="inner-container"><NativeSelect layout="fill" touchMode="container" aria-label="Narrow container" data-testid="narrow-container">{options}</NativeSelect></div></div>
       <div className="text-inputs"><input data-testid="text-responsive" data-touch-text="responsive" /><input data-testid="text-coarse" data-touch-text="coarse" /><input data-testid="text-ordinary" /></div>

@@ -44,6 +44,24 @@ const expectNoOverflow = async (page: Page) => {
   for (const rect of bounds) { expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(width + 1); }
 };
 
+test('xs selection preserves touch typography and target rules', async ({ browser }) => {
+  for (const coarse of [false, true]) {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch: coarse });
+    try {
+      const page = await context.newPage(); await page.goto(`http://127.0.0.1:14301${fixture}`);
+      for (const root of [16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        const responsive = await metrics(page.getByTestId('xs-responsive'));
+        const target = await metrics(page.getByTestId('xs-responsive-target'));
+        const container = await metrics(page.getByTestId('xs-container'));
+        expect(responsive.fontSize).toBe(`${Math.max(root, 16)}px`); expect(responsive.height).toBe(44);
+        expect(target.fontSize).toBe(`${coarse ? Math.max(root, 16) : root * 0.875}px`); expect(target.height).toBe(44);
+        expect(container.fontSize).toBe(`${coarse ? Math.max(root, 16) : root * 0.75}px`); expect(container.height).toBe(44);
+      }
+    } finally { await context.close(); }
+  }
+});
+
 for (const locale of ['en', 'zh']) {
   test(`keeps ${locale} variants, states and long labels aligned across viewport widths`, async ({ page }, info) => {
     await page.goto(`${fixture}?locale=${locale}`);

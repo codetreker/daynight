@@ -30,6 +30,21 @@ HTTP 使用 `include=session` 显式选择新表示，show 在原 Task 顶层增
 
 Graph 每节点附加 `session/relation`，顶层附加 `sessionSummary/partial`。relation 从请求 Task 沿普通依赖的无向连通分量计算；直接外部前置保留为 `external`，不参与进行中汇总。内部 GraphTask 读取版本用于绑定检查，不改变旧 Graph API 字段。`--depends-only` 使用原查询，不触发 Session 观察。
 
+## 凭据限定投影
+
+显式 scoped 服务和 REST/MCP 注册路径遵循[凭据准入合同](credential-scope-internal.md#任务读取准入与投影)。
+Task 读取先检查 task:read；缺少 session:read 时，在读取 TaskSessionSources、
+重验来源及采样 live 状态之前直接生成占位投影，既不探测 Session 是否存在，也不
+使用实际 Session 字段补齐。Task 属性中的 worker 与 sessionStartup 执行记录同时
+排除；原任务查询、普通字段、依赖与分页继续适用。
+
+占位观察使用 unavailable、unknown 和 insufficient_scope，全部会话身份、状态、
+时间及 send.allowed/mode 为空，error 只描述缺少 Session 读取权限。Graph 聚合
+只计 member 范围内进行中的普通 Task；工作分组扫描完整可见进行中成员后，保留
+原目标分页。聚合的 observedAt 来自 Task 查询，三个活动计数为零、unknownCount
+等于上述任务数、complete=false，结果 partial=true。即使任务没有执行记录，也
+不能通过无投影响应区分其 Session 存在性。原生产装配保留既有观察流程。
+
 ## 工作分组与稳定遍历
 
 PostgreSQL 从匹配负责人的 `in_progress` Task 出发，通过普通依赖的两个方向计算连通成员，并以最小 Task UUID 合并重复种子。查询一次选择所需组数及一个 lookahead；根和标题在 DAO 以预览字段返回，不为分组加载完整描述和属性。外部依赖始终不参与递归。

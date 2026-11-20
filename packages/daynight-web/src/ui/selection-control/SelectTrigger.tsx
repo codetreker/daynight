@@ -13,12 +13,13 @@ type SummaryProps = Omit<ComponentPropsWithRef<'summary'>, 'className' | 'style'
 export type SelectTriggerProps = ButtonProps | SummaryProps;
 
 export const SelectTrigger = (props: SelectTriggerProps) => {
-  const { density = 'form', touchMode = 'none', focusTone = 'default', pending = false, layoutClassName, count, children, ...element } = props;
+  const { density = 'form', touchMode = 'none', focusTone = 'default', textSize = 'sm', pending = false, layoutClassName, count, children, ...element } = props;
   const presentation = {
     className: layoutClassName === undefined ? 'selection-control select-trigger' : `selection-control select-trigger ${layoutClassName}`,
     'data-density': density,
     'data-touch-mode': touchMode,
     'data-focus-tone': focusTone,
+    'data-text-size': textSize,
     'data-pending': pending,
   };
   const content = <><span className="select-trigger__label">{children}</span>{count !== undefined && count > 0 && <>{' '}<span className="select-trigger__count">{count}</span></>}<SelectionArrow className="select-trigger__arrow" /></>;

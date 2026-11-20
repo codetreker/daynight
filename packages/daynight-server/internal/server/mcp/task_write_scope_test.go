@@ -288,8 +288,8 @@ func TestScopedTaskWritePublicRegistrations(t *testing.T) {
 				}
 			}
 			for _, name := range tc.reads {
-				if !fixture.entry.toolNames[name] || fixture.entry.scopedTools[name] {
-					t.Errorf("read tool %s classification changed", name)
+				if fixture.entry.toolNames[name] || fixture.entry.scopedTools[name] {
+					t.Errorf("write registration published read tool %s", name)
 				}
 			}
 			if err := tc.register(fixture.entry, service); err == nil {

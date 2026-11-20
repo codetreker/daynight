@@ -11,6 +11,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 )
 
@@ -21,9 +22,10 @@ type personalSessionRowObserver interface {
 	ObserveTaskSessionRows(context.Context, model.Principal, []store.TaskSessionSource) (map[string]sessioncore.TaskSessionRow, error)
 }
 type Observations struct {
-	database   store.SnapshotReader
-	observer   SessionObserver
-	operations observationOperations
+	authorization *model.CredentialAuthorization
+	database      store.SnapshotReader
+	observer      SessionObserver
+	operations    observationOperations
 }
 
 func NewObservations(database store.SnapshotReader, observer SessionObserver) *Observations {
@@ -71,7 +73,10 @@ func (s *Observations) authorizeObservation(ctx context.Context, snapshot store.
 		return err
 	}
 	_, err := s.operations.access(ctx, snapshot.ProjectDAO(), principal, projectID)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireTaskScope(s.authorization, principal)
 }
 func observationAuthorityFailure(err error) bool {
 	var fault *model.Fault
@@ -79,7 +84,7 @@ func observationAuthorityFailure(err error) bool {
 		return false
 	}
 	switch fault.Code {
-	case "unauthenticated", "unauthorized", "forbidden", "not_found", "project_deleted", "invalid_credentials", "credential_expired", "credential_revoked":
+	case "unauthenticated", "unauthorized", "forbidden", "insufficient_scope", "not_found", "project_deleted", "invalid_credentials", "credential_expired", "credential_revoked":
 		return true
 	}
 	return false
@@ -107,6 +112,12 @@ func (s *Observations) observeExecutionBatch(ctx context.Context, snapshot store
 
 func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time, strictSourceErrors bool, rows map[string]model.TaskSyncObservation) (map[string]sp.TaskSessionObservation, bool, error) {
 	result := make(map[string]sp.TaskSessionObservation, len(tasks))
+	if !sessionProjectionAllowed(s.authorization) {
+		for _, task := range tasks {
+			result[task.ID] = taskcore.ScopeUnavailableObservation()
+		}
+		return result, true, nil
+	}
 	partial := false
 	for _, task := range tasks {
 		if task.Type == model.TaskTypeGoal {

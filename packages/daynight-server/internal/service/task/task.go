@@ -35,6 +35,7 @@ type taskWriteOperations struct {
 }
 
 type Tasks struct {
+	authorization   *model.CredentialAuthorization
 	store           taskStore
 	capturer        Capturer
 	listOperations  taskListOperations

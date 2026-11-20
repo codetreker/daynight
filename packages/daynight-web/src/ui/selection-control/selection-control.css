@@ -8,6 +8,7 @@
 .selection-control[data-density="compact"] { --selection-control-height: 24px; }
 .selection-control[data-density="filter"] { --selection-control-height: 32px; }
 .selection-control[data-focus-tone="task"] { --selection-control-focus: #344054; }
+.selection-control[data-text-size="xs"] { font-size: var(--text-xs); }
 
 @media (max-width: 800px), (pointer: coarse) {
   .selection-control:is([data-touch-mode="responsive"], [data-touch-mode="responsive-target"]) {
