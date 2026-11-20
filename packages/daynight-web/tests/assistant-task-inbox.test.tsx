@@ -252,3 +252,123 @@ it('remounts the subscription panel with a fresh form when the inbox id changes'
   await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked());
   expect(screen.queryByRole('group', { name: 'Event types for Alpha' })).toBeNull();
 });
+
+it('retires the token when an inbox read started after issuance shows a replacement while the task version lags', async () => {
+  const s = server(off); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Enable inbox' }));
+  await screen.findByRole('group', { name: 'New token' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeVisible());
+  expect(screen.getByRole('group', { name: 'New token' })).toBeVisible();
+  // Another tab disabled and re-enabled the inbox; the task detail read still reports the version before the issuing write.
+  s.state.inbox = { ...on, inboxId: botId(94) };
+  fireEvent(document, new Event('visibilitychange'));
+  expect(await screen.findByText(assistantTaskInboxUrl(botId(94)))).toBeVisible();
+  await waitFor(() => expect(screen.queryByRole('group', { name: 'New token' })).toBeNull());
+  expect(screen.queryByText(token)).toBeNull();
+});
+
+it('publishes a confirmed receipt when the following task refresh fails and reports it as a read failure', async () => {
+  const s = server(off); mount(vi.fn(async () => { throw botError(500, 'internal'); }));
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (String(url).startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_rotate_immediate', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  fireEvent.click(await screen.findByRole('button', { name: 'Check current result' }));
+  expect(await screen.findByText('The receipt confirms this request was applied.')).toBeVisible();
+  expect(screen.getByText(/its receipt cannot return it/)).toBeVisible();
+  expect(screen.getByText(/Could not read the current result/)).toBeVisible();
+  expect(screen.queryByText('The change was not accepted.')).toBeNull();
+  expect(screen.getByRole('button', { name: 'I reviewed the current result' })).toBeEnabled();
+});
+
+it('publishes a confirmed receipt while the following task refresh stalls and keeps new writes blocked until it settles', async () => {
+  let settle: (() => void) | null = null, stall = false;
+  const s = server(off); mount(vi.fn(async () => { if (stall) await new Promise<void>(resolve => { settle = resolve; }); }));
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (String(url).startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_rotate_immediate', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  const check = await screen.findByRole('button', { name: 'Check current result' });
+  stall = true;
+  fireEvent.click(check);
+  expect(await screen.findByText('The receipt confirms this request was applied.')).toBeVisible();
+  expect(screen.getByText(/its receipt cannot return it/)).toBeVisible();
+  expect(settle).not.toBeNull();
+  expect(check).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current result' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check current result' })).toBeNull());
+  expect(screen.getByRole('button', { name: 'Rotate token' })).toBeDisabled();
+  settle!();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeEnabled());
+});
+
+it('offers the acknowledgement of a missing receipt only after a fresh inbox snapshot is shown', async () => {
+  const s = server(off); mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  let respond: (() => void) | null = null, fail = false;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (String(url) === `/api/v1/assistant-tasks/${taskId}/inbox` && s.writes.length > 0) {
+      if (fail) return botError(500, 'internal');
+      await new Promise<void>(resolve => { respond = resolve; });
+    }
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  fireEvent.click(await screen.findByRole('button', { name: 'Check current result' }));
+  await waitFor(() => expect(respond).not.toBeNull());
+  expect(screen.queryByRole('button', { name: 'I reviewed the current result' })).toBeNull();
+  expect(screen.queryByText(/No receipt was found/)).toBeNull();
+  respond!();
+  expect(await screen.findByRole('button', { name: 'I reviewed the current result' })).toBeVisible();
+  expect(screen.getByText(assistantTaskInboxUrl(inboxId))).toBeVisible();
+  fail = true;
+  fireEvent.click(screen.getByRole('button', { name: 'Check current result' }));
+  expect(await screen.findByText(/Could not read the current result/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'I reviewed the current result' })).toBeNull();
+});
+
+it('lets the owner check and acknowledge a confirmed receipt while the inbox read fails', async () => {
+  const s = server(off); mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    const path = String(url);
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botError(500, 'internal');
+    if (path.startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_enable', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  const check = await screen.findByRole('button', { name: 'Check current result' });
+  fireEvent(document, new Event('visibilitychange'));
+  expect(await screen.findByText('Could not load the inbox.')).toBeVisible();
+  expect(check).toBeEnabled();
+  fireEvent.click(check);
+  expect(await screen.findByText('The receipt confirms this request was applied.')).toBeVisible();
+  const reviewed = screen.getByRole('button', { name: 'I reviewed the current result' });
+  expect(reviewed).toBeEnabled();
+  fireEvent.click(reviewed);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check current result' })).toBeNull());
+  expect(screen.getByRole('button', { name: 'Enable inbox' })).toBeDisabled();
+});
+
+it('closes the confirmation when a rotation outcome is unknown so recovery happens beside the inbox', async () => {
+  server(on); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Rotate token' }));
+  const dialog = screen.getByRole('dialog', { name: 'Rotate inbox token' });
+  vi.mocked(fetch).mockImplementationOnce(async () => { throw new TypeError('network'); });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(screen.getByRole('button', { name: 'Check current result' })).toBeVisible();
+  expect(screen.getByText(assistantTaskInboxUrl(inboxId))).toBeVisible();
+});
