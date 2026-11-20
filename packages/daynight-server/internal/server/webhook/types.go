@@ -34,6 +34,7 @@ type Mutation struct {
 	ConfirmProjectIDs                                       []string
 	HasConfirmProjectIDs                                    bool
 	Mode                                                    string
+	ReturnReceipt                                           bool
 }
 
 type MutationResult struct {

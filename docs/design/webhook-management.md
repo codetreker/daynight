@@ -6,9 +6,15 @@ Webhook 管理模块处理 Personal User 和 shared Team 的 endpoint 配置、�
 
 业务校验位于 `internal/core/webhook`，中立事务合同位于 `internal/core/store`，PostgreSQL 实现负责锁与持久化。显式订阅绑定项目和固定事件类型；[捕获模块](webhook-capture.md)在来源事务内协调事件，[投递模块](webhook-delivery.md)负责发送与恢复，[投递历史与重投](webhook-history.md)使用当前权限和保留数据。Personal owner 从主体派生；Team 当前成员只能读取脱敏配置和本人原回执，当前管理员才能管理和读取秘密。读取在同一数据库快照内重新检查凭据与成员关系。
 
+## 凭据准入
+
+候选 `RegisterScopedRoutes` 将认证得到的凭据身份和策略交给领域入口；现有生产装配继续使用 `RegisterRoutes`。候选入口在原有 owner 可见性和管理角色之外，分别以 `webhook:read`、`webhook:write`、`webhook:delete`、`webhook:secret` 和 `webhook:deliver` 限制读取、普通写入、删除、秘密与外部投递。能力字段反映对应权限。配置扩张、改向、启用和重确认在写入事务中按最终变化判定；改名和订阅收窄不要求投递权限。事务在既有凭据锁后读取当前策略，防止等待期间的权限收窄被旧请求快照覆盖。禁用 endpoint 的草稿配置可以保存，启用仍须通过扩张能力与投递权限检查。Scope 目录按实际管理、配置扩张和派发能力裁剪，已保存策略的合法性独立于当前目录。
+
+带 `Daynight-Return: receipt-v1` 的写入成功后回显该 header，并仅返回 `operationId` 与 `resourceId`。首次提交的最小回执直接来自已确认的事务结果；匹配重放仍检查当前权限、回执有效期和意图。原完整响应在写入前还需要 `webhook:read`，且提交后的读取继续复查当前权限。Scope 不足沿用 HTTP `403 forbidden`，并以 `Daynight-Scope-Status: insufficient_scope` 区分。
+
 ## 写入与回执
 
-操作身份由 owner 和客户端提供的 operation ID 确定。写事务先取得操作围栏并查询现有回执；新操作检查权限和时间，在来源锁和 endpoint 锁后重新核验，再把效果和回执共同提交。回执保存规范化意图指纹、实际请求正文摘要、原时间及结果版本，不保存 URL 或秘密。匹配重放不重复效果；事务释放连接后，以新的授权快照读取回执和当前视图。提交结果未知时调用方使用原操作身份核对；回执不可读取不能证明回滚。
+操作身份由 owner 和客户端提供的 operation ID 确定。写事务先取得操作围栏并查询现有回执；新操作检查权限和时间，在来源锁和 endpoint 锁后重新核验，再把效果和回执共同提交。回执保存规范化意图指纹、实际请求正文摘要、原时间及结果版本，不保存 URL 或秘密。匹配重放不重复效果；完整响应在事务释放连接后，以新的授权快照读取回执和当前视图。提交结果未知时调用方使用原操作身份核对；回执不可读取不能证明回滚。
 
 每份回执都有可空的 `overlapUntil`。重叠轮换保存该次操作产生的原截止时间，立即轮换与非轮换操作为 `null`；`keyId` 和截止时间不随之后的轮换、秘密回收或 endpoint 删除而改变。轮换响应的 `signing.activeKeyId` 与 `signing.overlapUntil` 必须分别等于原回执的 `keyId` 与 `overlapUntil`，不能用当前 endpoint 状态替代原结果。
 

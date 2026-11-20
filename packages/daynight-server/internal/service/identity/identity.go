@@ -374,6 +374,9 @@ func (s *Identity) Logout(ctx context.Context, p model.Principal) error {
 	return s.run(ctx, func(scope store.IdentityScope) error { return s.ops.logout(ctx, scope.IdentityDAO(), p) })
 }
 func (s *Identity) CreatePAT(ctx context.Context, p model.Principal, input core.CreatePAT) (core.MintedPAT, error) {
+	if s.deviceCatalog != nil {
+		return core.MintedPAT{}, &model.Fault{Code: "invalid_input", Message: "Select scopes before creating a token."}
+	}
 	now := s.now().UTC()
 	if _, err := s.ops.validateCreatePAT(p, input, now); err != nil {
 		return core.MintedPAT{}, err

@@ -83,6 +83,10 @@ type ScopeSessionDAO interface {
 // Locking the grant before the session matches grant revocation and description
 // updates. The database clock is sampled after both locks have been acquired.
 func UpdateSessionGrantScope(ctx context.Context, session ScopeSessionDAO, dao store.OAuthScopeDAO, principal model.Principal, expectedUserID, grantID string, expected int64, selected []scopepolicy.ScopeID, now time.Time) (store.OAuthGrant, error) {
+	return updateSessionGrantScope(ctx, session, dao, principal, expectedUserID, grantID, expected, selected, now, nil)
+}
+
+func updateSessionGrantScope(ctx context.Context, session ScopeSessionDAO, dao store.OAuthScopeDAO, principal model.Principal, expectedUserID, grantID string, expected int64, selected []scopepolicy.ScopeID, now time.Time, catalog *scopepolicy.CatalogSnapshot) (store.OAuthGrant, error) {
 	if !validOwnerSession(principal) {
 		return store.OAuthGrant{}, model.Unauthenticated(nil)
 	}
@@ -129,6 +133,12 @@ func UpdateSessionGrantScope(ctx context.Context, session ScopeSessionDAO, dao s
 	}
 	if grant.ScopePolicy.Version() != expected {
 		return store.OAuthGrant{}, &model.Fault{Code: "version_conflict", Message: "Grant scopes changed. Read the current grant before trying again."}
+	}
+	if catalog != nil {
+		selected, err = catalog.ValidateEditSelection(scopepolicy.MCP, selected, grant.ScopePolicy.Scopes())
+		if err != nil {
+			return store.OAuthGrant{}, invalidInput()
+		}
 	}
 	return dao.CompareGrantScope(ctx, principal.UserID, grantID, expected, selected, fresh)
 }

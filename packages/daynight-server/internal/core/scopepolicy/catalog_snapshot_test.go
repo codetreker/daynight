@@ -92,3 +92,62 @@ func TestCatalogSnapshotCloneAndMutation(t *testing.T) {
 		t.Fatalf("clone changed original: %v", err)
 	}
 }
+
+func TestCatalogSnapshotEditSelection(t *testing.T) {
+	catalog, err := NewCatalogSnapshot(MCP, []ScopeID{"task:read", "project:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := []ScopeID{"team:read", "task:read"}
+	existing := []ScopeID{"team:read", "project:read"}
+	got, err := catalog.ValidateEditSelection(MCP, selected, existing)
+	if err != nil || !reflect.DeepEqual(got, []ScopeID{"task:read", "team:read"}) {
+		t.Fatalf("selection = %v, err = %v", got, err)
+	}
+	got[0] = "changed"
+	if selected[1] != "task:read" || existing[0] != "team:read" {
+		t.Fatal("result aliases input")
+	}
+
+	tests := []struct {
+		name               string
+		selected, existing []ScopeID
+	}{
+		{"empty", nil, existing},
+		{"duplicate selection", []ScopeID{"task:read", "task:read"}, existing},
+		{"new unavailable", []ScopeID{"team:write"}, existing},
+		{"unknown selection", []ScopeID{"unknown"}, existing},
+		{"wrong credential selection", []ScopeID{"worker:claim"}, existing},
+		{"unknown existing", []ScopeID{"task:read"}, []ScopeID{"unknown"}},
+		{"wrong credential existing", []ScopeID{"task:read"}, []ScopeID{"worker:claim"}},
+		{"duplicate existing", []ScopeID{"task:read"}, []ScopeID{"team:read", "team:read"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if result, err := catalog.ValidateEditSelection(MCP, tc.selected, tc.existing); err == nil {
+				t.Fatalf("accepted selection %v with existing %v: %v", tc.selected, tc.existing, result)
+			}
+		})
+	}
+	if _, err := catalog.ValidateEditSelection(PAT, []ScopeID{"task:read"}, []ScopeID{"task:read"}); err == nil {
+		t.Fatal("accepted MCP catalog for PAT edit")
+	}
+	if _, err := (CatalogSnapshot{}).ValidateEditSelection(MCP, []ScopeID{"task:read"}, existing); err == nil {
+		t.Fatal("accepted uninitialized catalog")
+	}
+	changed := catalog.Clone()
+	changed.Groups[0].ScopeIDs[0] = "team:read"
+	if _, err := changed.ValidateEditSelection(MCP, []ScopeID{"team:read"}, existing); err == nil {
+		t.Fatal("accepted catalog changed under its revision")
+	}
+	empty, err := NewCatalogSnapshot(MCP, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := empty.ValidateEditSelection(MCP, []ScopeID{"team:read"}, existing); err != nil {
+		t.Fatalf("retaining saved scope with empty catalog: %v", err)
+	}
+	if _, err := empty.ValidateEditSelection(MCP, []ScopeID{"team:write"}, existing); err == nil {
+		t.Fatal("empty catalog accepted newly added scope")
+	}
+}

@@ -146,6 +146,10 @@ func (h *Routes) history(w http.ResponseWriter, r *http.Request, p model.Princip
 			}
 		case "redeliver":
 			err = noQuery(r)
+			var receipt bool
+			if err == nil {
+				receipt, err = returnReceipt(r)
+			}
 			if err == nil {
 				var fields map[string]json.RawMessage
 				var digest string
@@ -164,8 +168,11 @@ func (h *Routes) history(w http.ResponseWriter, r *http.Request, p model.Princip
 							} else {
 								var result webhookservice.Result
 								h.logOperation(r, p, o, m.OperationID, "delivery.redeliver")
-								result, err = service.Redeliver(r.Context(), p, o, endpoint, delivery, webhookservice.Redelivery{OperationID: m.OperationID, IssuedAt: m.IssuedAt, ExpectedUserID: m.ExpectedUserID, IfVersion: m.IfVersion, IfGeneration: gen, RequestSHA256: digest})
+								result, err = service.Redeliver(r.Context(), p, o, endpoint, delivery, webhookservice.Redelivery{OperationID: m.OperationID, IssuedAt: m.IssuedAt, ExpectedUserID: m.ExpectedUserID, IfVersion: m.IfVersion, IfGeneration: gen, RequestSHA256: digest, ReturnReceipt: receipt})
 								value = result.Body
+								if err == nil && receipt {
+									w.Header().Set("Daynight-Return", "receipt-v1")
+								}
 							}
 						}
 					}
