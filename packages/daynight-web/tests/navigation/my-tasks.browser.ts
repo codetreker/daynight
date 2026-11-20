@@ -298,7 +298,7 @@ for (const width of [320, 1280]) {
     await page.route('**/api/v1/**', async route => {
       const url = new URL(route.request().url()), path = url.pathname;
       const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId, ...extra } });
-      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, session: { ...registered, indicator: 'warning', needsAttention: true }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true, canOpen: true } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
+      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, session: { ...registered, indicator: 'warning', activity: 'idle', reason: 'idle', needsAttention: true }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true, canOpen: true } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
       if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId, userId));
       if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId, name: 'Owner', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
       if (path === `/api/v1/projects/${projectId}/task-sync`) {
@@ -342,7 +342,7 @@ for (const width of [320, 1280]) {
     const goalDialog = page.getByRole('dialog', { name: longGoal });
     await expect(goalDialog.getByText('Goal description')).toBeVisible();
     const information = goalDialog.getByRole('complementary', { name: 'Goal information' });
-    await expect(information.getByRole('alert')).toBeVisible();
+    await expect(information.getByRole('alert').filter({ hasText: 'Refresh failed' })).toBeVisible();
     await information.getByRole('button', { name: 'Retry refresh' }).click();
     await expect(information.getByText('Total tasks')).toBeVisible();
     await page.evaluate(id => window.selectMyTasksChild(id), taskId(1));
