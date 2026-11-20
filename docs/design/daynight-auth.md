@@ -7,7 +7,7 @@
 [原始鉴权决策](../../.agents/notes/archived/architecture/2026-10-22-auth-architecture.md)
 保留架构取舍，[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)记录了当前配置、组合与验收隐私规则的历史取舍。
 
-业务 Scope 的[内部合同](credential-scope-internal.md)定义目录、策略快照与既有 profile 的区分，以及显式授权的 Tag 目录准入入口；生产认证与 Tag 装配仍使用既有入口，尚未启用受限凭据权限。
+业务 Scope 的[内部合同](credential-scope-internal.md)定义目录、策略快照、既有 profile 的区分及显式授权的业务准入入口；生产认证和业务装配仍使用既有入口，尚未启用受限凭据权限。
 
 ## 已采纳的架构边界
 
@@ -234,18 +234,23 @@ Access-Control-Request-Headers`。GET、HEAD、POST、PUT、PATCH、DELETE 保�
 Authorization, Content-Type, Accept, If-None-Match, X-Request-ID,
 Daynight-Worker-Protocol, Daynight-Worker-Configuration,
 Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention,
 Daynight-Worker-Prompts, Daynight-Session-Protocol,
 X-Daynight-Startup-Version, Daynight-Browser-Client,
-Daynight-Session-Content-Revision, Daynight-Chunk-SHA256
+Daynight-Session-Content-Revision, Daynight-Chunk-SHA256,
+Daynight-Worker-Alias, Daynight-Worker-Identity,
+Daynight-Confirm-Goal-Dependency-Removal
 ```
 
 完整暴露响应头为：
 
 ```text
-Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag,
-Content-Disposition, Retry-After, Allow, WWW-Authenticate,
-Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
-Daynight-Worker-Configuration
+Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch,
+X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow,
+WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention,
+Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version,
+Daynight-Worker-Alias, Daynight-Worker-Identity
 ```
 
 Content-Type、Content-Length、Cache-Control 本为 CORS safelisted response headers；
@@ -413,7 +418,9 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 以观察到的 expiresAt 做条件修改。账号不符返回 403，旧到期值返回 409 version_conflict，
 不存在、已过期或已撤销返回 404。观察值按实际时刻精确比较，不通过截断掩盖差异；
 同值且观察匹配返回 200 原元数据，不更新数据库。修改只改变 expires_at，令牌 ID、秘密散列和创建时间保持，
-现有 CLI 配置继续使用同一凭据。不能通过更新恢复已到期或撤销的凭据。
+现有 CLI 配置继续使用同一凭据。不能通过更新恢复已到期或撤销的凭据。锁定令牌后重新取得数据库时间，复核会话、原期限和目标期限，等待期间到期的决定不能提交。
+
+内部 PAT scope 存储在同一令牌行保存规范化 ID 数组和独立版本；scope 读取校验持久化值，条件更新核对归属、有效期及观察版本，仅实际变化推进版本。最近使用时间独立更新。准备迁移允许历史记录和旧写入暂时为空。设备授权提供显式 scoped 装配：批准状态、账号与所选集合在同一事务写入，领取在消费授权的事务中把该集合写入 PAT；锁定设备后使用数据库时间复核期限。旧生产装配继续使用原认证与设备流程，历史回填及公开启用另行完成。
 
 账户管理器默认选择“永不过期 / Never expires”，选择指定到期后显示本地日期时间输入，按设备时区
 转换为 UTC 提交。编辑显示当前到期，未修改时禁用保存，保留原有秒和微秒精度。

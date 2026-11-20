@@ -20,15 +20,25 @@ type appVerifier func(context.Context, int64, *rsa.PrivateKey) (remote.AppIdenti
 
 // AppManager coordinates remote proof with the short App transaction.
 type AppManager struct {
-	db     store.GitHubAppStore
-	verify appVerifier
+	db      store.GitHubAppStore
+	verify  appVerifier
+	current AuthorizationReader
 }
 
 func NewAppManager(db store.GitHubAppStore) *AppManager {
 	return &AppManager{db: db, verify: remote.VerifyApp}
 }
 
+// NewScopedAppManager supplies current authority for work resumed after proof.
+func NewScopedAppManager(db store.GitHubAppStore, current AuthorizationReader) *AppManager {
+	return &AppManager{db: db, verify: remote.VerifyApp, current: current}
+}
+
 func (m *AppManager) CreateApp(ctx context.Context, p model.Principal, in core.CreateAppInput) (core.AppMetadata, error) {
+	return m.createApp(ctx, p, in, nil)
+}
+
+func (m *AppManager) createApp(ctx context.Context, p model.Principal, in core.CreateAppInput, afterProof func(context.Context) error) (core.AppMetadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	if err := core.ValidateCreateApp(p, in); err != nil {
@@ -51,6 +61,11 @@ func (m *AppManager) CreateApp(ctx context.Context, p model.Principal, in core.C
 			return core.AppMetadata{}, &ManagementError{Code: "github_rate_limited", Message: "GitHub rate limit reached.", Cause: err}
 		}
 		return core.AppMetadata{}, &ManagementError{Code: "github_unavailable", Message: "GitHub is temporarily unavailable.", Cause: err}
+	}
+	if afterProof != nil {
+		if err := afterProof(ctx); err != nil {
+			return core.AppMetadata{}, err
+		}
 	}
 	var out githubpr.AppMetadata
 	completion, err := m.db.WriteGitHubApp(ctx, func(dao store.GitHubAppWriteDAO) error {
@@ -77,6 +92,10 @@ func (m *AppManager) CreateApp(ctx context.Context, p model.Principal, in core.C
 }
 
 func (m *AppManager) GetApp(ctx context.Context, p model.Principal, id string) (core.AppMetadata, error) {
+	return m.getApp(ctx, p, id, nil)
+}
+
+func (m *AppManager) getApp(ctx context.Context, p model.Principal, id string, admit func() error) (core.AppMetadata, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	if err := core.ValidateAppRead(p, id); err != nil {
@@ -86,6 +105,22 @@ func (m *AppManager) GetApp(ctx context.Context, p model.Principal, id string) (
 	var refusal *model.Fault
 	err := m.db.ReadGitHubApps(ctx, func(dao store.GitHubAppReadDAO) error {
 		return completion.Capture(func() error {
+			if admit != nil {
+				visible, ok := dao.(store.GitHubAppVisibilityReader)
+				if !ok {
+					return errors.New("GitHub App visibility capability unavailable")
+				}
+				e := visible.RequireAppVisible(ctx, id, p.UserID)
+				if errors.Is(e, model.ErrNotFound) {
+					return &model.Fault{Code: "not_found", Message: "GitHub App was not found.", Cause: e}
+				}
+				if e != nil {
+					return e
+				}
+				if e = admit(); e != nil {
+					return e
+				}
+			}
 			var e error
 			out, e = dao.Get(ctx, id, p.UserID)
 			if errors.Is(e, model.ErrNotFound) {

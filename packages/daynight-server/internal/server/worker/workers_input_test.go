@@ -169,6 +169,7 @@ func capacityExpectedSnapshot(t *testing.T, user, worker string, body map[string
 }
 
 type capacityReportOperations struct {
+	reviewPullRequests     func(context.Context, model.Principal, string, model.PageRequest) (workerservice.ReviewPullRequestPage, error)
 	reviewParticipation    func(context.Context, model.Principal, string) (model.WorkerReviewParticipation, error)
 	putReviewParticipation func(context.Context, model.Principal, string, string, bool) (model.WorkerReviewParticipation, error)
 	t                      *testing.T
@@ -180,6 +181,13 @@ type capacityReportOperations struct {
 	get                    func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
 	list                   func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
 	configuration          func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+}
+
+func (s *capacityReportOperations) ReviewPullRequests(ctx context.Context, p model.Principal, id string, page model.PageRequest) (workerservice.ReviewPullRequestPage, error) {
+	if s.reviewPullRequests == nil {
+		return workerservice.ReviewPullRequestPage{}, s.unexpected("ReviewPullRequests")
+	}
+	return s.reviewPullRequests(ctx, p, id, page)
 }
 
 func (s *capacityReportOperations) ReviewParticipation(ctx context.Context, p model.Principal, id string) (model.WorkerReviewParticipation, error) {

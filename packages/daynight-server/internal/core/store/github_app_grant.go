@@ -90,6 +90,19 @@ type GitHubGrantWriteDAO interface {
 	AdvanceImpact(context.Context) error
 }
 
+// GitHubGrantWriteAdmission contains only facts needed to authorize a write.
+// Implementations read them inside the existing locked write scope.
+type GitHubGrantWriteAdmission struct {
+	TeamID                                 string
+	TeamVersion, AppVersion, ImpactVersion int64
+	IsAdmin                                bool
+}
+
+type GitHubGrantWriteAdmissionDAO interface {
+	GrantWriteAdmission(context.Context, string) (GitHubGrantWriteAdmission, error)
+	RequireLiveGrant(context.Context, string) error
+}
+
 // GitHubConnectionStopDAO is bound to the caller's transaction after the App
 // root is locked. Its implementation never acquires Team or Project roots.
 type GitHubConnectionStopDAO interface {
@@ -102,4 +115,11 @@ type GitHubConnectionStopDAO interface {
 type GitHubGrantStore interface {
 	ReadGitHubGrants(context.Context, func(GitHubGrantReadDAO) error) error
 	WriteGitHubGrant(context.Context, string, string, string, func(GitHubGrantWriteDAO) error) (Completion, error)
+}
+
+// GitHubGrantVisibilityDAO checks only target visibility in the read snapshot.
+// Exactly one of teamID and grantID may be set; empty values select the App.
+// teamOnly selects a Team administrator check without requiring an App.
+type GitHubGrantVisibilityDAO interface {
+	GrantVisibility(ctx context.Context, appID, actor, teamID, grantID string, teamOnly bool) error
 }

@@ -1,6 +1,6 @@
 # Agent Note: Web Font Size Scale
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -9,14 +9,15 @@ purpose. Text serving different purposes can need the same size, and text
 serving the same purpose can need different sizes. Changing a single surface
 should not require misclassifying the text or changing every surface in its role.
 
-## Proposal
+## Decision
 
 The [Web typography specification](../../../../docs/spec/web-typography.md)
 defines six shared sizes named by magnitude. Consumers select or inherit a size;
 the standard owns the rules for browser scaling, touch accessibility, and
 terminal zoom. This replaces purpose-based selection in the [role-based
-decision](../../implemented/architecture/2026-11-20-web-semantic-typography.md)
-while retaining centralized ownership and browser-relative sizes.
+decision](2026-11-20-web-semantic-typography.md) while retaining centralized
+ownership and browser-relative sizes. The [migration policy](2026-11-20-web-typography-migration-policy.md)
+records the bounded compatibility window used to migrate consumers.
 
 ## Alternatives
 
@@ -27,17 +28,12 @@ to particular purposes.
 **Add a smaller reading token.** This accommodates one consumer but leaves
 controls, titles, and other purposes subject to the same coupling.
 
-## Acceptance Criteria
+## Consequences
 
 First-party Web text and renderer settings select or inherit an allowed size.
-The ownership check rejects independent definitions and fallbacks. Selecting a
-different size in one consumer does not change others, while changing a scale
-value affects every consumer of that value. Browser validation preserves text
-scaling, touch readability, terminal zoom, and narrow-screen reflow.
-
-## Risks
-
-An unrestricted size parameter would recreate a second scale. Touch and terminal
-adjustments must remain shared rendering behavior, not additional authored sizes.
-Renderer integrations require validation where static CSS analysis cannot prove
-the resulting size.
+The ownership check rejects independent definitions, retired names and fallbacks.
+Changing one consumer's selection does not affect other consumers, while changing
+a scale value affects its users. Browser validation remains necessary for text
+scaling, touch readability, terminal zoom, narrow-screen reflow and renderer
+integrations that static analysis cannot prove. Touch and terminal adjustments
+remain shared rendering behavior rather than additional authored sizes.

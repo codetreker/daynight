@@ -1,4 +1,4 @@
--- Schema snapshot version: 106
+-- Schema snapshot version: 109
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -332,6 +332,7 @@ CREATE TABLE "device_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "next_poll_at" timestamp with time zone NOT NULL,
     "poll_interval_seconds" integer NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "device_authorizations_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "device_authorizations_check1" CHECK ((("status" = 'pending'::"text") = ("user_id" IS NULL))),
     CONSTRAINT "device_authorizations_device_code_hash_check" CHECK (("octet_length"("device_code_hash") = 32)),
@@ -449,6 +450,7 @@ CREATE TABLE "oauth_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "code_expires_at" timestamp with time zone,
     "retain_until" timestamp with time zone NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "oauth_authorizations_binding_hash_check" CHECK (("octet_length"("binding_hash") = 32)),
     CONSTRAINT "oauth_authorizations_code_hash_check" CHECK ((("code_hash" IS NULL) OR ("octet_length"("code_hash") = 32))),
     CONSTRAINT "oauth_authorizations_status_check" CHECK (("status" = ANY (ARRAY['pending'::"text", 'approved'::"text", 'denied'::"text", 'consumed'::"text", 'expired'::"text"])))
@@ -483,6 +485,8 @@ CREATE TABLE "oauth_grants" (
     "revoked_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "oauth_grants_client_id_check" CHECK (("length"("client_id") > 0)),
     CONSTRAINT "oauth_grants_lifetime_check" CHECK ((("expires_at" > "created_at") AND ((("scope" = 'daynight:api'::"text") AND ("client_id" = 'societas-bot'::"text")) OR ("expires_at" <= ("created_at" + '720:00:00'::interval))))),
     CONSTRAINT "oauth_grants_resource_check" CHECK (("length"("resource") > 0)),
@@ -511,6 +515,8 @@ CREATE TABLE "personal_access_tokens" (
     "expires_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
@@ -2211,7 +2217,11 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
+CREATE INDEX "project_pr_review_assignments_worker_cursor" ON "project_pr_review_assignments" USING "btree" ("user_id", "worker_id", "project_id", "repository_id", "github_pr_id");
+
 CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+
+CREATE INDEX "project_pull_requests_open_github_id" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "github_id") INCLUDE ("number") WHERE ("state" = 'open'::"text");
 
 CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 

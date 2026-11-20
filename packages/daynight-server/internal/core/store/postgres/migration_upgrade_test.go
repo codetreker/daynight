@@ -183,14 +183,14 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 		t.Fatal(err)
 	}
 	var before string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	var after string
-	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
+	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'last_used_at'-'description'-'business_scopes'-'scope_version')::text FROM personal_access_tokens p WHERE id=$1`, finite.ID).Scan(&after); err != nil || after != before {
 		t.Fatalf("optional expiry changed historical credential: %v", err)
 	}
 	var descriptionNull bool

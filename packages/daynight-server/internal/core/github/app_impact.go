@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 
@@ -144,9 +145,32 @@ func nextImpactCursor(q store.GitHubAppImpactQuery, kind string, impact store.Gi
 
 // ReadAppImpact reads counts and a bounded Team page within the DAO snapshot.
 func ReadAppImpact(ctx context.Context, dao store.GitHubAppImpactDAO, p model.Principal, in AppImpactInput) (AppImpactPage, error) {
+	return ReadAppImpactWithAdmission(ctx, dao, p, in, nil)
+}
+
+func ReadAppImpactWithAdmission(ctx context.Context, dao store.GitHubAppImpactDAO, p model.Principal, in AppImpactInput, admit func() error) (AppImpactPage, error) {
 	q, c, err := impactRequest(p, in, "teams")
 	if err != nil {
 		return AppImpactPage{}, err
+	}
+	if admit != nil {
+		visibility, ok := dao.(store.GitHubAppImpactVisibilityDAO)
+		if !ok {
+			return AppImpactPage{}, fmt.Errorf("GitHub impact snapshot cannot check visibility")
+		}
+		facts, err := visibility.ImpactVisibility(ctx, q)
+		if err != nil {
+			return AppImpactPage{}, impactReadError(err)
+		}
+		if err := impactVersions(facts, c); err != nil {
+			return AppImpactPage{}, err
+		}
+		if facts.GrantMissing {
+			return AppImpactPage{}, &model.Fault{Code: "not_found", Message: "GitHub App grant was not found.", Cause: model.ErrNotFound}
+		}
+		if err := admit(); err != nil {
+			return AppImpactPage{}, err
+		}
 	}
 	summary, err := dao.Summary(ctx, q)
 	if err != nil {
@@ -174,9 +198,32 @@ func ReadAppImpact(ctx context.Context, dao store.GitHubAppImpactDAO, p model.Pr
 
 // ReadAppImpactProjects rechecks the actor's current project access per page.
 func ReadAppImpactProjects(ctx context.Context, dao store.GitHubAppImpactDAO, p model.Principal, in AppImpactInput) (AppImpactProjectsPage, error) {
+	return ReadAppImpactProjectsWithAdmission(ctx, dao, p, in, nil)
+}
+
+func ReadAppImpactProjectsWithAdmission(ctx context.Context, dao store.GitHubAppImpactDAO, p model.Principal, in AppImpactInput, admit func() error) (AppImpactProjectsPage, error) {
 	q, c, err := impactRequest(p, in, "projects")
 	if err != nil {
 		return AppImpactProjectsPage{}, err
+	}
+	if admit != nil {
+		visibility, ok := dao.(store.GitHubAppImpactVisibilityDAO)
+		if !ok {
+			return AppImpactProjectsPage{}, fmt.Errorf("GitHub impact snapshot cannot check visibility")
+		}
+		facts, err := visibility.ImpactVisibility(ctx, q)
+		if err != nil {
+			return AppImpactProjectsPage{}, impactReadError(err)
+		}
+		if err := impactVersions(facts, c); err != nil {
+			return AppImpactProjectsPage{}, err
+		}
+		if facts.GrantMissing {
+			return AppImpactProjectsPage{}, &model.Fault{Code: "not_found", Message: "GitHub App grant was not found.", Cause: model.ErrNotFound}
+		}
+		if err := admit(); err != nil {
+			return AppImpactProjectsPage{}, err
+		}
 	}
 	summary, err := dao.Summary(ctx, q)
 	if err != nil {

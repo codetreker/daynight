@@ -36,6 +36,17 @@ type botsHandler struct {
 	logger       *slog.Logger
 }
 
+// writeBotError preserves the legacy HTTP error envelope for scoped refusals.
+// KnownFault excludes uncertain transaction and cleanup outcomes.
+func writeBotError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
+	if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+		w.Header().Del(attentionHeader)
+		w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
+		err = &model.Fault{Code: "forbidden", Message: fault.Message, Cause: err}
+	}
+	httpx.WriteError(w, request, logger, "bot", phase, err)
+}
+
 func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &botsHandler{bots: bots, relay: relay, logger: logger}
 	h.observations, _ = bots.(observations)
@@ -111,7 +122,7 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 		}
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "create", err)
+		writeBotError(w, request, logger, "create", err)
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))
@@ -139,7 +150,7 @@ func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, pri
 		}
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "defaults", err)
+		writeBotError(w, request, logger, "defaults", err)
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, botDefaultsResponse(result))
@@ -176,7 +187,7 @@ func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, princip
 	logger := h.logger.With("user_id", principal.UserID)
 	page, err := httpx.PageRequest(request)
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "list", err)
+		writeBotError(w, request, logger, "list", err)
 		return
 	}
 	var result botcore.BotPage
@@ -186,7 +197,7 @@ func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, princip
 		result, err = h.bots.List(request.Context(), principal, page)
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "list", err)
+		writeBotError(w, request, logger, "list", err)
 		return
 	}
 	response := api.BotPage{Items: make([]api.Bot, 0, len(result.Items)), NextCursor: result.NextCursor}
@@ -211,7 +222,7 @@ func (h *botsHandler) get(w http.ResponseWriter, request *http.Request, principa
 		bot, err = h.bots.Get(request.Context(), principal, id)
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "read", err)
+		writeBotError(w, request, logger, "read", err)
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))
@@ -246,7 +257,7 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 		}
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "delete", err)
+		writeBotError(w, request, logger, "delete", err)
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))

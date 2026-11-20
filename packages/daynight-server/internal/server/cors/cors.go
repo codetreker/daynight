@@ -10,7 +10,7 @@ import (
 )
 
 const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256, Daynight-Worker-Alias, Daynight-Worker-Identity, Daynight-Confirm-Goal-Dependency-Removal"
-const exposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
+const exposedHeaders = "Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version, Daynight-Worker-Alias, Daynight-Worker-Identity"
 
 // Wrap decorates user REST responses before authentication and path validation.
 // Route lookup never runs a handler or authenticates a preflight request.
@@ -77,6 +77,9 @@ func userREST(path string, nativePaths []string) bool {
 		return false
 	}
 	// Account credential management is available only to main-site sessions.
+	if path == "/api/v1/me/credential-scope-catalog" || path == "/api/v2/auth/device/inspect" || path == "/api/v2/auth/device/decision" {
+		return false
+	}
 	const tokens = "/api/v2/me/tokens"
 	if path == tokens {
 		return false

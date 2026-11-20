@@ -699,6 +699,14 @@ func TestSessionOAuthReadonlyPreflightDoesNotAcquireFamilyLocks(t *testing.T) {
 }
 
 func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
+	for _, bound := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original credential", true: "bound OAuth credential"}[bound], func(t *testing.T) {
+			testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t, bound)
+		})
+	}
+}
+
+func testSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T, bound bool) {
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -736,7 +744,11 @@ func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
 		ready <- waiter.Conn().PgConn().PID()
 		select {
 		case <-start:
-			result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
+			if bound {
+				result <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), now)
+			} else {
+				result <- pgsession.New(waiter).LockCredential(ctx, actor, now)
+			}
 		case <-ctx.Done():
 		}
 	}()
@@ -770,7 +782,7 @@ func TestSessionOAuthNaturalExpiryIsFreshAfterTokenLockWait(t *testing.T) {
 	if err := blocker.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || (bound && errors.Is(err, pgx.ErrNoRows)) {
 		t.Fatalf("naturally expired access admitted using pre-wait time: %v", err)
 	}
 }
@@ -821,4 +833,66 @@ func rollbackOAuthExpiryWaiter(t *testing.T, operationCtx context.Context, tx pg
 		}
 	}
 	t.Errorf("rollback OAuth expiry waiter: %v", err)
+}
+
+// expiryClockBarrier holds the final clock check after the real credential read.
+type expiryClockBarrier struct {
+	pgx.Tx
+	calls  int
+	ready  chan struct{}
+	resume chan struct{}
+}
+
+func (tx *expiryClockBarrier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	tx.calls++
+	if tx.calls == 4 {
+		close(tx.ready)
+		select {
+		case <-tx.resume:
+		case <-ctx.Done():
+		}
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+func TestSessionOAuthExpiryBetweenCredentialReadAndClockCheck(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	_, owner, _ := testAuthRecords(t, db)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, access, _ := sessionOAuthFamily(t, db, owner.UserID, "api", now.Add(-time.Minute))
+	actor := model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID}
+	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE token_hash=$1`, secret.Hash(access)).Scan(&actor.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 1)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &expiryClockBarrier{Tx: tx, ready: make(chan struct{}), resume: make(chan struct{})}
+	result := make(chan error, 1)
+	finished := make(chan struct{})
+	defer func() {
+		cancel()
+		<-finished
+		rollbackSessionTestTransaction(t, tx)
+	}()
+	go func() {
+		defer close(finished)
+		result <- pgsession.New(wrapped).LockCredential(ctx, actor, now)
+	}()
+	select {
+	case <-wrapped.ready:
+	case err := <-result:
+		t.Fatalf("credential read did not reach clock check: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+	close(wrapped.resume)
+	if err := testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, model.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expiry after credential read was not rejected by clock check: %v", err)
+	}
 }

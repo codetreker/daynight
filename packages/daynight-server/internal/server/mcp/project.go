@@ -253,16 +253,28 @@ func (h *projectTools) transferPreview(ctx context.Context, actor RequestActor, 
 	if err != nil {
 		return ToolResult{}, err
 	}
-	preview, err := h.projects.TransferPreview(ctx, actor.Principal, in.ProjectID, target)
-	if err != nil {
-		return ToolResult{}, err
+	var preview coreproject.TransferPreview
+	var projectID, projectName string
+	if scoped, ok := h.projects.(interface {
+		TransferPreviewWithName(context.Context, model.Principal, string, string) (coreproject.TransferPreview, string, error)
+	}); ok {
+		preview, projectName, err = scoped.TransferPreviewWithName(ctx, actor.Principal, in.ProjectID, target)
+		if err == nil {
+			projectID, err = model.CanonicalID(in.ProjectID)
+		}
+	} else {
+		preview, err = h.projects.TransferPreview(ctx, actor.Principal, in.ProjectID, target)
+		if err == nil {
+			var project model.Project
+			project, err = h.projects.Get(ctx, actor.Principal, in.ProjectID)
+			projectID, projectName = project.ID, project.Name
+		}
 	}
-	project, err := h.projects.Get(ctx, actor.Principal, in.ProjectID)
 	if err != nil {
 		return ToolResult{}, err
 	}
 	return ToolResult{Data: map[string]any{
-		"projectId": project.ID, "projectName": project.Name,
+		"projectId": projectID, "projectName": projectName,
 		"sourceTeam": MapTeamRef(preview.SourceTeam),
 		"targetTeam": map[string]any{"id": preview.TargetTeam.ID, "name": preview.TargetTeam.Name, "kind": preview.TargetTeam.Kind, "version": Decimal(preview.TargetTeamVersion)},
 		"ownership":  ProjectOwnership{TeamID: preview.Ownership.TeamID, Version: Decimal(preview.Ownership.Version), UpdatedAt: preview.Ownership.UpdatedAt.UTC()},

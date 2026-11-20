@@ -4,6 +4,7 @@ const messages = {
   en: {
     titles: { user: 'User prompt', project: 'Personal project prompt', worker: 'Worker prompt' },
     descriptions: { user: 'Appended to tasks on all of your Workers.', project: 'Appended to your tasks in this project on any Worker. Other members have their own prompt.', worker: 'Appended to tasks on this Worker.' },
+    purpose: 'Purpose', reviewerDescriptions: { user: 'Used for your code reviews.', project: 'Used for your code reviews in this project.', worker: 'Used for code reviews on this Worker.' }, reviewerTiming: 'Saved Reviewer prompts are used for subsequent code reviews.', reviewerTooLarge: 'Reviewer prompt exceeds 32 KiB (UTF-8). Your draft is retained.', bytes: 'bytes (UTF-8)', clear: 'Clear',
     text: 'Prompt text', hint: 'Text, spaces and line breaks are preserved. Save an empty value to clear this layer.',
     order: 'Append order', builtin: 'Built-in prompt', timing: 'When changes take effect', timingDetail: 'After the Worker receives the saved value, new starts, recovery inputs and periodic pings use it. Delivery can take time.',
     preview: 'Combined example', example: 'This example uses your draft for this layer and placeholders for other layers. It does not show an actual task input.',
@@ -20,6 +21,7 @@ const messages = {
   'zh-CN': {
     titles: { user: '用户级 Prompt', project: '项目个人 Prompt', worker: 'Worker 级 Prompt' },
     descriptions: { user: '追加到你的所有 Worker 执行的任务。', project: '追加到你在此项目中执行的任务；其他成员维护自己的内容。', worker: '追加到此 Worker 执行的任务。' },
+    purpose: '用途', reviewerDescriptions: { user: '用于你的代码审查。', project: '用于你在此项目中的代码审查。', worker: '用于此 Worker 上的代码审查。' }, reviewerTiming: '后续代码审查使用已保存的 Reviewer Prompt。', reviewerTooLarge: 'Reviewer Prompt 超过 32 KiB（UTF-8），草稿已保留。', bytes: '字节（UTF-8）', clear: '清空',
     text: 'Prompt 内容', hint: '保留原始文字、空格和换行。清空后保存以移除此层内容。',
     order: '追加顺序', builtin: '内置 Prompt', timing: '生效时机', timingDetail: 'Worker 收到保存的内容后，后续启动、恢复输入和周期 ping 使用新内容；送达需要时间。',
     preview: '组合效果示例', example: '本层使用当前草稿，其他层使用占位内容；这不是实际任务输入。',

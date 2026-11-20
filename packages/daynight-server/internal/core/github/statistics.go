@@ -37,6 +37,17 @@ type Statistics struct {
 
 // Statistics reads authorization, connection and counts from one snapshot.
 func (r *Reader) Statistics(ctx context.Context, principal model.Principal, projectID string, request StatisticsRequest) (Statistics, error) {
+	return r.statistics(ctx, principal, projectID, request, nil)
+}
+
+func (r *Reader) StatisticsAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, request StatisticsRequest) (Statistics, error) {
+	if err := authorization.Validate(); err != nil {
+		return Statistics{}, err
+	}
+	return r.statistics(ctx, authorization.Principal, projectID, request, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) statistics(ctx context.Context, principal model.Principal, projectID string, request StatisticsRequest, check func() error) (Statistics, error) {
 	if request.RepositoryID != nil && *request.RepositoryID <= 0 {
 		return Statistics{}, invalid("Repository ID must be positive.")
 	}
@@ -48,7 +59,10 @@ func (r *Reader) Statistics(ctx context.Context, principal model.Principal, proj
 	if request.AuthorID != nil {
 		result.AuthorDaily = &[30]int64{}
 	}
-	err = r.snapshot(ctx, principal, projectID, func(s store.SnapshotScope, id string) error {
+	err = r.snapshot(ctx, principal, projectID, nil, func(s store.SnapshotScope, id string) error {
+		if err := checkRepositoryScope(ctx, s, id, request.RepositoryID, check); err != nil {
+			return err
+		}
 		dao := s.GitHubDAO()
 		var e error
 		result.Connection, e = dao.Connection(ctx, id)

@@ -1,5 +1,5 @@
 import { generate, ident, lexer, parse, walk, type CssNode } from 'css-tree';
-import { bridges, occurrenceDiagnostic, retired, retiredIn, scale, typographyOwner, type TypographyOccurrence } from './typography-policy-contract.mts';
+import { occurrenceDiagnostic, retired, retiredIn, scale, typographyOwner, type TypographyOccurrence } from './typography-policy-contract.mts';
 export { typographyOwner } from './typography-policy-contract.mts';
 
 const compact = (value: string): string => value.replace(/\s+/g, '');
@@ -19,8 +19,8 @@ export const readTypographyRoles = (text: string): Set<string> => {
     if (!name.startsWith('--text-')) return;
     if (this.rule?.prelude?.type !== 'SelectorList' || generate(this.rule.prelude) !== ':root' || this.atrule !== null) throw new Error(`${typographyOwner}: typography roles must be unconditional :root definitions.`);
     if (found.has(name)) throw new Error(`${typographyOwner}: duplicate typography role ${name}.`);
-    const expected = scale.get(name) ?? bridges.get(name);
-    if (expected === undefined || compact(generate(node.value)) !== expected || node.important) throw new Error(`${typographyOwner}: ${name} must use its exact public scale or bridge definition.`);
+    const expected = scale.get(name);
+    if (expected === undefined || compact(generate(node.value)) !== expected || node.important) throw new Error(`${typographyOwner}: ${name} must use its exact public scale definition.`);
     found.add(name);
   });
   if (roots !== 1 || [...scale.keys()].some(name => !found.has(name))) throw new Error(`${typographyOwner}: exactly one :root and all six public sizes are required.`);
@@ -60,8 +60,8 @@ export const collectTypographyCss = (text: string, path: string, roles: Readonly
     enter(node: CssNode) {
       if (node.type === 'Rule') contexts.push(generate(node.prelude));
       if (node.type === 'Atrule') contexts.push(`@${node.name}${node.prelude === null ? '' : ` ${generate(node.prelude)}`}`);
-      const add = (category: TypographyOccurrence['category'], context: string, value: string, message: string, identifiers: string[] = []): void => {
-        result.push({ path, category, context: [...contexts, context].join(' > '), value, line: node.loc?.start.line ?? 1, column: node.loc?.start.column ?? 1, message, identifiers });
+      const add = (category: TypographyOccurrence['category'], context: string, value: string, message: string): void => {
+        result.push({ path, category, context: [...contexts, context].join(' > '), value, line: node.loc?.start.line ?? 1, column: node.loc?.start.column ?? 1, message });
       };
       if (node.type === 'Atrule' && node.name.toLowerCase() === 'property' && node.prelude !== null) {
         const name = ident.decode(generate(node.prelude));
@@ -75,15 +75,15 @@ export const collectTypographyCss = (text: string, path: string, roles: Readonly
       walk(node.value, child => { if (child.type === 'Identifier') references.push(ident.decode(child.name)); });
       const legacy = [...new Set(references.filter(name => retired.has(name)))].sort();
       if (property.startsWith('--text-') && (path !== typographyOwner || inline)) add('invalid', property, value, `${property} is owned by ${typographyOwner}; local overrides are forbidden.`);
-      else if (retired.has(property)) add('legacy-definition', property, value, `retired definition ${property}.`, [property]);
+      else if (retired.has(property)) add('legacy-definition', property, value, `retired definition ${property}.`);
       else if (property.endsWith('-font-size') && property.startsWith('--')) add('invalid', property, value, `private typography alias ${property} is forbidden.`);
-      if (legacy.length > 0) add('legacy-reference', property, value, `retired typography reference ${legacy.join(', ')}.`, legacy);
+      if (legacy.length > 0) add('legacy-reference', property, value, `retired typography reference ${legacy.join(', ')}.`);
       if ((property === 'font-size' || property === 'font') && legacy.length === 0) {
         const problem = typographyValueProblem(property, value, roles, inline ? '' : path);
         if (problem !== undefined) add('invalid', property, value, problem);
       }
       walk(node.value, child => {
-        if (child.type === 'String' && retiredIn(child.value).length > 0) add('legacy-reference', `${property} string`, child.value, 'retired typography identifier in a CSS string.', retiredIn(child.value));
+        if (child.type === 'String' && retiredIn(child.value).length > 0) add('legacy-reference', `${property} string`, child.value, 'retired typography identifier in a CSS string.');
       });
     },
     leave(node: CssNode) { if (node.type === 'Rule' || node.type === 'Atrule') contexts.pop(); },

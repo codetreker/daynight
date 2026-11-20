@@ -33,6 +33,10 @@ test('Goal attachment image recovers from a network failure without rereading th
   const images: string[] = [];
   let detailReads = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === `/api/v1/projects/${projectId}/tasks/${goalId}`) detailReads++; });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${goalId}/goal-dependencies?*`, route => route.fulfill({
+    contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: stringifyWireJson({ goalId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null }),
+  }));
   await page.route('**/preview/images/goal.svg?size=small', route => {
     images.push(route.request().url());
     return images.length === 1 ? route.abort('failed') : route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#256a48"/></svg>' });
@@ -40,8 +44,9 @@ test('Goal attachment image recovers from a network failure without rereading th
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const description = page.locator('.goal-detail-description');
   await expect(description.getByRole('heading', { name: 'Goal image', exact: true })).toBeVisible();
-  const error = description.getByRole('alert');
+  const error = description.getByRole('alert', { name: 'Goal attachment', exact: true });
   await expect(error).toContainText('Unable to load the attachment image');
+  await expect(description.locator('.goal-dependencies .goal-dependency-empty')).toHaveCount(2);
   const before = detailReads;
   await error.getByRole('button', { name: 'Retry image', exact: true }).click();
   await expect(error).toHaveCount(0);
@@ -129,7 +134,7 @@ async function expectChainTimeLayout(header: Locator) {
   });
   expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
-async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'Long owner name '.repeat(8)) {
+async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'Long owner name '.repeat(8), hasProjectAccess = true) {
   let details = all;
   let currentGraph = graph;
   let sessionStates: Record<string, 'working' | 'notice' | 'warning' | 'pending'> = {};
@@ -166,11 +171,11 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path === `/api/v1/projects/${projectId}/access`) return projectRevoked ? send({ error: { code: 'not_found', message: 'Not found', requestId: goalId } }, 404) : send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/task-assignees` && failPeople) return send({ error: { code: 'unavailable', message: 'Assignee service unavailable', requestId: 'people-error' } }, 503);
-    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: ownerName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
+    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: ownerName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
-      const makeResponse = () => taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, ...(sessionStates[layoutWorkerId] === undefined ? {} : { taskObservations: { [layoutWorkerId]: { taskVersion: details.find(item => item.id === layoutWorkerId)!.version, state: 'working' as const, observedAt: currentGraph.observedAt, freshUntil: '2055-01-01T00:01:00Z', needsAttention: false, canOpen: true } } }), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
+      const makeResponse = () => taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, ...(!hasProjectAccess ? { assigneeVersions: [{ userId: TEST_VIEWER_ID, version: TEST_PROFILE_VERSION, hasProjectAccess }] } : {}), ...(sessionStates[layoutWorkerId] === undefined ? {} : { taskObservations: { [layoutWorkerId]: { taskVersion: details.find(item => item.id === layoutWorkerId)!.version, state: 'working' as const, observedAt: currentGraph.observedAt, freshUntil: '2055-01-01T00:01:00Z', needsAttention: false, canOpen: true } } }), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
       const response = makeResponse();
       if (holdNextSync) {
         holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
@@ -334,9 +339,9 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
   }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, setTaskDescription: (description: string) => { details = details.map(item => item.id === singleId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
     details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
     currentGraph = graphFixture(details);
-  }, addActiveChain: () => {
+  }, addActiveChain: (assignedTo: string | null = TEST_VIEWER_ID) => {
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
-    const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo: TEST_VIEWER_ID, status: 'done' });
+    const root = detailFixture(projectId, outsideId, { title: 'Long chain title '.repeat(12), assignedTo, status: 'done' });
     const child = detailFixture(projectId, firstId, { title: 'Child task', status: 'in_progress', startedAt: time, dependsOn: [outsideId], blockedBy: [], ready: false, properties: { worker } });
     details = [root, child]; currentGraph = graphFixture(details);
   }, addTimedGoalChain: () => {
@@ -458,11 +463,19 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
   const check = async (presentation: string) => {
     const surface = page.locator('.goal-detail-surface');
-    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论'] : ['Description', 'Attachments', 'Discussion']);
+    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论', '用量'] : ['Description', 'Attachments', 'Discussion', 'Usage']);
     await expect(surface.getByRole('tab').first()).toHaveAttribute('aria-selected', 'true');
     await expect(surface.locator('[data-goal-task-id], .goal-detail-overview')).toHaveCount(0);
     const aside = surface.getByRole('complementary', { name: zh ? 'Goal 信息' : 'Goal information' });
     await expect(aside).toBeVisible();
+    for (const root of [12, 16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(surface.locator('.task-detail-title')).toHaveCSS('font-size', `${root * 1.375}px`);
+      await expect(aside.locator('h3').first()).toHaveCSS('font-size', `${root * 1.125}px`);
+      await expect(aside).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(surface.locator('.goal-detail-description .markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     const count = (label: string) => aside.locator('dl > div').filter({ has: page.locator('dt', { hasText: new RegExp(`^${label}$`) }) }).locator('dd');
     await expect(count(zh ? '独立任务数' : 'Standalone tasks')).toHaveText(empty ? '0' : '1');
     await expect(count(zh ? '任务链数' : 'Task chains')).toHaveText(empty ? '0' : '1');
@@ -2463,6 +2476,24 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     ['todo', 'working'], ['todo', 'notice'], ['todo', 'warning'],
     ['in_progress', 'notice'], ['done', 'warning'], ['cancelled', 'working'],
   ] as const;
+  for (const rootSize of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    for (const selector of ['.goal-list-meta .assignee-name', '.goal-list-meta .chain-worker-active', '.goal-list-meta > span:last-child', '.session-status-label', '.session-status-annotation']) {
+      await expect(row.locator(selector)).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    }
+    await expect(row.locator('.goal-list-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+    await expect(row.locator('.task-pause-count')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+    await expect(row.locator('.goal-list-progress')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    expect(await row.evaluate(element => {
+      const selectors = ['.goal-list-title', '.task-pause-count', '.goal-list-meta', '.goal-list-progress', '.session-status-label', '.goal-list-detail', '.goal-list-graph'];
+      const parts = selectors.map(selector => element.querySelector<HTMLElement>(selector)!);
+      const boxes = parts.map(part => part.getBoundingClientRect());
+      const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+      return document.documentElement.scrollWidth <= innerWidth && parts.every(part => part.scrollWidth <= part.clientWidth + 1 && part.scrollHeight <= part.clientHeight + 1) &&
+        boxes.every((box, index) => boxes.slice(index + 1).every(other => separate(box, other)));
+    })).toBe(true);
+  }
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   for (const [index, [goalStatus, indicator]] of cases.entries()) {
     if (index > 0) {
       fixture.setGoalSessionFixture(goalStatus, indicator);
@@ -3069,6 +3100,23 @@ for (const width of [1280, 651, 650, 601, 600, 390, 320]) test(`expanded member 
   expect(fixture.edits()).toEqual([]);
 });
 
+for (const kind of ['goal', 'chain'] as const) for (const former of [false, true]) test(`${kind} summary retains ${former ? 'former' : 'unassigned'} assignee metadata size`, async ({ page }) => {
+  const fixture = await install(page, 'en', 'Former member', !former);
+  if (kind === 'chain') fixture.addActiveChain(former ? TEST_VIEWER_ID : null);
+  else if (former) fixture.setGoalSessionFixture('todo', 'working');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: kind === 'goal' ? /^Goal/ : 'Task chains' }).click();
+  const header = kind === 'goal' ? page.locator(`[data-goal-id="${goalId}"] .goal-list-row`) : page.locator(`[data-chain-id="${outsideId}"] .goal-header`);
+  await expect(header.locator('.assignee-name')).toHaveText(former ? 'Former member' : 'Unassigned');
+  await expect(header.locator('.assignee-former')).toHaveCount(former ? 1 : 0);
+  for (const rootSize of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await expect(header.locator('.assignee-name')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    if (former) await expect(header.locator('.assignee-former')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  }
+});
+
 test('completed and incomplete full and scoped chains have compact desktop headers', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const fixture = await install(page, 'en', 'Owner'); fixture.compactChains();
@@ -3086,10 +3134,10 @@ test('completed and incomplete full and scoped chains have compact desktop heade
       header: element.querySelector('.goal-header')!.getBoundingClientRect().height,
       meta: element.querySelector('.chain-summary-meta')!.getBoundingClientRect().height,
     }));
-    expect(Math.abs(sizes.header - 62)).toBeLessThanOrEqual(1);
-    expect(Math.abs(sizes.card - 64)).toBeLessThanOrEqual(1);
-    expect(sizes.meta).toBeGreaterThanOrEqual(16);
-    expect(sizes.meta).toBeLessThanOrEqual(17);
+    const scoped = id === outsideId || id === layoutWorkerId;
+    expect(sizes.header).toBeCloseTo(scoped ? 63 : 63.6, 0);
+    expect(sizes.card).toBeCloseTo(scoped ? 65 : 65.6, 0);
+    expect(sizes.meta).toBeCloseTo(scoped ? 18 : 18.6, 0);
     heights.push(sizes.header);
   }
   expect(Math.abs(heights[0]! - heights[1]!)).toBeLessThanOrEqual(1);
@@ -3115,6 +3163,17 @@ for (const width of [1440, 1280, 740, 600, 390, 320]) for (const locale of ['en'
     if (scoped) await expect(header.locator('.chain-worker-active')).toBeVisible();
     if (!scoped) await expect(header.locator('.assignee-name')).toHaveText('Long owner name '.repeat(8).trim());
     await expect(completion.locator('time')).toContainText('2026');
+    for (const rootSize of [16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      for (const selector of ['.chain-completion-time', '.session-status-label', scoped ? '.chain-worker-active' : '.assignee-name']) {
+        await expect(header.locator(selector)).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      }
+      await expect(header.locator('.root-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+      await expect(header.locator('.root-progress-label')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      await expectChainTimeLayout(header);
+      expect(await header.locator('.session-status-label').evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await expectChainTimeLayout(header);
     expect(await header.evaluate(element => [...element.querySelectorAll<HTMLElement>('.root-title, .assignee-name, .chain-worker-active, .chain-completion-time, .root-progress-label, .root-status, .goal-graph-button')].every(part => part.scrollWidth <= part.clientWidth + 1 && part.scrollHeight <= part.clientHeight + 1))).toBe(true);
     await expectHit(completion);
@@ -3192,6 +3251,13 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const detail = card.locator(`#project-goal-detail-${goalId}`);
   const label = card.locator('.goal-list-meta time');
   await expect(label).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+  for (const rootSize of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await expect(label).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    await expect(card.locator('.goal-list-session .session-status-label')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+    await expect(card.locator('.goal-list-session .session-status-annotation')).toHaveCount(0);
+  }
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await label.hover();
   const hint = card.getByRole('tooltip');
   const toggle = card.locator('.goal-list-toggle');

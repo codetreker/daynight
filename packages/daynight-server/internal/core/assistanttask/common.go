@@ -14,6 +14,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -36,7 +37,63 @@ func textValid(value string, required bool) bool {
 }
 func ptr[T any](v T) *T { return &v }
 
+// AuthorizationReader must read the current policy on the same transaction as
+// the Assistant Task operation. Implementations retain the credential lock until
+// the transaction completes, so a concurrent scope edit cannot pass admission.
+type AuthorizationReader interface {
+	CredentialAuthorization(context.Context, model.Principal) (model.CredentialAuthorization, error)
+}
+
+func scopeAdmission(ctx context.Context, dao store.AssistantTaskDAO, actor Actor) error {
+	if actor.Authorization == nil {
+		return nil
+	}
+	observed := *actor.Authorization
+	if observed.Principal != actor.Principal {
+		return errors.New("credential authorization identity mismatch")
+	}
+	if err := observed.Validate(); err != nil {
+		return err
+	}
+	if len(actor.operations) == 0 {
+		return errors.New("assistant task operation is not classified")
+	}
+	// Fixed profiles retain their existing transaction-bound credential checks.
+	if observed.Profile == model.SessionProfile || observed.Profile == model.OAuthAPIProfile {
+		return nil
+	}
+	reader, ok := dao.(AuthorizationReader)
+	if !ok {
+		return errors.New("transaction credential authorization is unavailable")
+	}
+	current, err := reader.CredentialAuthorization(ctx, actor.Principal)
+	if err != nil {
+		return err
+	}
+	if current.Principal != actor.Principal || current.Profile != observed.Profile {
+		return errors.New("transaction credential authorization identity mismatch")
+	}
+	if err = current.Validate(); err != nil {
+		return err
+	}
+	if current.Profile == model.ScopedPATProfile || current.Profile == model.ScopedMCPProfile {
+		required, err := scopepolicy.Requirements(actor.operations...)
+		if err != nil {
+			return err
+		}
+		return current.Policy.Require(required...)
+	}
+	return nil
+}
+
 func authorize(ctx context.Context, dao store.AssistantTaskDAO, actor Actor) error {
+	if err := authorizeIdentity(ctx, dao, actor); err != nil {
+		return err
+	}
+	return scopeAdmission(ctx, dao, actor)
+}
+
+func authorizeIdentity(ctx context.Context, dao store.AssistantTaskDAO, actor Actor) error {
 	if err := model.RequirePrincipal(actor.Principal); err != nil {
 		return err
 	}
@@ -78,10 +135,21 @@ func finish(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, until 
 	return now, nil
 }
 func loadTask(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, id string, lock bool) (model.AssistantTask, error) {
+	task, err := loadTaskIdentity(ctx, dao, actor, id, lock)
+	if err != nil {
+		return task, err
+	}
+	if err = scopeAdmission(ctx, dao, actor); err != nil {
+		return model.AssistantTask{}, err
+	}
+	return task, nil
+}
+
+func loadTaskIdentity(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, id string, lock bool) (model.AssistantTask, error) {
 	if !strictID(id) {
 		return model.AssistantTask{}, invalid("Task ID must be a canonical nonzero UUID.")
 	}
-	if err := authorize(ctx, dao, actor); err != nil {
+	if err := authorizeIdentity(ctx, dao, actor); err != nil {
 		return model.AssistantTask{}, err
 	}
 	task, err := dao.Task(ctx, actor.Principal.UserID, id, lock)

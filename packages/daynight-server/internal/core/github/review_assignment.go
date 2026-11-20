@@ -26,6 +26,17 @@ type ReviewAssignmentResult struct {
 // ReviewAssignment reads the caller's retained assignment in the same snapshot
 // as project authorization and the selected PR.
 func (r *Reader) ReviewAssignment(ctx context.Context, principal model.Principal, projectID string, number int64, repositoryID *int64) (ReviewAssignmentResult, error) {
+	return r.reviewAssignment(ctx, principal, projectID, number, repositoryID, nil)
+}
+
+func (r *Reader) ReviewAssignmentAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, number int64, repositoryID *int64) (ReviewAssignmentResult, error) {
+	if err := authorization.Validate(); err != nil {
+		return ReviewAssignmentResult{}, err
+	}
+	return r.reviewAssignment(ctx, authorization.Principal, projectID, number, repositoryID, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) reviewAssignment(ctx context.Context, principal model.Principal, projectID string, number int64, repositoryID *int64, check func() error) (ReviewAssignmentResult, error) {
 	if number <= 0 {
 		return ReviewAssignmentResult{}, invalid("Pull request number must be positive.")
 	}
@@ -33,7 +44,10 @@ func (r *Reader) ReviewAssignment(ctx context.Context, principal model.Principal
 		return ReviewAssignmentResult{}, invalid("Repository ID must be positive.")
 	}
 	var result ReviewAssignmentResult
-	err := r.snapshot(ctx, principal, projectID, func(s store.SnapshotScope, id string) error {
+	err := r.snapshot(ctx, principal, projectID, nil, func(s store.SnapshotScope, id string) error {
+		if err := checkPullRequestScope(ctx, s, id, number, repositoryID, check); err != nil {
+			return err
+		}
 		dao := s.GitHubDAO()
 		if _, err := dao.Connection(ctx, id); err != nil {
 			return err

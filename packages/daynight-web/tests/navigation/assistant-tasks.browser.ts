@@ -74,6 +74,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.goto(`/bots/tasks/${taskId}`);
       const detail = page.locator('.assistant-task-detail');
       await expect(detail.getByRole('heading', { name: 'Original manual' })).toBeVisible();
+      await expect(detail.locator('.markdown-content p').first()).toHaveCSS('font-size', '14px');
       await noOverflow(page);
       await detail.getByRole('button', { name: 'Pause', exact: true }).focus();
       await page.keyboard.press('Tab'); await expect(detail.getByRole('button', { name: 'Release', exact: true })).toBeFocused();
@@ -82,6 +83,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await detail.getByRole('button', { name: 'Pending proposals (2)' }).click();
       await expect(detail.getByText('Expands direct actions', { exact: true })).toBeVisible();
       const first = page.locator(`#proposal-${firstProposalId}`);
+      await expect(detail.locator('.assistant-task-proposals > h3')).toHaveCSS('font-size', '16px');
+      await expect(first.locator('h4')).toHaveCSS('font-size', '14px');
       await first.getByRole('button', { name: 'Approve', exact: true }).focus(); await page.keyboard.press('Enter');
       await expect(detail.getByRole('button', { name: 'Pending proposals (1)' })).toBeVisible();
       const second = page.locator(`#proposal-${secondProposalId}`);

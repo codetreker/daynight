@@ -2,7 +2,11 @@ package oauth
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
@@ -13,6 +17,9 @@ const authorizationCapacityLock int64 = 0x444e4f4155544841
 var _ store.AuthorizationDAO = (*DAO)(nil)
 
 func (d *DAO) InsertAuthorization(ctx context.Context, a store.OAuthAuthorization, limit int, now time.Time) (bool, error) {
+	if err := validateApprovedScopes(a); err != nil {
+		return false, err
+	}
 	if _, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock); err != nil {
 		return false, pg.AuthQueryError("lock OAuth authorization capacity", err)
 	}
@@ -29,11 +36,11 @@ func (d *DAO) InsertAuthorization(ctx context.Context, a store.OAuthAuthorizatio
 	if count >= limit {
 		return false, nil
 	}
-	_, err = d.tx.Exec(ctx, `INSERT INTO oauth_authorizations (id,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,created_at,expires_at,retain_until) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, a.ID, a.BindingHash, a.Client, a.ClientID, a.RedirectURI, a.Resource, a.Scope, a.Challenge, a.State, a.StatePresent, a.Status, a.CreatedAt, a.ExpiresAt, a.RetainUntil)
+	_, err = d.tx.Exec(ctx, `INSERT INTO oauth_authorizations (id,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,created_at,expires_at,retain_until,approved_business_scopes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, a.ID, a.BindingHash, a.Client, a.ClientID, a.RedirectURI, a.Resource, a.Scope, a.Challenge, a.State, a.StatePresent, a.Status, a.CreatedAt, a.ExpiresAt, a.RetainUntil, a.ApprovedScopes)
 	return err == nil, pg.AuthQueryError("insert OAuth authorization", err)
 }
 
-const authorizationColumns = `id::text,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,COALESCE(user_id::text,''),COALESCE(grant_id::text,''),code_hash,created_at,expires_at,code_expires_at,retain_until`
+const authorizationColumns = `id::text,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,COALESCE(user_id::text,''),COALESCE(grant_id::text,''),code_hash,created_at,expires_at,code_expires_at,retain_until,approved_business_scopes`
 
 func (d *DAO) readAuthorization(ctx context.Context, where string, arg any, lock bool) (store.OAuthAuthorization, error) {
 	var a store.OAuthAuthorization
@@ -41,7 +48,7 @@ func (d *DAO) readAuthorization(ctx context.Context, where string, arg any, lock
 	if lock {
 		q += ` FOR UPDATE`
 	}
-	err := d.tx.QueryRow(ctx, q, arg).Scan(&a.ID, &a.BindingHash, &a.Client, &a.ClientID, &a.RedirectURI, &a.Resource, &a.Scope, &a.Challenge, &a.State, &a.StatePresent, &a.Status, &a.UserID, &a.GrantID, &a.CodeHash, &a.CreatedAt, &a.ExpiresAt, &a.CodeExpiresAt, &a.RetainUntil)
+	err := scanAuthorization(d.tx.QueryRow(ctx, q, arg), &a)
 	return a, pg.AuthQueryError("read OAuth authorization", err)
 }
 func (d *DAO) Authorization(ctx context.Context, id string, lock bool) (store.OAuthAuthorization, error) {
@@ -51,7 +58,10 @@ func (d *DAO) AuthorizationByCode(ctx context.Context, hash []byte, lock bool) (
 	return d.readAuthorization(ctx, `code_hash=$1`, hash, lock)
 }
 func (d *DAO) UpdateAuthorization(ctx context.Context, a store.OAuthAuthorization) error {
-	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET state=$2,state_present=$9,status=$3,user_id=NULLIF($4,'')::uuid,grant_id=NULLIF($5,'')::uuid,code_hash=$6,code_expires_at=$7,retain_until=$8 WHERE id=$1`, a.ID, a.State, a.Status, a.UserID, a.GrantID, a.CodeHash, a.CodeExpiresAt, a.RetainUntil, a.StatePresent)
+	if err := validateApprovedScopes(a); err != nil {
+		return err
+	}
+	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET state=$2,state_present=$9,status=$3,user_id=NULLIF($4,'')::uuid,grant_id=NULLIF($5,'')::uuid,code_hash=$6,code_expires_at=$7,retain_until=$8,approved_business_scopes=$10 WHERE id=$1`, a.ID, a.State, a.Status, a.UserID, a.GrantID, a.CodeHash, a.CodeExpiresAt, a.RetainUntil, a.StatePresent, a.ApprovedScopes)
 	return pg.AuthQueryError("update OAuth authorization", err)
 }
 func (d *DAO) LockAuthorizationCapacity(ctx context.Context) error {
@@ -68,7 +78,7 @@ func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit in
 	var result []store.OAuthAuthorization
 	for rows.Next() {
 		var a store.OAuthAuthorization
-		if err := rows.Scan(&a.ID, &a.BindingHash, &a.Client, &a.ClientID, &a.RedirectURI, &a.Resource, &a.Scope, &a.Challenge, &a.State, &a.StatePresent, &a.Status, &a.UserID, &a.GrantID, &a.CodeHash, &a.CreatedAt, &a.ExpiresAt, &a.CodeExpiresAt, &a.RetainUntil); err != nil {
+		if err := scanAuthorization(rows, &a); err != nil {
 			return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
 		}
 		result = append(result, a)
@@ -91,4 +101,24 @@ func (d *DAO) AuthorizationCleanupCursor(ctx context.Context) (int, error) {
 func (d *DAO) SetAuthorizationCleanupCursor(ctx context.Context, next int) error {
 	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorization_cleanup_cursor SET next_kind=$1 WHERE singleton=true`, next)
 	return pg.AuthQueryError("advance OAuth authorization cleanup cursor", err)
+}
+
+func scanAuthorization(row pgx.Row, a *store.OAuthAuthorization) error {
+	if err := row.Scan(&a.ID, &a.BindingHash, &a.Client, &a.ClientID, &a.RedirectURI, &a.Resource, &a.Scope, &a.Challenge, &a.State, &a.StatePresent, &a.Status, &a.UserID, &a.GrantID, &a.CodeHash, &a.CreatedAt, &a.ExpiresAt, &a.CodeExpiresAt, &a.RetainUntil, &a.ApprovedScopes); err != nil {
+		return err
+	}
+	return validateApprovedScopes(*a)
+}
+
+func validateApprovedScopes(a store.OAuthAuthorization) error {
+	if a.ApprovedScopes == nil {
+		return nil
+	}
+	if a.Scope != "daynight:mcp" || (a.Status != "approved" && a.Status != "consumed") {
+		return fmt.Errorf("invalid OAuth authorization scope state")
+	}
+	if _, err := scopepolicy.NewPolicy(scopepolicy.MCP, a.ApprovedScopes, 1); err != nil {
+		return fmt.Errorf("invalid approved OAuth scopes: %w", err)
+	}
+	return nil
 }

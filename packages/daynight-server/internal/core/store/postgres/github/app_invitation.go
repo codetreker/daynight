@@ -23,6 +23,23 @@ func scanAppInvitation(row rowScanner, extra ...any) (githubpr.AppInvitation, er
 	return i, nil
 }
 
+func (d *appAdminDAO) AvailableAdminInvitation(ctx context.Context, hash []byte) (store.GitHubAdminInvitationRef, error) {
+	var ref store.GitHubAdminInvitationRef
+	var secrets bool
+	err := d.tx.QueryRow(ctx, `SELECT i.id::text,i.app_resource_id::text,i.expires_at, a.private_key_pem IS NOT NULL AND a.webhook_secret IS NOT NULL
+ FROM github_app_admin_invitations i JOIN github_apps a ON a.id=i.app_resource_id AND a.deleted_at IS NULL
+ JOIN github_app_admins m ON m.app_resource_id=i.app_resource_id AND m.user_id=i.created_by AND m.version=i.issuer_membership_version
+ WHERE i.token_hash=$1 AND i.revoked_at IS NULL AND i.consumed_at IS NULL AND i.expires_at>statement_timestamp()`, hash).Scan(&ref.ID, &ref.AppID, &ref.ExpiresAt, &secrets)
+	if err != nil {
+		return store.GitHubAdminInvitationRef{}, pg.QueryError("check github admin invitation availability", err)
+	}
+	if !secrets {
+		return store.GitHubAdminInvitationRef{}, fmt.Errorf("live github app credentials are missing")
+	}
+	ref.ExpiresAt = ref.ExpiresAt.UTC()
+	return ref, nil
+}
+
 func (d *appAdminDAO) Invitation(ctx context.Context, appID, invitationID string) (githubpr.AppInvitation, error) {
 	i, err := scanAppInvitation(d.tx.QueryRow(ctx, `SELECT `+appInvitationFields+` FROM github_app_admin_invitations i WHERE i.app_resource_id=$1 AND i.id=$2`, appID, invitationID))
 	if err != nil {

@@ -3318,6 +3318,21 @@ allows a new explicit decision with a freshly observed exact version.
 
 ## Review configuration and startup
 
+For assigned PRs, enable review participation for the Worker and run `daynight worker run`. The Worker reads the complete assigned list from the service and
+checks GitHub before each review. It uses Copilot directly and does not create a
+Daynight Session. Git, authenticated GitHub CLI and Copilot CLI must be available.
+Reviewer prompts are independent user, project and Worker resources and are
+appended in that order. Polling or prompt failures do not stop development tasks.
+
+When switching from `daynight review run`, stop that process first. Worker review
+uses `~/.daynight/reviewer/` (or `$DN_CONFIG_DIR/reviewer/`) for its own database,
+lock, clones, worktrees, logs and Copilot state. It does not import or remove the
+standalone reviewer's state. The new state has no shared review history, so an
+otherwise eligible PR may be reviewed again. Disabling participation stops new
+and active reviews while retained publication checks and terminal cleanup continue.
+
+The standalone commands below retain their independent configuration and state:
+
 Register a repository explicitly, or let the first review operation guide registration:
 
 ```text

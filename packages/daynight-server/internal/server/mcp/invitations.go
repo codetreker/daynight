@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -26,10 +27,11 @@ type invitationProjects interface {
 	AcceptInvitation(context.Context, model.Principal, string, string) (projectcore.InvitationAcceptance, error)
 }
 type invitationAdapter struct {
-	identity personalTeamResolver
-	teams    invitationTeams
-	projects invitationProjects
-	origin   string
+	identity        personalTeamResolver
+	teams           invitationTeams
+	projects        invitationProjects
+	origin          string
+	allowScopedTeam bool
 }
 
 type teamInvitation struct {
@@ -139,6 +141,21 @@ type invitationPage struct {
 
 // RegisterInvitationTools registers only complete invitation adapters.
 func RegisterInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects invitationProjects, origin string) error {
+	return registerInvitationTools(e, identity, teams, projects, origin, nil)
+}
+
+// RegisterScopedInvitationTools admits each invitation branch against the request policy.
+func RegisterScopedInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects invitationProjects, origin string, authorization teamservice.AuthorizationProvider) error {
+	if authorization == nil {
+		return errors.New("invitation credential authorization is required")
+	}
+	if !scopeProtected(teams) || !scopeProtected(projects) {
+		return errors.New("scoped Team and Project invitation services are required")
+	}
+	return registerInvitationTools(e, identity, teams, projects, origin, authorization)
+}
+
+func registerInvitationTools(e *Entry, identity personalTeamResolver, teams invitationTeams, projects invitationProjects, origin string, authorization teamservice.AuthorizationProvider) error {
 	if identity == nil || teams == nil || projects == nil {
 		return errors.New("invitation services are required")
 	}
@@ -146,7 +163,7 @@ func RegisterInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 	if err := json.Unmarshal([]byte(invitationSchemas), &tools); err != nil {
 		return err
 	}
-	a := &invitationAdapter{identity, teams, projects, origin}
+	a := &invitationAdapter{identity: identity, teams: teams, projects: projects, origin: origin, allowScopedTeam: authorization != nil}
 	for i := range tools {
 		var handler func(context.Context, RequestActor, invitationInput) (ToolResult, error)
 		switch tools[i].Name {
@@ -163,12 +180,41 @@ func RegisterInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 		default:
 			return errors.New("unknown invitation tool")
 		}
+		if authorization != nil {
+			original := handler
+			name := tools[i].Name
+			handler = func(ctx context.Context, actor RequestActor, in invitationInput) (ToolResult, error) {
+				_, write, err := a.invitationToolOperations(name, in)
+				if err != nil {
+					if write {
+						return ToolResult{WriteOutcome: "not_committed"}, err
+					}
+					return ToolResult{}, err
+				}
+				if err := verifyTeamRequestPolicy(ctx, authorization, actor); err != nil {
+					result := ToolResult{}
+					if write {
+						result.WriteOutcome = "not_committed"
+					}
+					return result, err
+				}
+				result, err := original(ctx, actor, in)
+				result = scopeRefusalResult(result, err, write)
+				return result, err
+			}
+		}
 		register := RegisterTypedTool[invitationInput]
 		if tools[i].Name == "team_invitation_list" || tools[i].Name == "invitation_inspect" {
 			register = registerTypedReadTool[invitationInput]
 		}
 		if err := register(e, &tools[i], BudgetControl, handler, "team", "invitationId", "link", "cursor"); err != nil {
 			return err
+		}
+		if authorization != nil {
+			if e.scopedTools == nil {
+				e.scopedTools = make(map[string]bool)
+			}
+			e.scopedTools[tools[i].Name] = true
 		}
 	}
 	return nil
@@ -253,6 +299,9 @@ func (a *invitationAdapter) inspect(ctx context.Context, actor RequestActor, in 
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil && !a.allowScopedTeam {
+			return ToolResult{}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.InspectInvitation(ctx, actor.Principal, secret)
 		if err != nil {
 			return ToolResult{}, err
@@ -283,6 +332,9 @@ func (a *invitationAdapter) accept(ctx context.Context, actor RequestActor, in i
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil && !a.allowScopedTeam {
+			return ToolResult{WriteOutcome: "not_committed"}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.AcceptInvitation(ctx, actor.Principal, secret, actor.Principal.UserID)
 		if err != nil {
 			return ToolResult{}, err

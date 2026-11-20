@@ -8,6 +8,8 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
@@ -16,12 +18,18 @@ import (
 
 // ConfigManager coordinates credential proofs and App configuration transactions.
 type ConfigManager struct {
-	db     store.GitHubAppConfigStore
-	verify appVerifier
+	db      store.GitHubAppConfigStore
+	verify  appVerifier
+	current AuthorizationReader
 }
 
 func NewConfigManager(db store.GitHubAppConfigStore) *ConfigManager {
 	return &ConfigManager{db: db, verify: remote.VerifyApp}
+}
+
+// NewScopedConfigManager supplies current authority for post-proof admission.
+func NewScopedConfigManager(db store.GitHubAppConfigStore, current AuthorizationReader) *ConfigManager {
+	return &ConfigManager{db: db, verify: remote.VerifyApp, current: current}
 }
 
 func appConfigCompletion(c store.Completion, err error, proven bool) error {
@@ -61,6 +69,19 @@ func appProofError(ctx context.Context, err error) error {
 }
 
 func (m *ConfigManager) UpdateApp(ctx context.Context, p model.Principal, id string, in core.UpdateAppInput) (core.AppMetadata, error) {
+	return m.updateApp(ctx, p, id, in, nil, nil)
+}
+
+func (m *ConfigManager) UpdateAppAuthorized(ctx context.Context, auth model.CredentialAuthorization, id string, in core.UpdateAppInput) (core.AppMetadata, error) {
+	if err := auth.Validate(); err != nil {
+		return core.AppMetadata{}, err
+	}
+	return m.updateApp(ctx, auth.Principal, id, in, func() error { return scopeadmission.Require(auth, scopepolicy.GithubManage, scopepolicy.GithubRead) }, func(ctx context.Context) error {
+		return currentAdmission(ctx, m.current, auth, scopepolicy.GithubManage, scopepolicy.GithubRead)
+	})
+}
+
+func (m *ConfigManager) updateApp(ctx context.Context, p model.Principal, id string, in core.UpdateAppInput, admit func() error, afterProof func(context.Context) error) (core.AppMetadata, error) {
 	budget := core.OperationTimeout
 	if in.PrivateKeyPEM != nil || in.WebhookSecret != nil {
 		budget = 45 * time.Second
@@ -71,11 +92,16 @@ func (m *ConfigManager) UpdateApp(ctx context.Context, p model.Principal, id str
 		return core.AppMetadata{}, err
 	}
 	var proof *core.AppUpdateProof
-	if in.PrivateKeyPEM != nil || in.WebhookSecret != nil {
+	preRead := in.PrivateKeyPEM != nil || in.WebhookSecret != nil
+	if preRead {
 		var facts store.GitHubAppConfigFacts
 		var refusal *model.Fault
 		err := m.db.ReadGitHubAppConfig(ctx, id, func(dao store.GitHubAppConfigReader) error {
-			return completion.Capture(func() error { var e error; facts, e = core.ReadAppConfigForUpdate(ctx, dao, p, in); return e }, &refusal)
+			return completion.Capture(func() error {
+				var e error
+				facts, e = core.ReadAppConfigForUpdateWithAdmission(ctx, dao, p, in, admit)
+				return e
+			}, &refusal)
 		})
 		if err != nil {
 			return core.AppMetadata{}, err
@@ -99,10 +125,14 @@ func (m *ConfigManager) UpdateApp(ctx context.Context, p model.Principal, id str
 			proof = &core.AppUpdateProof{MembershipVersion: facts.MembershipVersion, Version: facts.App.Version, GitHubAppID: facts.App.GitHubAppID, GitHubName: identity.Name, GitHubSlug: identity.Slug}
 		}
 	}
+	postProof := admit
+	if preRead && afterProof != nil {
+		postProof = func() error { return afterProof(ctx) }
+	}
 	var result core.AppMetadata
 	c, err := m.db.WriteGitHubAppConfig(ctx, id, func(dao store.GitHubAppConfigWriter) error {
 		var e error
-		result, e = core.UpdateApp(ctx, dao, p, in, proof)
+		result, e = core.UpdateAppWithAdmission(ctx, dao, p, in, proof, postProof)
 		return e
 	})
 	if err = appConfigCompletion(c, err, proof != nil); err != nil {
@@ -112,11 +142,24 @@ func (m *ConfigManager) UpdateApp(ctx context.Context, p model.Principal, id str
 }
 
 func (m *ConfigManager) RemoveApp(ctx context.Context, p model.Principal, id string, in core.RemoveAppInput) error {
+	return m.removeApp(ctx, p, id, in, nil)
+}
+
+func (m *ConfigManager) RemoveAppAuthorized(ctx context.Context, auth model.CredentialAuthorization, id string, in core.RemoveAppInput) error {
+	if err := auth.Validate(); err != nil {
+		return err
+	}
+	return m.removeApp(ctx, auth.Principal, id, in, func() error { return scopeadmission.Require(auth, scopepolicy.GithubManage) })
+}
+
+func (m *ConfigManager) removeApp(ctx context.Context, p model.Principal, id string, in core.RemoveAppInput, admit func() error) error {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	if err := core.ValidateRemoveApp(p, id, in); err != nil {
 		return err
 	}
-	c, err := m.db.WriteGitHubAppConfig(ctx, id, func(dao store.GitHubAppConfigWriter) error { return core.RemoveApp(ctx, dao, p, in) })
+	c, err := m.db.WriteGitHubAppConfig(ctx, id, func(dao store.GitHubAppConfigWriter) error {
+		return core.RemoveAppWithAdmission(ctx, dao, p, in, admit)
+	})
 	return appConfigCompletion(c, err, false)
 }

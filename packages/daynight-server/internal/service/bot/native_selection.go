@@ -8,6 +8,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/google/uuid"
@@ -22,6 +23,17 @@ func NewWithNativeDiscovery(database botStore, requester modelRequester) *Bots {
 	service := New(database)
 	service.models = requester
 	return service
+}
+
+// NewScopedWithNativeDiscovery applies the same admission before discovery and
+// again inside the Bot write transaction.
+func NewScopedWithNativeDiscovery(database botStore, requester modelRequester, authorization DefinitionAuthorizationSource) (*Bots, error) {
+	service, err := NewScoped(database, authorization)
+	if err != nil {
+		return nil, err
+	}
+	service.models = requester
+	return service, nil
 }
 
 func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, input botcore.CreateBot) (*botcore.CreationResolution, error) {
@@ -70,14 +82,14 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	if err != nil {
 		return nil, err
 	}
-	final, err := s.resolveNative(ctx, principal, base, input.Overrides, preference, baseline)
+	final, err := s.resolveNative(ctx, principal, base, input.Overrides, preference, baseline, definitionProjection(ctx, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)...)
 	if err != nil {
 		return nil, err
 	}
 	return &botcore.CreationResolution{Expected: base, ExpectedBaseline: baseline, ExpectedPreference: preference, Configuration: final}, nil
 }
 
-func (s *Bots) readModels(ctx context.Context, principal model.Principal, base model.BotConfiguration, selected *string) (ro.ModelResult, error) {
+func (s *Bots) readModels(ctx context.Context, principal model.Principal, base model.BotConfiguration, selected *string, operations ...scopepolicy.Operation) (ro.ModelResult, error) {
 	if s.models == nil {
 		return ro.ModelResult{}, nativeFailure("unsupported_native_selection", "Worker native selection discovery is unavailable.")
 	}
@@ -87,6 +99,9 @@ func (s *Bots) readModels(ctx context.Context, principal model.Principal, base m
 	var fence ro.Fence
 	seen := map[string]bool{}
 	for page := 0; page < 500; page++ {
+		if err := s.discoveryAdmission(ctx, principal, operations...); err != nil {
+			return catalog, err
+		}
 		raw, err := json.Marshal(input)
 		if err != nil {
 			return catalog, err
@@ -138,7 +153,7 @@ func (s *Bots) readModels(ctx context.Context, principal model.Principal, base m
 }
 func nativeFailure(code, message string) error { return &model.Fault{Code: code, Message: message} }
 
-func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, base model.BotConfiguration, overrides model.BotOverrides, preference model.BotNativePreference, baseline model.BotConfiguration) (model.BotConfiguration, error) {
+func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, base model.BotConfiguration, overrides model.BotOverrides, preference model.BotNativePreference, baseline model.BotConfiguration, operations ...scopepolicy.Operation) (model.BotConfiguration, error) {
 	ctx, cancel := context.WithTimeout(ctx, ro.ModelRequestTimeout)
 	defer cancel()
 	selected := base.Model
@@ -153,7 +168,7 @@ func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, bas
 	if base.Selection.ModelSource == "preference" {
 		probeModel = nil
 	}
-	catalog, err := s.readModels(ctx, principal, base, probeModel)
+	catalog, err := s.readModels(ctx, principal, base, probeModel, operations...)
 	if err != nil {
 		return base, err
 	}
@@ -161,7 +176,7 @@ func (s *Bots) resolveNative(ctx context.Context, principal model.Principal, bas
 		if botcore.NativeModel(catalog, selected) == nil {
 			selected = nil
 		} else {
-			catalog, err = s.readModels(ctx, principal, base, selected)
+			catalog, err = s.readModels(ctx, principal, base, selected, operations...)
 			if err != nil {
 				return base, err
 			}

@@ -54,7 +54,7 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 			projection = preCancellationTaskJSON
 		}
 		if table == "personal_access_tokens" {
-			projection = `(to_jsonb(t)-'last_used_at'-'description')`
+			projection = `(to_jsonb(t)-'last_used_at'-'description'-'business_scopes'-'scope_version')`
 		}
 		if table == "projects" {
 			// Later migrations add lifecycle, catalog and repository fields.

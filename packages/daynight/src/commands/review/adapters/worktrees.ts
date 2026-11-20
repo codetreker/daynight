@@ -6,7 +6,7 @@ import { ancestorIdentities, resolvePhysicalDirectory } from "../../../platform/
 import { executeCommand, prepareGitHubAuthentication, sanitizedProcessError } from "./github.js";
 import type { CommandExecutor, GitHubClient, GitHubRepository } from "./github.js";
 import type { Store } from "../store.js";
-import type { OperationsStopped, ProcessesExcluded, PullRequestIdentity, PullRequestState, ReviewState } from "../model.js";
+import type { OperationsStopped, ProcessesExcluded, PullRequestIdentity, PullRequestState, RepositoryState, ReviewState } from "../model.js";
 
 export type LocalRepository = {
   configuration: RepositoryConfiguration;
@@ -160,9 +160,10 @@ export const createGitManager = (options: {
     const common = await command(requested.ancestorPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal);
     return { root: requested.ancestorPath, commonDirectory: (await existingDirectory(common)).ancestorPath };
   };
-  const ensureRepository = async (configuration: RepositoryConfiguration, signal?: AbortSignal): Promise<LocalRepository> => {
+  const ensureRepository = async (configuration: RepositoryConfiguration, signal?: AbortSignal, expectedId?: string, registration?: RepositoryState | null): Promise<LocalRepository> => {
     signal?.throwIfAborted();
     const repository = await options.client.resolveRepository(configuration, signal);
+    if (expectedId !== undefined && repository.githubId !== expectedId) throw new Error("The assigned repository no longer has the expected GitHub identity.");
     signal?.throwIfAborted();
     const target = await resolvePhysicalDirectory(configuration.path);
     if (target.missingComponents.length !== 0) {
@@ -195,8 +196,26 @@ export const createGitManager = (options: {
     if (origins.length !== 1 || origins[0] === "") throw new Error("The configured repository must have exactly one origin URL.");
     const identity = remoteIdentity(origins[0]!, "Git origin");
     if (identity.host !== configuration.host) throw new Error("The configured repository origin has a different GitHub host.");
-    const originRepository = await options.client.resolveRepository({ ...configuration, ...identity, remote: origins[0]! }, signal);
-    if (originRepository.host !== repository.host || originRepository.githubId !== repository.githubId) throw new Error("The configured repository origin identifies a different GitHub repository.");
+    const recorded = registration == null ? null : remoteIdentity(registration.remote, "Registered repository remote");
+    const canRename = registration != null && expectedId !== undefined && registration.host === repository.host && registration.githubId === expectedId &&
+      await sameDirectory(registration.localPath, directories.root) && recorded?.coordinate === identity.coordinate && identity.coordinate !== configuration.coordinate;
+    if (canRename) {
+      // The durable registration binds the old origin and physical clone to this stable ID.
+      // The newly resolved coordinate is authoritative even when the old name was reused.
+      const rootIdentity = (await existingDirectory(directories.root)).ancestorIdentity;
+      const commonIdentity = (await existingDirectory(directories.commonDirectory)).ancestorIdentity;
+      try {
+        await git(directories.root, ["config", "--local", "--replace-all", "remote.origin.url", configuration.remote], signal);
+        const checked = await rootAndCommon(directories.root, signal);
+        if ((await existingDirectory(checked.root)).ancestorIdentity !== rootIdentity || (await existingDirectory(checked.commonDirectory)).ancestorIdentity !== commonIdentity ||
+          await command(checked.root, ["config", "--local", "--get-all", "remote.origin.url"], signal) !== configuration.remote) throw new Error("The repository identity or origin changed while updating its coordinate.");
+      } catch (error) {
+        throw new GitCommandError("The repository origin update could not be confirmed; its original ownership must be reconciled.", error, false);
+      }
+    } else {
+      const originRepository = await options.client.resolveRepository({ ...configuration, ...identity, remote: origins[0]! }, signal);
+      if (originRepository.host !== repository.host || originRepository.githubId !== repository.githubId) throw new Error("The configured repository origin identifies a different GitHub repository.");
+    }
     return { configuration, repository, ...directories,
       rootIdentity: (await existingDirectory(directories.root)).ancestorIdentity,
       commonIdentity: (await existingDirectory(directories.commonDirectory)).ancestorIdentity };

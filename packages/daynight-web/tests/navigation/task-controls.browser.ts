@@ -1427,7 +1427,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 39
       expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
       await description.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(5, 15); });
       await form.getByRole('button', { name: /^(Preview|预览)$/ }).tap();
-      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '16px');
+      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '14px');
       await form.getByRole('button', { name: /^(Edit|编辑)$/ }).tap();
       await expect(description).toHaveValue(text);
       expect(await description.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 15]);
@@ -1457,10 +1457,34 @@ for (const [width, touch] of [[768, false], [1360, false], [1360, true]] as cons
     try {
       await install(page); await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
       expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(touch);
+      await page.locator('.task-detail-page .assignee-trigger').click();
+      const search = page.locator('.assignee-menu .assignee-search');
+      await expect(search).toBeFocused();
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await expect(search).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+      }
+      await search.press('Escape');
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
       await page.getByRole('button', { name: 'Add step', exact: true }).click();
       const form = page.locator('.step-add-form');
       await expect(form.locator('input, textarea')).toHaveCount(2);
-      for (const field of await form.locator('input, textarea').all()) await expect(field).toHaveCSS('font-size', touch ? '16px' : '14px');
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        for (const field of await form.locator('input, textarea').all()) await expect(field).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+        await expect(page.locator('.steps-counts')).toHaveCSS('font-size', `${root * 0.75}px`);
+        await expect(page.locator('.step-title').first()).toHaveCSS('font-size', `${root * 0.875}px`);
+      }
+      await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+      const row = page.locator('.step-row[data-step-id="00000001"]');
+      await row.locator('.step-disclosure').click();
+      await row.getByRole('button', { name: 'Edit step' }).click();
+      const fields = page.locator('.step-edit-form textarea');
+      await expect(fields).toHaveCount(2);
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        for (const field of await fields.all()) await expect(field).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+      }
     } finally { await context.close(); }
   });
 }

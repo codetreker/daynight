@@ -58,6 +58,7 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
     let onGet: (() => void) | undefined;
     const client: GitHubClient = {
       resolveRepository: async (config) => ({ ...repository, githubId: config.owner === "owner" && config.name === "repo" ? "42" : "43", host: config.host }),
+      resolveRepositoryById: async (identity) => ({ ...repository, ...identity }),
       listPullRequestNumbers: async () => [101],
       listOpenPullRequests: async () => [observation],
       getPullRequest: async () => { onGet?.(); return { ...observation }; },

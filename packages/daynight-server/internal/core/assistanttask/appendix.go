@@ -117,6 +117,7 @@ func CompareRelatedAppendices(a, b model.AssistantTaskAppendix, input RelatedApp
 // ranks the appendices, so the query never materializes a task's full appendix
 // set.
 func (m *Module) RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	actor = actor.requiringBranches("RelatedAppendix", "default")
 	result := model.AssistantTaskRelatedAppendices{Items: []model.AssistantTaskAppendix{}}
 	if input.ProjectID != "" && !strictID(input.ProjectID) || input.EventType != "" && !knownEventType(input.EventType) || input.ItemCategory != "" && !appendixCategoryValid(input.ItemCategory) {
 		return result, invalid("Related appendix queries require a canonical project ID, a known event type and a nonblank item category of at most 200 bytes when given.")
@@ -140,6 +141,7 @@ func (m *Module) RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO
 // refused. The registration is unique per outcome record and appendix, and the
 // counts change in the same transaction as the registration.
 func (m *Module) ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	actor = actor.requiringBranches("ValidateAppendix", "default")
 	var result model.AssistantTaskAppendix
 	if !strictID(input.ID) || !strictID(input.OutcomeRecordID) {
 		return result, invalid("Appendix ID and outcome record ID must be canonical UUIDs.")
