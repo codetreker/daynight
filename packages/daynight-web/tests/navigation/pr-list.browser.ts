@@ -32,6 +32,10 @@ for (const width of [1280, 320]) test(`PR typography and responsive search retai
   await expect(search).toHaveAttribute('data-touch-text', 'responsive');
   await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '14px');
   if (width === 320) expect(await search.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '12px'; });
+  await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '10.5px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '9px');
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await search.fill('Pull request'); await search.focus();
   await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 5));
   await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });

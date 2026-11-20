@@ -5,7 +5,7 @@ import { completeContextGraph } from '../helpers/graphData';
 const rootId = '00000000-0000-4000-8000-000000000030';
 const expected = expectedDependencyTopology(completeContextGraph.tasks, rootId);
 
-for (const rootSize of [16, 24]) test(`graph text and geometry remain independent of view zoom at ${rootSize}px root`, async ({ page }, info) => {
+for (const rootSize of [12, 16, 24]) test(`graph text and geometry remain independent of view zoom at ${rootSize}px root`, async ({ page }, info) => {
   await page.goto('/tests/navigation/graph-browser.html');
   await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
   await page.getByRole('button', { name: 'Open graph' }).click();
@@ -16,7 +16,7 @@ for (const rootSize of [16, 24]) test(`graph text and geometry remain independen
   await expect(card.locator('.task-node-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
   await expect(page.locator('.task-chain-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
   await expect(page.locator('.task-chain-meta > .graph-status')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
-  await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(300 * rootSize / 16);
+  await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(300 * Math.max(rootSize / 16, 1));
   await body.focus();
   await body.press('Enter');
   await expect(body).toHaveAttribute('aria-pressed', 'true');

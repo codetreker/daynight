@@ -6,7 +6,7 @@ for (const width of [320, 1280]) test(`axis and label rows follow root text size
   await page.setViewportSize({ width, height: 700 });
   await page.goto(fixture);
   const scrolls = page.locator('.bar-chart__scroll');
-  for (const variant of [{ root: 16, zoom: 1 }, { root: 24, zoom: 1 }, { root: 24, zoom: 2 }]) {
+  for (const variant of [{ root: 12, zoom: 1 }, { root: 16, zoom: 1 }, { root: 24, zoom: 1 }, { root: 24, zoom: 2 }]) {
     await page.reload();
     await page.evaluate(({ root, zoom }) => {
       document.documentElement.style.fontSize = `${root}px`;
