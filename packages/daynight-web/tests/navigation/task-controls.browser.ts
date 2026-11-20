@@ -1292,7 +1292,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 39
       expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
       await description.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(5, 15); });
       await form.getByRole('button', { name: /^(Preview|预览)$/ }).tap();
-      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '16px');
+      await expect(form.locator('.step-add-preview p').first()).toHaveCSS('font-size', '14px');
       await form.getByRole('button', { name: /^(Edit|编辑)$/ }).tap();
       await expect(description).toHaveValue(text);
       expect(await description.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 15]);

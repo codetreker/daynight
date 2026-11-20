@@ -30,3 +30,215 @@
      if (!invalid) {
        renderEndTime = endTime.toDate();
      }
+--- a/dist/chunks/mermaid.core/xychartDiagram-4URNHDU4.mjs
++++ b/dist/chunks/mermaid.core/xychartDiagram-4URNHDU4.mjs
+@@ -1488,8 +1488,8 @@
+       }
+     ];
+     if (this.plotData.pointLabels && this.plotData.pointLabels.length > 0) {
+-      const labelOffset = 10;
+-      const fontSize = 12;
++      const fontSize = getConfig().fontSize || 16;
++      const labelOffset = Math.max(10, fontSize / 2 + 4);
+       const textData = [];
+       for (const [i, [px, py]] of finalData.entries()) {
+         const label = this.plotData.pointLabels[i];
+@@ -1661,12 +1661,28 @@
+   return new BasePlot(chartConfig, chartData, chartThemeConfig);
+ }
+ __name(getPlotComponent, "getPlotComponent");
+-
++// Measure line labels before assigning axis ranges, including the space between
++// each label and its point. This keeps extrema and long labels in the viewBox.
++function measureLineLabels(chartData, parent) {
++  const labels = chartData.plots.flatMap((plot) => plot.type === "line" ? plot.pointLabels ?? [] : []).filter(Boolean);
++  if (!labels.length) return { width: 0, height: 0, offset: 0 };
++  const fontSize = getConfig().fontSize || 16;
++  const dimensions = new TextDimensionCalculatorWithFont(parent).getMaxDimension(labels, fontSize);
++  return { width: Math.min(dimensions.width, 3000), height: dimensions.height, offset: Math.max(10, fontSize / 2 + 4) };
++}
++function requireLabelCanvas(width, height) {
++  if (width > 16384 || height > 16384) {
++    const error = new Error("XY chart label layout exceeds the available canvas");
++    error.name = "XYChartLabelLayoutLimitError";
++    throw error;
++  }
++}
+ // src/diagrams/xychart/chartBuilder/orchestrator.ts
+ var Orchestrator = class {
+   constructor(chartConfig, chartData, chartThemeConfig, tmpSVGGroup2) {
+     this.chartConfig = chartConfig;
+     this.chartData = chartData;
++    this.lineLabel = measureLineLabels(chartData, tmpSVGGroup2);
+     this.componentStore = {
+       title: getChartTitleComponent(chartConfig, chartData, chartThemeConfig, tmpSVGGroup2),
+       plot: getPlotComponent(chartConfig, chartData, chartThemeConfig),
+@@ -1756,9 +1772,9 @@
+       x: plotX + chartWidth,
+       y: plotY + Math.max((chartHeight - legendSpace.height) / 2, 0)
+     });
+-    this.componentStore.xAxis.setRange([plotX, plotX + chartWidth]);
++    this.componentStore.xAxis.setRange([plotX + this.lineLabel.width / 2, plotX + chartWidth - this.lineLabel.width / 2]);
+     this.componentStore.xAxis.setBoundingBoxXY({ x: plotX, y: plotY + chartHeight });
+-    this.componentStore.yAxis.setRange([plotY, plotY + chartHeight]);
++    this.componentStore.yAxis.setRange([plotY + (this.lineLabel.height ? this.lineLabel.offset + this.lineLabel.height / 2 : 0), plotY + chartHeight]);
+     this.componentStore.yAxis.setBoundingBoxXY({ x: 0, y: plotY });
+     if (this.chartData.plots.some((p) => isBarPlot(p))) {
+       this.componentStore.xAxis.recalculateOuterPaddingToDrawBar();
+@@ -1824,9 +1840,9 @@
+       x: plotX + chartWidth,
+       y: plotY + Math.max((chartHeight - legendSpace.height) / 2, 0)
+     });
+-    this.componentStore.yAxis.setRange([plotX, plotX + chartWidth]);
++    this.componentStore.yAxis.setRange([plotX, plotX + chartWidth - (this.lineLabel.width ? this.lineLabel.offset + this.lineLabel.width : 0)]);
+     this.componentStore.yAxis.setBoundingBoxXY({ x: plotX, y: titleYEnd });
+-    this.componentStore.xAxis.setRange([plotY, plotY + chartHeight]);
++    this.componentStore.xAxis.setRange([plotY + this.lineLabel.height / 2, plotY + chartHeight - this.lineLabel.height / 2]);
+     this.componentStore.xAxis.setBoundingBoxXY({ x: 0, y: plotY });
+     if (this.chartData.plots.some((p) => isBarPlot(p))) {
+       this.componentStore.xAxis.recalculateOuterPaddingToDrawBar();
+@@ -2096,6 +2112,14 @@
+   __name(getTextTransformation, "getTextTransformation");
+   log.debug("Rendering xychart chart\n" + txt);
+   const svg = selectSvgElement(id);
++  const scratch = svg.append("g").attr("class", "mermaid-label-measure");
++  const lineLabel = measureLineLabels(db.getXYChartData(), scratch);
++  scratch.remove();
++  if (lineLabel.width || lineLabel.height) {
++    chartConfig.width = Math.max(chartConfig.width, lineLabel.width * 2 + 200);
++    chartConfig.height = Math.max(chartConfig.height, lineLabel.height * 2 + 200);
++    requireLabelCanvas(chartConfig.width, chartConfig.height);
++  }
+   const group = svg.append("g").attr("class", "main");
+   const background = group.append("rect").attr("width", chartConfig.width).attr("height", chartConfig.height).attr("class", "background");
+   configureSvgSize(svg, chartConfig.height, chartConfig.width, true);
+@@ -2103,6 +2127,111 @@
+   background.attr("fill", themeConfig.backgroundColor);
+   db.setTmpSVGG(svg.append("g").attr("class", "mermaid-tmp-group"));
+   const shapes = db.getDrawableElem();
++  if (lineLabel.width || lineLabel.height) {
++    // Wrap without dropping source text, then lay out labels before painting.
++    // Dense and coincident points use extra lanes; leaders preserve association.
++    const measure = new TextDimensionCalculatorWithFont(svg.append("g"));
++    const context = document.createElement("canvas").getContext("2d");
++    if (!context) throw new Error("Unable to measure XY chart labels");
++    const fontSize = getConfig().fontSize || 16;
++    context.font = `${fontSize}px ${getComputedStyle(svg.node()).fontFamily}`;
++    const segmenter = new Intl.Segmenter(void 0, { granularity: "grapheme" });
++    const cache = /* @__PURE__ */ new Map();
++    const wrap = (text) => {
++      if (cache.has(text)) return cache.get(text);
++      const lines = [];
++      let line = "";
++      for (const { segment } of segmenter.segment(text)) {
++        if (segment === "\n") { lines.push(line); line = ""; continue; }
++        if (line && context.measureText(line + segment).width > 3000) {
++          lines.push(line);
++          line = segment;
++        } else line += segment;
++      }
++      lines.push(line);
++      const dimension = measure.getMaxDimension(lines, fontSize);
++      const lineHeight = Math.max(fontSize * 1.25, dimension.height);
++      const result = { lines, width: dimension.width, height: lineHeight * lines.length, lineHeight };
++      cache.set(text, result);
++      return result;
++    };
++    const occupied = [];
++    for (const shape of shapes) {
++      if (shape.type !== "text" || !["chart-title", "legend"].includes(shape.groupTexts[0])) continue;
++      for (const item of shape.data) {
++        const size = measure.getMaxDimension([item.text], item.fontSize);
++        const left = item.horizontalPos === "left" ? item.x : item.horizontalPos === "right" ? item.x - size.width : item.x - size.width / 2;
++        const top = item.verticalPos === "top" ? item.y : item.y - size.height / 2;
++        occupied.push({ left, right: left + size.width, top, bottom: top + size.height });
++      }
++    }
++    const horizontal = chartConfig.chartOrientation === "horizontal";
++    const labels = [];
++    let minX = 0, minY = 0, maxX = chartConfig.width, maxY = chartConfig.height;
++    for (const shape of shapes) {
++      if (shape.type !== "text" || shape.groupTexts[0] !== "plot" || shape.groupTexts[2] !== "labels") continue;
++      for (const item of shape.data) {
++        const dimensions = wrap(item.text);
++        const originalX = item.x, originalY = item.y;
++        let left = horizontal ? item.x : item.x - dimensions.width / 2;
++        let top = item.y - dimensions.height / 2;
++        const ordered = [...occupied].sort(horizontal ? (a, b) => a.left - b.left : (a, b) => b.bottom - a.bottom);
++        for (const other of ordered) {
++          if (left < other.right + 4 && left + dimensions.width + 4 > other.left && top < other.bottom + 4 && top + dimensions.height + 4 > other.top) {
++            if (horizontal) left = other.right + 4;
++            else top = other.top - dimensions.height - 4;
++          }
++        }
++        const label = { item, dimensions, originalX, originalY, left, top };
++        labels.push(label);
++        occupied.push({ left, right: left + dimensions.width, top, bottom: top + dimensions.height });
++        minX = Math.min(minX, left - 4);
++        minY = Math.min(minY, top - 4);
++        maxX = Math.max(maxX, left + dimensions.width + 4);
++        maxY = Math.max(maxY, top + dimensions.height + 4);
++      }
++    }
++    measure.parentGroup.remove();
++    // Compact columns keep a long series bounded even when every point has the
++    // same coordinates. Preserve source order when wrapping into a new column.
++    if (maxX - minX > 16384 || maxY - minY > 16384) {
++      let left = chartConfig.width + 16, top = 0;
++      for (const label of labels) {
++        if (top + label.dimensions.height + 4 > 16384) {
++          left += lineLabel.width + 12;
++          top = 0;
++        }
++        label.left = left;
++        label.top = top;
++        top += label.dimensions.height + 4;
++        maxX = Math.max(maxX, left + label.dimensions.width + 4);
++      }
++      minX = 0;
++      minY = 0;
++      maxX = Math.max(chartConfig.width, ...labels.map(label => label.left + label.dimensions.width + 4));
++      maxY = Math.max(chartConfig.height, ...labels.map(label => label.top + label.dimensions.height + 4));
++    }
++    requireLabelCanvas(maxX - minX, maxY - minY);
++    const guides = [], backgrounds = [];
++    for (const { item, dimensions, originalX, originalY, left, top } of labels) {
++      item.x = horizontal ? left : left + dimensions.width / 2;
++      item.y = top + dimensions.height / 2;
++      item.lines = dimensions.lines;
++      item.lineHeight = dimensions.lineHeight;
++      if (Math.abs(item.x - originalX) > 0.1 || Math.abs(item.y - originalY) > 0.1) {
++        const pointX = horizontal ? originalX - lineLabel.offset : originalX;
++        const pointY = horizontal ? originalY : originalY + lineLabel.offset;
++        guides.push({ path: `M ${pointX} ${pointY} L ${left} ${top + dimensions.height / 2}`, strokeFill: themeConfig.xAxisTickColor, strokeWidth: 1 });
++        backgrounds.push({ x: left - 2, y: top - 2, width: dimensions.width + 4, height: dimensions.height + 4, fill: themeConfig.backgroundColor, strokeWidth: 0 });
++      }
++    }
++    const firstLabel = shapes.findIndex(shape => shape.type === "text" && shape.groupTexts[0] === "plot" && shape.groupTexts[2] === "labels");
++    shapes.splice(firstLabel, 0, { groupTexts: ["label-guides"], type: "path", data: guides }, { groupTexts: ["label-backgrounds"], type: "rect", data: backgrounds });
++    if (minX < 0 || minY < 0 || maxX > chartConfig.width || maxY > chartConfig.height) {
++      svg.attr("viewBox", `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
++      configureSvgSize(svg, maxY - minY, maxX - minX, true);
++    }
++  }
+   const groups = {};
+   function getGroup(gList) {
+     let elem = group;
+@@ -2196,7 +2325,16 @@
+         }
+         break;
+       case "text":
+-        shapeGroup.selectAll("text").data(shape.data).enter().append("text").attr("x", 0).attr("y", 0).attr("fill", (data) => data.fill).attr("font-size", (data) => data.fontSize).attr("dominant-baseline", (data) => getDominantBaseLine(data.verticalPos)).attr("text-anchor", (data) => getTextAnchor(data.horizontalPos)).attr("transform", (data) => getTextTransformation(data)).text((data) => data.text);
++        shapeGroup.selectAll("text").data(shape.data).enter().append("text").attr("x", 0).attr("y", 0).attr("fill", (data) => data.fill).attr("font-size", (data) => data.fontSize).attr("dominant-baseline", (data) => getDominantBaseLine(data.verticalPos)).attr("text-anchor", (data) => getTextAnchor(data.horizontalPos)).attr("transform", (data) => getTextTransformation(data)).each(function(data) {
++          if (!data.lines || data.lines.length === 1) { this.textContent = data.text; return; }
++          for (const [index, line] of data.lines.entries()) {
++            const span = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
++            span.setAttribute("x", "0");
++            span.setAttribute("dy", String(index === 0 ? -(data.lines.length - 1) * data.lineHeight / 2 : data.lineHeight));
++            span.textContent = line;
++            this.append(span);
++          }
++        });
+         break;
+       case "path":
+         shapeGroup.selectAll("path").data(shape.data).enter().append("path").attr("d", (data) => data.path).attr("fill", (data) => data.fill ? data.fill : "none").attr("stroke", (data) => data.strokeFill).attr("stroke-width", (data) => data.strokeWidth);

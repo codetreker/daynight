@@ -2598,8 +2598,9 @@ assignments, `setProperty`, `cssText`, `setAttribute` and renderer configuration
 
 `scripts/typography-policy-baseline.json` grants temporary permission to exact
 legacy occurrences by path, diagnostic category, normalized value, syntax context
-and count, with a module owner for each entry. Selection aliases and the existing
-Mermaid font setting receive individual entries. Unrecorded uses, increased
+and count, with a module owner for each entry. Selection aliases receive individual
+entries. Mermaid font settings and theme CSS use the measured-size adapter's
+supported paths. Unrecorded uses, increased
 counts and stale entries fail. A module migration must remove or reduce its own
 entries in the same change; review baseline diffs to ensure they only shrink.
 Retired definitions must remain present while collected consumers reference

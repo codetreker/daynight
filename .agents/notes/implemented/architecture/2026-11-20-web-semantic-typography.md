@@ -19,15 +19,16 @@ The Web entry stylesheet loads six shared size values and transitional roles def
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
 baseline. The shared shell, selection controls, task filters and rows, personal
-task groups, Goal summaries, task search, Markdown reading surfaces, dependency
+task groups, Goal summaries, task search, dependency
 graphs, project overview, statistics, Worker pages and configuration, Worker
 Prompt editors, usage panels, project settings, teams, GitHub integration, pull
 requests, Webhooks, and Session controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
-count badges use the metadata role. Markdown code and tables use the interface
-role; Bot first-paragraph emphasis retains its weight without a separate size.
+count badges use the metadata role. Shared Markdown selects magnitude-based sizes
+under the [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md);
+Bot first-paragraph emphasis retains its weight without a separate size.
 Touch fields, including Step title and Markdown editors
 on coarse pointers, use the shared `--text-touch-field` size to preserve a 16 CSS
 px minimum while responding to larger browser font preferences.
@@ -69,7 +70,8 @@ The Web harness enforces size ownership using the existing CSS and TypeScript
 parsers across the complete production source tree. The central stylesheet owns
 size values and fixed transitional mappings. The migration policy replaces the
 original selection-alias and typed Mermaid theme permissions with exact legacy
-occurrences and counts. Strict checks reject local overrides, fixed font sizes,
+occurrences and counts. Mermaid now uses the measured-size adapter and its
+restricted source contract. Strict checks reject local overrides, fixed font sizes,
 numeric fallbacks, unknown aliases and invalid font shorthands, with source
 locations; only recorded legacy occurrences retain transitional permission.
 The [Web validation guide](../../../../packages/daynight-web/README.md#typography-validation)
