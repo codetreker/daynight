@@ -340,14 +340,22 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		// The public assistant task inbox logs only an allowlist of server-derived
 		// fields. Its senders are unauthenticated, so their X-Request-ID is not
-		// adopted and the route's own record replaces the completion record,
-		// which would also carry the sender's method.
-		inbox := strings.HasPrefix(request.URL.Path, assistanttask.InboxPathPrefix)
+		// adopted, and this middleware writes the route's single record in place
+		// of the completion and interruption records, which carry the sender's
+		// method and failure details. Owning the record here keeps it present for
+		// rejections before dispatch and for aborted handlers.
+		var inbox *InboxRecord
+		if strings.HasPrefix(request.URL.Path, assistanttask.InboxPathPrefix) {
+			inbox = &InboxRecord{}
+		}
 		id := request.Header.Get("X-Request-ID")
-		if inbox || !ValidRequestID(id) {
+		if inbox != nil || !ValidRequestID(id) {
 			id = rand.Text()
 		}
 		request = request.WithContext(requestid.With(request.Context(), id))
+		if inbox != nil {
+			request = request.WithContext(context.WithValue(request.Context(), inboxRecordKey{}, inbox))
+		}
 		request = request.WithContext(usage.WithCollector(request.Context(), &usage.Collector{}))
 		if request.Body != nil && request.Body != http.NoBody {
 			body := &trackedRequestBody{ReadCloser: request.Body}
@@ -381,6 +389,10 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 				}
 				metrics.observe(request, recorder, start, outcome)
 			}
+			if value != nil && inbox != nil {
+				inbox.log(logger, request.Context(), id, recorder.Status, true)
+				panic(http.ErrAbortHandler)
+			}
 			if value != nil {
 				if value == http.ErrAbortHandler {
 					logger.ErrorContext(request.Context(), "request aborted", "type", "request_error", "component", "server",
@@ -395,15 +407,53 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 		}()
 		w.Header().Set("X-Request-ID", id)
 		next.ServeHTTP(recorder.capabilities(), request)
-		if inbox {
-			return
-		}
 		status := recorder.Status
 		if status == 0 {
 			status = http.StatusOK
+		}
+		if inbox != nil {
+			inbox.log(logger, request.Context(), id, status, false)
+			return
 		}
 		logger.InfoContext(request.Context(), "request completed", "type", "http_request", "component", "server",
 			"phase", "response", "request_id", id, "method", request.Method, "route", request.Pattern,
 			"status", status, "duration", time.Since(start))
 	})
+}
+
+// InboxRecord holds the handler-derived fields of a public assistant task inbox
+// request. The request logging middleware writes them with the server-generated
+// request ID and the status as the request's only log record.
+type InboxRecord struct {
+	InboxID, Classification string
+	Bytes                   int
+}
+
+type inboxRecordKey struct{}
+
+// InboxRecordFrom returns the record of an inbox request, or nil outside the
+// inbox path or the request logging middleware.
+func InboxRecordFrom(ctx context.Context) *InboxRecord {
+	record, _ := ctx.Value(inboxRecordKey{}).(*InboxRecord)
+	return record
+}
+
+// log writes the allowlisted fields only. An interrupted handler keeps its
+// abort semantics; its record omits a status that was never written.
+func (r *InboxRecord) log(logger *slog.Logger, ctx context.Context, id string, status int, interrupted bool) {
+	attributes := []any{"type", "operation", "component", "assistant_task_inbox", "bytes", r.Bytes, "request_id", id}
+	if status != 0 {
+		attributes = append(attributes, "status", status)
+	}
+	if r.InboxID != "" {
+		attributes = append(attributes, "inbox_id", r.InboxID)
+	}
+	if r.Classification != "" {
+		attributes = append(attributes, "classification", r.Classification)
+	}
+	if interrupted {
+		logger.ErrorContext(ctx, "assistant task inbox request interrupted", attributes...)
+		return
+	}
+	logger.InfoContext(ctx, "assistant task inbox request", attributes...)
 }

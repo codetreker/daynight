@@ -135,6 +135,10 @@ func (b *trackedRequestBody) Read(p []byte) (int, error) {
 func LimitRequestTarget(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(r.RequestURI) > transport.MaxRequestTargetBytes || len(r.URL.RawQuery) > transport.MaxRawQueryBytes {
+			if InboxRecordFrom(r.Context()) != nil {
+				// The inbox request record is the route's only log output.
+				logger = slog.New(slog.DiscardHandler)
+			}
 			WriteError(w, r, logger, "server", "request_target", &URITooLongError{})
 			return
 		}

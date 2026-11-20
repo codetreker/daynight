@@ -47,44 +47,32 @@ type inboxReceiver interface {
 // RegisterInboxRoute registers the public inbox receive route. It sits outside
 // authentication: the inbox token or a verified Daynight delivery is the only
 // credential, and the route never reads cookies.
-func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver, logger *slog.Logger) {
-	r := &inboxRoute{inbox: inbox, logger: logger, quiet: slog.New(slog.DiscardHandler), limiter: newInboxLimiter(time.Now)}
+func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver) {
+	r := &inboxRoute{inbox: inbox, quiet: slog.New(slog.DiscardHandler), limiter: newInboxLimiter(time.Now)}
 	mux.HandleFunc(core.InboxPathPrefix+"{inboxId}", r.serve)
 }
 
 type inboxRoute struct {
-	inbox  inboxReceiver
-	logger *slog.Logger
+	inbox inboxReceiver
 	// quiet receives the diagnostics of shared response and failure helpers,
-	// whose records carry fields outside the inbox log allowlist. The route's
-	// single request record is the only inbox log output.
+	// whose records carry fields outside the inbox log allowlist.
 	quiet   *slog.Logger
 	limiter *inboxLimiter
 }
 
-// serve logs one line per request with only the server-generated request ID,
-// inbox ID, classification, status and body size; the token, the URL query, the
-// body, any sender-supplied request ID and failure causes never reach logs. The request logging
-// middleware replaces a sender's X-Request-ID on this route.
+// serve reports the inbox ID, classification and body size to the request
+// logging middleware, which writes them with the server-generated request ID
+// and the status as the request's only record. The token, the URL query, the
+// body, any sender-supplied request ID and failure causes never reach logs.
 func (h *inboxRoute) serve(w http.ResponseWriter, r *http.Request) {
-	outcome := inboxOutcome{}
-	status := h.receive(w, r, &outcome)
-	attributes := []any{"type", "operation", "component", "assistant_task_inbox", "status", status, "bytes", outcome.bytes, "request_id", httpx.RequestID(r.Context())}
-	if outcome.inboxID != "" {
-		attributes = append(attributes, "inbox_id", outcome.inboxID)
+	outcome := httpx.InboxRecordFrom(r.Context())
+	if outcome == nil {
+		outcome = &httpx.InboxRecord{}
 	}
-	if outcome.classification != "" {
-		attributes = append(attributes, "classification", outcome.classification)
-	}
-	h.logger.InfoContext(r.Context(), "assistant task inbox request", attributes...)
+	h.receive(w, r, outcome)
 }
 
-type inboxOutcome struct {
-	inboxID, classification string
-	bytes                   int
-}
-
-func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *inboxOutcome) int {
+func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *httpx.InboxRecord) int {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		return h.refuse(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is supported.", "")
@@ -93,7 +81,7 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id || parsed == uuid.Nil {
 		return h.refuse(w, r, http.StatusNotFound, "not_found", "The assistant task inbox does not exist.", "")
 	}
-	outcome.inboxID = id
+	outcome.InboxID = id
 	token, problem := requestInboxToken(r)
 	if problem != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
@@ -122,7 +110,7 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 		}
 		return http.StatusBadRequest
 	}
-	outcome.bytes = len(body)
+	outcome.Bytes = len(body)
 	if message := inboxBodyProblem(body, text); message != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", message, "")
 	}
@@ -134,7 +122,7 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	if err != nil {
 		return h.failure(w, r, err, webhookID != "" || idempotencyKey != "")
 	}
-	outcome.classification = result.Classification
+	outcome.Classification = result.Classification
 	httpx.WriteJSON(w, r, h.quiet, http.StatusAccepted, api.AssistantTaskInboxReceipt{EventID: result.EventID, Classification: result.Classification, Duplicate: result.Duplicate, Suppressed: result.Suppressed})
 	return http.StatusAccepted
 }
