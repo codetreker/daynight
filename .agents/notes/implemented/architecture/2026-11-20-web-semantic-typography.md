@@ -18,9 +18,11 @@ bounded transition between those decisions.
 The Web entry stylesheet loads the six shared sizes defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size, and the body selects `sm`. Selection text retains
-the existing touch conditions and a 16 CSS px minimum except for the narrow
-fine-pointer task filters described in the [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
-count badges select `xs`. Shared Markdown selects magnitude-based sizes under the
+the existing touch conditions and a 16 CSS px minimum except for narrow
+fine-pointer filters described in the [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md)
+and ordinary project toolbars under the [toolbar size decision](../bug-fix/2026-11-20-project-task-filter-xs.md).
+Ordinary toolbar labels, closed values and counts select `xs` with either pointer
+type; other count badges also select `xs`. Shared Markdown selects magnitude-based sizes under the
 [Markdown and Mermaid decision](2026-11-20-markdown-mermaid-typography.md).
 Bot first-paragraph emphasis retains its weight without a separate size. Marked
 text fields use shared responsive or coarse-pointer adjustments to preserve a

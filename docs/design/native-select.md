@@ -45,7 +45,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 调用者通过真实 `aria-expanded`、`aria-invalid`、禁用和公开 `pending` 提供状态。公共 owner 呈现中性 hover `#f0f3f7`、展开背景 `#eef1f8` 与边框 `#52649b`、禁用、错误和焦点；Task 焦点使用 3px 深色轮廓。summary marker 也由公共层隐藏。菜单 owner 继续管理开关、选中值、目录、网络、存储、定位和焦点恢复。
 
-TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详情和表单的原有人员编辑保留各自呈现。普通状态多选与两种 TagFilter 使用 SelectTrigger，表达式搜索仍使用单选 NativeSelect；这些任务筛选均显式选择 `filter`、`responsive-target`、`task`。细指针始终使用共享 14px 档，宽度大于 800px 且非紧凑布局时高度为 32px，800px 及以下时高度及命中宽度至少 44px；粗指针高度及命中宽度至少 44px，文字不小于 16 CSS px。窄屏自然换行，标签和计数可见。TagFilter 的 352px 面板、共享 14px 档正文、外部 chip 与定位生命周期独立于入口展示，几何变化沿既有观察更新位置。选择共享展示且保留各菜单语义的取舍见[筛选入口决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-selection-presentation.md)。
+TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详情和表单的原有人员编辑保留各自呈现。普通状态多选与两种 TagFilter 使用 SelectTrigger，表达式搜索仍使用单选 NativeSelect；这些任务筛选均显式选择 `filter`、`responsive-target`、`task`。普通项目筛选栏 `.project-task-filters` 内的标准入口由公共 `selection-control.css` 选择 `--text-xs`，对应题签由页面 CSS 选择同档，计数继续使用 `xs`。细/粗指针下均随根字号缩放，16px 根字号下为 12px，24px 下为 18px；真实 NativeSelect 继承包装元素字号。宽度大于 800px 且非紧凑布局时高度为 32px，800px 及以下或粗指针时高度及命中宽度至少 44px。表达式搜索保持独立作用域，细指针使用共享 `sm` 档，粗指针使用共享 `base` 档及 16 CSS px 下限。窄屏自然换行，标签和计数可见。普通栏的字号选择仅命中 `density="filter"` 且 `touchMode="responsive-target"` 的标准入口，不改变公共档位或其他控件默认值。TagFilter 的 352px 面板、共享 14px 档正文、触控查找输入下限、外部 chip 与错误反馈独立于入口展示，几何变化沿既有观察更新位置。普通栏选档的取舍见[紧凑字号决策](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-filter-xs.md)。选择共享展示且保留各菜单语义的取舍见[筛选入口决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-selection-presentation.md)。
 
 ## 结构与几何
 
@@ -59,7 +59,7 @@ TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详
 | `filter` | 32px |
 | `form` | 38px |
 
-高度为基础最小值；控件根据自身实际字号的 1.5 行及边框容纳文字，计数徽标独立选择 `xs`，当浏览器字体偏好使文字行高超出时随之增长，避免裁切。共享控件容器默认选择 `sm`，可显式选择 `xs`，真实 select 继承；公共触屏调整使用 `max(var(--text-base), 16px)` 并优先于字号选档。单选起始文字空间为 10px，末端 padding 至少 30px；10×10px 箭头盒距末端 12px，文字至箭头盒至少 8px。箭头路径为 `m2 3.5 3 3 3-3`，使用 `currentColor` 并垂直居中。单选文字单行省略，完整 option 文本保持原样。基础外观为白底、中性 1px 边框与 6px 圆角。
+高度为基础最小值；控件根据自身实际字号的 1.5 行及边框容纳文字，计数徽标独立选择 `xs`，当浏览器字体偏好使文字行高超出时随之增长，避免裁切。共享控件容器默认选择 `sm`，可通过 `textSize` 显式选择 `xs`，真实 select 继承；公共触屏调整使用 `max(var(--text-base), 16px)` 并优先于 `textSize` 选档。普通项目筛选栏的公共 CSS 作用域将标准入口固定选为 `xs`，保留其响应式命中尺寸；该作用域独立于 Task 详情的平台控件显式选档。单选起始文字空间为 10px，末端 padding 至少 30px；10×10px 箭头盒距末端 12px，文字至箭头盒至少 8px。箭头路径为 `m2 3.5 3 3 3-3`，使用 `currentColor` 并垂直居中。单选文字单行省略，完整 option 文本保持原样。基础外观为白底、中性 1px 边框与 6px 圆角。
 
 `multiple=true` 或原生 `size>1` 使用列表模式：没有箭头和箭头专属留白，不应用固定单行高度或省略。原生 `size`、滚动、单选列表及多选数组语义保持；公共层继续拥有字体、边框、焦点与禁用外观。
 
@@ -67,7 +67,7 @@ TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详
 
 公共基础选择器为 `.native-select[data-density] > .native-select__control`，状态规则使用真实属性或伪类限定。样式不依赖导入顺序或 `!important`。`:disabled` 同时覆盖直接禁用与 `fieldset` 继承，决定文字、背景和装饰箭头状态。`pending` 使用 attention 边框，`aria-invalid=true` 的 error 边框优先。3px 焦点轮廓独立保留，普通颜色为 `#8c8cf0`，Task/status 为 `#344054`。forced-colors 使用 `Canvas`、`CanvasText`、`GrayText` 和 `Highlight`，保留边框、箭头与焦点。
 
-`touchMode="responsive"` 在 viewport 不超过 800px 或 `pointer:coarse` 时使用至少 44px 高度，文字选择共享 16px 档并遵循 16 CSS px 触屏下限。`touchMode="responsive-target"` 复用相同的响应式目标尺寸与徽标规则，但在不超过 800px 且 `pointer:fine` 时保留共享 14px 档；粗指针及其他指针环境沿用 `responsive` 的字号规则。`touchMode="container"` 查询命名容器 `native-select-region`：容器宽度不超过 600px 时，高度至少 44px 并保留原字号；粗指针下使用同一触控字号。默认 16px 根字号下触控文字为 16px，根字号增大时随之增长。容器由消费页面的已有 inline-size 容器提供，保留其原名称并追加公共名；内层异名容器不会改变查询目标。普通控件默认 `none`，不因窄 viewport 自动放大。
+`touchMode="responsive"` 在 viewport 不超过 800px 或 `pointer:coarse` 时使用至少 44px 高度，文字选择共享 16px 档并遵循 16 CSS px 触屏下限。`touchMode="responsive-target"` 复用相同的响应式目标尺寸与徽标规则，但在不超过 800px 且 `pointer:fine` 时保留共享 14px 档；粗指针及其他指针环境默认沿用 `responsive` 的字号规则；普通项目筛选栏的公共 CSS 作用域只将入口文字改选 `xs`，保留响应式尺寸。`touchMode="container"` 查询命名容器 `native-select-region`：容器宽度不超过 600px 时，高度至少 44px 并保留原字号；粗指针下使用同一触控字号。默认 16px 根字号下触控文字为 16px，根字号增大时随之增长。容器由消费页面的已有 inline-size 容器提供，保留其原名称并追加公共名；内层异名容器不会改变查询目标。普通控件默认 `none`，不因窄 viewport 自动放大。
 
 ## 原生弹窗与外层关闭
 

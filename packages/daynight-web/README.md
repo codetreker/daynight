@@ -1548,11 +1548,17 @@ placement; internal skin, arrow and touch sizing belong to the common owners.
 SelectTrigger similarly exposes static `layoutClassName` and element-specific
 refs, events and ARIA while excluding arbitrary className/style. Project task
 assignee, status, platform and both tag entries use filter/responsive-target/task
-presentation. Fine pointers use the scalable interface size (14px at a 16px
-root), with a 32px height above 800px in noncompact layouts and at least 44px height and hit width at
-800px or below. Coarse pointers retain at least 44px targets and the scalable
-16 CSS px minimum. Search retains native single selection with the same presentation.
-Tag panel typography, positioning and menu state remain feature-owned.
+presentation. Within the ordinary `.project-task-filters` toolbar, visible labels,
+closed values and entry counts select `--text-xs` for fine and coarse pointers:
+12px at a 16px root and 18px at a 24px root. The public selection stylesheet owns
+that scoped trigger choice; native selects inherit it from their wrapper. The
+32px height above 800px in noncompact layouts and at least 44px height and hit
+width on small or coarse-pointer layouts remain unchanged. Expression search
+retains native single selection, scalable `sm` text for fine pointers and `base`
+text with a 16 CSS px minimum for coarse pointers. Expanded panels, tag search
+input minimums, external selected chips and errors retain their own typography.
+Tag panel positioning and menu state remain feature-owned. The [compact filter
+size decision](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-filter-xs.md) records the scope and trade-off.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
 request or Provider dependency.
