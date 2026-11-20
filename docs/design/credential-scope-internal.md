@@ -183,6 +183,8 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+启用时，同一 Session 服务必须同时装配命令和生产者准入；各自的 scoped
+构造入口只安装其对应的规则。
 
 ## Session 生产者准入
 
