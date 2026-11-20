@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -30,6 +31,15 @@ type tagOperations = tagOperationsFor[model.Principal]
 type ScopedTagOperations = tagOperationsFor[model.CredentialAuthorization]
 
 type TagAuthorization func(context.Context, RequestActor) (model.CredentialAuthorization, error)
+
+// TagAuthorizationFromActor reuses the authenticated request's policy snapshot.
+// It is suitable when scoped authentication is enabled for the MCP Entry.
+func TagAuthorizationFromActor(_ context.Context, actor RequestActor) (model.CredentialAuthorization, error) {
+	if actor.Authorization == nil || actor.Authorization.Principal != actor.Principal {
+		return model.CredentialAuthorization{}, fmt.Errorf("tag authorization unavailable")
+	}
+	return *actor.Authorization, actor.Authorization.Validate()
+}
 
 type tagInput struct {
 	ProjectID string  `json:"projectId"`
@@ -66,7 +76,7 @@ func mapTag(item tagservice.Item) tagData {
 
 // RegisterTagTools exposes the project catalog through the shared MCP wrapper.
 func RegisterTagTools(e *Entry, tags tagOperations) error {
-	return registerTagTools(e, tags, func(_ context.Context, actor RequestActor) (model.Principal, error) { return actor.Principal, nil })
+	return registerTagTools(e, tags, false, func(_ context.Context, actor RequestActor) (model.Principal, error) { return actor.Principal, nil })
 }
 
 // RegisterScopedTagTools resolves the current policy for each authenticated tool call.
@@ -75,7 +85,7 @@ func RegisterScopedTagTools(e *Entry, tags ScopedTagOperations, authorize TagAut
 	if authorize == nil {
 		return fmt.Errorf("tag authorization is required")
 	}
-	return registerTagTools(e, tags, func(ctx context.Context, actor RequestActor) (model.CredentialAuthorization, error) {
+	return registerTagTools(e, tags, true, func(ctx context.Context, actor RequestActor) (model.CredentialAuthorization, error) {
 		a, err := authorize(ctx, actor)
 		if err != nil {
 			return a, err
@@ -83,11 +93,20 @@ func RegisterScopedTagTools(e *Entry, tags ScopedTagOperations, authorize TagAut
 		if a.Principal != actor.Principal {
 			return a, fmt.Errorf("tag authorization identity mismatch")
 		}
-		return a, a.Validate()
+		if err := a.Validate(); err != nil {
+			return a, err
+		}
+		if current := actor.Authorization; current != nil {
+			if a.Profile != current.Profile || a.Policy == nil || current.Policy == nil || a.Policy.Kind() != current.Policy.Kind() || a.Policy.Version() != current.Policy.Version() || !slices.Equal(a.Policy.Scopes(), current.Policy.Scopes()) {
+				return a, fmt.Errorf("tag authorization policy mismatch")
+			}
+			return *current, nil
+		}
+		return a, nil
 	})
 }
 
-func registerTagTools[A any](e *Entry, tags tagOperationsFor[A], authorize func(context.Context, RequestActor) (A, error)) error {
+func registerTagTools[A any](e *Entry, tags tagOperationsFor[A], scoped bool, authorize func(context.Context, RequestActor) (A, error)) error {
 	if e == nil || tags == nil {
 		return fmt.Errorf("tag tool dependencies are required")
 	}
@@ -114,6 +133,12 @@ func registerTagTools[A any](e *Entry, tags tagOperationsFor[A], authorize func(
 		}
 		if err := register(e, tool, BudgetControl, handler, "projectId", "tagId", "name", "color", "ifVersion", "query", "cursor"); err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
+		}
+		if scoped {
+			if e.scopedTools == nil {
+				e.scopedTools = make(map[string]bool)
+			}
+			e.scopedTools[name] = true
 		}
 	}
 	return nil

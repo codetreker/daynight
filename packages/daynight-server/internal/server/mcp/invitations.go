@@ -27,10 +27,11 @@ type invitationProjects interface {
 	AcceptInvitation(context.Context, model.Principal, string, string) (projectcore.InvitationAcceptance, error)
 }
 type invitationAdapter struct {
-	identity personalTeamResolver
-	teams    invitationTeams
-	projects invitationProjects
-	origin   string
+	identity        personalTeamResolver
+	teams           invitationTeams
+	projects        invitationProjects
+	origin          string
+	allowScopedTeam bool
 }
 
 type teamInvitation struct {
@@ -162,7 +163,7 @@ func registerInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 	if err := json.Unmarshal([]byte(invitationSchemas), &tools); err != nil {
 		return err
 	}
-	a := &invitationAdapter{identity, teams, projects, origin}
+	a := &invitationAdapter{identity: identity, teams: teams, projects: projects, origin: origin, allowScopedTeam: authorization != nil}
 	for i := range tools {
 		var handler func(context.Context, RequestActor, invitationInput) (ToolResult, error)
 		switch tools[i].Name {
@@ -190,6 +191,13 @@ func registerInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 					}
 					return ToolResult{}, err
 				}
+				if err := verifyTeamRequestPolicy(ctx, authorization, actor); err != nil {
+					result := ToolResult{}
+					if write {
+						result.WriteOutcome = "not_committed"
+					}
+					return result, err
+				}
 				result, err := original(ctx, actor, in)
 				result = scopeRefusalResult(result, err, write)
 				return result, err
@@ -201,6 +209,12 @@ func registerInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 		}
 		if err := register(e, &tools[i], BudgetControl, handler, "team", "invitationId", "link", "cursor"); err != nil {
 			return err
+		}
+		if authorization != nil {
+			if e.scopedTools == nil {
+				e.scopedTools = make(map[string]bool)
+			}
+			e.scopedTools[tools[i].Name] = true
 		}
 	}
 	return nil
@@ -285,6 +299,9 @@ func (a *invitationAdapter) inspect(ctx context.Context, actor RequestActor, in 
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil && !a.allowScopedTeam {
+			return ToolResult{}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.InspectInvitation(ctx, actor.Principal, secret)
 		if err != nil {
 			return ToolResult{}, err
@@ -315,6 +332,9 @@ func (a *invitationAdapter) accept(ctx context.Context, actor RequestActor, in i
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil && !a.allowScopedTeam {
+			return ToolResult{WriteOutcome: "not_committed"}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.AcceptInvitation(ctx, actor.Principal, secret, actor.Principal.UserID)
 		if err != nil {
 			return ToolResult{}, err

@@ -12,6 +12,10 @@ import (
 
 // SearchMemberCandidates publishes directory data only after the credential and Project authorization snapshot completes.
 func (s *Memberships) SearchMemberCandidates(ctx context.Context, p model.Principal, id string, input core.CandidateSearchInput) (core.CandidatePage, error) {
+	return s.searchMemberCandidates(ctx, p, id, input, nil)
+}
+
+func (s *Memberships) searchMemberCandidates(ctx context.Context, p model.Principal, id string, input core.CandidateSearchInput, admit func(context.Context, store.SnapshotScope) error) (core.CandidatePage, error) {
 	id, search, err := core.ValidateCandidateSearch(p, id, input)
 	if err != nil {
 		return core.CandidatePage{}, err
@@ -25,6 +29,18 @@ func (s *Memberships) SearchMemberCandidates(ctx context.Context, p model.Princi
 					return model.Unauthenticated(err)
 				}
 				return err
+			}
+			if admit != nil {
+				access, err := core.RequireProjectRead(ctx, scope.ProjectDAO(), p, id)
+				if err != nil {
+					return err
+				}
+				if err := core.RequireProjectAdmin(access); err != nil {
+					return err
+				}
+				if err := admit(ctx, scope); err != nil {
+					return err
+				}
 			}
 			var err error
 			result, err = core.SearchMemberCandidates(ctx, scope.ProjectDAO(), scope.UserCandidateDAO(), p, id, search)

@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -160,6 +161,15 @@ func registerTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 			if err != nil {
 				return ToolResult{}, err
 			}
+			if authorization != nil {
+				if err := verifyTeamRequestPolicy(ctx, authorization, actor); err != nil {
+					result := ToolResult{}
+					if write {
+						result.WriteOutcome = "not_committed"
+					}
+					return result, err
+				}
+			}
 			result, err := teamTool(ctx, actor, name, a, teams, projects, identities, authorization)
 			if authorization != nil {
 				result = scopeRefusalResult(result, err, write)
@@ -175,6 +185,12 @@ func registerTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 		}
 		if err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
+		}
+		if authorization != nil {
+			if e.scopedTools == nil {
+				e.scopedTools = make(map[string]bool)
+			}
+			e.scopedTools[name] = true
 		}
 	}
 	return nil
@@ -268,6 +284,14 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: map[string]any{"teamId": id, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": id}}, nil
 	case "team_projects":
+		if actor.Authorization != nil && authorization == nil {
+			if _, err := teams.Get(ctx, p, id); err != nil {
+				return ToolResult{}, err
+			}
+			if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TeamRead); err != nil {
+				return ToolResult{}, err
+			}
+		}
 		if authorization != nil {
 			// Check visibility through the protected Team service before exposing
 			// a scope refusal for a specific Team.

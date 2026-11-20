@@ -22,6 +22,10 @@ func NewDirectMembers(writer store.ProjectDirectMemberWriter, resource string) *
 	return &DirectMembers{writer: writer, resource: resource, now: time.Now}
 }
 func (s *DirectMembers) AddExistingMember(ctx context.Context, p model.Principal, projectID, target, expected string) (core.ExistingMemberResult, error) {
+	return s.addExistingMember(ctx, p, projectID, target, expected, nil)
+}
+
+func (s *DirectMembers) addExistingMember(ctx context.Context, p model.Principal, projectID, target, expected string, admit func(context.Context, store.ProjectDirectMemberScope) error) (core.ExistingMemberResult, error) {
 	id, user, err := core.ValidateExistingMember(p, projectID, target, expected)
 	if err != nil {
 		return core.ExistingMemberResult{}, err
@@ -35,6 +39,18 @@ func (s *DirectMembers) AddExistingMember(ctx context.Context, p model.Principal
 		if err := lock(); err != nil {
 			return err
 		}
+		if admit != nil {
+			access, err := core.RequireProjectWrite(ctx, scope.ProjectDAO(), p)
+			if err != nil {
+				return err
+			}
+			if err := core.RequireProjectAdmin(access); err != nil {
+				return err
+			}
+			if err := admit(ctx, scope); err != nil {
+				return err
+			}
+		}
 		var err error
 		result, err = core.AddExistingMember(ctx, scope.ProjectDAO(), scope.DirectMemberDAO(), p, user)
 		if err != nil {
@@ -45,7 +61,13 @@ func (s *DirectMembers) AddExistingMember(ctx context.Context, p model.Principal
 				return err
 			}
 		}
-		return lock()
+		if err := lock(); err != nil {
+			return err
+		}
+		if admit != nil {
+			return admit(ctx, scope)
+		}
+		return nil
 	})
 	if completion.Outcome == store.TransactionUnknown && err == nil {
 		return core.ExistingMemberResult{}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("Project direct member transaction completion was not confirmed")}
