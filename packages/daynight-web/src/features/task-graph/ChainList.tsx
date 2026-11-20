@@ -20,6 +20,7 @@ import type { ProjectGraphTarget } from '../projects/project-graph-target';
 import { TaskMemberRow } from './TaskMemberRow';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
 import { ScopedTaskChainRow } from './ScopedTaskChainRow';
+import { ChainUsageButton } from './ChainUsageButton';
 import { scopedChainProgress } from './scoped-chain-progress';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import '../../styles/graph.css';
@@ -39,6 +40,7 @@ type ChainListProps = {
   readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly openGraphTarget: ProjectGraphTarget | null;
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
+  readonly onOpenChainUsage?: (id: string, trigger: HTMLElement) => void;
   readonly onCloseChain: () => void;
   readonly onRestoreGraphFocus?: () => void;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
@@ -47,7 +49,7 @@ type ChainListProps = {
   readonly pagination?: PaginationState;
 };
 
-type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'summaries' | 'workerMachines' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
+type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'summaries' | 'workerMachines' | 'onOpenChain' | 'onOpenChainUsage' | 'onOpenTask' | 'onOpenSession'> & {
   readonly rootId: string;
   readonly open: boolean;
   readonly revealTaskId?: string | null;
@@ -61,7 +63,7 @@ const RepresentativeDetail = ({ task, rootId, title, onOpenTask }: { readonly ta
   return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.representativeTaskDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}>{m.representativeTaskDetails}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
 };
 
-const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
+const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenChainUsage, onOpenTask, onOpenSession }: ChainRowProps) => {
   const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
@@ -110,14 +112,14 @@ const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, re
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
-        <RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} />
+        <div className="goal-children-actions">{onOpenChainUsage !== undefined && task.type === 'task' && summaries.get(rootId)?.type === 'task' && <ChainUsageButton id={rootId} title={title} onOpen={onOpenChainUsage} />}<RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} /></div>
       </div>
       <ul className="goal-task-list">{members.map((member) => <TaskMemberRow key={member.id} active={expanded} projectId={projectId} task={member} summary={summaries.get(member.id)!} title={summaries.get(member.id)!.title} tags={summaries.get(member.id)!.tags} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });
 
-const ScopedChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, members, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps & { readonly members: readonly string[] }) => {
+const ScopedChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, members, revealTaskId, onRevealed, open, onOpenChain, onOpenChainUsage, onOpenTask, onOpenSession }: ChainRowProps & { readonly members: readonly string[] }) => {
   const [expanded, setExpanded] = useState(false);
   const container = useRef<HTMLLIElement>(null);
   const revealed = useRef<string | null>(null);
@@ -129,7 +131,7 @@ const ScopedChainRow = memo(({ projectId, index, summaries, workerMachines, root
     const row = container.current?.querySelector<HTMLElement>(`[id="chain-task-${rootId}-${revealTaskId}"]`);
     if (row != null) { row.focus({ preventScroll: true }); revealed.current = revealTaskId; onRevealed?.(revealTaskId); }
   }, [expanded, members, revealTaskId, rootId, onRevealed]);
-  return <ScopedTaskChainRow ref={container} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} memberIds={members} progress={progress} instanceId={rootId} expanded={expanded} onExpandedChange={setExpanded} open={open} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
+  return <ScopedTaskChainRow ref={container} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} memberIds={members} progress={progress} instanceId={rootId} expanded={expanded} onExpandedChange={setExpanded} open={open} onOpenChain={onOpenChain} {...(onOpenChainUsage === undefined ? {} : { onOpenChainUsage })} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
 });
 
 const noop = () => {};
@@ -140,7 +142,7 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openGraphTarget, onOpenChain, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, summaries, workerMachines, representativeIds, allRepresentativeIds, scopedMembers, revealTaskId, onRevealed, renderNested, onGraphRootChange, openGraphTarget, onOpenChain, onOpenChainUsage, onCloseChain, onRestoreGraphFocus, onOpenTask, onNavigateExternalTask, onOpenSession, pagination }: ChainListProps) => {
   const openChainId = openGraphTarget?.kind === 'chain' ? openGraphTarget.rootId : null;
   const { messages: { graph: m, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
@@ -175,8 +177,8 @@ export const ChainList = ({ projectId, index, summaries, workerMachines, represe
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
       : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
         : <ul className="root-list">{representativeIds.map((rootId) => scopedMembers === undefined || scopedMembers.get(rootId)?.length === index.components.get(rootId)!.memberIds.size
-          ? <ChainRow key={rootId} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />
-          : <ScopedChainRow key={rootId} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} members={scopedMembers.get(rootId)!} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+          ? <ChainRow key={rootId} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} {...(onOpenChainUsage === undefined ? {} : { onOpenChainUsage })} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />
+          : <ScopedChainRow key={rootId} projectId={projectId} index={index} summaries={summaries} workerMachines={workerMachines} rootId={rootId} members={scopedMembers.get(rootId)!} {...(revealTaskId === undefined ? {} : { revealTaskId })} {...(onRevealed === undefined ? {} : { onRevealed })} open={openChainId === rootId} onOpenChain={onOpenChain} {...(onOpenChainUsage === undefined ? {} : { onOpenChainUsage })} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
     {openGraphTarget !== null && <ProjectListGraphHost projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} target={openGraphTarget} onOpenTask={onOpenTask} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} onOpenChain={onOpenChain} onClose={onCloseChain} onRestoreFocus={onRestoreGraphFocus ?? noop} {...(renderNested === undefined ? {} : { renderNested })} {...(onGraphRootChange === undefined ? {} : { onRootChange: onGraphRootChange })} />}
   </section>;

@@ -21,12 +21,29 @@ it('omits graph usage without a project context', () => {
   expect(view.container).toBeEmptyDOMElement();
 });
 
+it('does not subscribe or display cached readings when the graph host hides usage', async () => {
+  vi.useFakeTimers();
+  const fetch = vi.fn(async (url: string) => url.endsWith('capabilities') ? reply({ protocol: 'daynight.usage.v1' }) : reply({ items: [{ taskId: task, summary: summary() }] }));
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={false}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetch).not.toHaveBeenCalled();
+    view.rerender(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token ≥1,000T');
+    view.rerender(<UsageProjectProvider projectId={project} graphUsage={false}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>);
+    expect(view.container.querySelector('.task-node-usage')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
 it.each(['failure', 'unsupported', 'no_data', 'unknown'] as const)('omits graph usage during loading and for %s without a reading', async mode => {
   let release!: (response: Response) => void;
   const response = new Promise<Response>(resolve => { release = resolve; });
   const fetch = vi.fn(async (url: string) => url.endsWith('capabilities') ? (mode === 'unsupported' ? response : reply({ protocol: 'daynight.usage.v1' })) : response);
   vi.stubGlobal('fetch', fetch);
-  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /><TaskUsageSummary projectId={project} taskId={task} compact /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /><TaskUsageSummary projectId={project} taskId={task} compact /></UsageProjectProvider>, { locale: 'en', taskCache: true });
   await waitFor(() => expect(fetch).toHaveBeenCalled());
   expect(view.container.querySelector('.task-node-usage')).toBeNull();
   const data = summary(mode === 'no_data' ? 'no_data' : 'partial');
@@ -50,7 +67,7 @@ it('renders graph readings in priority order, retains them on transient failure 
     return reply({ items: [{ taskId: task, summary: data }] });
   });
   vi.stubGlobal('fetch', fetch);
-  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  const view = renderWithLocale(<UsageProjectProvider projectId={project} graphUsage={true}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
   await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 12.3K'));
   const refresh = async (next: typeof state) => {
     state = next;
@@ -128,6 +145,27 @@ it('does not subscribe a retained inactive card until it becomes active', async 
   expect(fetch).not.toHaveBeenCalled();
   view.rerender(<TaskUsageSummary projectId={project} taskId={task} active />);
   await screen.findByText('9,007,199,254,740,993');
+});
+
+it('keeps the retained member usage panel separate from the shared summary cache', async () => {
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  let batches = 0;
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith('capabilities')) return reply({ protocol: 'daynight.usage.v1' });
+    if (url.endsWith('task-summaries')) return ++batches === 1 ? reply({ items: [{ taskId: task, summary: summary() }] }) : pending;
+    return reply({ items: [], nextCursor: null, snapshotToken: 'snapshot', observedAt: now });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<TaskUsageSummary projectId={project} taskId={task} compact />, { locale: 'en', taskCache: true });
+  await screen.findByText('9,007,199,254,740,993');
+  view.rerender(<><TaskUsageSummary projectId={project} taskId={task} compact /><TaskUsagePanel projectId={project} taskId={task} active isolated /></>);
+  await waitFor(() => expect(batches).toBe(2));
+  expect(view.container.querySelector('.usage-panel')).not.toHaveTextContent('9,007,199,254,740,993');
+  const next = summary(); next.metrics.outputTokens!.known = '42';
+  await act(async () => { release(reply({ items: [{ taskId: task, summary: next }] })); });
+  await waitFor(() => expect(view.container.querySelector('.usage-panel')).toHaveTextContent('42'));
+  expect(view.container.querySelector('.usage-summary-compact')).toHaveTextContent('9,007,199,254,740,993');
 });
 
 it('clears scheduled work and polling while hidden, then refreshes once on visibility recovery', async () => {

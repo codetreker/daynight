@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { detectModules, pullRequestPaths, selectModules, type ModuleSelection } from "./ci-modules.mts";
 
-const none: ModuleSelection = { cli: false, server: false, api: false, web: false, e2e: false };
-const all: ModuleSelection = { cli: true, server: true, api: true, web: true, e2e: true };
+const none: ModuleSelection = { cli: false, server: false, api: false, web: false, mobile: false, e2e: false };
+const all: ModuleSelection = { cli: true, server: true, api: true, web: true, mobile: true, e2e: true };
+const sharedNodeInputs: ModuleSelection = { ...all, server: false };
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
@@ -72,6 +73,11 @@ for (const [path, expected] of [
   ["packages/daynight-server/.gitignore", { ...none, server: true, api: true }],
   ["packages/daynight-web/src/App.vue", { ...none, api: true, web: true, e2e: true }],
   ["packages/daynight-web/.gitignore", { ...none, web: true }],
+  ["packages/mobile/src/app/index.tsx", { ...none, mobile: true }],
+  ["packages/mobile/app.json", { ...none, mobile: true }],
+  ["packages/mobile/package.json", { ...none, mobile: true }],
+  ["packages/mobile/tsconfig.json", { ...none, mobile: true }],
+  ["packages/mobile/README.md", none],
   ["packages/e2e_tests/src/run.ts", { ...none, e2e: true }],
   ["packages/e2e_tests/src/provider.ts", { ...none, e2e: true }],
   ["packages/e2e_tests/tests/main-flow.spec.ts", { ...none, e2e: true }],
@@ -82,8 +88,8 @@ for (const [path, expected] of [
   ["packages/e2e_tests/Dockerfile.runtime", { ...none, e2e: true }],
   ["deployment/localhost/Dockerfile", { ...none, web: true }],
   ["deployment/dev-ci/tests/run.sh", { ...none, web: true }],
-  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
-  ["patches/@xyflow__system@0.0.83.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["patches/@dagrejs__dagre@3.1.1.patch", sharedNodeInputs],
+  ["patches/@xyflow__system@0.0.83.patch", sharedNodeInputs],
   ["README.md", none],
   [".gitignore", none],
   ["packages/daynight/README.md", none],
@@ -99,11 +105,11 @@ for (const [path, expected] of [
   [".agents/skills/beads/agents/openai.yaml", none],
   [".claude/settings.json", none],
   [".github/workflows/publish.yml", none],
-  ["package.json", { ...none, cli: true, api: true, web: true, e2e: true }],
-  ["pnpm-lock.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
-  ["pnpm-workspace.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
-  [".npmrc", { ...none, cli: true, api: true, web: true, e2e: true }],
-  ["patches/future-cli-dependency.patch", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["package.json", sharedNodeInputs],
+  ["pnpm-lock.yaml", sharedNodeInputs],
+  ["pnpm-workspace.yaml", sharedNodeInputs],
+  [".npmrc", sharedNodeInputs],
+  ["patches/future-cli-dependency.patch", sharedNodeInputs],
   ["packages/future-module/src/main.ts", all],
   [".github/workflows/checks.yml", all],
   [".github/workflows/shell-browser.yml", all],
@@ -131,14 +137,15 @@ test("CLI production implementations also select product E2E while fixtures rema
 test("combines module ownership without making documentation select a module", () => {
   assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), { ...none, cli: true, api: true, web: true, e2e: true });
   assert.deepEqual(selectModules(["packages/daynight-server/internal/server/tasks.go", "packages/daynight-web/src/App.tsx"]), { ...none, server: true, api: true, web: true, e2e: true });
-  assert.deepEqual(selectModules(["packages/daynight/test/session/fixtures/snapshot.json", "packages/daynight-server/internal/server/session/terminal.go", "packages/daynight-web/src/App.tsx"]), all);
+  assert.deepEqual(selectModules(["packages/daynight/test/session/fixtures/snapshot.json", "packages/daynight-server/internal/server/session/terminal.go", "packages/daynight-web/src/App.tsx"]), { ...all, mobile: false });
+  assert.deepEqual(selectModules(["packages/daynight-web/tests/task-status.test.tsx", "packages/mobile/src/app/index.tsx"]), { ...none, web: true, mobile: true });
   assert.deepEqual(selectModules([]), none);
 });
 
 test("Node workspace inputs and patches combine with Go changes in either order", () => {
   const server = "packages/daynight-server/internal/server/tasks.go";
   for (const path of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "patches/future-dependency.patch"]) {
-    assert.deepEqual(selectModules([path]), { ...none, cli: true, api: true, web: true, e2e: true });
+    assert.deepEqual(selectModules([path]), sharedNodeInputs);
     assert.deepEqual(selectModules([path, server]), all);
     assert.deepEqual(selectModules([server, path]), all);
   }
@@ -264,7 +271,7 @@ test("counts both sides of cross-module renames and source moves into documentat
   const head = repo.commit();
   const paths = await pullRequestPaths(repo.cwd, base, head);
   assert.deepEqual(new Set(paths), new Set(["packages/daynight/src/moved.ts", "packages/daynight-web/src/moved.ts", "packages/daynight-server/deleted.go", "docs/moved.md"]));
-  assert.deepEqual(selectModules(paths), all);
+  assert.deepEqual(selectModules(paths), { ...all, mobile: false });
 });
 
 test("retains deleted module paths", async (t) => {
@@ -320,7 +327,7 @@ for (const [path, expected] of [
   ["packages/daynight/src/commands/worker/runtime.ts", { ...none, cli: true, api: true, e2e: true }],
   ["packages/daynight/src/main.ts", { ...none, cli: true, api: true, e2e: true }],
   ["packages/daynight-web/src/App.vue", { ...none, cli: true, api: true, web: true, e2e: true }],
-  ["pnpm-lock.yaml", { ...none, cli: true, api: true, web: true, e2e: true }],
+  ["pnpm-lock.yaml", sharedNodeInputs],
   [".github/workflows/checks.yml", all],
 ] as const) {
   test(`version plus ${path} retains ordinary module checks`, async (t) => {
@@ -494,8 +501,9 @@ test("rejects unknown events, malformed SHAs, and unavailable commits", async (t
 });
 
 for (const [path, expected] of [
-  ["packages/daynight-server/server.go", "cli=false\nserver=true\napi=true\nweb=false\ne2e=false\n"],
-  ["packages/e2e_tests/src/run.ts", "cli=false\nserver=false\napi=false\nweb=false\ne2e=true\n"],
+  ["packages/daynight-server/server.go", "cli=false\nserver=true\napi=true\nweb=false\nmobile=false\ne2e=false\n"],
+  ["packages/mobile/src/app/index.tsx", "cli=false\nserver=false\napi=false\nweb=false\nmobile=true\ne2e=false\n"],
+  ["packages/e2e_tests/src/run.ts", "cli=false\nserver=false\napi=false\nweb=false\nmobile=false\ne2e=true\n"],
 ] as const) {
   test(`command entry point writes the complete GitHub selection for ${path}`, async (t) => {
     const repo = repository(t);

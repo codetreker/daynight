@@ -94,6 +94,13 @@ resource loss or access revocation still requires the affected state to be
 cleared. Keep actual failures visible and recoverable. Feature specifications
 own the exact behavior when a resource changes.
 
+## Follow browser navigation
+
+Browser Back and Forward follow the existing navigation. Temporary interfaces
+must not intercept navigation, add history entries, or implement restoration to
+simulate an explicit close. Feature-specific navigation and draft protection
+continue to apply.
+
 ## Keep global language selection at page level
 
 Application-wide settings belong to the application or page. Dialogs and

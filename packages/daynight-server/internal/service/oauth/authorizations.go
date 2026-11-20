@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -50,6 +51,7 @@ type Authorizations struct {
 	writer           store.AuthorizationWriter
 	operations       authorizationOperations
 	issuer, resource string
+	catalog          *scopepolicy.CatalogSnapshot
 	now              func() time.Time
 }
 
@@ -177,6 +179,10 @@ func (s *Authorizations) Inspect(ctx context.Context, id, binding string, princi
 	return AuthorizationView{RequestID: a.ID, Status: status, UserID: principal.UserID, ClientName: client.ClientName, ClientID: a.ClientID, ClientProvenance: client.Provenance, RedirectURI: a.RedirectURI, Resource: a.Resource, Scope: a.Scope, CodeExpired: codeExpired}, nil
 }
 func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (DecisionResult, error) {
+	return s.decide(ctx, in, s.operations.decide)
+}
+
+func (s *Authorizations) decide(ctx context.Context, in DecisionInput, decide func(*store.OAuthAuthorization, string, string, string, string, time.Time) (string, error)) (DecisionResult, error) {
 	if !validSession(in.Principal) {
 		return DecisionResult{}, model.Unauthenticated(nil)
 	}
@@ -200,7 +206,7 @@ func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (Decision
 		if err = lockSession(ctx, scope.IdentityDAO(), in.Principal, now); err != nil {
 			return err
 		}
-		result.RedirectURI, err = s.operations.decide(&a, in.Binding, in.Decision, in.Principal.UserID, s.issuer, now)
+		result.RedirectURI, err = decide(&a, in.Binding, in.Decision, in.Principal.UserID, s.issuer, now)
 		if err != nil {
 			return err
 		}
@@ -318,7 +324,7 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 					return grantRefusal(err)
 				}
 			}
-			issued, err := s.operations.issueFamily(ctx, scope.CredentialFamilyDAO(), core.IssueInput{UserID: a.UserID, ClientID: a.ClientID, Resource: a.Resource, ClientSnapshot: a.Client}, now)
+			issued, err := s.operations.issueFamily(ctx, scope.CredentialFamilyDAO(), core.IssueInput{UserID: a.UserID, ClientID: a.ClientID, Resource: a.Resource, ClientSnapshot: a.Client, ApprovedScopes: a.ApprovedScopes}, now)
 			if err != nil {
 				return err
 			}

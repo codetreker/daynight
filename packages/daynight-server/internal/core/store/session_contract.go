@@ -23,6 +23,20 @@ type SessionScope interface {
 	BotDAO() BotWriteDAO
 }
 
+// SessionCredentialScope provides credential policy reads in the Session
+// transaction. Locks held by these DAOs last through the Session write.
+type SessionCredentialScope interface {
+	SessionPATScopeDAO() PATScopeDAO
+	SessionPATManagementDAO() PATManagementDAO
+	SessionOAuthScopeDAO() OAuthScopeDAO
+}
+
+// SessionOperationExistenceDAO probes a ledger key without reading its receipt
+// or intent. Scoped command admission requires this transaction-bound capability.
+type SessionOperationExistenceDAO interface {
+	SessionOperationExists(context.Context, string, string) (bool, error)
+}
+
 // SessionRecord contains only durable ledger state; transient content remains
 // owned by the Session engine.
 type SessionRecord struct {
