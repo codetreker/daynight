@@ -10,12 +10,16 @@ request for attention and makes the row harder to scan.
 
 ## Decision
 
-The shared row's localized presentation combines `warning` and
-`needsAttention=true` into one Session attention description. The same text is
-used for plain status and the accessible Session action. A warning without
-attention retains its check wording; notice and attention remain separate because
-response and attention convey different facts. The [Session status design](../../../../docs/design/task-session-status.md)
-owns the presentation and admission conditions.
+The original fix combined `warning` and `needsAttention=true` into one Session
+attention description for plain text and the accessible Session action. It kept
+a warning without attention as a check prompt and treated notice plus attention
+as separate facts. The later
+[unified status decision](../simplification/2026-11-20-unified-task-row-status.md)
+replaces that wording policy: the native projection derives notice and attention
+from the same state, so notice always selects one response phrase. Warning still
+selects attention when flagged and a check prompt otherwise, without a Session
+prefix. The [Session status design](../../../../docs/design/task-session-status.md)
+owns the current presentation and admission conditions.
 
 ## Alternatives
 

@@ -55,7 +55,7 @@ const assistantTaskEn = {
   transfer: 'Transfer', assign: 'Assign assistant', release: 'Release', pause: 'Pause', resume: 'Resume', remove: 'Delete task', confirmDelete: 'Delete this task, its manual, appendices and work records?', confirmRelease: 'Release the responsible assistant?', confirmTransfer: 'The selected assistant will bind the claim before starting work.',
   manual: 'Work manual', records: 'Work records', proposals: 'Pending proposals', inbox: 'Inbox', pendingDecisions: 'Waiting for you', escalation: 'Escalation', unknownResult: 'Result unknown',
   cancel: 'Cancel', save: 'Save', confirm: 'Confirm', close: 'Close', back: 'Back to assistants', refresh: 'Refresh', loading: 'Loading…', error: 'Could not load assistant tasks.', retry: 'Retry', more: 'Load more',
-  writeError: 'The change was not accepted.', conflict: 'This task changed. The latest content has been requested; review it before saving again.', unknown: 'The write result is unknown. Check the current task before making another change.', check: 'Check current result', checked: 'Current data was read. It does not prove which request changed it.', reviewed: 'I reviewed the current result', saved: 'Saved', unavailable: 'This task is no longer available.',
+  writeError: 'The change was not accepted.', conflict: 'This task changed. The latest content has been requested; review it before saving again.', unknown: 'The write result is unknown. Check the current task before making another change.', check: 'Check current result', checked: 'Current data was read. It does not prove which request changed it.', confirmed: 'The receipt confirms this request was applied. Current data was read.', missing: 'No receipt was found for this request, so its result remains inconclusive. Do not repeat it before reviewing the current data.', reviewed: 'I reviewed the current result', saved: 'Saved', unavailable: 'This task is no longer available.',
   watchdog: 'Enable Watchdog', watchdogDescription: 'Watchdog follows your in-progress tasks. Choose the assistant responsible for it.', watchdogUnavailable: 'Watchdog is not available on this server yet.', noBots: 'Create an assistant first.',
 };
 const assistantTaskZh: typeof assistantTaskEn = {
@@ -64,7 +64,7 @@ const assistantTaskZh: typeof assistantTaskEn = {
   transfer: '转交', assign: '指定负责助手', release: '释放', pause: '暂停', resume: '恢复', remove: '删除任务', confirmDelete: '删除这个助手任务及其手册、附录与工作记录？', confirmRelease: '释放当前负责助手？', confirmTransfer: '所选助手绑定认领后才会开始工作。',
   manual: '工作手册', records: '工作记录', proposals: '待决定的修订', inbox: '收件箱', pendingDecisions: '待你决定', escalation: '升级', unknownResult: '结果未知',
   cancel: '取消', save: '保存', confirm: '确认', close: '关闭', back: '返回助手列表', refresh: '刷新', loading: '正在加载…', error: '无法读取助手任务。', retry: '重试', more: '加载更多',
-  writeError: '变更未受理。', conflict: '任务已变化。正在重读最新内容；请核对后重新保存。', unknown: '写入结果未知。请先核对任务当前状态，再决定下一步。', check: '核对当前结果', checked: '已读取当前内容，不能据此确定是哪次请求造成了变化。', reviewed: '我已核对当前结果', saved: '已保存', unavailable: '这个助手任务已不可访问。',
+  writeError: '变更未受理。', conflict: '任务已变化。正在重读最新内容；请核对后重新保存。', unknown: '写入结果未知。请先核对任务当前状态，再决定下一步。', check: '核对当前结果', checked: '已读取当前内容，不能据此确定是哪次请求造成了变化。', confirmed: '回执确认这次请求已生效，已读取当前内容。', missing: '没有找到这次请求的回执，结果仍无法确定。请先核对当前内容，不要重复提交。', reviewed: '我已核对当前结果', saved: '已保存', unavailable: '这个助手任务已不可访问。',
   watchdog: '开启 Watchdog', watchdogDescription: 'Watchdog 关注分配给你的进行中任务。请选择负责助手。', watchdogUnavailable: '此服务器尚未提供 Watchdog。', noBots: '请先创建助手。',
 };
 export const useAssistantTaskMessages = () => useI18n().locale === 'zh-CN' ? assistantTaskZh : assistantTaskEn;

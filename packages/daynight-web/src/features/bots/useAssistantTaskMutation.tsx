@@ -14,18 +14,21 @@ class MutationState {
 const states=new WeakMap<TaskCacheScope,Map<string,MutationState>>();
 function stateFor(scope:TaskCacheScope,key:string){let map=states.get(scope);if(!map){map=new Map();states.set(scope,map);}let state=map.get(key);if(!state){state=new MutationState();map.set(key,state);}return state;}
 type ReceiptReader=(taskId:string,operationId:string,signal:AbortSignal,admission:AssistantTaskAdmission)=>Promise<unknown>;
-/** An original write and its unknown outcome remain observable across navigation; readReceipt reads the receipt store that owns the write's operation ID. */
-export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>,readReceipt:ReceiptReader=getAssistantTaskClaimOperation){
+/**
+ * An original write and its unknown outcome remain observable across navigation; readReceipt reads the receipt store that owns the write's operation ID.
+ * A receipt proves the write was applied, while a missing receipt (404) stays inconclusive. describeReceipt adds what a confirmed receipt cannot restore.
+ */
+export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>,readReceipt:ReceiptReader=getAssistantTaskClaimOperation,describeReceipt?:(receipt:unknown)=>string|null){
   const scope=useTaskCacheScope(),m=useAssistantTaskMessages(),state=stateFor(scope,key);
   const {busy,unknown}=useSyncExternalStore(state.subscribe,state.snapshot);
-  const [error,setError]=useState<unknown>(null),[checked,setChecked]=useState(false);
-  const live=useRef(true),current=useRef({scope,key,enabled,reload,readReceipt});current.current={scope,key,enabled,reload,readReceipt};
+  const [error,setError]=useState<unknown>(null),[checked,setChecked]=useState<null|{readonly receipt:'confirmed'|'missing'|'none';readonly note:string|null}>(null);
+  const live=useRef(true),current=useRef({scope,key,enabled,reload,readReceipt,describeReceipt});current.current={scope,key,enabled,reload,readReceipt,describeReceipt};
   useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
-  useEffect(()=>{setError(null);setChecked(false);},[scope,key,unknown]);
+  useEffect(()=>{setError(null);setChecked(null);},[scope,key,unknown]);
   const allowed=()=>live.current&&current.current.scope===scope&&current.current.key===key&&current.current.enabled&&!scope.isInvalidated&&!authRequestsPaused();
   const run=async(operation:(signal:AbortSignal)=>Promise<unknown>):Promise<boolean>=>{
     if(!allowed()||state.snapshot().busy||state.snapshot().unknown)return false;
-    state.update({busy:true});setError(null);setChecked(false);
+    state.update({busy:true});setError(null);setChecked(null);
     try{
       await scope.ready(scope.signal);if(!allowed())return false;
       await operation(scope.signal);
@@ -46,13 +49,14 @@ export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pend
     state.update({busy:true});setError(null);
     try{
       await scope.ready(scope.signal);if(!allowed())return;
+      let observed:{readonly receipt:'confirmed'|'missing'|'none';readonly note:string|null}={receipt:'none',note:null};
       if(unknown?.operationId){
-        try{await current.current.readReceipt(unknown.taskId,unknown.operationId,scope.signal,assistantTaskAdmission(scope));}
-        catch(failure){if(!(failure instanceof ApiError&&failure.status===404))throw failure; /* A missing receipt is an observation, not proof of failure. */}
+        try{const receipt=await current.current.readReceipt(unknown.taskId,unknown.operationId,scope.signal,assistantTaskAdmission(scope));observed={receipt:'confirmed',note:current.current.describeReceipt?.(receipt)??null};}
+        catch(failure){if(!(failure instanceof ApiError&&failure.status===404))throw failure; /* A missing receipt is an observation, not proof of failure. */observed={receipt:'missing',note:null};}
       }
-      await current.current.reload(unknown);if(allowed())setChecked(true);
+      await current.current.reload(unknown);if(allowed())setChecked(observed);
     }catch(failure){if(allowed())setError(failure);}finally{state.update({busy:false});}
   };
-  const notice=unknown?<div className="notice error" role="alert"><p>{m.unknown}</p><button className="button" type="button" disabled={busy||!enabled} onClick={()=>void check()}>{m.check}</button>{checked?<><p>{m.checked}</p><button className="button" type="button" disabled={!enabled} onClick={()=>{state.update({unknown:null});setChecked(false);}}>{m.reviewed}</button></>:null}{error?<p>{m.writeError}</p>:null}</div>:error?<div className="notice error" role="alert">{error instanceof ApiError&&error.status===409?m.conflict:m.writeError}{error instanceof ApiError&&error.requestId?<code>{error.requestId}</code>:null}</div>:null;
+  const notice=unknown?<div className="notice error" role="alert"><p>{m.unknown}</p><button className="button" type="button" disabled={busy||!enabled} onClick={()=>void check()}>{m.check}</button>{checked?<><p>{checked.receipt==='confirmed'?m.confirmed:checked.receipt==='missing'?`${m.missing} ${m.checked}`:m.checked}</p>{checked.note?<p>{checked.note}</p>:null}<button className="button" type="button" disabled={!enabled} onClick={()=>{state.update({unknown:null});setChecked(null);}}>{m.reviewed}</button></>:null}{error?<p>{m.writeError}</p>:null}</div>:error?<div className="notice error" role="alert">{error instanceof ApiError&&error.status===409?m.conflict:m.writeError}{error instanceof ApiError&&error.requestId?<code>{error.requestId}</code>:null}</div>:null;
   return {run,busy,unknown,blocked:busy||unknown!==null||!enabled||scope.isInvalidated,notice};
 }

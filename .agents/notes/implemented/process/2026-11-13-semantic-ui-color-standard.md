@@ -13,11 +13,11 @@ the same task.
 
 ## Decision
 
-The [UI design standard](../../../../docs/ui-design.md#semantic-color-roles)
-owns the exact semantic palette and its application rules. Product specifications
-and designs reference that owner while retaining their own status, aggregation,
-interaction and lifecycle contracts. The standard defines required rendering;
-source-bound checks establish whether each consumer conforms.
+The [UI design principles](../../../../docs/ui-design.md#semantic-color-roles)
+define semantic hierarchy and readability. The [Web visual tokens](../../../../docs/design/web-visual-tokens.md#任务状态与交互色)
+own the exact palette. Product specifications and designs own their status,
+aggregation, interaction and lifecycle contracts. Source-bound checks verify
+whether consumers conform.
 
 Tinted lifecycle rows use lavender for proposed, near-white for todo, blue for
 in_progress, green for done and neutral gray for cancelled. Mixed ended summaries

@@ -144,7 +144,8 @@ it('checks an unknown inbox write against the inbox operation receipt', async ()
   vi.mocked(fetch).mockImplementationOnce(async () => { throw new TypeError('network'); });
   fireEvent.click(enable);
   fireEvent.click(await screen.findByRole('button', { name: 'Check current result' }));
-  expect(await screen.findByText(/Current data was read/)).toBeVisible();
+  expect(await screen.findByText(/No receipt was found for this request/)).toBeVisible();
+  expect(screen.getByText(/Current data was read/)).toBeVisible();
   const urls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
   expect(urls.some(url => url.startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`))).toBe(true);
   expect(urls.some(url => url.includes('/claim-operations/'))).toBe(false);
@@ -212,4 +213,41 @@ it('keeps a token issued while the inbox tab was hidden', async () => {
   await waitFor(() => expect(changed).toHaveBeenCalled());
   mounted.rerender({ task, enabled: true });
   expect(within(await screen.findByRole('group', { name: 'New token' })).getByText(token)).toBeVisible();
+});
+
+it('reports a confirmed inbox receipt and explains that its token cannot be recovered', async () => {
+  const s = server(off); mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    const path = String(url);
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (path.startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_enable', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  fireEvent.click(await screen.findByRole('button', { name: 'Check current result' }));
+  expect(await screen.findByText(/receipt confirms this request was applied/)).toBeVisible();
+  expect(screen.getByText(/its receipt cannot return it/)).toBeVisible();
+  expect(screen.queryByText(/No receipt was found/)).toBeNull();
+  expect(screen.queryByRole('group', { name: 'New token' })).toBeNull();
+});
+
+it('shows the issued token without waiting for the task detail refresh', async () => {
+  server(off); mount(vi.fn(() => new Promise<undefined>(() => undefined)));
+  fireEvent.click(await screen.findByRole('button', { name: 'Enable inbox' }));
+  expect(within(await screen.findByRole('group', { name: 'New token' })).getByText(token)).toBeVisible();
+});
+
+it('retires the token once a later snapshot shows its credential rotated, replaced or disabled', async () => {
+  const s = server(off); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Enable inbox' }));
+  await screen.findByRole('group', { name: 'New token' });
+  mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeEnabled());
+  expect(screen.getByRole('group', { name: 'New token' })).toBeVisible();
+  s.state.inbox = { ...on, rotatedAt: '2026-11-05T12:00:00Z' };
+  mounted.rerender({ task: { ...task, version: '9' }, enabled: true });
+  await waitFor(() => expect(screen.queryByRole('group', { name: 'New token' })).toBeNull());
+  expect(screen.queryByText(token)).toBeNull();
 });

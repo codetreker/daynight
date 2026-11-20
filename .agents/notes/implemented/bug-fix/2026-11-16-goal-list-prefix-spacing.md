@@ -13,9 +13,9 @@ narrow widths while disclosure still needed a usable independent target.
 
 The Goal card supplies an inline-size container, aligning the arrow viewport
 with the chain at 15px from the inner edge above 600px and 11px at or below it.
-The existing 740px viewport breakpoint separately governs row rearrangement.
-At or below 600px of card content width, the summary also wraps and aligns its
-progress to the title, so a narrow card in a wide viewport retains readable space.
+The original 740px viewport breakpoint governed row rearrangement; the later
+[card layout decision](2026-11-20-goal-card-container-layout.md) moves that
+choice to card content width while retaining the prefix and progress alignment.
 The native disclosure button remains 22px wide and at least 34px high; negative
 logical margins leave a 14px layout column for its 14px square arrow while
 keeping its hit area inside the card and clear of the icon. A 20px decorative
@@ -34,9 +34,10 @@ No other approach was recorded for this prefix repair.
 
 ## Consequences
 
-The prefix occupies 50px before the title, leaving more room for content while
-retaining a keyboard-focusable disclosure and the broad pointer target. Container
-width controls alignment independently of viewport-driven rearrangement, so a
-narrow card in a wide viewport follows the same alignment as a narrow chain.
+The wide-card prefix occupies 50px before the title, leaving more room for content while
+retaining a keyboard-focusable disclosure and the broad pointer target. The later
+card layout decision reduces the compact prefix by hiding the decoration. Container
+width controls alignment, so a narrow card in a wide viewport follows the same
+alignment as a narrow chain.
 Long content can still wrap and increase row height. Changes to prefix sizes
 must keep the wrapped progress offset and disclosure hit area in sync.
