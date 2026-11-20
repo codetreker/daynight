@@ -26,6 +26,18 @@ type GitHubAppConfigReader interface {
 	Facts(context.Context, string) (GitHubAppConfigFacts, error)
 }
 
+// GitHubAppConfigAccess contains only the facts needed to establish an App
+// administrator's visibility and the current versions before scope admission.
+type GitHubAppConfigAccess struct {
+	AppVersion, ImpactVersion, MembershipVersion int64
+}
+
+// GitHubAppConfigAccessReader reads access facts without loading credentials.
+// The capability is used in the same scope as the subsequent configuration read.
+type GitHubAppConfigAccessReader interface {
+	ConfigAccess(context.Context, string) (GitHubAppConfigAccess, error)
+}
+
 // GitHubAppConfigWriter is bound to the live App root locked by its scope.
 type GitHubAppConfigWriter interface {
 	GitHubAppConfigReader

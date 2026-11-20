@@ -8,6 +8,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/prompt"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -71,6 +73,20 @@ func authorizeRead(ctx context.Context, snapshot store.PromptSnapshot, principal
 	}
 }
 func (p *Prompts) Get(ctx context.Context, principal model.Principal, scope model.PromptScope, id string) (model.PromptResource, error) {
+	return p.get(ctx, principal, scope, id, nil)
+}
+
+// GetAuthorized preserves resource visibility before checking the credential policy.
+func (p *Prompts) GetAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
+	if err := authorization.Validate(); err != nil {
+		return model.PromptResource{}, err
+	}
+	return p.get(ctx, authorization.Principal, scope, id, func() error {
+		return scopeadmission.Require(authorization, scopepolicy.PromptRead)
+	})
+}
+
+func (p *Prompts) get(ctx context.Context, principal model.Principal, scope model.PromptScope, id string, admit func() error) (model.PromptResource, error) {
 	id, err := normalize(principal, scope, id)
 	if err != nil {
 		return model.PromptResource{}, err
@@ -80,6 +96,11 @@ func (p *Prompts) Get(ctx context.Context, principal model.Principal, scope mode
 		if err := authorizeRead(ctx, snapshot, principal, scope, id); err != nil {
 			return err
 		}
+		if admit != nil {
+			if err := admit(); err != nil {
+				return err
+			}
+		}
 		var err error
 		value, err = read(ctx, snapshot, principal.UserID, scope, id)
 		return err
@@ -87,6 +108,20 @@ func (p *Prompts) Get(ctx context.Context, principal model.Principal, scope mode
 	return value, err
 }
 func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	return p.put(ctx, principal, scope, id, expectedUserID, revision, text, nil)
+}
+
+// PutAuthorized checks policy before accessing or modifying the prompt.
+func (p *Prompts) PutAuthorized(ctx context.Context, authorization model.CredentialAuthorization, scope model.PromptScope, id, expectedUserID, revision, text string) (model.PromptResource, error) {
+	if err := authorization.Validate(); err != nil {
+		return model.PromptResource{}, err
+	}
+	return p.put(ctx, authorization.Principal, scope, id, expectedUserID, revision, text, func() error {
+		return scopeadmission.Require(authorization, scopepolicy.PromptWrite, scopepolicy.PromptRead)
+	})
+}
+
+func (p *Prompts) put(ctx context.Context, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string, admit func() error) (model.PromptResource, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.PromptResource{}, err
 	}
@@ -118,6 +153,11 @@ func (p *Prompts) Put(ctx context.Context, principal model.Principal, scope mode
 		case model.PromptScopeWorker:
 			if err := tx.PromptWorkerExists(ctx, principal.UserID, id); err != nil {
 				return notFound(err)
+			}
+		}
+		if admit != nil {
+			if err := admit(); err != nil {
+				return err
 			}
 		}
 		current, err := tx.PromptResource(ctx, principal.UserID, scope, id)

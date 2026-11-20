@@ -79,3 +79,26 @@ func (d *projectAppDAO) Save(ctx context.Context, w store.GitHubProjectAppWrite)
 func (d *projectAppDAO) AdvanceImpact(ctx context.Context, appID string) error {
 	return NewConnectionStopWriter(d.tx, appID).AdvanceImpact(ctx)
 }
+
+func (d *projectAppDAO) ProjectAppAccess(ctx context.Context, p model.Principal) (store.GitHubProjectAppAccess, error) {
+	var out store.GitHubProjectAppAccess
+	var err error
+	out.Access, err = pg.ReadProjectAccess(ctx, d.tx, p.UserID, d.projectID)
+	if err != nil {
+		return out, err
+	}
+	err = d.tx.QueryRow(ctx, `SELECT o.team_id::text,o.version,COALESCE((SELECT c.version FROM project_github c WHERE c.project_id=o.project_id),1) FROM project_ownership o WHERE o.project_id=$1`, d.projectID).Scan(&out.TeamID, &out.OwnershipVersion, &out.ConnectionVersion)
+	if err != nil {
+		return store.GitHubProjectAppAccess{}, pg.QueryError("read project App access", err)
+	}
+	return out, nil
+}
+
+func (d *projectAppDAO) ProjectAppVersion(ctx context.Context, appID, grantID, teamID string) (int64, error) {
+	var version int64
+	err := d.tx.QueryRow(ctx, `SELECT a.version FROM github_apps a JOIN github_app_team_grants g ON g.app_resource_id=a.id WHERE a.id=$1 AND a.deleted_at IS NULL AND g.id=$2 AND g.team_id=$3 AND g.revoked_at IS NULL`, appID, grantID, teamID).Scan(&version)
+	if err != nil {
+		return 0, pg.QueryError("read project App grant version", err)
+	}
+	return version, nil
+}

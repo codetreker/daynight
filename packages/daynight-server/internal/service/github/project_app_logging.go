@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
@@ -23,6 +24,21 @@ type projectAppObservation struct {
 type observedProjectAppDAO struct {
 	store.GitHubProjectAppWriteDAO
 	observation *projectAppObservation
+}
+
+func (d *observedProjectAppDAO) ProjectAppAccess(ctx context.Context, p model.Principal) (store.GitHubProjectAppAccess, error) {
+	reader, ok := d.GitHubProjectAppWriteDAO.(store.GitHubProjectAppAdmissionReader)
+	if !ok {
+		return store.GitHubProjectAppAccess{}, fmt.Errorf("project App admission capability unavailable")
+	}
+	return reader.ProjectAppAccess(ctx, p)
+}
+func (d *observedProjectAppDAO) ProjectAppVersion(ctx context.Context, app, grant, team string) (int64, error) {
+	reader, ok := d.GitHubProjectAppWriteDAO.(store.GitHubProjectAppAdmissionReader)
+	if !ok {
+		return 0, fmt.Errorf("project App admission capability unavailable")
+	}
+	return reader.ProjectAppVersion(ctx, app, grant, team)
 }
 
 func (d *observedProjectAppDAO) Facts(ctx context.Context, p model.Principal) (store.GitHubProjectAppFacts, error) {

@@ -135,6 +135,9 @@ func (s *Service) TaskSummaries(ctx context.Context, p model.Principal, project 
 		if err != nil {
 			return err
 		}
+		if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+			return err
+		}
 		out.Items, err = summaries(ctx, scope, store.UsageFilter{ProjectID: project, TaskIDs: ids}, ids, permission, now)
 		if err != nil {
 			return err
@@ -349,6 +352,11 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 		now, err := dao.Now(ctx)
 		if err != nil {
 			return err
+		}
+		if sessionID == "" {
+			if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+				return err
+			}
 		}
 		out.ObservedAt = now
 		binding, err := core.Hash([]any{p.UserID, project, task, sessionID, input.Kind, input.StateID, input.Model, input.Provider, input.Role, permission})

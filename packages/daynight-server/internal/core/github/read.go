@@ -10,6 +10,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -48,7 +50,57 @@ type Detail struct {
 }
 
 func invalid(message string) error { return &model.Fault{Code: "invalid_input", Message: message} }
-func (r *Reader) snapshot(ctx context.Context, principal model.Principal, projectID string, work func(store.SnapshotScope, string) error) error {
+func requireProjectScope(auth model.CredentialAuthorization) error {
+	return scopeadmission.Require(auth, scopepolicy.ProjectRead)
+}
+
+// checkPullRequestScope establishes the targeted resource's existence inside
+// the project snapshot before reporting a scope refusal or reading its data.
+func checkPullRequestScope(ctx context.Context, s store.SnapshotScope, project string, number int64, repositoryID *int64, check func() error) error {
+	if check == nil {
+		return nil
+	}
+	visible, ok := s.GitHubDAO().(store.GitHubPullRequestVisibilityReader)
+	if !ok {
+		return fmt.Errorf("GitHub pull request visibility capability unavailable")
+	}
+	if repositoryID != nil {
+		if err := visible.RequireRepositoryVisible(ctx, project, *repositoryID); err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				return &model.Fault{Code: "not_found", Message: "Pull request repository was not found.", Cause: err}
+			}
+			return err
+		}
+	}
+	if err := visible.RequirePullRequestVisible(ctx, project, number, repositoryID); err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return &model.Fault{Code: "not_found", Message: "Pull request was not found.", Cause: err}
+		}
+		return err
+	}
+	return check()
+}
+
+func checkRepositoryScope(ctx context.Context, s store.SnapshotScope, project string, repositoryID *int64, check func() error) error {
+	if check == nil {
+		return nil
+	}
+	if repositoryID != nil {
+		visible, ok := s.GitHubDAO().(store.GitHubPullRequestVisibilityReader)
+		if !ok {
+			return fmt.Errorf("GitHub repository visibility capability unavailable")
+		}
+		if err := visible.RequireRepositoryVisible(ctx, project, *repositoryID); err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				return &model.Fault{Code: "not_found", Message: "Pull request repository was not found.", Cause: err}
+			}
+			return err
+		}
+	}
+	return check()
+}
+
+func (r *Reader) snapshot(ctx context.Context, principal model.Principal, projectID string, check func() error, work func(store.SnapshotScope, string) error) error {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
@@ -63,6 +115,14 @@ func (r *Reader) snapshot(ctx context.Context, principal model.Principal, projec
 				return nil
 			}
 			return e
+		}
+		if check != nil {
+			if e := check(); e != nil {
+				if errors.As(e, &refusal) {
+					return nil
+				}
+				return e
+			}
 		}
 		e := work(s, id)
 		if errors.As(e, &refusal) {
@@ -80,7 +140,7 @@ func (r *Reader) snapshot(ctx context.Context, principal model.Principal, projec
 }
 func (r *Reader) Get(ctx context.Context, principal model.Principal, projectID string) (Status, error) {
 	result := Status{ServiceAvailable: r.available}
-	err := r.snapshot(ctx, principal, projectID, func(s store.SnapshotScope, id string) error {
+	err := r.snapshot(ctx, principal, projectID, nil, func(s store.SnapshotScope, id string) error {
 		var err error
 		result.Connection, err = s.GitHubDAO().Connection(ctx, id)
 		return err
@@ -91,6 +151,17 @@ func (r *Reader) Get(ctx context.Context, principal model.Principal, projectID s
 	return result, nil
 }
 func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectID string, number int64, repositoryID *int64) (Detail, error) {
+	return r.detail(ctx, principal, projectID, number, repositoryID, nil)
+}
+
+func (r *Reader) DetailAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, number int64, repositoryID *int64) (Detail, error) {
+	if err := authorization.Validate(); err != nil {
+		return Detail{}, err
+	}
+	return r.detail(ctx, authorization.Principal, projectID, number, repositoryID, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) detail(ctx context.Context, principal model.Principal, projectID string, number int64, repositoryID *int64, check func() error) (Detail, error) {
 	if repositoryID != nil && *repositoryID <= 0 {
 		return Detail{}, invalid("Repository ID must be positive.")
 	}
@@ -98,7 +169,10 @@ func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectI
 		return Detail{}, invalid("Pull request number must be positive.")
 	}
 	var result Detail
-	err := r.snapshot(ctx, principal, projectID, func(s store.SnapshotScope, id string) error {
+	err := r.snapshot(ctx, principal, projectID, nil, func(s store.SnapshotScope, id string) error {
+		if err := checkPullRequestScope(ctx, s, id, number, repositoryID, check); err != nil {
+			return err
+		}
 		var err error
 		dao := s.GitHubDAO()
 		result.Connection, err = dao.Connection(ctx, id)
@@ -121,6 +195,17 @@ func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectI
 	return result, nil
 }
 func (r *Reader) List(ctx context.Context, principal model.Principal, projectID string, request ListRequest) (Page, error) {
+	return r.list(ctx, principal, projectID, request, nil)
+}
+
+func (r *Reader) ListAuthorized(ctx context.Context, authorization model.CredentialAuthorization, projectID string, request ListRequest) (Page, error) {
+	if err := authorization.Validate(); err != nil {
+		return Page{}, err
+	}
+	return r.list(ctx, authorization.Principal, projectID, request, func() error { return requireProjectScope(authorization) })
+}
+
+func (r *Reader) list(ctx context.Context, principal model.Principal, projectID string, request ListRequest, check func() error) (Page, error) {
 	if request.State != "active" && request.State != "closed" && request.State != "merged" && request.State != "all" {
 		return Page{}, invalid("State is invalid.")
 	}
@@ -152,7 +237,10 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 		query.Previous = cursor.direction == "previous"
 	}
 	result := Page{AuthorID: request.AuthorID}
-	err = r.snapshot(ctx, principal, id, func(s store.SnapshotScope, id string) error {
+	err = r.snapshot(ctx, principal, id, nil, func(s store.SnapshotScope, id string) error {
+		if err := checkRepositoryScope(ctx, s, id, request.RepositoryID, check); err != nil {
+			return err
+		}
 		dao := s.GitHubDAO()
 		var e error
 		result.Connection, e = dao.Connection(ctx, id)

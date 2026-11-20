@@ -21,6 +21,13 @@ type GitHubReadDAO interface {
 	PullRequestStatistics(context.Context, GitHubPRStatisticsQuery) (GitHubPRStatistics, error)
 }
 
+// GitHubPullRequestVisibilityReader checks only existence in the caller's
+// snapshot, using the same fixed legacy or explicit source as PullRequest.
+type GitHubPullRequestVisibilityReader interface {
+	RequireRepositoryVisible(context.Context, string, int64) error
+	RequirePullRequestVisible(context.Context, string, int64, *int64) error
+}
+
 // GitHubRepositoriesQuery selects one ascending source page plus its continuation row.
 type GitHubRepositoriesQuery struct {
 	ProjectID         string

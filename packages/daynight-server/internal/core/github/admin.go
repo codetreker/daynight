@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
@@ -47,6 +48,31 @@ func RequireAppAdmin(ctx context.Context, dao store.GitHubAppAdminReader, p mode
 	return membership, appAdminReadError(err)
 }
 
+func adminVisibility(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, appID string, admit func() error, userID, invitationID string) error {
+	if admit == nil {
+		_, err := RequireAppAdmin(ctx, dao, p, appID)
+		return err
+	}
+	v, ok := dao.(store.GitHubAppAdminVisibilityDAO)
+	if !ok {
+		return fmt.Errorf("GitHub administrator snapshot cannot check visibility")
+	}
+	if err := v.AppAdminVisibility(ctx, appID, p.UserID); err != nil {
+		return appAdminReadError(err)
+	}
+	if userID != "" {
+		if err := v.AdminMembershipVisibility(ctx, appID, userID); err != nil {
+			return appAdminReadError(err)
+		}
+	}
+	if invitationID != "" {
+		if err := v.AdminInvitationVisibility(ctx, appID, invitationID); err != nil {
+			return appAdminReadError(err)
+		}
+	}
+	return admit()
+}
+
 func appAdminReadError(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
 		return &model.Fault{Code: "not_found", Message: "GitHub App was not found.", Cause: err}
@@ -72,11 +98,15 @@ func adminListPage(p model.Principal, appID, kind string, in ListAppsInput) (sto
 }
 
 func ListAdmins(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, appID string, in ListAppsInput) (AdminPage, error) {
+	return ListAdminsWithAdmission(ctx, dao, p, appID, in, nil)
+}
+
+func ListAdminsWithAdmission(ctx context.Context, dao store.GitHubAppAdminReader, p model.Principal, appID string, in ListAppsInput, admit func() error) (AdminPage, error) {
 	page, scope, err := adminListPage(p, appID, "github_app_admins", in)
 	if err != nil {
 		return AdminPage{}, err
 	}
-	if _, err = RequireAppAdmin(ctx, dao, p, appID); err != nil {
+	if err := adminVisibility(ctx, dao, p, appID, admit, "", ""); err != nil {
 		return AdminPage{}, err
 	}
 	result, err := dao.AdminPage(ctx, appID, page)
@@ -99,7 +129,11 @@ func ListAdmins(ctx context.Context, dao store.GitHubAppAdminReader, p model.Pri
 }
 
 func RemoveAdmin(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID, userID string, version int64) (AdminRemoval, error) {
-	if _, err := RequireAppAdmin(ctx, dao, p, appID); err != nil {
+	return RemoveAdminWithAdmission(ctx, dao, p, appID, userID, version, nil)
+}
+
+func RemoveAdminWithAdmission(ctx context.Context, dao store.GitHubAppAdminWriter, p model.Principal, appID, userID string, version int64, admit func() error) (AdminRemoval, error) {
+	if err := adminVisibility(ctx, dao, p, appID, admit, userID, ""); err != nil {
 		return AdminRemoval{}, err
 	}
 	member, err := dao.Membership(ctx, appID, userID)

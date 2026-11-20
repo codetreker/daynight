@@ -159,6 +159,23 @@ func summaryTargets(p *githubpr.PullRequestSummary) []any {
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID, &p.RepositoryID, &p.RepositoryFullName}
 }
+func (r *reader) RequireRepositoryVisible(ctx context.Context, id string, repositoryID int64) error {
+	var one int
+	if err := r.tx.QueryRow(ctx, `SELECT 1 FROM project_github_repositories WHERE project_id=$1 AND repository_id=$2`, id, repositoryID).Scan(&one); err != nil {
+		return pg.QueryError("check github repository visibility", err)
+	}
+	return nil
+}
+
+func (r *reader) RequirePullRequestVisible(ctx context.Context, id string, number int64, repositoryID *int64) error {
+	var one int
+	err := r.tx.QueryRow(ctx, `SELECT 1 FROM project_pull_requests WHERE project_id=$1 AND repository_id=COALESCE($3::bigint, (SELECT legacy_repository_id FROM project_github WHERE project_id=$1)) AND number=$2`, id, number, repositoryID).Scan(&one)
+	if err != nil {
+		return pg.QueryError("check github pull request visibility", err)
+	}
+	return nil
+}
+
 func (r *reader) PullRequest(ctx context.Context, id string, number int64, repositoryID *int64) (githubpr.PullRequest, error) {
 	if repositoryID != nil {
 		return r.pullRequest(ctx, id, *repositoryID, number)

@@ -53,6 +53,32 @@ func (r *grantReader) Locate(ctx context.Context, appID, actor, grantID string) 
 	}
 	return result, nil
 }
+func (r *grantReader) GrantVisibility(ctx context.Context, appID, actor, teamID, grantID string, teamOnly bool) error {
+	var visible bool
+	if teamOnly {
+		err := r.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM teams t JOIN team_members m ON m.team_id=t.id AND m.user_id=$2 AND m.role='admin' WHERE t.id=$1)`, teamID, actor).Scan(&visible)
+		if err != nil {
+			return pg.QueryError("check Team administrator", err)
+		}
+	} else {
+		err := r.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM github_apps a WHERE a.id=$1 AND a.deleted_at IS NULL AND EXISTS (SELECT 1 FROM github_app_admins m WHERE m.app_resource_id=a.id AND m.user_id=$2) AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM teams t WHERE t.id=$3)) AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.id=$4 AND g.app_resource_id=a.id AND g.revoked_at IS NULL)))`, appID, actor, nullableID(teamID), nullableID(grantID)).Scan(&visible)
+		if err != nil {
+			return pg.QueryError("check GitHub grant visibility", err)
+		}
+	}
+	if !visible {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
+func nullableID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
 func readTeam(ctx context.Context, tx pgx.Tx, id string) (store.GitHubGrantTeam, error) {
 	var t store.GitHubGrantTeam
 	var personal, ownerID, ownerName *string
@@ -185,6 +211,29 @@ func (r *grantReader) TeamApps(ctx context.Context, teamID, actor string, after 
 	}
 	return p, nil
 }
+
+// GrantWriteAdmission reads no Team or owner projection before scope admission.
+func (w *grantWriter) GrantWriteAdmission(ctx context.Context, actor string) (store.GitHubGrantWriteAdmission, error) {
+	var f store.GitHubGrantWriteAdmission
+	if err := w.tx.QueryRow(ctx, `SELECT id::text,version FROM teams WHERE id=$1`, w.teamID).Scan(&f.TeamID, &f.TeamVersion); err != nil {
+		return f, pg.QueryError("read grant Team authority", err)
+	}
+	err := w.tx.QueryRow(ctx, `SELECT version,impact_version,EXISTS(SELECT 1 FROM github_app_admins m WHERE m.app_resource_id=a.id AND m.user_id=$2) FROM github_apps a WHERE id=$1 AND deleted_at IS NULL`, w.appID, actor).Scan(&f.AppVersion, &f.ImpactVersion, &f.IsAdmin)
+	if err != nil {
+		return f, pg.QueryError("read grant App authority", err)
+	}
+	return f, nil
+}
+
+func (w *grantWriter) RequireLiveGrant(ctx context.Context, id string) error {
+	var found int
+	err := w.tx.QueryRow(ctx, `SELECT 1 FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.id=$1 AND g.team_id=$2 AND g.app_resource_id=$3 AND g.revoked_at IS NULL`, id, w.teamID, w.appID).Scan(&found)
+	if err != nil {
+		return pg.QueryError("check locked grant", err)
+	}
+	return nil
+}
+
 func (w *grantWriter) Facts(ctx context.Context, actor string) (store.GitHubGrantFacts, error) {
 	t, err := readTeam(ctx, w.tx, w.teamID)
 	if err != nil {

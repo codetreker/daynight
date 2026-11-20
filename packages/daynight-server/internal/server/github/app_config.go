@@ -30,11 +30,11 @@ type appConfigHandler struct {
 }
 
 // registerAppConfigRoutes adds configuration routes to the unmounted App adapter.
-func registerAppConfigRoutes(mux *http.ServeMux, ops AppConfigOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+func registerAppConfigRoutes(routes *RouteRegistry, ops AppConfigOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
 	h := &appConfigHandler{operations: ops, origin: origin, logger: logger}
-	mux.HandleFunc("PATCH /api/v1/github/apps/{id}", auth.Require(h.update))
-	mux.HandleFunc("POST /api/v1/github/apps/{id}/remove", auth.Require(h.remove))
-	mux.HandleFunc("/api/v1/github/apps/{id}/remove", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+	routes.handle("PATCH /api/v1/github/apps/{id}", auth.Require(h.update), routeReadManage)
+	routes.handle("POST /api/v1/github/apps/{id}/remove", auth.Require(h.remove), routeManage)
+	routes.handle("/api/v1/github/apps/{id}/remove", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")), routeFallback)
 }
 
 func configFields(w http.ResponseWriter, r *http.Request, budget time.Duration, names ...string) (map[string]json.RawMessage, error) {

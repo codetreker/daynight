@@ -17,7 +17,14 @@ operation requirements. A validated policy is an immutable, versioned snapshot;
 combined actions require every applicable scope. Credential authorization retains
 the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
-without changing the existing product assembly.
+without changing the existing product assembly. Account, prompt, user-visible
+usage and GitHub admission paths apply the shared guard alongside their existing
+resource and profile checks. Their route registrations declare operation
+classifications for scoped assembly, including automatic HEAD and fallback paths.
+Account and usage operations that already recheck credentials in a transaction
+also require a current scoped policy at that boundary. GitHub operations resumed
+after external proof obtain current authority for the original credential before
+returning a result or continuing a write.
 
 ## Alternatives
 
@@ -36,4 +43,6 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
+itself. The current production assembly retains the existing credential paths;
+scoped assembly requires an authenticated policy snapshot and transaction-bound
+policy readers. Issuance and enabling scoped credentials remain independent work.
