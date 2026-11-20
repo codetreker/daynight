@@ -18,7 +18,11 @@ with separate intent versions, management-instance epochs and received observati
 sequences. Lifecycle and business admission serialize on the existing Worker row.
 The lifecycle transaction never locks Tasks, Bots or Sessions in reverse order.
 Credentials retain their original transaction-bound authorization before Worker
-admission, including the existing scoped-service policy when enabled.
+admission, including the existing scoped-service policy when enabled. Same-host,
+same-execution grant renewal retains those identity checks without requiring an
+open Worker gate, because expired grants would otherwise cut off stop and receipt
+channels. New hosting and execution generations check the authorized destination
+Worker in the same transaction; a retired host need not reopen for takeover.
 
 The ledger preserves original requests and receipts. Resolve obtains the same
 Worker lock and either reads the committed result or persists a not-committed

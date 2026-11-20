@@ -41,6 +41,9 @@ type recoveryFixture struct {
 	tokenUsed                                              bool
 	executionError                                         error
 	executionChecks                                        int
+	executionErrors                                        map[string]error
+	executionWorkers                                       []string
+	expectedStopProof                                      *sp.StopProof
 }
 
 func (f *recoveryFixture) BotDAO() store.BotWriteDAO    { return f }
@@ -135,6 +138,13 @@ func (f *recoveryFixture) SetSessionGrant(ctx context.Context, grant store.Sessi
 		f.t.Fatal("grant used old Session or PAT")
 	}
 	return f.stage(ctx, "grant")
+}
+func (f *recoveryFixture) SetSessionGenerationStop(ctx context.Context, id string, proof []byte) error {
+	expected, err := json.Marshal(f.expectedStopProof)
+	if err != nil || f.expectedStopProof == nil || id != *f.bot.SessionID || !bytes.Equal(proof, expected) {
+		f.t.Fatal("changed or unexpected generation stop proof")
+	}
+	return f.stage(ctx, "generationStop")
 }
 func (f *recoveryFixture) SaveSession(ctx context.Context, v store.SessionRecord) error {
 	f.saves++
@@ -510,6 +520,14 @@ func (f *recoveryFixture) CheckWorkerExecution(ctx context.Context, owner, worke
 		f.t.Fatal("changed execution admission identity")
 	}
 	f.executionChecks++
+	f.executionWorkers = append(f.executionWorkers, worker)
+	if f.executionErrors != nil {
+		err, exists := f.executionErrors[worker]
+		if !exists {
+			f.t.Fatal("unconfigured execution Worker")
+		}
+		return err
+	}
 	return f.executionError
 }
 

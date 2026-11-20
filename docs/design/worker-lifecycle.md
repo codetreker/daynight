@@ -30,7 +30,7 @@ Task claim 保持 Project/Task 原锁顺序，在业务写入之前取得 Worker
 
 Session 按原业务作用域锁定归属。Task Session 使用原 Worker 身份；Bot Session 从同事务锁定的 Bot 当前承载或恢复记录得到 Worker。`session_operations.worker_id` 和 `worker_intent_version` 保存接受时的 Worker 身份及云端意图版本；派发前两者都必须与当前归属相等，防止 Bot 更换宿主时相同版本数值误放行。旧 null 记录仅在 Worker 尚无生命周期资源时可用，首次注册后保守拒绝，避免停用后恢复隐式重送旧输入。独立非 Worker Test Session 保持原行为。新输入、accepted 到 offered、offered 到 dispatching 各自检查；原 ID 结果查询优先，不会因关闭门禁失去核对能力。
 
-Bot 保持 credential、Bot、Session 再 Worker 的顺序。需要 Worker 互斥准入时直接取得最终锁级别，避免两个恢复事务先持 SHARE 再升级 UPDATE 的死锁。管理报告和停止授权不通过统一的业务禁用开关；新增或推进执行才检查门禁。
+Bot 保持 credential、Bot、Session 再 Worker 的顺序。需要 Worker 互斥准入时直接取得最终锁级别，避免两个恢复事务先持 SHARE 再升级 UPDATE 的死锁。管理报告和停止授权不通过统一的业务禁用开关。同承载、同执行的 reconnect 续期保留全部身份与凭据校验，不因停用拒绝；新承载、bootstrap 或执行代际推进检查目标 Worker。takeover 的 Session grant 使用同一事务内已验证的目标 Worker 身份，不能从尚未推进的旧 Bot 承载记录反推准入对象。旧 Worker 保持关闭也可完成合法迁移，最终的 Bot 承载变更和 Session grant 共同提交。
 
 生命周期写事务不反向锁 Task、Bot 或 Session，也不等待网络或本机进程停止，因此不会与既有业务锁形成反向环。业务先提交的 claim/指令身份不会被停用删除；本机必须把它们纳入完整停止责任。
 

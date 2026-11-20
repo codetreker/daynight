@@ -268,17 +268,18 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 }
 
 func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
-	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "")
+	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "", r.ExecutionWorkerID)
 }
 
-func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token string) (GrantResult, error) {
+func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token, executionWorkerID string) (GrantResult, error) {
 	var out GrantResult
 	id := r.Snapshot.SessionID
 	v := &r.Snapshot
 	// A grant for the same execution maintains the stop/upload channel. New
-	// execution generations and bootstrap grants require business admission.
+	// execution generations and bootstrap grants require business admission on
+	// their destination Worker, which may differ from the old Bot host.
 	if g.Kind == "bootstrap" || g.PreviousGeneration != nil {
-		if err := RequireWorkerExecution(ctx, tx.scope, r.Owner, r.ExecutionWorkerID); err != nil {
+		if err := RequireWorkerExecution(ctx, tx.scope, r.Owner, executionWorkerID); err != nil {
 			return out, err
 		}
 	}
