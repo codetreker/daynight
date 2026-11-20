@@ -33,6 +33,7 @@ import type { PendingInvitation } from "../features/auth/invitation";
 import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSession";
 import { TaskAssigneesProvider } from "../features/task-assignees/TaskAssignees";
 import { ProjectPage } from "../features/projects/ProjectPage";
+import { ProjectSettingsActionContent } from "../features/projects/ProjectHeaderActions";
 import { ProjectAccessBoundary, useProjectAccess } from "../features/projects/ProjectAccess";
 import { ProjectsPage } from "../features/projects/ProjectsPage";
 import { SharedProjectsPage } from "../features/projects/SharedProjectsPage";
@@ -76,7 +77,7 @@ const AuthorizedProject = ({ projectId }: { readonly projectId: string }) => {
   if (access.status === "unavailable") denied.current = true;
   if (access.status === "ready" || access.projectReadAvailable === true) { admitted.current = true; denied.current = false; }
   const unavailable = denied.current && !admitted.current && access.projectReadAvailable !== true;
-  return <>{unavailable && <AccessUnavailable onRetry={access.session.retryProjectRead} />}{access.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => access.session.revalidate()}>{m.retryPermissions}</button></div>}<div hidden={unavailable} inert={unavailable}><ProjectPage projectId={projectId} renderActions={() => access.projectReadAvailable === true ? <a className="button" href={`/projects/${projectId}/settings`} onClick={followLink}>{m.projectSettings}</a> : <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{m.projectSettings}</span></span>} /></div></>;
+  return <>{unavailable && <AccessUnavailable onRetry={access.session.retryProjectRead} />}{access.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => access.session.revalidate()}>{m.retryPermissions}</button></div>}<div hidden={unavailable} inert={unavailable}><ProjectPage projectId={projectId} renderActions={() => access.projectReadAvailable === true ? <a className="button project-header-secondary" href={`/projects/${projectId}/settings`} onClick={followLink} aria-label={m.projectSettings} title={m.projectSettings}><ProjectSettingsActionContent label={m.projectSettings} /></a> : <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button project-header-secondary"><ProjectSettingsActionContent label={m.projectSettings} /></span></span>} /></div></>;
 };
 
 const ProjectManagementNav = ({ projectId }: { readonly projectId: string }) => {

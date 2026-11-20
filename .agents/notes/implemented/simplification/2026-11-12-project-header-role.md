@@ -18,6 +18,8 @@ section retains effective roles, their sources and permission controls. The
 records the unified entry.
 The [project read decision](../architecture/2026-11-13-project-page-independent-read.md)
 records its separate admission and withdrawal boundary.
+The [narrow heading decision](../bug-fix/2026-11-20-project-heading-actions.md)
+defines the responsive action and reservation geometry.
 
 The [earlier header decision](../../archived/bug-fix/2026-10-23-project-header-layout-shift.md)
 records why asynchronous access must not move restored content. Its role-width
