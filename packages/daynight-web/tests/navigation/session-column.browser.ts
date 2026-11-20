@@ -249,6 +249,19 @@ for (const entry of ['task', 'test'] as const) test(`${entry} uses its narrow de
   expect(dimensions.heading.bottom).toBeLessThanOrEqual(dimensions.bounds.bottom);
   expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
 });
+test('switches pending navigation at the timeline shell height threshold', async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 900 });
+  const { observations } = await open(page, 'en', 'waiting_input', 'test', 'tall-form');
+  const shell = page.locator('.session-timeline-shell').last();
+  const jump = page.locator('.session-pending-request');
+  for (const [height, position] of [[120, 'absolute'], [121, 'static'], [119, 'absolute']] as const) {
+    await shell.evaluate((node, value) => { node.style.flex = 'none'; node.style.height = `${value}px`; }, height);
+    await expect(jump).toBeVisible();
+    await expect.poll(() => jump.evaluate(node => getComputedStyle(node.parentElement!).position)).toBe(position);
+    await expect(jump).toHaveAccessibleName('Pending request · Choose session options');
+  }
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+});
 async function imageFooterGeometry(page: Page) {
   return page.locator('.session-composer-footer-default').evaluate(footer => {
     const surface = footer.closest<HTMLElement>('.session-composer-surface')!;
