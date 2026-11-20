@@ -117,3 +117,5 @@
 .graph-inspection-legend>span{display:inline-flex;align-items:center;gap:5px}
 .graph-inspection-legend i{width:12px;height:12px;border:1px solid #52649b;border-radius:3px;flex:none}
 .graph-successor-legend i{border-color:var(--graph-successor-color)}
+
+.goal-children-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px 12px;min-width:0}
