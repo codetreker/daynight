@@ -12,8 +12,7 @@ chains also makes the same visual control behave differently across graphs.
 ## Decision
 
 Goal and chain cards share native body inspection and an independent sibling
-Details button. Goal cards use 360×184 geometry at the default root size, scaling with larger
-root fonts, and retain existing status and
+Details button. Goal cards use shared compact geometry, scaling with larger root fonts, and retain status and
 execution presentation, and separate room for Details. They retain the complete
 Parent projection and provide no progressive expansion or external navigation.
 

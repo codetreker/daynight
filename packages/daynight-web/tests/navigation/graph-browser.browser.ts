@@ -12,6 +12,21 @@ test('retains real dependency geometry and viewport through direction, zoom, pan
   const viewport = page.locator('.react-flow__viewport');
   await expect(page.locator('.react-flow__node')).toHaveCount(expected.nodes.length);
   await expect(page.locator('.react-flow__edge')).toHaveCount(expected.edges.length);
+  const cards = await page.locator('.react-flow__node').evaluateAll(elements => elements.map(element => {
+    const card = element.querySelector<HTMLElement>('.task-node')!;
+    const details = card.querySelector('.task-node-details')!.getBoundingClientRect();
+    const title = card.querySelector('.task-node-title')!.getBoundingClientRect();
+    const bottom = [...card.querySelectorAll('.task-node-bottom > *')].map(part => part.getBoundingClientRect());
+    const controls = card.querySelector('.task-node-expansions')?.getBoundingClientRect();
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return { id: element.getAttribute('data-id'), width: card.offsetWidth, height: card.offsetHeight, hasControls: controls !== undefined,
+      separate: bottom.every(part => separate(title, part) && separate(part, details) && (controls === undefined || separate(part, controls))) &&
+        separate(title, details) && (controls === undefined || separate(details, controls)) };
+  }));
+  for (const card of cards) {
+    const external = !expected.memberIds.includes(card.id!);
+    expect(card).toEqual({ id: card.id, width: 320, height: external ? 204 : 144, hasControls: external, separate: true });
+  }
   const geometry = async (direction: 'horizontal' | 'vertical') => {
     expect(await checkDependencyGeometry(page, expected, info, undefined, direction)).toEqual({ total: 0, examples: [] });
   };
@@ -69,11 +84,14 @@ for (const rootSize of [16, 32]) test(`320px graph keeps its first card and cont
   await body.focus();
   await expect(body).toBeFocused();
   const sizes = await card.evaluate(element => {
-    const box = element.querySelector('.task-node')!.getBoundingClientRect();
+    const card = element.querySelector<HTMLElement>('.task-node')!;
+    const box = card.getBoundingClientRect();
     const parts = [...element.querySelectorAll('.task-node-title, .task-node-meta, .task-node-bottom, .task-external-label, .task-node-details, .task-node-expansions')].map(part => part.getBoundingClientRect());
-    return parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1);
+    return { width: card.offsetWidth, height: card.offsetHeight,
+      inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1) };
   });
-  expect(sizes).toBe(true);
+  expect(sizes).toEqual({ width: 320 * rootSize / 16, height: 144 * rootSize / 16, inside: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await body.press('Enter');
   await expect(body).toHaveAttribute('aria-pressed', 'true');
   const viewport = page.locator('.react-flow__viewport');

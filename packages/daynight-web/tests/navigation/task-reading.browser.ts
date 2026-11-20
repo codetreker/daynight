@@ -1,5 +1,6 @@
 import { expectTextContrast, roleColors } from './color-roles';
 import { expectCopyButtonSkin } from './copy-button-assertions';
+import { expectGraphCardBadges } from './graph-card-badges';
 import type { TaskDetail } from '../../src/api/types';
 import { usageMetricKeys } from '../../src/api/usage';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
@@ -184,7 +185,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       expect(await node.locator('.task-node').evaluate(element => {
         const card = element.getBoundingClientRect(), timing = element.querySelector('.task-duration')!.getBoundingClientRect(), detail = element.querySelector('.task-node-details')!.getBoundingClientRect();
         const decorations = [...element.querySelectorAll('.task-stuck-label, .task-agent-permission')];
-        return (element as HTMLElement).offsetWidth === 360 && [184, 244].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
+        return (element as HTMLElement).offsetWidth === 320 && [144, 204].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button', { name: locale === 'en' ? 'Close dependency graph' : '关闭依赖图' }).click();
@@ -848,6 +849,70 @@ const rowUsageSummary = (mode: RowUsageMode) => {
     measurementRecords: mode === 'no_data' ? '0' : '1', lastMeasuredAt: null, observedAt: time, etag: 'row-usage',
   };
 };
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 32]) {
+  test(`compact graph contains complex external task content at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+    const goalId = '00000000-0000-4000-8000-000000000061';
+    const externalId = '00000000-0000-4000-8000-000000000062';
+    const title = locale === 'en' ? 'A task title long enough to occupy two lines in this card' : '这是一个用于验证依赖图卡片双行标题显示和完整布局的任务';
+    const details = [
+      detailFixture(projectId, taskId, { version: 5n, title: 'Short', status: 'in_progress', ready: false, startedAt: '2026-10-22T09:45:00Z' }),
+      detailFixture(projectId, successorId, { version: 5n, title: 'Blocked successor', ready: false, blockedBy: [taskId, externalId], dependsOn: [taskId, externalId], externalDependsOn: [externalId] }),
+      detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'A very long external owner name that should truncate', status: 'in_progress', ready: false }),
+      detailFixture(projectId, externalId, { version: 5n, parentId: goalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-22T08:00:00Z',
+        allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } }),
+    ];
+    await install(page, false, false, 'Short', details);
+    await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+      const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+      return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary(id === externalId ? 'large' : 'no_data') })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const graph = page.locator('.task-chain-dialog');
+    const external = graph.locator(`.react-flow__node[data-id="${externalId}"] .task-node`);
+    const short = graph.locator(`.react-flow__node[data-id="${taskId}"] .task-node`);
+    await expect(external.locator('.task-node-usage')).toBeVisible();
+    await expect(short.locator('.task-node-usage')).toHaveCount(0);
+    await expect(external.locator('.task-node-owner')).toContainText('A very long external owner');
+    await expect(external.locator('.task-external-label')).toBeVisible();
+    await expect(external.locator('.task-paused-badge, .task-agent-permission, .task-platform, .task-stuck-label')).toHaveCount(4);
+    await expectGraphCardBadges(external);
+    const geometry = await external.evaluate(element => {
+      const card = element as HTMLElement, box = card.getBoundingClientRect();
+      const title = card.querySelector<HTMLElement>('.task-node-title')!;
+      const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
+      const selectors = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-node-bottom > *', '.task-node-details', '.task-node-expansions'];
+      const parts = selectors.flatMap(selector => [...card.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+      const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+      return { width: card.offsetWidth, height: card.offsetHeight, twoLines: title.offsetHeight > lineHeight * 1.5 && title.scrollHeight <= title.clientHeight + 1,
+        inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
+        separate: parts.every((part, index) => parts.slice(index + 1).every(other => separate(part, other))) };
+    });
+    expect(geometry).toEqual({ width: 320 * rootSize / 16, height: 204 * rootSize / 16, twoLines: true, inside: true, separate: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await graph.locator('[data-direction="vertical"]').click();
+    await expect(graph.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+    const detail = external.locator('.task-node-details');
+    await detail.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: title, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'A very long external owner name that should truncate', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(detail).toBeFocused();
+    const navigate = external.locator('.task-node-navigate');
+    await navigate.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'A very long external owner name that should truncate', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: title, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await expect(navigate).toBeFocused();
+  });
+}
 
 for (const kind of ['standalone', 'goal'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
   test(`ordinary ${kind} usage shows only numeric readings at ${width}px in ${locale}`, async ({ page }) => {
