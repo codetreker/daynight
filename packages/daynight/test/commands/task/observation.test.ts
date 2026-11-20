@@ -99,6 +99,51 @@ describe("Task Session command observations", () => {
     expect(parseApiJson(f.stdout.join(""))).toMatchObject({ id: taskId, title: "Task", session: { observation: "unavailable" } });
   });
 
+  it("keeps Task reads successful and reports missing Session permission", async () => {
+    const scoped = { ...observation, observation: "unavailable", registration: "unknown", sessionId: null, nativeSessionId: null, claimId: null, executionGeneration: null, connectionEpoch: null, agentControlMode: null, contentKind: null, provider: null, indicator: null, reason: "insufficient_scope", activity: null, connectionState: null, lifecycle: null, currentTurnId: null, needsAttention: null, send: { allowed: null, mode: null, reason: "insufficient_scope" }, observedAt: null, lastSeenAt: null, freshUntil: null, error: { code: "insufficient_scope", message: "Session read permission required" } };
+    const f = fixture({ ...task, session: scoped });
+    expect(await f.run(["show", taskId, "--project", projectId, "--json"])).toBe(0);
+    expect(parseApiJson(f.stdout.join(""))).toMatchObject({ id: taskId, session: { reason: "insufficient_scope" } });
+    expect(f.stderr.join("")).toContain("session:read");
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not hide other Session failures alongside missing permission", async () => {
+    const scoped = { ...observation, observation: "unavailable", reason: "insufficient_scope", error: { code: "insufficient_scope", message: "Session read permission required" } };
+    const failed = { ...observation, observation: "unavailable", reason: "unavailable", error: { code: "unavailable", message: "Failed" } };
+    const f = fixture({ items: [{ ...task, session: scoped }, { ...task, id: "55555555-5555-4555-8555-555555555555", session: failed }], nextCursor: null, observedAt: time, partial: true });
+    expect(await f.run(["list", "--project", projectId, "--json"])).toBe(3);
+    expect(parseApiJson(f.stdout.join(""))).toHaveLength(2);
+    expect(f.stderr.join("")).toContain("partial");
+  });
+
+  it("reports missing Session permission on an empty observed list", async () => {
+    const f = fixture({ items: [], nextCursor: null, observedAt: time, partial: true });
+    expect(await f.run(["list", "--project", projectId, "--json"])).toBe(0);
+    expect(parseApiJson(f.stdout.join(""))).toEqual([]);
+    expect(f.stderr.join("")).toContain("session:read");
+  });
+
+  it("reports missing Session permission on an empty work page", async () => {
+    const f = fixture({ groups: [], nextCursor: null, observedAt: time, partial: true });
+    expect(await f.run(["list", "--project", projectId, "--group-by", "chain", "--status", "in_progress", "--json"])).toBe(0);
+    expect(f.stderr.join("")).toContain("session:read");
+  });
+
+  it("recognizes permission-limited work with paginated targets", async () => {
+    const group = workPage.groups[0];
+    const f = fixture({ ...workPage, partial: true, groups: [{ ...group, memberCount: 22, inProgressCount: 22, summary: { ...group.summary, indicator: null, workingCount: 0, noticeCount: 0, warningCount: 0, unknownCount: 22, complete: false }, targets: [{ ...group.targets[0], sessionId: null, indicator: null, reason: "insufficient_scope", send: { allowed: null, mode: null, reason: "insufficient_scope" } }], contributorCursor: "more" }] });
+    expect(await f.run(["list", "--project", projectId, "--group-by", "chain", "--status", "in_progress", "--json"])).toBe(0);
+    expect(f.stderr.join("")).toContain("session:read");
+  });
+
+  it("preserves a partial work error when observations do not match the permission projection", async () => {
+    const group = workPage.groups[0];
+    const f = fixture({ ...workPage, partial: true, groups: [{ ...group, targets: [{ ...group.targets[0], reason: "unavailable" }] }] });
+    expect(await f.run(["list", "--project", projectId, "--group-by", "chain", "--status", "in_progress", "--json"])).toBe(3);
+    expect(f.stderr.join("")).toContain("partial");
+  });
+
   it("reports an empty legacy list as unsupported with usable JSON and exit 3", async () => {
     const f = fixture({ items: [], nextCursor: null });
     expect(await f.run(["list", "--json"])).toBe(3);

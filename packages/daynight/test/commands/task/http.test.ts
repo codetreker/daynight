@@ -24,7 +24,7 @@ type Request = { readonly method: string; readonly path: string; readonly query:
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
 const respond = (response: ServerResponse, value: unknown, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(status === 200 ? observedFixtureResponse(value, response.req.url!) : value)); };
-const fixture = async (handler: (request: Request, response: ServerResponse, raw: IncomingMessage) => void) => {
+const fixture = async (handler: (request: Request, response: ServerResponse, raw: IncomingMessage) => void, denyProject = false) => {
   const requests: Request[] = [];
   const server = createServer((request, response) => {
     let body = ""; request.setEncoding("utf8");
@@ -33,7 +33,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
       const url = new URL(request.url!, "http://localhost");
       const current = { method: request.method!, path: url.pathname, query: url.searchParams, body };
       requests.push(current);
-      if (current.path === `/api/v1/projects/${projectId}`) respond(response, project);
+      if (current.path === `/api/v1/projects/${projectId}`) denyProject ? respond(response, { error: { code: "forbidden", message: "project:read required" } }, 403) : respond(response, project);
       else if (current.path === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       else handler(current, response, request);
     });
@@ -47,8 +47,9 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
   await mkdir(path.join(home, ".daynight"));
   await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
   const signals = new EventEmitter();
+  const stdout = vi.fn<(value: string) => void>();
   const context = { version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,
-    workingDirectory: vi.fn<() => string>(() => { throw new Error("Explicit project must not query cwd"); }), stdout: vi.fn<(value: string) => void>(), stdoutBytes: vi.fn(async () => {}), stderr: vi.fn<(value: string) => void>() };
+    workingDirectory: vi.fn<() => string>(() => { throw new Error("Explicit project must not query cwd"); }), stdout, stdoutBytes: vi.fn(async (value: Uint8Array) => { stdout(Buffer.from(value).toString("utf8")); }), closeStdoutBytes: vi.fn(async () => {}), stderr: vi.fn<(value: string) => void>() };
   const dependencies = {
     runServerCommand: (current: Parameters<typeof runServerCommand>[0], command: Parameters<typeof runServerCommand>[1]) => runServerCommand(current, command, { signalEmitter: signals }),
     resolveProject: vi.fn(async (): Promise<never> => { throw new Error("Explicit project must not resolve repository"); }),
@@ -58,6 +59,62 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it("reads a Task with task:read alone and no project lookup", async () => {
+    const f = await fixture((request, response) => {
+      expect(request.method).toBe("GET");
+      expect(request.path).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}`);
+      respond(response, task);
+    }, true);
+    await f.run(["show", taskId, "--json"]);
+    expect(f.requests).toHaveLength(1);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toMatchObject({ id: taskId, projectId });
+  });
+
+  it.each([
+    { scope: "task:write", args: ["--title", "Changed"], field: { title: "Changed" } },
+    { scope: "agent:authorize", args: ["--allow-agents", "true"], field: { allowAgents: true } },
+  ])("uses a minimal update receipt with $scope alone", async ({ args, field }) => {
+    const f = await fixture((request, response, raw) => {
+      expect(request.method).toBe("PATCH");
+      expect(raw.headers["daynight-return"]).toBe("receipt-v1");
+      expect(parseApiJson(request.body)).toEqual({ version: task.version, ...field });
+      response.setHeader("Daynight-Return", "receipt-v1");
+      respond(response, { projectId, taskId, version: task.version + 1n });
+    }, true);
+    await f.run(["update", taskId, ...args, "--if-version", String(task.version)]);
+    expect(f.requests).toHaveLength(1);
+    expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: ${task.version + 1n}\n`);
+  });
+
+  it("accepts one old-server full response but renders only the receipt", async () => {
+    const f = await fixture((request, response, raw) => {
+      expect(request.method).toBe("PATCH");
+      expect(raw.headers["daynight-return"]).toBe("receipt-v1");
+      respond(response, { ...task, title: "Changed", version: task.version + 1n });
+    }, true);
+    await f.run(["update", taskId, "--title", "Changed", "--if-version", String(task.version)]);
+    expect(f.requests).toHaveLength(1);
+    expect(f.context.stdout.mock.calls[0]![0]).toBe(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: ${task.version + 1n}\n`);
+  });
+
+  it("does not retry a refused scoped update", async () => {
+    const f = await fixture((_request, response) => respond(response, { error: { code: "forbidden", message: "insufficient scope", requestId: "scope-denied" } }, 403), true);
+    await expect(f.run(["update", taskId, "--title", "Changed", "--if-version", String(task.version)])).rejects.toMatchObject({ status: 403, confirmedRefusal: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["PATCH"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each(["output", "cleanup"] as const)("reports a confirmed update after local %s fails", async (phase) => {
+    const f = await fixture((_request, response) => {
+      response.setHeader("Daynight-Return", "receipt-v1");
+      respond(response, { projectId, taskId, version: task.version + 1n });
+    }, true);
+    if (phase === "output") f.context.stdoutBytes.mockRejectedValue(new Error("output failed"));
+    else f.context.closeStdoutBytes.mockRejectedValue(new Error("cleanup failed"));
+    await expect(f.run(["update", taskId, "--title", "Changed", "--if-version", String(task.version)])).rejects.toMatchObject({ message: expect.stringContaining(`Task update was confirmed for Project ${projectId}, Task ${taskId}, but local ${phase} failed.`) });
+    expect(f.requests.map(({ method }) => method)).toEqual(["PATCH"]);
+  });
+
   it.each([
     { args: ["--type", "goal"], input: { type: "goal" }, parentId: null, assignedTo: accountId, type: "goal" },
     { args: ["--type", "goal", "--parent", "none", "--clear-assigned-to"], input: { type: "goal", parentId: null, assignedTo: null }, parentId: null, assignedTo: null, type: "goal" },
@@ -95,10 +152,10 @@ describe("task commands over HTTP", () => {
     { args: ["--parent", otherId.toUpperCase()], parent: otherId },
     { args: ["--parent", "none"], parent: null },
   ])("sends parent-only update with the caller's exact version: $parent", async ({ args, parent }) => {
-    const f = await fixture((_request, response) => respond(response, { ...task, parentId: parent }));
+    const f = await fixture((_request, response) => respond(response, { ...task, parentId: parent, version: 9_223_372_036_854_775_807n }));
     await f.run(["update", taskId, ...args, "--if-version", "9223372036854775807"]);
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PATCH"]);
-    expect(parseApiJson(f.requests[1]!.body)).toEqual({ version: 9_223_372_036_854_775_807n, parentId: parent });
+    expect(f.requests.map(({ method }) => method)).toEqual(["PATCH"]);
+    expect(parseApiJson(f.requests[0]!.body)).toEqual({ version: 9_223_372_036_854_775_807n, parentId: parent });
   });
 
   it("preserves parent and dependency classifications when parent is omitted from an update", async () => {
@@ -114,7 +171,7 @@ describe("task commands over HTTP", () => {
     const f = await fixture((request, response) => respond(response, request.query.has("ready") ? { items: [], nextCursor: null } : request.query.has("cursor") ? { items: [{ ...task, id: claimId, parentId }], nextCursor: null } : { items: [{ ...task, parentId }], nextCursor: cursor }));
     await f.run(["list", "--type", "task", "--parent", parent, "--json"]);
     const selection = parent === "none" ? "none" : otherId;
-    expect(f.requests.slice(1).map(({ query }) => Object.fromEntries(query))).toEqual([
+    expect(f.requests.map(({ query }) => Object.fromEntries(query))).toEqual([
       { type: "task", parentId: selection, limit: "100", include: "session" },
       { type: "task", parentId: selection, limit: "100", include: "session", cursor },
     ]);
@@ -126,7 +183,7 @@ describe("task commands over HTTP", () => {
   it("sends an explicit Goal list filter", async () => {
     const f = await fixture((_request, response) => respond(response, { items: [], nextCursor: null }));
     await f.run(["list", "--type", "goal", "--json"]);
-    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ type: "goal", limit: "100", include: "session" });
+    expect(Object.fromEntries(f.requests[0]!.query)).toEqual({ type: "goal", limit: "100", include: "session" });
   });
 
   it("keeps assigned responsibility and complete active worker ownership through a same-assignee update", async () => {
@@ -136,13 +193,13 @@ describe("task commands over HTTP", () => {
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(active));
     await f.run(["update", taskId, "--assigned-to", accountId.toUpperCase(), "--if-version", String(active.version)]);
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: active.version, assignedTo: accountId });
-    expect(f.context.stdout.mock.calls[1]![0]).toContain(`Assigned to: ${accountId}\n`);
+    expect(f.context.stdout.mock.calls[1]![0]).toContain(`ID: ${taskId}\n`);
     await f.run(["show", taskId, "--json"]);
     expect(parseApiJson(f.context.stdout.mock.calls[2]![0])).toEqual(withTaskObservation(active));
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
-      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
-      `GET /api/v1/projects/${projectId}`, `PATCH /api/v1/projects/${projectId}/tasks/${taskId}`,
-      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
+      `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
+      `PATCH /api/v1/projects/${projectId}/tasks/${taskId}`,
+      `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
     ]);
   });
   it("reports a stale property removal without retrying or printing success", async () => {
@@ -168,13 +225,14 @@ describe("task commands over HTTP", () => {
     const f = await fixture((request, response) => respond(response, request.method === "GET" ? current : updated));
     await f.run(["update", taskId, ...args, ...(version === undefined ? [] : ["--if-version", version])]);
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
-      `GET /api/v1/projects/${projectId}`,
+      ...(version === undefined ? [`GET /api/v1/projects/${projectId}`] : []),
       ...(version === undefined ? [`GET /api/v1/projects/${projectId}/tasks/${taskId}`] : []),
       `PATCH /api/v1/projects/${projectId}/tasks/${taskId}`,
     ]);
     expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, ...patch });
     const output = f.context.stdout.mock.calls[0]![0];
-    expect(output).toContain(`Assigned to: ${assignedTo ?? "unassigned"}\n`);
+    if (version === undefined) expect(output).toContain(`Assigned to: ${assignedTo ?? "unassigned"}\n`);
+    else expect(output).not.toContain("Assigned to:");
     expect(output).toContain("Version: 9007199254740994\n");
     expect(f.context.stdout).toHaveBeenCalledOnce(); expect(f.context.stderr).not.toHaveBeenCalled();
     expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
@@ -191,10 +249,10 @@ describe("task commands over HTTP", () => {
     });
     await f.run(["list", "--assigned-to", selection, "--status", "todo", "--ready", "--allow-agents", "true", "--compatible-platform", "linux", "--json"]);
     expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
-      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks`, `GET /api/v1/projects/${projectId}/tasks`,
+      `GET /api/v1/projects/${projectId}/tasks`, `GET /api/v1/projects/${projectId}/tasks`,
     ]);
     const filters = { assignedTo: selection === "me" ? "me" : selection === "unassigned" ? "unassigned" : otherId, status: "todo", ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100", include: "session" };
-    expect(f.requests.slice(1).map(({ query }) => Object.fromEntries(query))).toEqual([filters, { ...filters, cursor }]);
+    expect(f.requests.map(({ query }) => Object.fromEntries(query))).toEqual([filters, { ...filters, cursor }]);
     const { description: _firstDescription, ...firstItem } = first;
     const { description: _secondDescription, ...secondItem } = second;
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual([firstItem, secondItem].map(withTaskObservation));
@@ -205,8 +263,8 @@ describe("task commands over HTTP", () => {
   it("uses one project request and one page for an empty me-assigned result", async () => {
     const f = await fixture((_request, response) => { response.setHeader("Daynight-User-ID", accountId); respond(response, { items: [], nextCursor: null }); });
     await f.run(["list", "--assigned-to", "me", "--status", "in_progress", "--json"]);
-    expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([`GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks`]);
-    expect(Object.fromEntries(f.requests[1]!.query)).toEqual({ assignedTo: "me", status: "in_progress", limit: "100", include: "session" });
+    expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([`GET /api/v1/projects/${projectId}/tasks`]);
+    expect(Object.fromEntries(f.requests[0]!.query)).toEqual({ assignedTo: "me", status: "in_progress", limit: "100", include: "session" });
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith("[]\n"); expect(f.context.stderr).not.toHaveBeenCalled();
   });
 
@@ -388,9 +446,9 @@ describe("task commands over HTTP", () => {
   });
 
   it("uses an explicit maximum int64 version without issuing a task GET", async () => {
-    const f = await fixture((_request, response) => respond(response, task));
+    const f = await fixture((_request, response) => respond(response, { ...task, version: 9_223_372_036_854_775_807n }));
     await f.run(["update", taskId, "--clear-dependencies", "--if-version", "9223372036854775807"]);
-    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PATCH"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["PATCH"]);
     expect(f.requests.at(-1)!.body).toBe('{"version":9223372036854775807,"dependsOn":[],"externalDependsOn":[]}');
   });
 
@@ -414,7 +472,7 @@ describe("task commands over HTTP", () => {
     });
     await expect(f.run(["list", "--json"])).rejects.toMatchObject({ operation: "task.list", projectId, code: "internal_error", requestId: "task-page-failure" });
     expect(f.context.stdout).not.toHaveBeenCalled();
-    expect(f.requests).toHaveLength(3);
+    expect(f.requests).toHaveLength(2);
   });
 
   it("publishes only the first ready page even when a later page would fail", async () => {

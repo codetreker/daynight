@@ -1,4 +1,5 @@
 import type { CreateTaskInput, Project, Task, TaskFilters, TaskPlatform, UpdateTaskInput } from "../../api/types.js";
+import type { TaskSessionObservation } from "../../api/task-observation.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
@@ -238,17 +239,22 @@ export const runTaskCommand = async (
   }
   let partialObservation = false;
   let unsupportedObservation = false;
+  let insufficientSessionScope = false;
   await dependencies.runServerCommand(context, async ({ api, operation, serverUrl }) => {
     operation.check();
-    let project: Project;
+    let project: Pick<Project, "id">;
     if (projectId !== undefined) {
-      project = await api.getProject(projectId);
+      const direct = name === "show" || name === "list" || name === "graph" || name === "update" && expectedVersion !== undefined;
+      project = direct ? { id: projectId } : await api.getProject(projectId);
     } else {
       project = await dependencies.resolveProject({ serverUrl, operation, api, workingDirectory: context.workingDirectory() });
     }
     operation.check();
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     const { taskObservationPartial } = await import("../../api/task-observation.js");
+    const scopeUnavailable = (session: TaskSessionObservation): boolean => session.observation === "unavailable" && session.reason === "insufficient_scope" && (session.error === null || session.error.code === "insufficient_scope");
+    const permissionOnly = (sessions: readonly TaskSessionObservation[]): boolean =>
+      sessions.some(scopeUnavailable) && sessions.every(session => scopeUnavailable(session) || !taskObservationPartial(session));
     operation.check();
     if (command.command.name === "create") {
       if (type === "goal" && status !== undefined && isTerminalTaskStatus(status) && !command.options.has("--force")) {
@@ -268,12 +274,15 @@ export const runTaskCommand = async (
         const { stringifyApiJson } = await import("../../api/json.js");
         const page = await api.listTaskWork(project.id, { assignedTo: assignedTo ?? "me", ...(limitArgument === undefined ? {} : { limit: readyLimit }), ...(cursor === undefined ? {} : { cursor }), ...(groupId === undefined ? {} : { groupId, targetsCursor: targetsCursor! }) });
         operation.check();
-        partialObservation = page.partial;
+        const targets = page.groups.flatMap(group => group.targets);
+        insufficientSessionScope = page.partial && (page.groups.length === 0 || targets.length > 0 && targets.every(target => target.reason === "insufficient_scope") && page.groups.every(group => group.summary.indicator === null && group.summary.workingCount === 0 && group.summary.noticeCount === 0 && group.summary.warningCount === 0 && group.summary.unknownCount === group.inProgressCount && !group.summary.complete));
+        partialObservation = page.partial && !insufficientSessionScope;
         return command.options.has("--json") ? `${stringifyApiJson(page)}\n` : renderTaskWorkPage(page, project.id, assignedTo ?? "me");
       }
       const filters: TaskFilters = { ...filterTags, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const observed = await api.listObservedTasks(project.id, filters);
-      partialObservation = observed.partial;
+      insufficientSessionScope = observed.partial && !observed.unsupported && (observed.items.length === 0 || permissionOnly(observed.items.map(task => task.session)));
+      partialObservation = observed.partial && !insufficientSessionScope;
       unsupportedObservation = observed.unsupported;
       const tasks = observed.items
         .filter((task) => all || status !== undefined || !isTerminalTaskStatus(task.status))
@@ -294,14 +303,16 @@ export const runTaskCommand = async (
       }
       const graph = await api.getObservedTaskGraph(project.id, taskId!);
       operation.check();
-      partialObservation = graph.partial;
+      insufficientSessionScope = graph.partial && permissionOnly(graph.tasks.map(task => task.session));
+      partialObservation = graph.partial && !insufficientSessionScope;
       unsupportedObservation = graph.tasks.some(task => task.session.observation === "unsupported");
       return command.options.has("--json") ? renderTaskJson(graph) : renderTaskGraph(graph);
     }
     if (command.command.name === "show") {
       const task = await api.getObservedTask(project.id, taskId!);
       operation.check();
-      partialObservation = taskObservationPartial(task.session);
+      insufficientSessionScope = scopeUnavailable(task.session);
+      partialObservation = taskObservationPartial(task.session) && !insufficientSessionScope;
       unsupportedObservation = task.session.observation === "unsupported";
       return command.options.has("--json") ? renderTaskJson(task) : renderTask(task);
     }
@@ -324,10 +335,25 @@ export const runTaskCommand = async (
       operation.check();
       return `Task status set.\n${renderTask(task)}`;
     }
+    if (projectId !== undefined && expectedVersion !== undefined) {
+      let receipt;
+      try { receipt = await api.updateTaskReceipt(project.id, taskId!, { ...changes, version }); }
+      catch (cause) {
+        const { ApiError } = await import("../../api/client.js");
+        if (cause instanceof ApiError && cause.confirmedMutationId === taskId) throw new PublicDiagnosticError(`Task update was confirmed for Project ${project.id}, Task ${taskId}, but local request cleanup failed.`, 1, { cause });
+        throw cause;
+      }
+      return {
+        kind: "confirmed-mutation" as const,
+        output: `Task updated.\nProject: ${receipt.projectId}\nID: ${receipt.taskId}\nVersion: ${receipt.version}\n`,
+        failureText: (phase: string) => `Task update was confirmed for Project ${project.id}, Task ${taskId}, but local ${phase} failed.`,
+      };
+    }
     const task = await api.updateTask(project.id, taskId!, { ...changes, version });
     operation.check();
     return `Task updated.\n${renderTask(task)}`;
   });
+  if (insufficientSessionScope) context.stderr("Task data is available; Session observations require session:read.\n");
   if (partialObservation) throw new PublicDiagnosticError(unsupportedObservation
     ? "Task data is available, but Session observations are unsupported. Upgrade the Daynight service and run the same query again."
     : "Task data is available, but Session observations are partial. Inspect each observation's reason, error and freshness before using it; run the same query again to refresh.", 3, {});

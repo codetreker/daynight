@@ -82,8 +82,9 @@ truncated. Grouped chain queries reject tag options.
 Lists order in_progress, ready todo, blocked todo, proposed, then selected
 terminal Tasks; done/cancelled stay distinct. Neither list nor ready ordering
 ranks relevance. List/show/graph include [Session observations](session-reads.md#observations);
-ready and Task-returning writes retain full Task data without querying live Sessions.
-Task and Goal details, lists, ready results and receipts contain their own `tags`
+ready and full Task-returning writes do not query live Sessions. An update with
+explicit Project and version returns a minimal receipt instead.
+Full Task and Goal details, lists, ready results and full receipts contain their own `tags`
 array of `{id,name}` references; `[]` means no tags. Text displays each name on
 its own line, or `Tags: none`. Missing or invalid references fail as protocol
 errors; graph nodes do not include tags.
@@ -121,6 +122,15 @@ daynight task update <task-id> --parent none --if-version <observed-version>
 daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-version>
 daynight task update <task-id> --allow-agents true --required-platform linux --if-version <observed-version>
 ```
+
+With explicit `--project` and `--if-version`, update sends one PATCH without
+Project or Task pre-reads and prints only Project ID, Task ID and resulting
+version. Older services may return a full Task, which is validated in the same
+response and reduced to that receipt. Without an explicit version, update reads
+the Task first. A title change needs `task:write`; an `allowAgents` change needs
+`agent:authorize`. Combined fields require all applicable scopes. Explicit Project
+selection also lets show/list/graph read the Task endpoint directly; repository
+discovery and other commands retain their existing read requirements.
 
 Follow the [material writing guidance](materials.md#descriptions-and-references) when updating a description.
 Update needs at least one mutable field. Supplied description replaces the
