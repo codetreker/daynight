@@ -929,12 +929,13 @@ const typographyScenarios = [
   { width: 320, coarse: true, locale: 'en' },
 ] as const;
 
-for (const { width, coarse, locale } of typographyScenarios) test(`ordinary filter entries use xs at ${width}px in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+for (const { width, coarse, locale } of typographyScenarios) test(`ordinary filter entries use xs at ${width}px in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }, info) => {
   const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: coarse });
   try {
     const page = await context.newPage(), state = await install(page, locale), zh = locale === 'zh-CN';
     const assigneeName = zh ? '非常长的项目负责人姓名'.repeat(5) : 'UnbrokenProjectAssigneeName'.repeat(5);
     state.assigneeName = assigneeName;
+    state.tasks = state.tasks.map(task => ({ ...task, assignedTo: TEST_VIEWER_ID }));
     await page.goto(`/projects/${projectId}`);
     await page.locator('#project-section-tab-tasks').click();
     expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
@@ -1004,6 +1005,7 @@ for (const { width, coarse, locale } of typographyScenarios) test(`ordinary filt
         } else await expect(platform).toHaveCSS('font-size', xs);
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       }
+      if (rootSize === 24) await info.attach('selected-filter-xs-root24', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
       await assignee.focus(); await page.keyboard.press('Enter');
       await expect(page.locator('.assignee-option-name').filter({ hasText: assigneeName })).toHaveCSS('font-size', `${rootSize * .875}px`);
       await page.keyboard.press('Escape'); await expect(assignee).toBeFocused();
@@ -1492,7 +1494,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
       for (const view of ['goals', 'standalone', 'chains']) {
         await page.locator(`#project-task-tab-${view}`).click();
         const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
-        const expected = { height: enlarged || compact ? 44 : 32, fontSize: coarse ? '16px' : '14px' };
+        const expected = { height: enlarged || compact ? 44 : 32, fontSize: '12px' };
         const geometry = await filterGeometry(toolbar);
         if (width === 1280 && view === 'goals') await info.attach('initial-toolbar-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
         expect(geometry).toHaveLength(4);
@@ -1507,7 +1509,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
         observations.push({ width, view, coarse, geometry });
       }
       const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
-      const expected = { height: enlarged || compact ? 44 : 32, fontSize: coarse ? '16px' : '14px' };
+      const expected = { height: enlarged || compact ? 44 : 32, fontSize: '12px' };
       const status = toolbar.locator('.task-status-multifilter > button');
       await status.click();
       const panel = toolbar.locator('.task-status-filter-panel'), all = panel.getByRole('checkbox').first();
@@ -1532,7 +1534,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
       if (width === 550) {
         await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
         for (const entry of await filterGeometry(toolbar)) {
-          expect(entry.fontSize).toBe(coarse ? '20px' : '17.5px');
+          expect(entry.fontSize).toBe('15px');
           expect(entry.height).toBeGreaterThanOrEqual(44);
           expect(entry.width).toBeGreaterThanOrEqual(44);
         }
@@ -1549,7 +1551,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
         await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
         const goalEntries = await filterGeometry(toolbar);
         expect(goalEntries).toHaveLength(4);
-        for (const entry of goalEntries) expect(entry.fontSize).toBe(coarse ? '20px' : '17.5px');
+        for (const entry of goalEntries) expect(entry.fontSize).toBe('15px');
         await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
