@@ -40,11 +40,11 @@ observation without making the component an event owner. ManagementDialog uses
 it before its ordinary Escape close, retaining native cancellation and stopping
 outward propagation while respecting prevented events and IME input.
 
-Session Provider settings, interaction form choices and terminal recording zoom
+Session Provider settings, single-value interaction form choices and terminal recording zoom
 use the shared component without moving their value or operation ownership.
-Pending presentation retains the confirmed Provider value. Multi-select responses
-still use native selected options as arrays, and recording zoom remains local
-player state.
+Pending presentation retains the confirmed Provider value, and recording zoom
+remains local player state. The [Session multi-select decision](../bug-fix/2026-11-20-session-form-multiselect.md)
+replaces the native list for form multi-select responses while preserving their arrays.
 
 BotSessionHost sets the Composer presentation touch mode after spreading caller
 configuration. Composer and ControlsPanel pass it to the common control; ordinary
