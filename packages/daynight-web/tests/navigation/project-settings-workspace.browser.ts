@@ -332,6 +332,15 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await joined.press('Escape'); await expect(input).toBeFocused(); await expect(popup).toHaveCount(0);
     await input.fill('Alice ');
     await expect(popup).toBeVisible();
+    if (width === 320) {
+      await page.evaluate(() => window.scrollBy(0, 100));
+      await expect.poll(() => popup.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const title = element.querySelector('.member-search-heading')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(title.left + title.width / 2, title.top + title.height / 2);
+        return box.height > 100 && hit !== null && element.contains(hit);
+      })).toBe(true);
+    }
     await page.getByRole('navigation', { name: chinese ? '项目设置分组' : 'Project settings sections' }).getByRole('link', { name: chinese ? '执行与提醒' : 'Execution & alerts' }).click();
     await expect(popup).toBeHidden();
   });
