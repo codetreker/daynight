@@ -98,7 +98,7 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await expect(page.locator('.monitoring-issue')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (width <= 390) expect(await rows.nth(0).getByRole('link').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
-  await panel.screenshot({ path: testInfo.outputPath('tasks-in-cleanup.png') });
+  await page.screenshot({ path: testInfo.outputPath('tasks-in-cleanup.png'), fullPage: true });
   state.fail = true;
   await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
   const alert = page.getByRole('alert').filter({ hasText: locale === 'zh-CN' ? '运行监控更新失败' : 'Runtime monitoring could not be updated' });
