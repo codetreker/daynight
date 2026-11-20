@@ -32,17 +32,17 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
   const compact = useRef<boolean | null>(null);
   const menuId = useId();
   const items = () => Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []);
-  const focusItem = (item: HTMLElement) => {
-    item.focus({ preventScroll: true });
+  const revealItem = (item: HTMLElement) => {
     const element = menu.current;
     if (element === null) return;
     const bounds = element.getBoundingClientRect();
     const top = bounds.top + element.clientTop;
     const bottom = top + element.clientHeight;
     const itemBounds = item.getBoundingClientRect();
-    if (itemBounds.top < top || itemBounds.height > element.clientHeight) element.scrollTop += itemBounds.top - top;
-    else if (itemBounds.bottom > bottom) element.scrollTop += itemBounds.bottom - bottom;
+    const delta = itemBounds.top < top || itemBounds.height > element.clientHeight ? itemBounds.top - top : Math.max(0, itemBounds.bottom - bottom);
+    if (Math.abs(delta) > 0.5) element.scrollTop += delta;
   };
+  const focusItem = (item: HTMLElement) => { item.focus({ preventScroll: true }); revealItem(item); };
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus({ preventScroll: true }); };
   const show = (edge: 'first' | 'last') => { initial.current = edge; setOpen(true); };
 
@@ -110,6 +110,7 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
     if (!open) return;
     const element = menu.current!;
     const viewport = window.visualViewport;
+    let previousSize: { readonly viewportWidth: number; readonly viewportHeight: number; readonly menuWidth: number; readonly menuHeight: number } | null = null;
     const position = () => {
       if (trigger.current === null) return;
       const anchor = trigger.current.getBoundingClientRect();
@@ -120,10 +121,17 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
       element.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
       element.style.maxHeight = `${Math.max(0, bottom - top - 16)}px`;
       const box = element.getBoundingClientRect();
+      const size = { viewportWidth: viewport?.width ?? window.innerWidth, viewportHeight: viewport?.height ?? window.innerHeight, menuWidth: box.width, menuHeight: box.height };
+      const resized = previousSize !== null && (size.viewportWidth !== previousSize.viewportWidth || size.viewportHeight !== previousSize.viewportHeight || size.menuWidth !== previousSize.menuWidth || size.menuHeight !== previousSize.menuHeight);
+      previousSize = size;
       element.style.left = `${Math.max(left + 8, Math.min(anchor.right - box.width, right - box.width - 8))}px`;
       const preferredTop = anchor.bottom + box.height + 8 <= bottom ? anchor.bottom + 4 : anchor.top - box.height - 4;
       element.style.top = `${Math.max(top + 8, Math.min(preferredTop, bottom - box.height - 8))}px`;
+      const active = document.activeElement;
+      if (resized && active instanceof HTMLElement && element.contains(active) && active.matches('[role="menuitem"]')) revealItem(active);
     };
+    // Scrolling within the menu is intentional and must not snap back to focus.
+    const repositionOnScroll = (event: Event) => { if (event.target !== element) position(); };
     const toggled = (event: ToggleEvent) => { if (event.newState === 'closed') setOpen(false); };
     element.addEventListener('toggle', toggled);
     element.showPopover();
@@ -138,14 +146,14 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
     window.addEventListener('resize', position);
     viewport?.addEventListener('resize', position);
     viewport?.addEventListener('scroll', position);
-    document.addEventListener('scroll', position, true);
+    document.addEventListener('scroll', repositionOnScroll, true);
     return () => {
       element.removeEventListener('toggle', toggled);
       observer?.disconnect();
       window.removeEventListener('resize', position);
       viewport?.removeEventListener('resize', position);
       viewport?.removeEventListener('scroll', position);
-      document.removeEventListener('scroll', position, true);
+      document.removeEventListener('scroll', repositionOnScroll, true);
       element.hidePopover();
     };
   }, [open]);

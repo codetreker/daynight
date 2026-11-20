@@ -259,6 +259,43 @@ test('keyboard navigation keeps focused menu items visible in a short viewport w
   expect(state.writes).toEqual([]);
 });
 
+test('shrinking an open menu keeps its focused item visible without moving the page', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 600 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+  await trigger.evaluate(element => window.scrollTo(0, window.scrollY + element.getBoundingClientRect().top - 40));
+  await trigger.focus(); await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'Project actions' });
+  const goal = menu.getByRole('menuitem', { name: 'New Goal', exact: true });
+  await page.keyboard.press('End'); await expect(goal).toBeFocused();
+  const before = await position(page);
+  await page.setViewportSize({ width: 320, height: 160 });
+  await expect(goal).toBeFocused();
+  await expect.poll(() => menu.evaluate(element => {
+    const item = document.activeElement!.getBoundingClientRect(), panel = element.getBoundingClientRect();
+    return item.top >= panel.top - 1 && item.bottom <= panel.bottom + 1 && item.top >= 0 && item.bottom <= innerHeight;
+  })).toBe(true);
+  expect(await menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await position(page)).toBe(before);
+  await menu.evaluate(element => { element.scrollTop = 0; });
+  await position(page);
+  expect(await menu.evaluate(element => element.scrollTop)).toBe(0);
+  await page.evaluate(() => window.scrollBy(0, 30));
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(before + 30);
+  await position(page);
+  expect(await menu.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(goal).toBeFocused();
+  await page.locator('.project-heading h1').click();
+  await expect(menu).toHaveCount(0);
+  const focused = await page.evaluateHandle(() => document.activeElement);
+  await page.setViewportSize({ width: 320, height: 300 });
+  expect(await focused.evaluate(element => element === document.activeElement)).toBe(true);
+  await focused.dispose();
+  expect(state.writes).toEqual([]);
+});
+
 for (const kind of ['Task', 'Goal'] as const) test(`keeps the ${kind} draft across the heading breakpoint`, async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   await page.setViewportSize({ width: 320, height: 640 });
