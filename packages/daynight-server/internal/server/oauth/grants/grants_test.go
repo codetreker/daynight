@@ -43,6 +43,10 @@ func (s observedLifecycle) RevokeSessionGrant(context.Context, model.Principal, 
 	return false, nil
 }
 
+func (s observedLifecycle) UpdateSessionGrantDescription(context.Context, model.Principal, string, string, *string, *string) (*string, error) {
+	panic("unexpected UpdateSessionGrantDescription")
+}
+
 func TestListUsesObservationTimeAndUTC(t *testing.T) {
 	now := time.Now().UTC()
 	zone := time.FixedZone("offset", 8*60*60)

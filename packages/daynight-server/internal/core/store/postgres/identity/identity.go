@@ -158,7 +158,7 @@ func (s *scope) LockSession(ctx context.Context, p model.Principal, now time.Tim
 	return nil
 }
 func (s *scope) InsertPAT(ctx context.Context, c model.PersonalAccessToken) error {
-	_, err := s.tx.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6)`, c.ID, c.UserID, c.TokenHash, c.Name, c.CreatedAt, c.ExpiresAt)
+	_, err := s.tx.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at,description) VALUES ($1,$2,$3,$4,$5,$6,$7)`, c.ID, c.UserID, c.TokenHash, c.Name, c.CreatedAt, c.ExpiresAt, c.Description)
 	return pg.AuthQueryError("insert token", err)
 }
 func (s *scope) ListPATs(ctx context.Context, user string, now time.Time) ([]model.PersonalAccessToken, error) {

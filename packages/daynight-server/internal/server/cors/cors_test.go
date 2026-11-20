@@ -117,3 +117,29 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialRouteCORSExclusions(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	h := Wrap(mux, mux, "https://client.example", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		path     string
+		excluded bool
+	}{
+		{"/api/v2/me/tokens", true}, {"/api/v2/me/tokens/id/description", true},
+		{"/api/v3/oauth/grants", true}, {"/api/v3/oauth/grants/id/description", true},
+		{"/api/v2/me/tokens/id", false}, {"/api/v2/me/tokens/id/description/extra", false},
+		{"/api/v2/me/tokens-extra", false}, {"/api/v1/me/tokens", false}, {"/api/v2/oauth/grants", false},
+	} {
+		for _, method := range []string{"GET", "OPTIONS"} {
+			r := httptest.NewRequest(method, tc.path, nil)
+			r.Header.Set("Origin", "https://client.example")
+			r.Header.Set("Access-Control-Request-Method", "GET")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if got := w.Header().Get("Access-Control-Allow-Origin"); (got == "") != tc.excluded {
+				t.Errorf("%s %s CORS origin = %q", method, tc.path, got)
+			}
+		}
+	}
+}
