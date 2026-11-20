@@ -13,6 +13,7 @@ type Ticket = { executionId: string; launchId: string; sessionId: string; contro
   initialOperationId: string; initialPrompt: string; claimId: string; projectId: string; taskId: string; workerId: string; worktreeId: string; userId: string; serverOrigin: string; cwd: string;
   testExecutionId?: string; ownerUserId?: string; codexBotRecovery?: { botId: string } };
 type Snapshot = { controllerProcess: FixtureProcessProof | null; nativeProcesses: FixtureProcessProof[]; nativeSessionId: string | null };
+type LaunchObservation = { kind: "observed" | "running-unobserved" | "controller-exited" | "pre-writer-exited" | "unknown"; cause?: unknown };
 export type FixtureStopProofs = {
   parseLaunchTicket: (input: unknown) => Ticket;
   readCurrentControllerSnapshot: (filename: string, ticket: Ticket, deadline: number) => Snapshot;
@@ -21,18 +22,24 @@ export type FixtureStopProofs = {
   preservesControllerEvidence: (previous: Snapshot, observed: Snapshot, launchId: string) => boolean;
   stopControllerProcesses: (controller: FixtureProcessProof, native: readonly FixtureProcessProof[], deadline: number) => Promise<void>;
   confirmControllerProcessesStopped: (controller: FixtureProcessProof, native: readonly FixtureProcessProof[], deadline: number) => Promise<boolean>;
+  reconcileSubmittedControllerLaunch: (input: { journalFile: string; ticket: Ticket; spawnProof: FixtureProcessProof; signal: AbortSignal; deadline: number }) => Promise<LaunchObservation>;
+  stopControllerBootstrap: (proof: FixtureProcessProof, deadline: number) => Promise<void>;
+  ControllerBootstrapReplacedError: new (...args: never[]) => Error;
 };
 
 export const loadFixtureStopProofs = async (load: (name: string) => Promise<Record<string, unknown>>): Promise<FixtureStopProofs> => {
-  const [processProof, ticket, journal, orchestration] = await Promise.all([
+  const [processProof, ticket, journal, orchestration, launch] = await Promise.all([
     load("commands/controller/process-proof.js"), load("commands/controller/launch-ticket.js"),
     load("commands/controller/lifecycle-store.js"), load("commands/worker/backends/orchestration.js"),
+    load("commands/controller/launch-observation.js"),
   ]);
   const functions = {
     stopControllerProcesses: processProof.stopControllerProcesses, confirmControllerProcessesStopped: processProof.confirmControllerProcessesStopped,
     parseLaunchTicket: ticket.parseLaunchTicket, readCurrentControllerSnapshot: journal.readCurrentControllerSnapshot,
     preservesControllerProcessProof: orchestration.preservesControllerProcessProof, preservesNativeProcessPrefix: orchestration.preservesNativeProcessPrefix,
     preservesControllerEvidence: orchestration.preservesControllerEvidence,
+    reconcileSubmittedControllerLaunch: launch.reconcileSubmittedControllerLaunch, stopControllerBootstrap: launch.stopControllerBootstrap,
+    ControllerBootstrapReplacedError: launch.ControllerBootstrapReplacedError,
   };
   if (Object.values(functions).some(value => typeof value !== "function")) throw new Error("Fixture Controller proof implementation is unavailable.");
   return functions as FixtureStopProofs;
@@ -100,26 +107,53 @@ export const stopRecordedFixtureExecutions = async (records: readonly Execution[
 // The journal may append native processes after the recorded evidence; each observation must extend that evidence.
 const stopJournaledController = async (original: { journal: string; ticket: Ticket; launchId: string; controllerProcess: FixtureProcessProof;
   nativeProcesses: readonly FixtureProcessProof[]; nativeSessionId: string | null }, proofs: FixtureStopProofs, deadline: number): Promise<void> => {
-  const observe = (): Snapshot => {
-    const snapshot = proofs.readCurrentControllerSnapshot(original.journal, original.ticket, deadline);
+  const read = (): Snapshot => proofs.readCurrentControllerSnapshot(original.journal, original.ticket, deadline);
+  const check = (snapshot: Snapshot): Snapshot => {
     if (!proofs.preservesControllerProcessProof(original.controllerProcess, snapshot.controllerProcess, original.launchId)
       || !proofs.preservesNativeProcessPrefix(original.nativeProcesses, snapshot.nativeProcesses)
       || original.nativeSessionId !== null && snapshot.nativeSessionId !== original.nativeSessionId) throw new Error("Fixture Controller journal conflicts with the original process evidence.");
     return snapshot;
   };
+  const observe = (): Snapshot => check(read());
   const stop = async (snapshot: Snapshot): Promise<void> => {
     if (!await proofs.confirmControllerProcessesStopped(snapshot.controllerProcess!, snapshot.nativeProcesses, deadline)) {
       await proofs.stopControllerProcesses(snapshot.controllerProcess!, snapshot.nativeProcesses, deadline);
       if (!await proofs.confirmControllerProcessesStopped(snapshot.controllerProcess!, snapshot.nativeProcesses, deadline)) throw new Error("Fixture Controller process stop remains unconfirmed.");
     }
   };
-  const first = observe(); await stop(first);
+  let initial: Snapshot;
+  try { initial = read(); }
+  catch (failure) {
+    try { await stopPreJournalController(original, proofs, deadline); initial = read(); }
+    catch (recovery) { throw new AggregateError([failure, recovery], "Fixture Controller journal is unavailable and bootstrap recovery did not confirm the process tree.", { cause: failure }); }
+  }
+  const first = check(initial); await stop(first);
   const latest = observe();
   if (!proofs.preservesControllerEvidence(first, latest, original.launchId)) throw new Error("Fixture Controller journal changed incompatibly during stop.");
   await stop(latest);
   const final = observe();
   if (!proofs.preservesControllerEvidence(latest, final, original.launchId) || JSON.stringify(latest.nativeProcesses) !== JSON.stringify(final.nativeProcesses)
     || !await proofs.confirmControllerProcessesStopped(final.controllerProcess!, final.nativeProcesses, deadline)) throw new Error("Fixture Controller final process evidence is not settled.");
+};
+
+// The Worker persists the spawn proof before the Controller commits its first journal snapshot.
+// As in production Bot shutdown, a launch without a readable snapshot is classified from that proof, its verified
+// bootstrap process is stopped within the deadline, and the journal is then rechecked for native children.
+// A Controller that exits before committing its generation leaves no evidence that native children stopped.
+const stopPreJournalController = async (original: { journal: string; ticket: Ticket; controllerProcess: FixtureProcessProof }, proofs: FixtureStopProofs, deadline: number): Promise<void> => {
+  const reconcile = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Fixture Controller recovery exceeded its deadline.");
+    return proofs.reconcileSubmittedControllerLaunch({ journalFile: original.journal, ticket: original.ticket, spawnProof: original.controllerProcess, signal: AbortSignal.timeout(remaining), deadline });
+  };
+  let observation = await reconcile();
+  if (observation.kind === "observed" || observation.kind === "running-unobserved") {
+    try { await proofs.stopControllerBootstrap(original.controllerProcess, deadline); }
+    catch (error) { if (!(error instanceof proofs.ControllerBootstrapReplacedError)) throw error; }
+    observation = await reconcile();
+  }
+  if (observation.kind === "pre-writer-exited") throw new Error("Fixture Controller exited before committing its journal; native process stop remains unconfirmed.");
+  if (observation.kind !== "controller-exited") throw new Error("Fixture Controller pre-journal launch could not be classified; process stop remains unconfirmed.", { cause: observation.cause });
 };
 
 type BotLaunchIntent = { launchId: string; executionId: string; controllerInstanceId: string; sessionId: string | null; executionGeneration: string;

@@ -82,6 +82,9 @@ test("fallback uses the original ticket and refreshed append-only journal proofs
       preservesControllerProcessProof: (before, after) => JSON.stringify(before) === JSON.stringify(after),
       preservesNativeProcessPrefix: (before, after) => before.every((item, index) => JSON.stringify(item) === JSON.stringify(after[index])),
       preservesControllerEvidence: (before, after) => before.nativeProcesses.every((item, index) => JSON.stringify(item) === JSON.stringify(after.nativeProcesses[index])),
+      reconcileSubmittedControllerLaunch: async () => { throw new Error("unexpected launch reconciliation"); },
+      stopControllerBootstrap: async () => { throw new Error("unexpected bootstrap stop"); },
+      ControllerBootstrapReplacedError: class extends Error {},
       confirmControllerProcessesStopped: async (_controller, native) => native.length <= stopped,
       stopControllerProcesses: async (_controller, native) => { stopLists.push(native.map(item => item.pid)); stopped = native.length; },
     };
@@ -126,6 +129,9 @@ test("Bot fallback stops the recorded Controller tree from its own store, ticket
       preservesControllerProcessProof: (before, after) => JSON.stringify(before) === JSON.stringify(after),
       preservesNativeProcessPrefix: (before, after) => before.every((item, index) => JSON.stringify(item) === JSON.stringify(after[index])),
       preservesControllerEvidence: () => true,
+      reconcileSubmittedControllerLaunch: async () => { throw new Error("unexpected launch reconciliation"); },
+      stopControllerBootstrap: async () => { throw new Error("unexpected bootstrap stop"); },
+      ControllerBootstrapReplacedError: class extends Error {},
       confirmControllerProcessesStopped: async (_controller, native) => native.length <= stopped,
       stopControllerProcesses: async (_controller, native) => { stopLists.push(native.map(item => item.pid)); stopped = native.length; },
     };
@@ -141,21 +147,50 @@ test("Bot fallback stops the recorded Controller tree from its own store, ticket
     const unsubmitted = { ...record!, execution: { ...execution, launchSubmission: "not-submitted", controllerProcess: null, snapshot: null } };
     await stopRecordedFixtureBot(unsubmitted, expected, directory, proofs, Date.now() + 5_000);
     assert.deepEqual(stopLists, [[124, 125]]);
+
+    // The Worker died after saving the spawn proof but before the Controller wrote its first snapshot.
+    const preJournal = { ...record!, execution: { ...execution, snapshot: null } };
+    for (const exit of ["controller-exited", "pre-writer-exited"] as const) {
+      let journalWritten = false; const steps: string[] = []; stopped = 0; stopLists.length = 0;
+      const recovering: FixtureStopProofs = { ...proofs,
+        readCurrentControllerSnapshot: filename => {
+          if (!journalWritten) throw new Error("journal is missing");
+          return proofs.readCurrentControllerSnapshot(filename, ticket as never, 0);
+        },
+        reconcileSubmittedControllerLaunch: async input => {
+          assert.equal(input.journalFile, journalPath); assert.deepEqual(input.spawnProof, proof);
+          if (!steps.includes("bootstrap")) { steps.push("running"); return { kind: "running-unobserved" }; }
+          steps.push(exit); journalWritten = exit === "controller-exited"; return { kind: exit };
+        },
+        stopControllerBootstrap: async controller => { assert.deepEqual(controller, proof); steps.push("bootstrap"); },
+      };
+      if (exit === "controller-exited") {
+        await stopRecordedFixtureBot(preJournal, expected, directory, recovering, Date.now() + 5_000);
+        assert.deepEqual(stopLists, [[124, 125]]);
+      } else {
+        await assert.rejects(stopRecordedFixtureBot(preJournal, expected, directory, recovering, Date.now() + 5_000),
+          (error: AggregateError) => /bootstrap recovery/.test(error.message) && /native process stop remains unconfirmed/.test((error.errors[1] as Error).message));
+        assert.deepEqual(stopLists, []);
+      }
+      assert.deepEqual(steps, ["running", "bootstrap", exit]);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("fallback loads all four production proof owners and refuses an incomplete set", async () => {
+test("fallback loads all five production proof owners and refuses an incomplete set", async () => {
   const noop = () => {};
   const sources: Record<string, Record<string, unknown>> = {
     "commands/controller/process-proof.js": { stopControllerProcesses: noop, confirmControllerProcessesStopped: noop },
     "commands/controller/launch-ticket.js": { parseLaunchTicket: noop },
     "commands/controller/lifecycle-store.js": { readCurrentControllerSnapshot: noop },
     "commands/worker/backends/orchestration.js": { preservesControllerProcessProof: noop, preservesNativeProcessPrefix: noop, preservesControllerEvidence: noop },
+    "commands/controller/launch-observation.js": { reconcileSubmittedControllerLaunch: noop, stopControllerBootstrap: noop, ControllerBootstrapReplacedError: class extends Error {} },
   };
   const loaded = await loadFixtureStopProofs(async name => sources[name]!);
   assert.equal(loaded.parseLaunchTicket, noop);
   assert.equal(loaded.readCurrentControllerSnapshot, noop);
   assert.equal(loaded.preservesControllerEvidence, noop);
+  assert.equal(loaded.stopControllerBootstrap, noop);
   delete sources["commands/controller/lifecycle-store.js"]!.readCurrentControllerSnapshot;
   await assert.rejects(loadFixtureStopProofs(async name => sources[name]!), /proof implementation is unavailable/);
 });
