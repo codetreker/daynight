@@ -1100,6 +1100,18 @@ PYTHONDONTWRITEBYTECODE=1 python3 packages/daynight/scripts/external-image-netwo
 bash -n packages/daynight/scripts/external-image-network.sh
 ```
 
+The ordinary CLI transport tests in `test/scripts/external-image-auth.test.ts`
+load the fixed public test certificates and keys from
+`packages/daynight/test/fixtures/external-image-auth/`; they require curl and
+Node.js, with no runtime OpenSSL provisioning. These materials serve only
+loopback listeners. The app certificate covers `app.daynight.localhost` and
+`preview.daynight.localhost`, the provider certificate covers `github.com`, and
+the untrusted app certificate uses a separate self-signed root. Tests retain
+certificate identity checks, real verified TLS, Secure cookies, OAuth/SSO,
+HTTP/WebSocket forwarding and untrusted-root rejection. The
+[certificate fixture decision](../.agents/notes/implemented/testing/2026-11-20-fixed-external-image-tls-fixtures.md)
+owns validity and replacement requirements.
+
 ## Product E2E
 
 `packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
