@@ -33,6 +33,10 @@ test('Goal attachment image recovers from a network failure without rereading th
   const images: string[] = [];
   let detailReads = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === `/api/v1/projects/${projectId}/tasks/${goalId}`) detailReads++; });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${goalId}/goal-dependencies?*`, route => route.fulfill({
+    contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: stringifyWireJson({ goalId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null }),
+  }));
   await page.route('**/preview/images/goal.svg?size=small', route => {
     images.push(route.request().url());
     return images.length === 1 ? route.abort('failed') : route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#256a48"/></svg>' });
@@ -40,8 +44,9 @@ test('Goal attachment image recovers from a network failure without rereading th
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const description = page.locator('.goal-detail-description');
   await expect(description.getByRole('heading', { name: 'Goal image', exact: true })).toBeVisible();
-  const error = description.getByRole('alert');
+  const error = description.getByRole('alert', { name: 'Goal attachment', exact: true });
   await expect(error).toContainText('Unable to load the attachment image');
+  await expect(description.locator('.goal-dependencies .goal-dependency-empty')).toHaveCount(2);
   const before = detailReads;
   await error.getByRole('button', { name: 'Retry image', exact: true }).click();
   await expect(error).toHaveCount(0);
