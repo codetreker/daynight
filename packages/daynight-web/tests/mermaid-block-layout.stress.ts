@@ -34,14 +34,14 @@ try {
     const branch = (prefix, depth) => Array.from({ length: depth - 1 }, (_, i) => 'block:' + prefix + i).join('\n')
       + '\n' + prefix + 'leaf["' + prefix + 'label"]\n' + Array.from({ length: depth - 1 }, () => 'end').join('\n');
     const deep = 'block\n' + branch('D', 27);
-    try { await renderMermaidDiagram(deep, new AbortController().signal); throw new Error('Deep layout was accepted'); }
+    try { await renderMermaidDiagram(deep, new AbortController().signal, { xs: 12, sm: 14, lg: 18 }); throw new Error('Deep layout was accepted'); }
     catch (error) {
       if (error.issue !== 'complexity' || error.cause?.issue !== 'complexity') throw error;
     }
     // 49,999 calls including root: two deep branches plus 425 leaf blocks.
     const leaves = Array.from({ length: 425 }, (_, i) => 'L' + i + '["Leaf ' + i + '"]').join('\n');
     const normal = 'block\n' + branch('A', 14) + '\n' + branch('B', 13) + '\n' + leaves;
-    const svg = await renderMermaidDiagram(normal, new AbortController().signal);
+    const svg = await renderMermaidDiagram(normal, new AbortController().signal, { xs: 12, sm: 14, lg: 18 });
     const xml = new DOMParser().parseFromString(svg, 'image/svg+xml');
     const text = xml.documentElement.textContent ?? '';
     return { viewBox: xml.documentElement.getAttribute('viewBox'), labels: ['Alabel', 'Blabel', 'Leaf 424'].every((label) => text.includes(label)) };

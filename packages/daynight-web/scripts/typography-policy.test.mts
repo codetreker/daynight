@@ -143,18 +143,44 @@ test('tracks retired static strings, runtime reads and writes including concaten
   });
 });
 
-test('narrows Mermaid configuration and selection aliases to recorded occurrences', async () => {
+test('constrains Mermaid font settings to measured adapter paths', async () => {
   await fixture(async (directory, put) => {
     const css = '.selection-control {--selection-control-font-size:var(--text-sm);font-size:var(--selection-control-font-size)}';
     await put('src/ui/selection-control/selection-control.css', css);
-    await put('src/mermaid.ts', "const configuration: MermaidConfig = { themeVariables: { fontSize:'14px' } };");
     const baseline = inventoryTypography((await collectTypographyPolicy(directory)).occurrences, () => 'E');
+    const adapter = 'src/ui/markdown/mermaid/MermaidRenderer.ts';
+    const wrap = (body: string) => `const buildMermaidConfiguration = (sizes: MermaidSizes): MermaidConfig => (${body});`;
+    await put(adapter, wrap('{themeVariables:{fontSize:`${sizes.sm}px`,pieTitleTextSize:`${sizes.lg}px`,packet:{byteFontSize:`${sizes.xs}px`}}, sequence:{actorFontSize:sizes.sm}, themeCSS:`.title {font-size:${sizes.lg}px}`}'));
     assert.deepEqual((await checkTypographyPolicy(directory, { baseline })).diagnostics, []);
-    await put('src/mermaid.ts', "const configuration: MermaidConfig = { themeVariables: { fontSize:'14px' }, sequence:{actorFontSize:13} };");
+    for (const bad of [
+      '{sequence:{actorFontSize:13}}', '{themeVariables:{pieTitleTextSize:"18px"}}',
+      '{themeVariables:{packet:{byteFontSize:"12px"}}}', '{sequence:{actorFontSize:getSize()}}',
+      '{sequence:{actorFontSize:sizes.lg}}', '{themeCSS:`.title {font-size:18px}`} ',
+      '{themeCSS:`.title {font-size:${getSize()}px}`}', '{themeCSS:`.title {font-size:var(--text-sm)}`}',
+      '{sequence: other}', '{...other}',
+    ]) {
+      await put(adapter, wrap(bad));
+      assert.ok((await checkTypographyPolicy(directory, { baseline })).diagnostics.some(value => value.includes('Mermaid')), bad);
+    }
+    await put(adapter, '');
+    await put('src/mermaid.ts', 'const sequence = { actorFontSize: 13 }; const configuration: MermaidConfig = { sequence }; const alias = configuration.sequence; alias.actorFontSize = 14; configuration.packet = {byteFontSize: 13}; mermaid.initialize({sequence:{actorFontSize:13}});');
     await put('src/ui/selection-control/selection-control.css', css + '.new {font-size:var(--selection-control-font-size)}');
     const diagnostics = (await checkTypographyPolicy(directory, { baseline })).diagnostics.join('\n');
     assert.match(diagnostics, /actorFontSize/);
+    assert.match(diagnostics, /cannot be written dynamically/);
     assert.match(diagnostics, /\.new/);
+    for (const bad of [
+      'type Config = MermaidConfig; const c: Config = {sequence:{actorFontSize:13}};',
+      'const c = {} as MermaidConfig; c.sequence.actorFontSize = 13;',
+      'const c: MermaidConfig = {}; Object.assign(c, {sequence:{actorFontSize:13}});',
+      'function f(c: MermaidConfig) { c.sequence.actorFontSize = 13; }',
+      'const c: MermaidConfig = {}; const {sequence} = c; sequence.actorFontSize = 13;',
+      'const c: MermaidConfig = {}; Reflect.set(c.sequence, "actorFontSize", 13);',
+      'import type { MermaidConfig as C } from "mermaid"; const c: C = {sequence:{actorFontSize:13}};',
+    ]) {
+      await put('src/mermaid.ts', bad);
+      assert.ok((await checkTypographyPolicy(directory, { baseline })).diagnostics.some(value => value.includes('Mermaid')), bad);
+    }
   });
 });
 
