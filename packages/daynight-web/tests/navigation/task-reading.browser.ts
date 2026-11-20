@@ -406,7 +406,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const platforms = ['windows', 'linux', 'macos', null, null] as const;
     const overdueId = '00000000-0000-4000-8000-000000000065', blockedId = '00000000-0000-4000-8000-000000000066';
     const details = statuses.map((status, index) => detailFixture(projectId, ids[index]!, {
-      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0, requiredPlatform: platforms[index],
+      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0, requiredPlatform: platforms[index] ?? null,
       completedAt: status === 'done' ? '2026-10-22T09:59:50Z' : null,
       cancelledAt: status === 'cancelled' ? '2026-10-22T09:59:55Z' : null,
       properties: { pullRequests: [], ...(status === 'in_progress' ? { paused: true } : {}) },
