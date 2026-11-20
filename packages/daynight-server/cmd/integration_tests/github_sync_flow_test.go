@@ -243,7 +243,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		receipt := requestJSON[api.RepositoryReceipt](t, f, http.MethodPatch, base+"/repository", map[string]any{
 			"repoUrl": target, "expectedUserId": f.userID, "repositoryVersion": preview.RepositoryVersion,
 			"ownershipVersion": preview.OwnershipVersion, "classification": preview.Classification,
-			"targetGitHubRepositoryId": preview.TargetGitHubRepositoryID, "treatUnverifiedAsSwitch": true,
+			"targetGitHubRepositoryId": preview.TargetGitHubRepositoryID, "treatUnverifiedAsSwitch": preview.Classification == "unverified",
 		}, http.StatusOK)
 		if !receipt.Changed || !receipt.BindingsInvalidated || receipt.RepoURL != target {
 			t.Fatalf("repository switch: %+v", receipt)
