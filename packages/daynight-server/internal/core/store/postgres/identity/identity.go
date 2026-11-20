@@ -3,9 +3,11 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
@@ -158,6 +160,13 @@ func (s *scope) LockSession(ctx context.Context, p model.Principal, now time.Tim
 	return nil
 }
 func (s *scope) InsertPAT(ctx context.Context, c model.PersonalAccessToken) error {
+	if c.ScopePolicy != nil {
+		if c.ScopePolicy.Kind() != scopepolicy.PAT || c.ScopePolicy.Version() != 1 {
+			return fmt.Errorf("invalid initial PAT scope policy")
+		}
+		_, err := s.tx.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at,description,business_scopes,scope_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, c.ID, c.UserID, c.TokenHash, c.Name, c.CreatedAt, c.ExpiresAt, c.Description, c.ScopePolicy.Scopes(), c.ScopePolicy.Version())
+		return pg.AuthQueryError("insert scoped token", err)
+	}
 	_, err := s.tx.Exec(ctx, `INSERT INTO personal_access_tokens (id,user_id,token_hash,name,created_at,expires_at,description) VALUES ($1,$2,$3,$4,$5,$6,$7)`, c.ID, c.UserID, c.TokenHash, c.Name, c.CreatedAt, c.ExpiresAt, c.Description)
 	return pg.AuthQueryError("insert token", err)
 }
@@ -182,9 +191,16 @@ func (s *scope) DeletePAT(ctx context.Context, user, id string) error {
 	return pg.AuthQueryError("delete token", err)
 }
 func (s *scope) LockActivePAT(ctx context.Context, user, id string, now time.Time) (model.PersonalAccessToken, error) {
-	p, err := scanPAT(s.tx.QueryRow(ctx, `SELECT `+patFields+` FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND (expires_at IS NULL OR expires_at>$3) FOR UPDATE`, id, user, now))
+	p, err := scanPAT(s.tx.QueryRow(ctx, `SELECT `+patFields+` FROM personal_access_tokens WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user))
 	if err != nil {
 		return p, pg.AuthQueryError("lock token", err)
+	}
+	fresh, err := s.FreshPATTime(ctx, now)
+	if err != nil {
+		return model.PersonalAccessToken{}, err
+	}
+	if p.ExpiresAt != nil && !p.ExpiresAt.After(fresh) {
+		return model.PersonalAccessToken{}, model.ErrNotFound
 	}
 	return p, nil
 }

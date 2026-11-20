@@ -17,7 +17,11 @@ operation requirements. A validated policy is an immutable, versioned snapshot;
 combined actions require every applicable scope. Credential authorization retains
 the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
-without changing the existing product assembly.
+without changing the existing product assembly. PAT storage supports explicit
+policies with an independent version and rejects absent or malformed policies
+on scoped reads. The preparation migration leaves historical and legacy-writer
+rows unscoped until the coordinated backfill and cutover. Device records reserve
+the approved selection without changing the existing redemption flow.
 
 Bot definition services accept an explicitly supplied authorization source for
 snapshot reads and transaction-bound writes. Definition reads, writes and
@@ -51,9 +55,12 @@ and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
 itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
-the policy through opt-in service and transport entry points. Persistence,
-production activation and issuance remain independent work. Bot definition
-permission does not confer Session or runtime control. A scoped
+the policy through opt-in service and transport entry points. Production
+activation, device issuance integration and historical backfill remain independent
+work. Scope updates compare the owner and observed version and only advance it for
+a changed selection; usage timestamps remain independent. PAT management
+rechecks expiry against database time after acquiring the target lock. Bot
+definition permission does not confer Session or runtime control. A scoped
 authorization source must read current authority at each supplied boundary and
 preserve the principal; it cannot substitute a stale request snapshot for an
 existing transactional recheck.
