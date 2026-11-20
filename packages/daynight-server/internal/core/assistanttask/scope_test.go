@@ -303,3 +303,68 @@ func TestScopedTransferReplayDoesNotRequireTargetBot(t *testing.T) {
 		t.Fatalf("replay: %v", err)
 	}
 }
+
+func TestScopedAuthorityFailuresRefuseBeforeTaskOperation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		change    func(*model.CredentialAuthorization, *model.CredentialAuthorization)
+		readError error
+		wantReads int
+	}{
+		{name: "invalid request profile", change: func(observed, _ *model.CredentialAuthorization) { observed.Profile = "unknown" }, wantReads: 0},
+		{name: "request policy absent", change: func(observed, _ *model.CredentialAuthorization) { observed.Policy = nil }, wantReads: 0},
+		{name: "authority failure", readError: sentinel, wantReads: 1},
+		{name: "different current credential", change: func(_, current *model.CredentialAuthorization) { current.Principal.CredentialID = entryID }, wantReads: 1},
+		{name: "different current profile", change: func(_, current *model.CredentialAuthorization) { current.Profile = model.SessionProfile }, wantReads: 1},
+		{name: "current policy absent", change: func(_, current *model.CredentialAuthorization) { current.Policy = nil }, wantReads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actor := scopeActor(t, "assistant-task:read")
+			observed := *actor.Authorization
+			current := observed
+			if tc.change != nil {
+				tc.change(&observed, &current)
+			}
+			actor.Authorization = &observed
+			d := baseDAO(t, baseTask())
+			reads := 0
+			wrapped := policyDAO{AssistantTaskDAO: d, read: func(_ context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+				reads++
+				if p != actor.Principal {
+					t.Fatal("wrong principal")
+				}
+				return current, tc.readError
+			}}
+			got, err := New().Get(context.Background(), wrapped, actor, taskID)
+			if err == nil || got.Task.ID != "" || reads != tc.wantReads {
+				t.Fatalf("refusal result=%+v reads=%d err=%v", got, reads, err)
+			}
+			if tc.readError != nil && !errors.Is(err, tc.readError) {
+				t.Fatalf("authority failure hidden: %v", err)
+			}
+		})
+	}
+}
+
+func TestScopedAdmissionRejectsUnknownOperationAndKeepsFixedSessionProfile(t *testing.T) {
+	actor := scopeActor(t, "assistant-task:read")
+	actor.operations = []scopepolicy.Operation{"unknown.operation"}
+	if err := scopeAdmission(context.Background(), withPolicy(baseDAO(t, baseTask()), actor.Authorization), actor); err == nil {
+		t.Fatal("unknown operation admitted")
+	}
+	session := Actor{Principal: model.Principal{Kind: model.SessionCredential, UserID: ownerID, CredentialID: operationID}}
+	session.Authorization = &model.CredentialAuthorization{Principal: session.Principal, Profile: model.SessionProfile}
+	d := baseDAO(t, baseTask())
+	credentialCalls := 0
+	d.credential = func(_ context.Context, p model.Principal) error {
+		if p != session.Principal {
+			t.Fatal("wrong session principal")
+		}
+		credentialCalls++
+		return nil
+	}
+	got, err := New().Get(context.Background(), d, session, taskID)
+	if err != nil || got.Task.ID != taskID || credentialCalls != 2 {
+		t.Fatalf("session result=%+v checks=%d err=%v", got, credentialCalls, err)
+	}
+}

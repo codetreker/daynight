@@ -55,6 +55,28 @@ func scopedAuthorization(t *testing.T) model.CredentialAuthorization {
 	return model.CredentialAuthorization{Principal: testPrincipal, Profile: model.ScopedPATProfile, Policy: &policy}
 }
 
+func TestScopedRegistrationRequiresResolverAndRecorder(t *testing.T) {
+	resolve := func(context.Context, model.Principal) (model.CredentialAuthorization, error) {
+		return model.CredentialAuthorization{}, nil
+	}
+	record := func(RouteClassification) {}
+	for _, tc := range []struct {
+		name    string
+		resolve AuthorizationResolver
+		record  func(RouteClassification)
+	}{
+		{"missing resolver", nil, record},
+		{"missing recorder", resolve, nil},
+		{"both missing", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := RegisterScopedRoutes(nil, nil, nil, nil, tc.resolve, tc.record); err == nil {
+				t.Fatal("registration accepted a missing dependency")
+			}
+		})
+	}
+}
+
 func TestScopedRoutesForwardAuthorizationAndDeletion(t *testing.T) {
 	authorization := scopedAuthorization(t)
 	calls := 0
