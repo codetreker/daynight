@@ -419,7 +419,7 @@ it.skipIf(process.platform === "win32")("does not restore a checkout while an un
     f.source.saved.mockReturnValue(saved); vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(saved);
     f.source.stopped.mockRestore(); vi.mocked(processProof.inspectProcessProof).mockResolvedValue("stopped");
     await rm(task.resources.worktree!.worktreePath, { recursive: true }); vi.mocked(f.git.prepareWorktree).mockClear();
-    await expect(f.backend.advance(task, new AbortController().signal)).rejects.toThrow("process tree remains active");
+    await expect(f.backend.advance(task, new AbortController().signal)).rejects.toThrow("original Web processes have not been confirmed stopped");
     expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.launcher.launch).not.toHaveBeenCalled();
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
