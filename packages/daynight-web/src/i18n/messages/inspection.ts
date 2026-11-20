@@ -217,6 +217,7 @@ export type InspectionMessages = {
   };
   readonly attachments: {
     readonly title: string;
+    readonly detailScroll: string;
     readonly heading: (args: { count: string }) => string;
     readonly refresh: string;
     readonly chooseFile: string;

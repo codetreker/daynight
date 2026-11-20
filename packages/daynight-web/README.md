@@ -2198,8 +2198,8 @@ owns its content scrolling and pairs a reading column with a 265px
 metadata/relationship column (225px at 850px and below); at 600px and below it
 stacks into one column. Attachments fills the panel with adjacent file and
 preview panes at every supported width, including 320px. Its parent body and
-panels do not scroll. Short viewports, including 844×390, use compact heading
-and control spacing to retain usable content without a second outer scrollbar.
+panels do not scroll in ordinary viewports. Short viewports use compact heading
+and control spacing; when space is insufficient, the detail body can scroll.
 The dialog locks background focus and scrolling, supports its close button,
 backdrop, Escape and Tab, and restores a surviving original trigger or a
 visible control in the active task view on close. Focusable controls are
@@ -2353,12 +2353,11 @@ seconds and semantic `time` values. It retains known metadata during refresh,
 preview errors and remote-operation pauses; confirmed removal or absence clears it.
 On desktop, file information sizes to content up to 240px, followed by timestamps with a 16px gap and right-aligned actions. Both timestamp values share a left edge. Narrow screens wrap the groups; compact short screens retain aligned timestamps and accessible actions.
 
-The right preview has one vertical scroll owner. Markdown, text/JSON/source and
+The preview content has one vertical scroll owner. Markdown, text/JSON/source and
 large images use `attachment-preview-body`; their renderers have no nested
 vertical height limits. Tables and code can scroll horizontally. For ready
 HTML/PDF, the body and fitted frame wrapper hide overflow and the embedded
-document or native reader owns scrolling. The preview header never scrolls
-independently, exposes the complete path and keeps Download and Open in new tab reachable. File-row menus and confirmation controls remain accessible at narrow widths.
+document or native reader owns scrolling. The preview header exposes the complete path and keeps Download and Open in new tab reachable. In short viewports it can scroll independently; the outer detail can also scroll when needed, with keyboard access to both regions. File-row menus and confirmation controls remain accessible at narrow widths.
 Left-pane scrolling does not move right-side content or its reading position.
 The standalone complete details reuse this panel, rendering and sizing; their
 outer composition integrates task, tab and file navigation with URL and history.
