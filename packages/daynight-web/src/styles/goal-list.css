@@ -32,8 +32,12 @@
   .goal-list-summary { grid-column: 1 / -1; width: 100%; }
   .goal-list-session { grid-column: 2; max-width: 100%; }
   .goal-list-summary { flex-wrap: wrap; padding: 11px 4px 11px 15px; }
-  .goal-list-main { flex-basis: calc(100% - 50px); }
-  .goal-list-progress { margin-left: 50px; width: auto; flex: 1; text-align: left; }
+  .goal-list-icon { display: none; }
+  .goal-list-main { flex-basis: calc(100% - 22px); }
+  .goal-list-id.task-row-id-group { display: inline-grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: end; }
+  .goal-list-id .task-row-id { min-width: 0; }
+  .goal-list-id .task-row-copy-feedback { grid-column: 1 / -1; width: 0; min-width: 100%; }
+  .goal-list-progress { margin-left: 22px; max-width: calc(100% - 22px); flex: 0 1 145px; text-align: left; }
 }
 
 @container goal-list-card (max-width: 600px) {

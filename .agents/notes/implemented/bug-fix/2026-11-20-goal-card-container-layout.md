@@ -13,8 +13,11 @@ title and complete ID, leaving too little room for the summary.
 The named Goal card inline-size container selects the compact row grid at a
 content width of 740px or less. The summary occupies the first row, with progress
 below the main information; status and the independent actions occupy the next
-row. Wider cards retain the horizontal layout. The 600px inset and 50px prefix
-remain governed by the [prefix spacing decision](2026-11-16-goal-list-prefix-spacing.md).
+row. The compact layout hides the decorative icon and reclaims its column, keeps
+the ID and copy control together while allowing the ID text to wrap, and caps the
+progress track at 145px. Wider cards retain the horizontal layout and 50px prefix.
+The 600px inset and disclosure geometry remain governed by the
+[prefix spacing decision](2026-11-16-goal-list-prefix-spacing.md).
 The [Web design](../../../../docs/design/daynight-web.md) describes the geometry.
 
 ## Alternatives

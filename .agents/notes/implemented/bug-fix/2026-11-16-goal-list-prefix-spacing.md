@@ -34,8 +34,9 @@ No other approach was recorded for this prefix repair.
 
 ## Consequences
 
-The prefix occupies 50px before the title, leaving more room for content while
-retaining a keyboard-focusable disclosure and the broad pointer target. Container
+The wide-card prefix occupies 50px before the title, leaving more room for content while
+retaining a keyboard-focusable disclosure and the broad pointer target. The later
+card layout decision reduces the compact prefix by hiding the decoration. Container
 width controls alignment, so a narrow card in a wide viewport follows the same
 alignment as a narrow chain.
 Long content can still wrap and increase row height. Changes to prefix sizes

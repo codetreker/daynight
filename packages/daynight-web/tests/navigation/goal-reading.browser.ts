@@ -2126,20 +2126,23 @@ for (const { viewport, contentWidth } of [
   });
   expect(geometry.buttonWidth).toBeCloseTo(22, 1);
   expect(geometry.buttonHeight).toBeGreaterThanOrEqual(34);
-  expect(geometry.iconWidth).toBeCloseTo(20, 1);
-  expect(geometry.iconHeight).toBeCloseTo(20, 1);
-  expect(geometry.iconGap).toBeCloseTo(8, 1);
-  expect(geometry.buttonGap).toBeCloseTo(4, 1);
-  expect(geometry.titleGap).toBeCloseTo(8, 1);
   expect(geometry.mainWidth).toBeGreaterThanOrEqual(40);
-  expect(geometry.titleLeft - geometry.origin).toBeCloseTo(chainCollapsed.width <= 600 ? 61 : 65, 1);
-  expect(geometry.inside).toBe(true);
   expect(geometry.hits).toEqual([true, true]);
   expect(geometry.outline).toBe(true);
   if (chainCollapsed.width <= 740) {
+    expect(geometry.iconWidth).toBe(0);
+    expect(geometry.iconHeight).toBe(0);
+    expect(geometry.titleLeft - geometry.origin).toBeCloseTo(chainCollapsed.width <= 600 ? 33 : 37, 1);
     expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
     expect(Math.abs(geometry.progressLeft - geometry.titleLeft)).toBeLessThanOrEqual(1);
   } else {
+    expect(geometry.iconWidth).toBeCloseTo(20, 1);
+    expect(geometry.iconHeight).toBeCloseTo(20, 1);
+    expect(geometry.iconGap).toBeCloseTo(8, 1);
+    expect(geometry.buttonGap).toBeCloseTo(4, 1);
+    expect(geometry.titleGap).toBeCloseTo(8, 1);
+    expect(geometry.titleLeft - geometry.origin).toBeCloseTo(65, 1);
+    expect(geometry.inside).toBe(true);
     expect(geometry.progressTop).toBeLessThan(geometry.mainBottom - 1);
   }
   const icon = card.locator('svg.goal-list-icon');
@@ -2202,6 +2205,91 @@ for (const constrained of [false, true]) test(`Goal header reflows at narrow des
   expect(geometry.idLines).toBe(1);
   expect(geometry.copyBottom).toBeGreaterThan(geometry.idTop);
   expect(geometry.copyTop).toBeLessThan(geometry.idBottom);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const scenario of ['desktop-620', 'phone', 'very-narrow', 'wide'] as const) test(`Goal ID and progress layout at ${scenario} in ${locale}`, async ({ page, context }) => {
+  const phone = scenario === 'phone' || scenario === 'very-narrow';
+  await page.setViewportSize({ width: phone ? 320 : scenario === 'wide' ? 1440 : 864, height: 900 });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await install(page, locale, 'Owner'); fixture.compactDesktopGoal();
+  await page.goto(`/projects/${projectId}`);
+  const outerWidth = scenario === 'desktop-620' ? 620 : scenario === 'very-narrow' ? 180 : null;
+  if (outerWidth !== null) await page.addStyleTag({ content: `[data-goal-id="${goalId}"] { width: ${outerWidth}px !important; }` });
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const id = card.locator('.goal-list-id .task-row-id');
+  const copy = card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
+  const toggle = card.locator('.goal-list-toggle');
+  await expect(id).toHaveText(goalId);
+  await expect(copy).toBeVisible();
+  const layout = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const id = element.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const range = document.createRange(); range.selectNodeContents(id);
+    const lines = [...range.getClientRects()]; const last = lines.at(-1)!;
+    const copy = box('.task-copy-button'), track = box('.goal-list-track'), progress = box('.goal-list-progress');
+    const main = box('.goal-list-main'), icon = box('.goal-list-icon'), card = element.getBoundingClientRect();
+    return { contentWidth: element.clientWidth, outerWidth: card.width, idLines: lines.length,
+      lastTop: last.top, lastBottom: last.bottom, idRight: id.getBoundingClientRect().right,
+      copyTop: copy.top, copyBottom: copy.bottom, copyLeft: copy.left, copyRight: copy.right,
+      trackLeft: track.left, trackWidth: track.width, progressLeft: progress.left, mainLeft: main.left,
+      mainBottom: main.bottom, progressTop: progress.top, iconWidth: icon.width,
+      contained: copy.right <= card.right && track.right <= card.right && element.scrollWidth <= element.clientWidth };
+  });
+  if (outerWidth !== null) expect(layout.outerWidth).toBe(outerWidth);
+  expect(layout.contained).toBe(true);
+  expect(layout.trackWidth).toBeLessThanOrEqual(145);
+  if (scenario === 'wide') {
+    expect(layout.contentWidth).toBeGreaterThan(740);
+    expect(layout.iconWidth).toBe(20);
+    expect(layout.progressTop).toBeLessThan(layout.mainBottom - 1);
+    expect(layout.trackWidth).toBeCloseTo(145, 1);
+  } else {
+    expect(layout.contentWidth).toBeLessThanOrEqual(740);
+    expect(layout.iconWidth).toBe(0);
+    expect(layout.progressTop).toBeGreaterThanOrEqual(layout.mainBottom - 1);
+    expect(Math.abs(layout.trackLeft - layout.mainLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(layout.progressLeft - layout.mainLeft)).toBeLessThanOrEqual(1);
+    expect(layout.copyBottom).toBeGreaterThan(layout.lastTop);
+    expect(layout.copyTop).toBeLessThan(layout.lastBottom);
+    expect(layout.copyLeft - layout.idRight).toBeGreaterThanOrEqual(0);
+    expect(layout.copyLeft - layout.idRight).toBeLessThanOrEqual(5);
+    if (scenario === 'desktop-620') expect(layout.idLines).toBe(1);
+    if (scenario === 'very-narrow') { expect(layout.idLines).toBeGreaterThan(1); expect(layout.trackWidth).toBeLessThan(145); }
+  }
+  const copyPosition = () => copy.evaluate(element => {
+    const button = element.getBoundingClientRect(), card = element.closest('.goal-list-card')!.getBoundingClientRect();
+    return { left: button.left - card.left, top: button.top - card.top };
+  });
+  const initialPosition = await copyPosition();
+  await copy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  await expect(card.getByRole('status')).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+  if (scenario !== 'wide') expect(await copyPosition()).toEqual(initialPosition);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+  await copy.click();
+  const alert = card.getByRole('alert');
+  await expect(alert).toHaveText(locale === 'en' ? 'Could not copy the Goal ID. Select and copy it manually.' : '无法复制 Goal ID，请选中并手动复制。');
+  if (scenario !== 'wide') {
+    expect(await copyPosition()).toEqual(initialPosition);
+    expect(await alert.evaluate(element => {
+      const bounds = element.getBoundingClientRect(), card = element.closest('.goal-list-card')!.getBoundingClientRect();
+      const button = element.parentElement!.querySelector('.task-copy-button')!.getBoundingClientRect();
+      return bounds.left >= card.left && bounds.right <= card.right && bounds.top >= button.bottom - 1
+        && element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1;
+    })).toBe(true);
+  }
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+  await copy.focus(); await page.keyboard.press('Enter');
+  await expect(card.getByRole('status')).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+  if (scenario !== 'wide') expect(await copyPosition()).toEqual(initialPosition);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click(); await expect(toggle).toHaveAttribute('aria-expanded', 'false');
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
