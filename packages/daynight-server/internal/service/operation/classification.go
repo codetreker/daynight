@@ -49,8 +49,6 @@ func KnownFault(err error) (*model.Fault, bool) {
 		switch fault.Code {
 		case "project_repository_conflict", "project_repository_identity_unavailable":
 			return fault, true
-		case "insufficient_scope":
-			return fault, true
 		case "goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch", "goal_dependency_target_unavailable":
 			return fault, true
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
