@@ -7,7 +7,7 @@ import path from "node:path";
 // Task Sessions use the read-authority profile pinned to 0.167.0. Hosted Bots
 // require the verified 0.169.0 legacy rollout profile, whose recovery point is
 // captured from the rollout file named by the native thread.
-const bot = process.env.DAYNIGHT_BOT_ID !== undefined;
+const botId = process.env.DAYNIGHT_BOT_ID ?? null, bot = botId !== null;
 const version = bot ? "0.169.0" : "0.167.0";
 if (process.argv.includes("--version")) { console.log(`codex-cli ${version}`); process.exit(0); }
 if (process.argv.includes("--help")) { console.log("app-server --stdio"); process.exit(0); }
@@ -28,7 +28,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       mkdirSync(sessions, { recursive: true });
       rollout = params.path ?? path.join(realpathSync(sessions), `${threadId}.jsonl`);
     }
-    appendFileSync(process.env.DAYNIGHT_WORKER_PEER_LOG, JSON.stringify({ method, threadId }) + "\n");
+    appendFileSync(process.env.DAYNIGHT_WORKER_PEER_LOG, JSON.stringify({ method, threadId, botId }) + "\n");
     const thread = { id: threadId, sessionId: threadId, cwd, turns: [], environments: [{ environmentId: "local", cwd, runtimeWorkspaceRoots: [cwd] }],
       ...(bot ? { path: rollout, historyMode: "legacy" } : {}) };
     send({ id, result: { ...settings, sandbox: settings.sandboxPolicy, runtimeWorkspaceRoots: [cwd], thread } });
@@ -45,10 +45,13 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (method === "skills/list") send({ id, result: { data: [] } });
   else if (method === "hooks/list") send({ id, result: { data: [{ cwd, hooks: [], warnings: [], errors: [] }] } });
   else if (method === "thread/items/list" || method === "thread/turns/list") send({ id, result: { data: [], nextCursor: null } });
-  else if (method === "turn/start") {
+  else if (method === "turn/start" && (threadId === null || params.threadId !== threadId)) {
+    // A real app-server addresses turns by thread; a misaddressed turn must not appear delivered.
+    send({ id, error: { code: -32602, message: `Unknown native fixture thread: ${params.threadId}` } });
+  } else if (method === "turn/start") {
     const turnId = randomUUID(), turn = { id: turnId, status: "inProgress" };
     const item = { id: randomUUID(), type: "userMessage", clientId: params.clientUserMessageId, content: params.input };
-    appendFileSync(process.env.DAYNIGHT_WORKER_PEER_LOG, JSON.stringify({ method, threadId, text: params.input.map(part => part.text ?? "").join("\n") }) + "\n");
+    appendFileSync(process.env.DAYNIGHT_WORKER_PEER_LOG, JSON.stringify({ method, threadId, botId, text: params.input.map(part => part.text ?? "").join("\n") }) + "\n");
     record("event_msg", { type: "task_started", turn_id: turnId });
     send({ method: "turn/started", params: { threadId, turn } });
     send({ method: "item/completed", params: { threadId, turnId, item } });

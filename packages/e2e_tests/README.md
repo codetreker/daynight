@@ -134,7 +134,11 @@ rollout profile that Bot recovery verifies, writing the rollout file its
 recovery point captures. An auto-takeover assistant task with an enabled inbox is
 claimed by that Bot; an external JSON body posted with the bearer token becomes
 an `inbound` event, and the Worker renders it as fenced untrusted data into the
-Bot's native Session before acknowledging delivery. Claiming and delivery wait
+Bot's native Session before acknowledging delivery. The peer rejects a turn
+addressed to another thread, and the journey requires the complete body inside
+the untrusted-data fence of the turn on the Bot's own native thread. The inbox
+enablement response carries the bearer token, so its output is neither forwarded
+to the test report nor included in failure diagnostics. Claiming and delivery wait
 for the Worker's minute-loop cadence. Each Worker run has a seven-minute process
 limit so the restarted run covers the rest of the patrol and the inbox journey,
 including a delivery that lands on a later minute-loop tick, while staying below
@@ -259,6 +263,10 @@ are persisted before they can launch their targets. Test CLI and Git commands
 have their own recorded process groups. Independent recovery
 first verifies that the original runner has exited, then stops the recorded
 groups and checks the Worker's original Controller and native process evidence.
+The fixture records the inbox Bot's ID before creating it. Recovery reads that
+Bot's own Worker store, launch ticket and Controller journal and stops the
+recorded Controller and native process tree with the same evidence checks as the
+patrol Task.
 Fixture credentials remain in a separate private, retained directory outside
 uploaded results. Before Chromium starts, the fixture records a browser launch
 intent and binds the original process-group leader's identity. Cleanup confirms

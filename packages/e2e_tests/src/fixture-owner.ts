@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { CommandOptions, CommandResult, ManagedCommand } from "./command.ts";
 import { startGatedCommand, stopGate } from "./gated-command.ts";
 import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "./process-evidence.ts";
-import { loadFixtureStopProofs, readFixtureExecutions, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "./worker-cleanup.ts";
+import { loadFixtureStopProofs, readFixtureBot, readFixtureExecutions, stopRecordedFixtureBot, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "./worker-cleanup.ts";
 
 type Launch = { id: string; stopped: boolean };
 type BrowserScope = { id: string; proof: ProcessEvidence | null; stopped: boolean };
@@ -175,6 +175,14 @@ export const registerFixtureClaim = async (repository: string, runDirectory: str
     if (!identity || identity.claimId !== undefined && identity.claimId !== claimId) throw new Error("Fixture claim conflicts with its original identity.");
     identity.claimId = claimId; await writeOwner(run, owner); });
 };
+// Persisted before Bot creation so recovery can stop a Controller that outlives a forcibly stopped Worker.
+export const registerFixtureBot = async (repository: string, runDirectory: string, botId: string): Promise<void> => {
+  if (!uuid.test(botId)) throw new Error("Fixture Bot identity is invalid.");
+  const run = await validateRun(repository, runDirectory);
+  await withLock(run, async () => { const owner = await readOwner(run), identity = owner.fixture.identity;
+    if (!identity || identity.botId !== undefined) throw new Error("Fixture Bot conflicts with its original identity.");
+    identity.botId = botId; await writeOwner(run, owner); });
+};
 export const startOwnedFixture = async (input: { repository: string; runDirectory: string; command: string; args: readonly string[]; options: CommandOptions }): Promise<ManagedCommand> => {
   const run = await validateRun(input.repository, input.runDirectory), launch = { id: randomUUID(), stopped: false };
   await withLock(run, async () => { const owner = await readOwner(run);
@@ -208,7 +216,15 @@ export const recoverRunOwnership = async (input: { repository: string; runDirect
     if (!identity || identity.repository !== path.join(root, "repository")) throw new Error("Original fixture identity is unavailable.");
     const config = path.join(root, "worker-config"), dist = path.join(run, "artifacts", "cli", "dist");
     const proofs = await loadFixtureStopProofs(name => import(pathToFileURL(path.join(dist, name)).href));
-    await stopRecordedFixtureExecutions(await readFixtureExecutions(config), identity, config, proofs, Date.now() + 15_000);
+    // Stop both trees before reporting either failure; each has its own original evidence.
+    const failures: unknown[] = [];
+    try { await stopRecordedFixtureExecutions(await readFixtureExecutions(config), identity, config, proofs, Date.now() + 15_000); } catch (error) { failures.push(error); }
+    if (identity.botId !== undefined) {
+      if (!uuid.test(identity.botId)) failures.push(new Error("Original fixture Bot identity is invalid."));
+      else try { await stopRecordedFixtureBot(await readFixtureBot(config, identity.botId), identity, config, proofs, Date.now() + 15_000); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Original fixture Controller stops failed.");
   }
   if (latest.controllerUnconfirmed) throw new Error("Test Session Controller stop is unconfirmed; original private evidence is retained.");
   if (latest.fixture.interrupted) throw new Error("Interrupted Worker subprocess ownership remains unconfirmed; original state is retained.");

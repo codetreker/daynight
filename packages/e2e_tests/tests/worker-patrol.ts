@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, copyFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ManagedCommand } from "../src/command.ts";
-import { markFixtureStopped, prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
+import { markFixtureStopped, prepareFixtureOwnership, registerFixtureBot, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
 import { completeFixtureTask, type WorkerCompletionTask } from "../src/worker-completion.ts";
 import { stopFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
@@ -10,6 +10,8 @@ import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtur
 import { verifyAssistantInbox, type PeerEvent } from "./assistant-inbox.ts";
 
 type Task = WorkerCompletionTask & { session?: { lifecycle?: string } };
+// POSIX single quotes keep every byte literal; an embedded quote closes, escapes and reopens the literal.
+const shellLiteral = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 // The native peer is controlled; Worker, Controller, Server, relay and PostgreSQL are real.
 export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToken: string }): Promise<void> => {
@@ -42,7 +44,7 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     await git(repository, ["push", "origin", "HEAD:main"]);
     await git(root, ["--git-dir", bare, "symbolic-ref", "HEAD", "refs/heads/main"]);
     await copyFile(path.join(import.meta.dirname, "native-worker-peer.mjs"), peer); await chmod(peer, 0o700);
-    await writeFile(launcher, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(topology.cliEntry)} "$@"\n`, { mode: 0o700 });
+    await writeFile(launcher, `#!/bin/sh\nexec ${shellLiteral(process.execPath)} ${shellLiteral(topology.cliEntry)} "$@"\n`, { mode: 0o700 });
     const projectCreation = await cli(["project", "create", `Worker patrol ${randomUUID()}`, "--repo", remote, "--team", "personal", "--confirm"]);
     const projectId = projectCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
     if (!projectId) throw new Error("Worker test Project creation did not return an ID.");
@@ -112,7 +114,9 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     await new Promise(resolve => setTimeout(resolve, 3_000));
     expect((await entries()).filter(event => event.method === "turn/start" && event.text?.includes("periodic check")).length).toBe(completedPings);
     // The completed Task released the Worker's only execution slot for a hosted Bot.
-    await verifyAssistantInbox({ workerId, root, events });
+    await verifyAssistantInbox({ workerId, root, events, registerBot: async botId => {
+      identity!.botId = botId; await registerFixtureBot(checkout, runDirectory, botId);
+    } });
   } catch (error) { scenarioFailure = error; }
   finally {
     const failures: unknown[] = [];

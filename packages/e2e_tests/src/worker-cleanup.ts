@@ -10,7 +10,8 @@ type Execution = { projectId: string; taskId: string; claimId: string; workerId:
     initialOperationId: string; initialPrompt: string; ticketPath: string; launchSubmission: string;
     controllerProcess: FixtureProcessProof | null; nativeProcesses: FixtureProcessProof[] } | null };
 type Ticket = { executionId: string; launchId: string; sessionId: string; controllerId: string; controllerInstanceId: string; executionGeneration: string;
-  initialOperationId: string; initialPrompt: string; claimId: string; projectId: string; taskId: string; workerId: string; worktreeId: string; userId: string; serverOrigin: string; cwd: string };
+  initialOperationId: string; initialPrompt: string; claimId: string; projectId: string; taskId: string; workerId: string; worktreeId: string; userId: string; serverOrigin: string; cwd: string;
+  testExecutionId?: string; ownerUserId?: string; codexBotRecovery?: { botId: string } };
 type Snapshot = { controllerProcess: FixtureProcessProof | null; nativeProcesses: FixtureProcessProof[]; nativeSessionId: string | null };
 export type FixtureStopProofs = {
   parseLaunchTicket: (input: unknown) => Ticket;
@@ -53,7 +54,7 @@ export const stopFixtureWorker = async (worker: ManagedCommand, exited: boolean)
   if (!groupStopped || exitCode !== 0) throw new FixtureWorkerStopError(groupStopped);
 };
 
-export type FixtureExecutionIdentity = { projectId: string; taskId: string; workerId: string; userId: string; serverOrigin: string; repository: string; claimId?: string };
+export type FixtureExecutionIdentity = { projectId: string; taskId: string; workerId: string; userId: string; serverOrigin: string; repository: string; claimId?: string; botId?: string };
 const absent = async (filename: string): Promise<boolean> => {
   try { await stat(filename); return false; }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return true; throw error; }
@@ -92,11 +93,18 @@ export const stopRecordedFixtureExecutions = async (records: readonly Execution[
     || ticket.initialOperationId !== execution.initialOperationId || ticket.initialPrompt !== execution.initialPrompt || ticket.claimId !== record.claimId
     || ticket.projectId !== record.projectId || ticket.taskId !== record.taskId || ticket.workerId !== record.workerId || ticket.worktreeId !== record.worktreeId
     || ticket.userId !== record.userId || ticket.serverOrigin !== record.serverOrigin || ticket.cwd !== worktree) throw new Error("Fixture Controller ticket conflicts with the original execution.");
+  await stopJournaledController({ journal, ticket, launchId: execution.launchId, controllerProcess: execution.controllerProcess,
+    nativeProcesses: execution.nativeProcesses, nativeSessionId: record.resources.nativeSession?.sessionId ?? null }, proofs, deadline);
+};
+
+// The journal may append native processes after the recorded evidence; each observation must extend that evidence.
+const stopJournaledController = async (original: { journal: string; ticket: Ticket; launchId: string; controllerProcess: FixtureProcessProof;
+  nativeProcesses: readonly FixtureProcessProof[]; nativeSessionId: string | null }, proofs: FixtureStopProofs, deadline: number): Promise<void> => {
   const observe = (): Snapshot => {
-    const snapshot = proofs.readCurrentControllerSnapshot(journal, ticket, deadline);
-    if (!proofs.preservesControllerProcessProof(execution.controllerProcess!, snapshot.controllerProcess, execution.launchId)
-      || !proofs.preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses)
-      || record.resources.nativeSession !== null && snapshot.nativeSessionId !== record.resources.nativeSession.sessionId) throw new Error("Fixture Controller journal conflicts with the original process evidence.");
+    const snapshot = proofs.readCurrentControllerSnapshot(original.journal, original.ticket, deadline);
+    if (!proofs.preservesControllerProcessProof(original.controllerProcess, snapshot.controllerProcess, original.launchId)
+      || !proofs.preservesNativeProcessPrefix(original.nativeProcesses, snapshot.nativeProcesses)
+      || original.nativeSessionId !== null && snapshot.nativeSessionId !== original.nativeSessionId) throw new Error("Fixture Controller journal conflicts with the original process evidence.");
     return snapshot;
   };
   const stop = async (snapshot: Snapshot): Promise<void> => {
@@ -107,11 +115,75 @@ export const stopRecordedFixtureExecutions = async (records: readonly Execution[
   };
   const first = observe(); await stop(first);
   const latest = observe();
-  if (!proofs.preservesControllerEvidence(first, latest, execution.launchId)) throw new Error("Fixture Controller journal changed incompatibly during stop.");
+  if (!proofs.preservesControllerEvidence(first, latest, original.launchId)) throw new Error("Fixture Controller journal changed incompatibly during stop.");
   await stop(latest);
   const final = observe();
-  if (!proofs.preservesControllerEvidence(latest, final, execution.launchId) || JSON.stringify(latest.nativeProcesses) !== JSON.stringify(final.nativeProcesses)
+  if (!proofs.preservesControllerEvidence(latest, final, original.launchId) || JSON.stringify(latest.nativeProcesses) !== JSON.stringify(final.nativeProcesses)
     || !await proofs.confirmControllerProcessesStopped(final.controllerProcess!, final.nativeProcesses, deadline)) throw new Error("Fixture Controller final process evidence is not settled.");
+};
+
+type BotLaunchIntent = { launchId: string; executionId: string; controllerInstanceId: string; sessionId: string | null; executionGeneration: string;
+  ticketPath: string; journalPath: string; registration: { testExecutionId: string; controllerId: string } };
+type BotExecution = { launchId: string; executionId: string; executionGeneration: string; launchSubmission: string;
+  controllerProcess: FixtureProcessProof | null; snapshot: { nativeSessionId: string | null; nativeProcesses: FixtureProcessProof[] } | null };
+export type FixtureBotRecord = { serverOrigin: string; ownerUserId: string; workerId: string; botId: string; intent: BotLaunchIntent | null; execution: BotExecution | null };
+
+/** A Bot hosted by the fixture Worker keeps its execution evidence in its own private store. */
+export const readFixtureBot = async (workerConfigDirectory: string, botId: string): Promise<FixtureBotRecord | null> => {
+  const filename = path.join(workerConfigDirectory, "bots", botId, "store.sqlite");
+  if (await absent(filename)) return null;
+  if (!(await stat(filename)).isFile()) throw new Error("Fixture Bot store is not a regular file.");
+  const db = new DatabaseSync(filename, { readOnly: true });
+  try {
+    const rows = (table: string) => db.prepare(`SELECT server_origin, owner_user_id, worker_id, bot_id, record FROM ${table}`).all();
+    const bots = rows("bots"), executions = rows("bot_executions");
+    if (bots.length > 1 || executions.length > 1 || bots.length === 0 && executions.length > 0) throw new Error("Fixture Bot records are ambiguous.");
+    const bot = bots[0];
+    if (bot === undefined) return null;
+    const execution = executions[0];
+    for (const row of [bot, execution]) {
+      if (row !== undefined && (typeof row.record !== "string" || row.server_origin !== bot.server_origin || row.owner_user_id !== bot.owner_user_id
+        || row.worker_id !== bot.worker_id || row.bot_id !== bot.bot_id)) throw new Error("Fixture Bot record is invalid.");
+    }
+    try {
+      const record = JSON.parse(bot.record as string) as { botId: string; intent: BotLaunchIntent | null };
+      return { serverOrigin: String(bot.server_origin), ownerUserId: String(bot.owner_user_id), workerId: String(bot.worker_id), botId: record.botId,
+        intent: record.intent, execution: execution === undefined ? null : JSON.parse(execution.record as string) as BotExecution };
+    } catch { throw new Error("Fixture Bot record is invalid."); }
+  } finally { db.close(); }
+};
+
+// Ticket, journal and the Worker's recorded process evidence fence the Bot's current launch.
+export const stopRecordedFixtureBot = async (record: FixtureBotRecord | null, expected: FixtureExecutionIdentity, directory: string, proofs: FixtureStopProofs, deadline: number): Promise<void> => {
+  const botId = expected.botId;
+  if (botId === undefined) return;
+  // The Worker records the Bot before preparing any launch, so an absent store proves nothing was launched.
+  if (record === null) return;
+  if (record.botId !== botId || record.workerId !== expected.workerId || record.ownerUserId !== expected.userId
+    || record.serverOrigin !== expected.serverOrigin) throw new Error("Fixture Bot identity conflicts with the original Worker.");
+  const execution = record.execution, intent = record.intent;
+  if (execution === null) return;
+  if (intent === null || execution.launchId !== intent.launchId || execution.executionId !== intent.executionId || execution.executionGeneration !== intent.executionGeneration
+    || !/^[0-9a-f-]{36}$/.test(execution.launchId) || !/^[0-9a-f-]{36}$/.test(execution.executionId)) throw new Error("Fixture Bot execution conflicts with its launch intent.");
+  const storage = path.join(directory, "bots", botId, "controller");
+  const ticketPath = path.join(storage, "launches", `${execution.launchId}.json`), journal = path.join(storage, "executions", execution.executionId, "journal.sqlite");
+  if (intent.ticketPath !== ticketPath || intent.journalPath !== journal) throw new Error("Fixture Bot private paths differ from its original storage.");
+  if (execution.launchSubmission === "not-submitted") {
+    if (execution.controllerProcess !== null || execution.snapshot !== null || !await absent(journal)) throw new Error("Fixture Bot unsubmitted launch has process evidence.");
+    return;
+  }
+  if (!["unknown", "acknowledged"].includes(execution.launchSubmission)) throw new Error("Fixture Bot launch submission evidence is invalid.");
+  if (execution.controllerProcess === null) throw new Error("Fixture Bot original Controller process proof is unavailable.");
+  if ((await stat(ticketPath)).size > 6 * 1024 * 1024) throw new Error("Fixture Bot Controller ticket is too large.");
+  let ticket: Ticket;
+  try { ticket = proofs.parseLaunchTicket(JSON.parse(await readFile(ticketPath, "utf8"))); }
+  catch { throw new Error("Fixture Bot Controller ticket is unavailable or invalid."); }
+  if (ticket.executionId !== execution.executionId || ticket.launchId !== execution.launchId || ticket.controllerInstanceId !== intent.controllerInstanceId
+    || ticket.executionGeneration !== intent.executionGeneration || ticket.sessionId !== intent.sessionId || ticket.controllerId !== intent.registration.controllerId
+    || ticket.testExecutionId !== intent.registration.testExecutionId || ticket.ownerUserId !== record.ownerUserId || ticket.serverOrigin !== record.serverOrigin
+    || ticket.claimId !== undefined || ticket.codexBotRecovery?.botId !== botId) throw new Error("Fixture Bot Controller ticket conflicts with the original execution.");
+  await stopJournaledController({ journal, ticket, launchId: execution.launchId, controllerProcess: execution.controllerProcess,
+    nativeProcesses: execution.snapshot?.nativeProcesses ?? [], nativeSessionId: execution.snapshot?.nativeSessionId ?? null }, proofs, deadline);
 };
 
 export const readFixtureExecutions = async (workerConfigDirectory: string): Promise<Execution[]> => {
