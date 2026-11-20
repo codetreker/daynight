@@ -94,6 +94,13 @@ type AssistantTaskAppendixValidation struct {
 	LastValidatedAt time.Time `json:"lastValidatedAt"`
 }
 
+// AssistantTaskRelatedAppendices lists at most five non-deleted appendices in
+// relevance order. It is complete for its query and has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix `json:"items"`
+	ObservedAt time.Time               `json:"observedAt"`
+}
+
 type AssistantTaskProposal struct {
 	ID              string          `json:"id"`
 	TaskID          string          `json:"taskId"`
@@ -236,3 +243,11 @@ type AssistantTaskInboxTokenResult struct {
 	Token *string `json:"token"`
 }
 
+// AssistantTaskInboxReceipt answers an accepted public inbox request. EventID
+// is null only for a suppressed request, which writes no event.
+type AssistantTaskInboxReceipt struct {
+	EventID        *string `json:"eventId"`
+	Classification string  `json:"classification"`
+	Duplicate      bool    `json:"duplicate"`
+	Suppressed     bool    `json:"suppressed"`
+}

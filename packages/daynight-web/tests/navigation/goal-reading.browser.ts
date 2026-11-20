@@ -80,6 +80,33 @@ const second = detailFixture(projectId, secondId, { parentId: goalId, title: 'Se
 const single = detailFixture(projectId, singleId, { parentId: goalId, title: 'Standalone task' });
 const all = [goal, first, second, single];
 const graph = graphFixture(all);
+
+for (const width of [1440, 320]) test(`Goal successor inspection keeps keyboard focus and viewport at ${width}px`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 1000 });
+  await install(page);
+  await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  const dialog = page.locator(`#task-graph-${goalId}`);
+  const selected = dialog.locator(`.react-flow__node[data-id="${firstId}"] .task-node-body`);
+  const successor = dialog.locator(`.react-flow__node[data-id="${secondId}"] .task-node`);
+  await expect(selected).toBeVisible();
+  await selected.focus();
+  const viewport = dialog.locator('.react-flow__viewport');
+  const before = await viewport.getAttribute('style');
+  await selected.press('Enter');
+  await expect(selected).toBeFocused();
+  await expect(successor).toHaveAttribute('data-inspection', 'successor');
+  await expect(successor).toHaveCSS('outline-color', 'rgb(8, 127, 140)');
+  await expect(successor.locator('.task-node-body')).toHaveAccessibleName(/successor of the selected task/);
+  await expect(dialog.locator('.task-dependency-edge')).toHaveAttribute('data-inspection', 'successor');
+  await expect(dialog.locator('.graph-successor-legend')).toHaveText('Successors');
+  await page.screenshot({ path: info.outputPath('successor-goal.png') });
+  await expect(viewport).toHaveAttribute('style', before!);
+  await selected.press('Enter');
+  await expect(successor).toHaveAttribute('data-inspection', 'normal');
+  await expect(viewport).toHaveAttribute('style', before!);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);
@@ -2515,18 +2542,19 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const copy = card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
   const initialUrl = page.url();
   await expect(id).toHaveText(goalId);
-  await expect(id).toHaveCSS('font-size', '11px');
+  await expect(id).toHaveCSS('font-size', '12px');
   await expectCopyButtonSkin(page, copy);
   await card.locator('.goal-list-title').focus(); await page.keyboard.press('Tab');
   await expect(copy).toBeFocused();
   await id.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  const box = await id.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const rect = range.getClientRects()[0]!; return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
-  await page.mouse.move(box.x + 2, box.y + box.height / 2); await page.mouse.down();
-  await page.mouse.move(box.x + Math.min(box.width - 2, 80), box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
+  await id.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const box = await id.evaluate(element => { const range = document.createRange(); range.setStart(element.firstChild!, 1); range.setEnd(element.firstChild!, 10); const rect = range.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+  await page.mouse.move(box.x, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width, box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
   const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
   expect(selected.length).toBeGreaterThan(0); expect(goalId).toContain(selected);
-  await page.keyboard.press('Control+C');
+  await page.keyboard.press('ControlOrMeta+C');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await page.evaluate(() => window.getSelection()?.removeAllRanges());

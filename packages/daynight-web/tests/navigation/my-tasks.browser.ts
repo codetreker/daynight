@@ -158,6 +158,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   const worker = page.locator('.task-row-machine');
   await expect(worker).toBeVisible();
   await expect(worker).toHaveCSS('font-size', '12px');
+  await expect(page.locator('.task-row-primary-status')).toHaveCSS('font-size', '12px');
   await expect.poll(() => worker.textContent()).toBe(`Claim machine: ${replacement}`);
   const layout = await worker.evaluate(el => {
     const node = el.firstChild!;
@@ -175,6 +176,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   expect(layout.tailLastTop).toBeGreaterThan(layout.tailFirstTop);
   await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
   await expect(worker).toHaveCSS('font-size', '18px');
+  await expect(page.locator('.task-row-primary-status')).toHaveCSS('font-size', '18px');
   expect(await worker.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await expect(page.getByText(`Claim machine: ${longWorker}`)).toHaveCount(0);
@@ -349,7 +351,7 @@ for (const width of [320, 1280]) {
     const goalDialog = page.getByRole('dialog', { name: longGoal });
     await expect(goalDialog.getByText('Goal description')).toBeVisible();
     const information = goalDialog.getByRole('complementary', { name: 'Goal information' });
-    await expect(information.getByRole('alert')).toBeVisible();
+    await expect(information.locator('.goal-information-error')).toBeVisible();
     await information.getByRole('button', { name: 'Retry refresh' }).click();
     await expect(information.getByText('Total tasks')).toBeVisible();
     await page.evaluate(id => window.selectMyTasksChild(id), taskId(1));

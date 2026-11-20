@@ -7,16 +7,16 @@
 .goal-list-toggle:focus-visible { outline: 2px solid var(--task-focus); outline-offset: -2px; border-radius: 6px; }
 .goal-list-icon { flex: none; width: 20px; height: 20px; fill: none; stroke: #6b65bc; stroke-width: 1.4; }
 .goal-list-main { flex: 1; min-width: 0; }
-.goal-list-title { display: block; max-width: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-interface); font-weight: 650; line-height: 1.5; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.goal-list-title { display: block; max-width: 100%; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-sm); font-weight: 650; line-height: 1.5; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
 .goal-list-title:hover { text-decoration: underline; }
 .goal-list-title:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 2px; border-radius: 2px; }
 .goal-list-main .goal-title-line { align-items: baseline; }
 .goal-list-main .goal-list-title { min-width: 0; }
-.goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 3px; font-size: var(--text-metadata); color: var(--task-helper); }
+.goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 3px; font-size: var(--text-xs); color: var(--task-helper); }
 .goal-list-meta > span:empty { display: none; }
 .goal-list-meta > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .goal-list-meta .completion-time-label { margin-inline-start: 0; }
-.goal-list-progress { flex: none; width: 145px; font-size: var(--text-metadata); color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
+.goal-list-progress { flex: none; width: 145px; font-size: var(--text-xs); color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
 .goal-list-track i { background: var(--task-done-ink); }
 .goal-list-session { flex: none; min-width: 0; max-width: 40%; cursor: pointer; }
@@ -26,7 +26,7 @@
 .goal-list-session .session-status-progress .session-status-label { padding: 0; border: 0; border-radius: 0; background: transparent; line-height: 1.5; }
 .goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); background: #fcfcfe; }
 .goal-list-contents .goal-task-list { container-type: inline-size; padding-block-end: 0; }
-.goal-list-empty { margin: 0; padding: 16px 18px; font-size: var(--text-interface); color: var(--task-helper); }
+.goal-list-empty { margin: 0; padding: 16px 18px; font-size: var(--text-sm); color: var(--task-helper); }
 @container goal-list-card (max-width: 740px) {
   .goal-list-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 32px 32px; padding: 0 12px 8px 0; gap: 0 6px; }
   .goal-list-summary { grid-column: 1 / -1; width: 100%; }
@@ -56,9 +56,9 @@
 
 .goal-list-card .task-assignee-identity, .goal-list-card .assignee-former,
 .goal-list-card .chain-worker-active, .goal-list-card .root-status,
-.goal-list-card .task-paused-badge, .goal-list-card .task-pause-count { font-size: var(--text-interface); }
-.goal-list-card .goal-in-progress, .goal-list-card .completion-time-label { font-size: var(--text-metadata); }
+.goal-list-card .task-paused-badge, .goal-list-card .task-pause-count { font-size: var(--text-sm); }
+.goal-list-card .goal-in-progress, .goal-list-card .completion-time-label { font-size: var(--text-xs); }
 .goal-list-card .chain-worker-active { line-height: 1.5; }
 .goal-list-session .session-status-label { white-space: normal; overflow-wrap: anywhere; }
 .goal-list-session .session-status-label { display: inline-flex; flex-direction: column; align-items: flex-end; }
-.goal-list-session .session-status-annotation { position: static; height: auto; font-size: var(--text-interface); line-height: 1.5; white-space: normal; }
+.goal-list-session .session-status-annotation { position: static; height: auto; font-size: var(--text-sm); line-height: 1.5; white-space: normal; }

@@ -352,10 +352,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE personal_access_tokens DROP COLUMN description; ALTER TABLE oauth_grants DROP COLUMN description`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104)`); err != nil || result.RowsAffected() != 26 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105)`); err != nil || result.RowsAffected() != 27 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -372,6 +375,10 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	defer db.Close()
 	var repositoryVersion int64
 	var migrationCount int
+	var descriptionColumns int
+	if err := db.QueryRow(f.context, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('personal_access_tokens','oauth_grants') AND column_name='description'`).Scan(&descriptionColumns); err != nil || descriptionColumns != 2 {
+		t.Fatalf("credential description migration: columns=%d error=%v", descriptionColumns, err)
+	}
 	if err := db.QueryRow(f.context, `SELECT repository_version,(SELECT count(*) FROM schema_migrations WHERE version=95) FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion, &migrationCount); err != nil || repositoryVersion != 1 || migrationCount != 1 {
 		t.Fatalf("upgraded repository version: version=%d migration count=%d error=%v", repositoryVersion, migrationCount, err)
 	}

@@ -276,6 +276,36 @@ test('scales shared roles with root preference and preserves the touch floor', a
   await expect(page.getByTestId('responsive')).toHaveCSS('font-size', '16px');
 });
 
+for (const coarse of [false, true]) test(`preserves touch text and geometry at root sizes 12 and 24 with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch: coarse });
+  try {
+    const page = await context.newPage(); await page.goto(`http://127.0.0.1:14301${fixture}`);
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(coarse);
+    for (const root of [12, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      const normal = `${root * .875}px`, touch = `${Math.max(root, 16)}px`, count = `${root * .75}px`;
+      for (const id of ['responsive', 'trigger-responsive', 'text-responsive']) await expect(page.getByTestId(id)).toHaveCSS('font-size', touch);
+      for (const id of ['responsive-target', 'trigger-responsive-target', 'text-coarse']) await expect(page.getByTestId(id)).toHaveCSS('font-size', coarse ? touch : normal);
+      for (const id of ['compact-normal', 'trigger-compact-normal', 'text-ordinary']) await expect(page.getByTestId(id)).toHaveCSS('font-size', normal);
+      const option = page.getByTestId('responsive').locator('option').first();
+      await expect(option).toHaveCSS('font-size', touch);
+      const trigger = page.getByTestId('trigger-responsive-target');
+      await expect(trigger.locator('.select-trigger__count')).toHaveCSS('font-size', count);
+      for (const id of ['responsive', 'responsive-target', 'trigger-responsive', 'trigger-responsive-target', 'narrow-container', 'trigger-container']) {
+        const element = page.getByTestId(id);
+        const measurement = await element.evaluate(node => {
+          const box = node.getBoundingClientRect(), style = getComputedStyle(node);
+          const badge = node.querySelector('.select-trigger__count');
+          return { height: box.height, lineHeight: Number.parseFloat(style.fontSize) * 1.5, badgeHeight: badge?.getBoundingClientRect().height, badgeLine: badge ? Number.parseFloat(getComputedStyle(badge).fontSize) * 1.5 : 0 };
+        });
+        expect(measurement.height).toBeGreaterThanOrEqual(44);
+        expect(measurement.height - 2).toBeGreaterThanOrEqual(measurement.lineHeight);
+        if (measurement.badgeHeight !== undefined) expect(measurement.badgeHeight).toBeGreaterThanOrEqual(Math.max(20, measurement.badgeLine));
+      }
+    }
+  } finally { await context.close(); }
+});
+
 test('cancels the native popup without changing its value', async ({ page }) => {
   await page.goto(fixture);
   const control = page.getByTestId('interactive');
