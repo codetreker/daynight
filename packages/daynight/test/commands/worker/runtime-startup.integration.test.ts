@@ -15,6 +15,7 @@ import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
+import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -167,6 +168,47 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it.each(["configuration", "telemetry"] as const)("keeps Bot recovery closed until a matching machine %s report is confirmed", async channel => {
+    const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
+    let options: ReporterOptions | undefined, canSubmit: (() => boolean) | undefined;
+    const createReconciliation = botReconciliation.createBotReconciliation;
+    const observation = vi.spyOn(botReconciliation, "createBotReconciliation").mockImplementation(value => {
+      canSubmit = value.canSubmit; return createReconciliation(value);
+    });
+    mocks.reporter.mockImplementation((value: ReporterOptions) => { options = value; return reporter(); });
+    const { cancellation, running } = start(f);
+    const operation = createOperation();
+    try {
+      await vi.waitFor(() => { expect(options).toBeDefined(); expect(mocks.coordinator).toHaveBeenCalled(); });
+      expect(mocks.bots.mock.results[0]!.value.run).toHaveBeenCalled();
+      expect(canSubmit?.()).toBe(false);
+      const machine = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).machine;
+      const report = { ...reportSample, machine };
+      const captured = await prepareConfiguration(options!);
+      const receipt = { observedAt: report.sampledAt, lastReportedAt: report.sampledAt,
+        configuration: receivedReceipt({ desired: desired(), observationRevision: "0", observationAccepted: false }) };
+      const send = channel === "configuration" ? remote.reportConfiguration : remote.report;
+      const submit = (input = report) => channel === "configuration"
+        ? options!.configuration!.send(input, captured, operation)
+        : options!.send(input, operation);
+      send.mockResolvedValueOnce(receipt);
+      await submit({ ...report, machine: { ...machine, id: uuid(999) } });
+      expect(canSubmit?.()).toBe(false);
+      const unknown = new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("Report acknowledgement was lost") });
+      send.mockRejectedValueOnce(unknown);
+      await expect(submit()).rejects.toBe(unknown);
+      expect(canSubmit?.()).toBe(false);
+      const acknowledgement = Promise.withResolvers<typeof receipt>();
+      send.mockImplementationOnce(() => acknowledgement.promise);
+      const pending = submit();
+      expect(canSubmit?.()).toBe(false);
+      acknowledgement.resolve(receipt);
+      await pending;
+      // The remote acknowledgement suffices before any local configuration accept.
+      expect(canSubmit?.()).toBe(true);
+    } finally { operation.dispose(); cancellation.abort(); try { await running; } finally { observation.mockRestore(); } }
+  });
+
   it("continues retained-project reconciliation with bounded observations and after restart", async () => {
     const f = await fixture(true, false), target = { ...desired([]), revision: "2" }, ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
@@ -1114,20 +1156,36 @@ it("starts Bot management with no projects and preserves the Worker lock through
   expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
 });
 
-it("attempts Task shutdown and releases stores and the lock when Bot shutdown fails", async () => {
+it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdown is unconfirmed", async () => {
   const f = await fixture(false, false), cancellation = new AbortController(); cancellations.add(cancellation);
   mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
   const failure = new Error("Bot writer stop remains unconfirmed");
+  const shutdown = vi.fn(async () => { throw failure; });
+  const { bot } = await import("./bot-store.fixtures.js");
+  const definition = bot();
+  if (definition.deletion !== null) throw new Error("Expected an active Bot fixture.");
+  const retained = { ...definition, ownerUserId: uuid(6), workerId,
+    resolvedConfiguration: { ...definition.resolvedConfiguration, workerId } };
   let botOptions: any;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: async () => {}, shutdown: async () => { throw failure; } };
+    options.store.observe(options.owner, retained, 1);
+    return { run: async () => {}, shutdown };
   });
   const tasks = coordinator(async () => cancellation.abort()); mocks.coordinator.mockReturnValue(tasks);
-  await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toBe(failure);
-  expect(tasks.shutdown).toHaveBeenCalledOnce();
-  expect(() => botOptions.store.list(botOptions.owner)).toThrow();
-  expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+  try {
+    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toMatchObject({
+      errors: [failure, expect.objectContaining({ message: expect.stringContaining("storage locks are retained") })],
+    });
+    expect(tasks.shutdown).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(botOptions.store.get(botOptions.owner, retained.id)?.observed).toEqual(retained);
+    expect(await readFile(path.join(f.paths.stateDirectory, "bots", retained.id, "instance.lock"), "utf8")).toContain(String(process.pid));
+    expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+  } finally {
+    // The controlled runtime never started a writer; release its retained test handle.
+    botOptions?.store.close();
+  }
 });
 
 

@@ -62,7 +62,9 @@ of the public Controller directory. It requires downtime and temporarily holds
 both source and copied bytes. Original files are retained as evidence rather
 than removed as an implicit cleanup step.
 
-A completed local migration does not make the assistant runnable: remote
-recovery registration and Provider recovery verification remain required.
+A completed local migration does not make the assistant runnable. The
+[Worker reconciliation](2026-11-20-bot-worker-reconciliation.md) performs remote
+recovery registration while preserving the execution fence; verified Provider
+recovery material and an executable dedicated generation remain required.
 The history reader does not add an offline browser history service. Unknown
 stopping evidence remains a refusal even if all files appear readable.

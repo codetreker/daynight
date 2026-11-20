@@ -76,6 +76,46 @@ describe("assistant-task Session transport", () => {
     expect(f.readSession).toHaveBeenCalledOnce();
   });
 
+  it("sends through a new hosting Worker only after recovery authorization and synchronized Session preflight", async () => {
+    const f = fixture(), canSend = vi.fn(() => true);
+    const transport = createAssistantTaskSessionTransport({ owner: { ...owner, workerId: id(30) }, serverToken: "current-account-token", sessionApi: { readSession: f.readSession }, fetch: f.fetch, canSend });
+    expect(await transport.send(f.record, command(), signal())).toEqual(receipt());
+    expect(canSend).toHaveBeenCalledWith(f.record);
+    expect(f.readSession).toHaveBeenCalledWith(f.record, expect.any(AbortSignal));
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch.mock.calls[0]![1]!.headers).toMatchObject({ authorization: "Bearer current-account-token" });
+    expect(f.record.owner.workerId).toBe(id(2));
+    expect(f.record.definition!.resolvedConfiguration.workerId).toBe(id(2));
+  });
+
+  it.each(["absent", "refused"])("does not send from a new Worker when recovery authorization is %s", async permission => {
+    const f = fixture();
+    const transport = createAssistantTaskSessionTransport({ owner: { ...owner, workerId: id(30) }, serverToken: "fixture-secret", sessionApi: { readSession: f.readSession }, fetch: f.fetch,
+      ...(permission === "absent" ? {} : { canSend: () => false }) });
+    await expect(transport.send(f.record, command(), signal())).rejects.toMatchObject({ outcomeUnconfirmed: false, code: "not_ready" });
+    expect(f.readSession).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks hosting authorization after the Session preflight", async () => {
+    const f = fixture(); let permitted = true;
+    f.readSession.mockImplementation(async () => { permitted = false; return f.snapshot; });
+    const transport = createAssistantTaskSessionTransport({ owner: { ...owner, workerId: id(30) }, serverToken: "fixture-secret", sessionApi: { readSession: f.readSession }, fetch: f.fetch, canSend: () => permitted });
+    await expect(transport.send(f.record, command(), signal())).rejects.toMatchObject({ outcomeUnconfirmed: false, code: "not_ready" });
+    expect(f.readSession).toHaveBeenCalledOnce(); expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("queries an original operation after Worker and execution changes without acquiring send eligibility", async () => {
+    const f = fixture(), canSend = vi.fn(() => false);
+    f.record.intent!.executionGeneration = "2";
+    f.fetch.mockResolvedValue(f.response({ operation: receipt() }, 200));
+    const transport = createAssistantTaskSessionTransport({ owner: { ...owner, workerId: id(30) }, serverToken: "current-account-token", sessionApi: { readSession: f.readSession }, fetch: f.fetch, canSend });
+    expect(await transport.readOperation(f.record, command(), signal())).toEqual(receipt());
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch.mock.calls[0]![0]).toBe(`${owner.serverOrigin}${operationUrl}`);
+    expect(f.fetch.mock.calls[0]![1]).toMatchObject({ method: "GET", headers: { authorization: "Bearer current-account-token" } });
+    expect(f.readSession).not.toHaveBeenCalled(); expect(canSend).not.toHaveBeenCalled();
+  });
+
   it.each([400, 409, 500])("distinguishes confirmed refusal from ambiguous HTTP %s", async status => {
     const f = fixture(); f.fetch.mockResolvedValue(f.response({ error: { code: "stale_turn", message: "Changed", requestId: id(20) } }, status));
     await expect(f.transport.send(f.record, command(), signal())).rejects.toMatchObject({ outcomeUnconfirmed: status >= 500, code: "stale_turn", status });

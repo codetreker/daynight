@@ -242,6 +242,16 @@ describe("Bot deletion receipts", () => {
   const receipt = () => ({ deletionId: id(40), stop: { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(7), controllerInstanceId: id(8), stopProof: { recordId: id(41), previousControllerInstanceId: id(8), stoppedAt: "2026-01-01T00:00:00Z" } }, result: { state: "completed" as const, code: null } });
   const deleting = (value: BotRecord): BotRecord => ({ ...value, observed: deleted() });
 
+  it("reports cleanup through the current host while preserving the original creation Worker DTO", async () => {
+    const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result } };
+    const fixture = await listen((request, response) => {
+      expect(request.url).toBe(`/api/v1/me/workers/${id(99)}/bots/${id(3)}/deletion-complete`);
+      response.end(JSON.stringify(expected));
+    });
+    const api = createBotSessionApi({ owner: { ...fixture.record.owner, workerId: id(99) }, serverToken: "fixture-token", recovery: {} as never });
+    expect(await api.completeDeletion(deleting(fixture.record), receipt(), signal())).toEqual(expected);
+  });
+
   it.each(["pending", "failed", "completed"])("confirms only the worker stage when server cleanup is %s", async state => {
     const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result, serverCleanup: { state, code: state === "failed" ? "server_cleanup_failed" : null } } };
     const requests: { method: string; url: string; body: unknown }[] = [];
