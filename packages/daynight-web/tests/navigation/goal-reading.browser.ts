@@ -2307,7 +2307,13 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const content = card.locator(`#project-goal-children-${goalId}`);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(content).toBeHidden();
-  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
+  const icon = card.locator('.goal-list-icon');
+  const compact = await card.evaluate(element => element.clientWidth <= 740);
+  if (compact) await expect(icon).toBeHidden();
+  else await expect(icon).toBeVisible();
+  const targets = ['.goal-disclosure', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status'];
+  if (!compact) targets.push('.goal-list-icon');
+  for (const selector of targets) {
     const target = card.locator('.goal-list-row').locator(selector);
     await target.click();
     await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
