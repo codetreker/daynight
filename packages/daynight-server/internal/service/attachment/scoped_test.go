@@ -295,7 +295,7 @@ func TestScopedAttachmentOpenedStreamRetainsAdmission(t *testing.T) {
 	}
 }
 
-func TestScopedAttachmentFixedProfilesAndInvalidAuthorization(t *testing.T) {
+func TestScopedAttachmentFixedProfiles(t *testing.T) {
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.OAuthCredential} {
 		base, m, files, task, p := attachmentUnit(t)
 		p.Kind = kind
@@ -317,8 +317,66 @@ func TestScopedAttachmentFixedProfilesAndInvalidAuthorization(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	subject := NewScopedAttachments(nil, nil)
-	if _, err := subject.List(t.Context(), model.CredentialAuthorization{}, "", "", model.PageRequest{}); err == nil {
-		t.Fatal("invalid authorization accepted")
+}
+
+func TestScopedAttachmentInvalidAuthorizationNeverReachesResources(t *testing.T) {
+	for _, invalid := range []string{"missing identity", "missing policy", "profile mismatch", "unknown profile"} {
+		for _, action := range []string{"list", "put", "retained", "open", "delete"} {
+			t.Run(invalid+"/"+action, func(t *testing.T) {
+				_, m, files, task, p := attachmentUnit(t)
+				observed := &observedAttachmentStorage{Storage: files}
+				auth := attachmentAuthorization(t, p, "attachment:read", "attachment:upload", "attachment:delete")
+				switch invalid {
+				case "missing identity":
+					auth.Principal = model.Principal{}
+				case "missing policy":
+					auth.Policy = nil
+				case "profile mismatch":
+					auth.Profile = model.SessionProfile
+				case "unknown profile":
+					auth.Profile = "unknown"
+				}
+				subject := NewScopedAttachments(m.service(m, observed), func(context.Context, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+					t.Error("invalid request authorization reached current credential reader")
+					return model.CredentialAuthorization{}, errors.New("unexpected credential read")
+				})
+				var err error
+				switch action {
+				case "list":
+					var page attachmentcore.Page
+					page, err = subject.List(t.Context(), auth, task.ProjectID, task.ID, model.PageRequest{Limit: 1})
+					if len(page.Items) != 0 || page.NextCursor != nil {
+						t.Fatalf("invalid authorization disclosed a page: %+v", page)
+					}
+				case "put", "retained":
+					var item model.Attachment
+					var created bool
+					if action == "retained" {
+						var lease io.Closer
+						item, created, lease, err = subject.PutRetained(t.Context(), auth, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("content"))
+						if lease != nil {
+							t.Fatal("invalid authorization acquired an upload lease")
+						}
+					} else {
+						item, created, err = subject.Put(t.Context(), auth, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("content"))
+					}
+					if item != (model.Attachment{}) || created {
+						t.Fatalf("invalid authorization returned upload facts: %+v %t", item, created)
+					}
+				case "open":
+					var item model.Attachment
+					var object filestorage.Object
+					item, object, err = subject.Open(t.Context(), auth, task.ProjectID, task.ID, "file")
+					if item != (model.Attachment{}) || object.Body != nil {
+						t.Fatalf("invalid authorization disclosed file metadata or content: %+v %+v", item, object)
+					}
+				case "delete":
+					err = subject.Delete(t.Context(), auth, task.ProjectID, task.ID, "file")
+				}
+				if err == nil || observed.calls.Load() != 0 {
+					t.Fatalf("invalid authorization reached resource operation: err=%v fileCalls=%d", err, observed.calls.Load())
+				}
+			})
+		}
 	}
 }
