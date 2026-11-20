@@ -1,6 +1,6 @@
 # Agent Note: Assistant Task Outcome-Based Learning
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -11,16 +11,30 @@ over the task. Existing work records say what was done but not whether it
 worked, so neither the assistant nor the user can tell which practices are
 effective.
 
-## Proposal
+## Decision
 
-Keep experience in assistant task materials, as specified in
+Experience is kept in assistant task materials, as specified in
 [the learning specification](../../../../docs/spec/assistant-task-learning.md)
 and [its design](../../../../docs/design/assistant-task-learning.md):
-`outcome` records judge earlier `action` records; `retrospective` events are
-generated when an item closes and, lazily during event pulls, at most weekly
-when new outcomes exist; appendix entries gain an applicability scope and
-outcome-backed validation counts; a bounded related-experience query feeds
-event notifications; and a 30-day metrics read summarizes effectiveness.
+
+- `outcome` records judge earlier `action` records of the same task
+  (migration `098_assistant_task_outcomes.sql`) and are exposed through REST
+  and `daynight assistant-task record add --kind outcome`.
+- Items record their current open time and append a closure record on every
+  close (migration `101_assistant_task_item_lifecycle.sql`); items that existed
+  before the migration have no trustworthy open time and are excluded from
+  average resolution time.
+- `retrospective` events are generated when an item closes and, lazily during
+  event pulls, at most weekly when new outcomes exist
+  (migration `102_assistant_task_retrospectives.sql`).
+- Appendix entries carry an applicability scope and outcome-backed success and
+  failure counts (migration `104_assistant_task_appendix_validations.sql`).
+- A bounded related-experience query feeds Worker event notifications with
+  short summaries, within a fixed request and time budget per batch.
+- A 30-day metrics read (migration `103_assistant_task_metrics.sql`) summarizes
+  actions, outcomes, escalations, resolution time and recurrence, and the Web
+  task page displays it.
+
 Promotion to executable rules stays with the existing proposal flow decided by
 the user.
 
@@ -44,19 +58,22 @@ invisible to the user. Task materials survive takeover and are reviewable.
 direct actions, which the assistant task specification reserves for user
 decisions.
 
-## Acceptance Criteria
+**Deriving resolution time from item `created_at` and `updated_at`.** Items can
+be created closed, reopened and edited after closing, so those timestamps do
+not identify an open period. Recording transition times and closure records
+gives an authoritative source at the cost of no history for pre-existing
+items.
 
-- Outcome records, retrospectives, appendix scope and validation, the
-  related-experience query and metrics behave as the specification requires,
-  verified by the tests named in the design.
-- A replaced holder Bot can read the accumulated experience and its evidence
-  without access to the previous Session.
+## Consequences
 
-## Risks
-
+- A replaced holder Bot reads the accumulated experience and its evidence from
+  task materials without access to the previous Session.
 - Outcome judgments are made by the assistant itself and can be wrong; the
   user reviews them through records, appendices and proposals.
 - Retrospectives cost assistant turns; the weekly bound and the requirement of
-  new outcomes limit them.
+  new outcomes limit them, and no periodic retrospective is generated while
+  nothing pulls events.
 - Relevance scoring is coarse; it ranks by declared scope and recency rather
   than content similarity.
+- Appendix scope categories are limited to 200 bytes while item categories
+  have no byte limit, so a longer item category cannot be named in a scope.

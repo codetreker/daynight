@@ -40,6 +40,10 @@ let observationStore: ProjectTaskObservationsStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); observationStore = new ProjectTaskObservationsStore(sessionScope, project.id); });
 afterEach(() => { observationStore.dispose(); sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
+const pausedTasks = (value: GraphSnapshot) => {
+  const ids = pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds);
+  return value.graph.tasks.filter(task => ids.has(task.id));
+};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
@@ -121,7 +125,7 @@ describe('paused task discovery', () => {
     const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
     const view = renderWithLocale(<ProjectPage projectId={project.id} />, { container: root, locale: 'zh-CN', taskCache: true });
     const headingCount = () => view.container.querySelector('#project-section-panel-tasks .project-section-heading .task-pause-count');
-    await waitFor(() => expect(screen.getByRole('button', { name: /查看受阻任务/ })).toHaveTextContent('6 受阻'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^6 受阻$/ })).toHaveTextContent('6 受阻'));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
     await waitFor(() => expect(headingCount()).toHaveTextContent('6 受阻'));
     const expectPausedTasks = (numbers: number[]) => {
@@ -163,8 +167,16 @@ describe('paused task discovery', () => {
     expect(headingCount()).toHaveTextContent('2 受阻');
     expectPausedTasks([2, 3]);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    expect(screen.getByRole('button', { name: /查看受阻任务/ })).toHaveTextContent('6 受阻');
+    const overviewBadge = screen.getByRole('button', { name: /^6 受阻$/ });
+    expect(overviewBadge).toHaveTextContent('6 受阻');
+    fireEvent.click(overviewBadge);
+    const overviewMenu = screen.getByRole('menu', { name: '受阻任务' });
+    expect(within(overviewMenu).getAllByRole('menuitem').map(row => row.textContent)).toEqual(
+      [1, 2, 3, 4, 6, 100].map(number => expect.stringContaining(`Task ${number}`)));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(headingCount()).toHaveTextContent('2 受阻');
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('Other person');
     await selectAssignee('所有负责人');
     expect(headingCount()).toHaveTextContent('6 受阻');
   });
@@ -192,7 +204,7 @@ describe('paused task discovery', () => {
     installGraphMeasurements();
     const value = snapshot([summary(1, { status: 'done', properties: { paused: true } }), summary(2, { dependsOn: [id(1)] })]);
     const onOpenTask = vi.fn();
-    const view = renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+    const view = renderWithLocale(<ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en', taskCache: true });
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
     view.rerender(workspace(value, 'chains', id(1)));
@@ -222,17 +234,22 @@ describe('paused task discovery', () => {
     const onOpenTask = vi.fn();
     const overview = (items: TaskSummary[]) => {
       const value = snapshot(items);
-      return <ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
+      return <ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [], BigInt(Date.parse(time)) * 1_000_000n)}
         pagination={{ page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />;
     };
     const view = renderWithLocale(overview(tasks), { locale: 'en' });
-    expect(screen.getByRole('button', { name: 'Open blocked task: Task 2' })).toHaveTextContent('1 blocked');
+    expect(screen.getByRole('button', { name: /blocked$/ })).toHaveTextContent('1 blocked');
     view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: 'done' } : task)));
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
     view.rerender(overview(tasks.map((task) => task.id === id(2) ? { ...task, status: reopenedStatus } : task)));
-    const entry = screen.getByRole('button', { name: 'Open blocked task: Task 2' });
+    const entry = screen.getByRole('button', { name: /blocked$/ });
     fireEvent.click(entry);
+    expect(onOpenTask).not.toHaveBeenCalled();
+    const menu = screen.getByRole('menu', { name: 'Blocked tasks' });
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(1);
+    fireEvent.click(within(menu).getByRole('menuitem'));
     expect(onOpenTask).toHaveBeenCalledWith(id(2), entry);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('counts the complete ordinary chain but excludes a visible external prerequisite', async () => {
@@ -251,16 +268,21 @@ describe('paused task discovery', () => {
     expect(within(root).getByText('1 blocked')).toBeVisible();
   });
 
-  it('opens a specific paused task from the complete overview count without altering the seven status cards', () => {
+  it('opens the selected non-first paused task from the complete overview menu without altering the seven status cards', () => {
     const value = snapshot();
     const onOpenTask = vi.fn();
-    renderWithLocale(<ProjectOverview snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
+    renderWithLocale(<ProjectOverview active pausedTasks={pausedTasks(value)} onPausedFocusFallback={noop} snapshot={value} progress={overviewProgress(value.index, [id(1)], [id(3), id(4), id(5)], BigInt(Date.parse(time)) * 1_000_000n)}
       pagination={{ page: 1, pageCount: 2, total: 2, start: 1, end: 1, onPageChange: noop }} onNavigate={noop} onOpenTask={onOpenTask} />, { locale: 'en' });
     expect(document.querySelectorAll('.stats .stat')).toHaveLength(7);
-    const open = screen.getByRole('button', { name: 'Open blocked task: Task 2' });
+    const open = screen.getByRole('button', { name: /blocked$/ });
     expect(open).toHaveTextContent('2 blocked');
     fireEvent.click(open);
-    expect(onOpenTask).toHaveBeenCalledWith(id(2), open);
+    expect(onOpenTask).not.toHaveBeenCalled();
+    const rows = within(screen.getByRole('menu', { name: 'Blocked tasks' })).getAllByRole('menuitem');
+    expect(rows.map(row => row.textContent)).toEqual([expect.stringContaining('Task 2'), expect.stringContaining('Task 3')]);
+    fireEvent.click(rows[1]!);
+    expect(onOpenTask).toHaveBeenCalledWith(id(3), open);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });
 

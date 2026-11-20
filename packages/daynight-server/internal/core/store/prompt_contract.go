@@ -22,8 +22,8 @@ type PromptSnapshot interface {
 }
 
 type PromptReader interface {
-	PromptMetadata(context.Context, string, model.PromptScope, string) (PromptMetadata, error)
-	PromptText(context.Context, string, model.PromptScope, string) (string, error)
+	PromptMetadata(context.Context, model.PromptPurpose, string, model.PromptScope, string) (PromptMetadata, error)
+	PromptText(context.Context, model.PromptPurpose, string, model.PromptScope, string) (string, error)
 	PromptWorkerExists(context.Context, string, string) error
 }
 
@@ -33,8 +33,8 @@ type PromptWriter interface {
 
 type PromptWriteScope interface {
 	PromptReader
-	PromptResource(context.Context, string, model.PromptScope, string) (model.PromptResource, error)
+	PromptResource(context.Context, model.PromptPurpose, string, model.PromptScope, string) (model.PromptResource, error)
 	LockPromptProject(context.Context, model.Principal, string) error
-	CreatePrompt(context.Context, string, model.PromptScope, string, string) (model.PromptResource, error)
-	UpdatePrompt(context.Context, string, model.PromptScope, string, int64, int64, string) (model.PromptResource, error)
+	CreatePrompt(context.Context, model.PromptPurpose, string, model.PromptScope, string, string) (model.PromptResource, error)
+	UpdatePrompt(context.Context, model.PromptPurpose, string, model.PromptScope, string, int64, int64, string) (model.PromptResource, error)
 }

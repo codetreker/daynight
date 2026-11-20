@@ -1,7 +1,7 @@
 import type { PauseMessages } from '../pause';
 
 export const pause: PauseMessages = {
-  label: 'Blocked', count: (count) => `${count} blocked`, openTask: (title) => `Open blocked task: ${title}`, listTitle: 'Blocked tasks', truncated: 'Title truncated',
+  label: 'Blocked', count: (count) => `${count} blocked`, listTitle: 'Blocked tasks', truncated: 'Title truncated',
   unpause: 'Unblock', unpausing: 'Unblocking…', unavailable: 'Task changes are unavailable until the current task details and access can be confirmed.',
   confirmed: 'The task is unblocked.',
   conflict: 'The task changed. Check its current blocked state before trying again.',

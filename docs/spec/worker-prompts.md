@@ -1,6 +1,6 @@
 # Worker 个人 prompt
 
-三层 prompt 分别归属当前用户、当前用户与项目、当前用户与 Worker。项目普通成员可以编辑自己的项目 prompt；它不是共享项目设置。服务端按认证用户隔离正文。Worker 的配置报告可以在同一次响应中获取指定层的正文，不授予任务执行资格。实现机制见[设计](../design/worker-prompts.md)。
+开发 Worker 与 Reviewer 各有三层独立的个人 prompt，分别归属当前用户、当前用户与项目、当前用户与 Worker。项目普通成员可以编辑自己的项目 prompt；它不是共享项目设置。服务端按认证用户和用途隔离正文与版本。Worker 的配置报告可以在同一次响应中获取指定层的开发 prompt，不授予任务执行资格。实现机制见[设计](../design/worker-prompts.md)。
 
 ## 编辑资源
 
@@ -9,6 +9,9 @@
 | GET、HEAD、PUT | `/api/v1/me/worker-prompt` | 当前用户 |
 | GET、HEAD、PUT | `/api/v1/me/projects/{projectId}/worker-prompt` | 当前用户可访问的项目 |
 | GET、HEAD、PUT | `/api/v1/me/workers/{workerId}/prompt` | 当前用户的已注册 Worker |
+| GET、HEAD、PUT | `/api/v1/me/reviewer-prompt` | 当前用户的 Reviewer prompt |
+| GET、HEAD、PUT | `/api/v1/me/projects/{projectId}/reviewer-prompt` | 当前用户可访问的项目的 Reviewer prompt |
+| GET、HEAD、PUT | `/api/v1/me/workers/{workerId}/reviewer-prompt` | 当前用户的已注册 Worker 的 Reviewer prompt |
 
 路径 UUID 必须规范，禁止查询参数。Worker 不要求在线或近期报告。PAT 和浏览器会话沿用现有认证；Cookie 写入要求精确主站 Origin。认证响应带 `Daynight-User-ID` 和 `Cache-Control: no-store`；错误带 requestId。其他方法返回 405 和 `Allow: GET, HEAD, PUT`。项目不存在、删除或失权以及 Worker 不存在或不属于当前用户返回 404；未配置不返回 404。
 
@@ -19,6 +22,8 @@ PUT 必须且只能提供 `{expectedUserId,revision,text}`。expectedUserId 为�
 Web 编辑器在身份准入暂停时保留正文和草稿。保存准备阶段被取消时不派发；已派发但未取得可信回执时结果未知，需要按既有核对流程处理，取消不表示服务端回滚。可信确认结束本地保存等待，但正文发布仍受身份及项目权限准入约束；恢复后不能用旧回执覆盖较新的本地编辑，也不能仅凭等待结束授权新保存。
 
 正文原样保存，不 trim 或解释。允许空、多行、普通空白及标记；拒绝无效 UTF-8、孤立 surrogate、NUL、除 TAB/LF/CR 外的 C0、DEL 和 C1 控制字符。严格 JSON 拒绝重复、未知、缺失或 null 字段、错误类型和尾随数据。完整 PUT JSON 上限 1 MiB，超过返回 413 `payload_too_large`；其他非法输入返回 400 `invalid_input`。事务结果未知不能当作未写入，读取只能核对当前事实，不能证明原请求已提交。
+
+Reviewer 的每层正文另有 32,768 字节上限，按解码后的 UTF-8 正文计算，空白和换行计入，JSON 转义不计入。超限返回 400 `invalid_input`，不改变正文或版本。开发 prompt 的限制不变。两种用途各自读写、递增版本和清空；返回的 `scope` 仍为逻辑层级。
 
 ## 配置报告同步
 
