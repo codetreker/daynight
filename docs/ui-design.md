@@ -30,8 +30,10 @@ numeric fallbacks. The browser controls the root size, and the body uses the
 interface role as its baseline. Reading text should use a 1.75 line height;
 controls and lists should use 1.5. Keep roles consistent across viewport widths:
 wrap, rearrange, or scroll content instead of shrinking text. Preserve existing
-touch target dimensions and the 16 CSS px minimum on touch fields and task
-filters through the shared `--text-touch-field` size (`max(1rem, 16px)`).
+touch target dimensions and the 16 CSS px minimum on touch fields and coarse-pointer
+task filters through the shared `--text-touch-field` size (`max(1rem, 16px)`).
+Project task filters retain the interface role on narrow fine-pointer screens
+while preserving their touch-sized targets.
 Terminal text uses `--text-terminal` (12px at a 16px root) as its base and retains independent scaling; external diagrams retain
 their own rendering boundary. Any necessary first-party special size belongs
 in the shared definitions with its reason.
