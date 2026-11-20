@@ -32,21 +32,22 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type Routes struct {
-	history              HistoryReader
-	service              serviceCalls
-	auth                 *authhttp.RequestAuthentication
-	logger               *slog.Logger
-	instance             string
-	pingInterval         time.Duration
-	mutex                sync.Mutex
-	closing              bool
-	reserved             int
-	connections          map[*websocket.Conn]context.CancelFunc
-	active               sync.WaitGroup
-	drained              chan struct{}
-	drainErr             error
-	userChannelAdmission UserChannelAdmission
-	readContext          ReadContextBinder
+	history               HistoryReader
+	service               serviceCalls
+	auth                  *authhttp.RequestAuthentication
+	logger                *slog.Logger
+	instance              string
+	pingInterval          time.Duration
+	mutex                 sync.Mutex
+	closing               bool
+	reserved              int
+	connections           map[*websocket.Conn]context.CancelFunc
+	active                sync.WaitGroup
+	drained               chan struct{}
+	drainErr              error
+	userChannelAdmission  UserChannelAdmission
+	readContext           ReadContextBinder
+	scopedImageOccurrence bool
 }
 
 // UserChannelAdmission binds a handshake's authenticated identity to an
@@ -63,6 +64,13 @@ func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger 
 		requestAuth = auth.RequestAuthentication
 	}
 	routes := newRoutes(callsFromService(s), requestAuth, logger)
+	if execution := s.ScopedCommandExecution(); execution != nil {
+		// Bind the guarded execution itself; an independently replaced Service
+		// execution must not widen these routes.
+		routes.service.GetImageOccurrence = execution.GetImageOccurrence
+		routes.service.RetryImageOccurrence = execution.RetryImageOccurrence
+		routes.scopedImageOccurrence = true
+	}
 	if len(history) > 0 {
 		routes.history = history[0]
 	}
@@ -79,10 +87,20 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 // RegisterRoutesWithProducerObserver records the producer routes as they are
 // registered. Other Session operations have their own admission owners.
 func (h *Routes) RegisterRoutesWithProducerObserver(mux *http.ServeMux, observe func(ProducerRoute)) {
+	h.registerRoutes(mux, observe, nil)
+}
+
+// RegisterRoutesWithImageOccurrenceObserver records occurrence admission on
+// the actual registrations, including the implicit HEAD route.
+func (h *Routes) RegisterRoutesWithImageOccurrenceObserver(mux *http.ServeMux, observe func(ImageOccurrenceRoute)) {
+	h.registerRoutes(mux, nil, observe)
+}
+
+func (h *Routes) registerRoutes(mux *http.ServeMux, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux, observe)
 	h.registerArchiveRoutes(mux, observe)
-	h.registerImageRoutes(mux, observe)
+	h.registerImageRoutes(mux, observe, observeOccurrence)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		if _, err := httpx.QueryValues(r); err != nil {
 			h.Failure(w, r, err)

@@ -285,10 +285,9 @@ schema 与资源绑定。用户通道在握手及每次投递前复核当前权�
 后续投递并关闭连接、释放资源；网络 I/O 不持有凭据事务。能力查询、生产者
 与命令入口保留各自的协议和准入责任。
 
-图片 occurrence 状态读取可能结算重试或调度复制，而 `retry_source` 另需
-`session:control`，主动重试还返回完整状态。在完整图片准入接入前，scoped
-装配对 PAT 的状态读取和重试在业务操作前失败关闭；Cookie 和固定 OAuth API
-profile 保持原有规则。图片状态及重试的完整权限与结算由图片准入实现负责。
+图片 occurrence 的状态和重试使用下文的图片准入。只装配 scoped 读取而未
+安装事务内命令准入时，PAT 的状态读取和重试在业务操作前失败关闭；Cookie 和
+固定 OAuth API profile 保持原有规则。
 
 ## Worker 报告与检查准入
 
@@ -353,6 +352,21 @@ scoped 命令服务显式装配后使用这些能力，原生产装配保持不�
 Execution；替换服务的公开执行字段不会改变该入口实际调用的实例。
 启用时，`NewScopedCommandsAndProducer` 在同一 Session 服务装配命令和
 生产者准入；各自的 scoped 构造入口只安装其对应的规则。
+
+## Session 图片出现状态和重试
+
+图片出现状态读取在原 Session 资源准入后、结算前检查 `session:read`。已有
+attempt 的完成结果仍按原记录结算，已验证的 copying 继续由原 Controller
+生产者及 fence 负责；状态读取不会创建新来源请求或替换 locator。只有具备
+`session:control` 且符合原业务条件时才返回 `retry_source`。控制权限不足
+仅隐藏该动作；身份和存储等其他授权错误仍向调用方返回。
+
+重试 POST 在写入、计费或生成完整回执前同时检查 `session:control` 和
+`session:read`。真实 Task 和 Test Session 路由及隐式 HEAD 在注册时记录这些
+权限和动态投影，原生产装配保持不变。具体权衡见
+[图片准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-image-scope.md)。
+scoped 路由绑定构造时安装了命令准入的原 Execution；仅读取装配不能放行
+这些受限凭据。
 
 ## Session 生产者准入
 

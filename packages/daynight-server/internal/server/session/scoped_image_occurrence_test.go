@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,10 +12,95 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/google/uuid"
 )
+
+type occurrenceAuthorizationSource struct{}
+
+type occurrenceRejectWriter struct{ failure error }
+
+func (w occurrenceRejectWriter) WriteSession(context.Context, func(store.SessionScope) error) (store.Completion, error) {
+	return store.Completion{Outcome: store.TransactionNotCommitted}, w.failure
+}
+
+func (occurrenceAuthorizationSource) SessionWrite(context.Context, store.SessionScope, model.Principal) (model.CredentialAuthorization, error) {
+	return model.CredentialAuthorization{}, nil
+}
+
+func TestScopedImageOccurrenceUsesGuardedExecution(t *testing.T) {
+	f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
+	engine := sessioncore.NewEngine(nil)
+	t.Cleanup(func() {
+		if err := engine.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	failure := errors.New("original execution writer")
+	service, err := sessionservice.NewScopedCommands(occurrenceRejectWriter{failure}, engine, occurrenceAuthorizationSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewRoutes(service, nil, f.routes.logger)
+	if !h.scopedImageOccurrence {
+		t.Fatal("guarded execution not installed")
+	}
+	service.Execution = nil
+	if _, err := h.service.GetImageOccurrence(t.Context(), f.native, "", "", f.session, uuid.NewString()); !errors.Is(err, failure) {
+		t.Fatalf("status lost its original execution: %v", err)
+	}
+	if _, err := h.service.RetryImageOccurrence(t.Context(), f.native, "", "", f.session, uuid.NewString()); !errors.Is(err, failure) {
+		t.Fatalf("retry lost its original execution: %v", err)
+	}
+	legacy := NewRoutes(sessionservice.New(nil, engine), nil, f.routes.logger)
+	if legacy.scopedImageOccurrence {
+		t.Fatal("unguarded execution accepted")
+	}
+	h.auth = f.routes.auth
+	if err := h.EnableScopedSessionReads(func(r *http.Request, _ model.Principal) (context.Context, error) { return r.Context(), nil }, func(*http.Request, model.Principal) (func(context.Context, string, string, string) error, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	image := uuid.NewString()
+	reads, retries := 0, 0
+	h.service.GetImageOccurrence = func(_ context.Context, p model.Principal, _, _, _, id string) (sp.ImageOccurrenceStatus, error) {
+		reads++
+		if p != f.native || id != image {
+			t.Error("status identity changed")
+		}
+		return sp.ImageOccurrenceStatus{ImageID: id, Revision: "1", State: "failed", Action: "none", Error: &sp.ImageError{Code: "invalid_image", Message: "failed"}}, nil
+	}
+	h.service.RetryImageOccurrence = func(_ context.Context, p model.Principal, _, _, _, id string) (sp.ImageOccurrenceRetryReceipt, error) {
+		retries++
+		if p != f.native || id != image {
+			t.Error("retry identity changed")
+		}
+		return sp.ImageOccurrenceRetryReceipt{}, nil
+	}
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	path := "/api/v1/test-sessions/" + f.session + "/image-occurrences/" + image
+	for _, req := range []struct{ method, path, body string }{{"GET", path, ""}, {"POST", path + "/retry", `{}`}} {
+		r := httptest.NewRequest(req.method, req.path, strings.NewReader(req.body))
+		r.Header.Set("Authorization", "Bearer native-secret")
+		r.Header.Set("Daynight-Session-Content-Revision", "2")
+		if req.body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", req.method, w.Code, w.Body)
+		}
+	}
+	if reads != 1 || retries != 1 {
+		t.Fatalf("calls: %d %d", reads, retries)
+	}
+}
 
 func TestScopedImageOccurrenceRoutesKeepFixedProfilesAndClosePAT(t *testing.T) {
 	for _, profile := range []string{"pat", "cookie", "api", "legacy-pat"} {
