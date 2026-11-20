@@ -1330,8 +1330,10 @@ tests and fixtures do not. Server inputs also select the independent Go API
 integration job. Production Web source, resources and build configuration, root
 Node inputs and dependency patches select API integration because its production
 Server embeds the resulting Web bundle. Root Node inputs and patches select CLI,
-Web and product E2E as well, while preserving the Go module job's directory
-ownership. CLI-only changes do not select API integration. Documentation and
+Web, Mobile and product E2E as well, while preserving the Go module job's
+directory ownership. Mobile package inputs select only Mobile because API
+integration and product E2E do not consume its bundles. CLI-only changes do
+not select API integration. Documentation and
 instruction exclusions remain effective inside directories, except for bundled
 CLI source resources. Deployment changes select Web and do not become API or
 product E2E inputs merely because their environments use Docker.
@@ -1355,7 +1357,11 @@ reconciliation step retains original command and cleanup failures; it uploads
 only safe API build/result/log evidence. The
 [API integration decision](../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
 owns the scheduling and build-input rationale. Web quality owns full
-typechecking, harness, production Docker Web build and coverage. Product E2E
+typechecking, harness, production Docker Web build and coverage. The independent
+Linux `verify-mobile` job waits only for detection, installs the mobile package
+from the frozen workspace lockfile, and checks TypeScript, Expo SDK dependency
+compatibility and Metro bundle export for iOS and Android. Native compilation
+and device interaction are outside this check. Product E2E
 waits only for detection and prepares its own Node.js, pnpm, Go, Chromium,
 database and complete auth system.
 It rebuilds every runtime product from the checked-out source, even on a
@@ -1371,8 +1377,8 @@ failures stay observable. Uploads include only `.tmp/product-e2e/*/results/**`
 and `*/logs/**`, with 30-day retention.
 
 Final `checks` wait for every job in that workflow. Failure and cancellation are
-rejected; selected CLI, Go module, startup/shutdown, API integration, Web quality
-and product E2E jobs must equal `success`, so an unexpected skip cannot pass their
+rejected; selected CLI, Go module, startup/shutdown, API integration, Web quality,
+Mobile and product E2E jobs must equal `success`, so an unexpected skip cannot pass their
 gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.

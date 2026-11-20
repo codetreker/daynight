@@ -405,8 +405,9 @@ preserves the source boundary and normal gates.
 | Go tests, fixtures and validation tooling | Go module, Go server startup & shutdown and Go API integration |
 | Web production source, resources and build inputs | Web, Go API integration and product E2E |
 | Web tests, other Web validation tooling and `deployment/` | Web |
+| `packages/mobile/` source, app configuration, dependencies and tooling | Mobile |
 | `packages/e2e_tests/` code, fixtures, scenarios and configuration | Product E2E |
-| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web, Go API integration and product E2E |
+| Root `package.json`, lockfile, workspace configuration, `.npmrc`, and `patches/` | CLI, Web, Mobile, Go API integration and product E2E |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
 | CI workflow, routing and unclassified paths | Every module, Go API integration and product E2E |
 

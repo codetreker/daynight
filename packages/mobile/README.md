@@ -40,5 +40,7 @@ pnpm --filter @codetreker/daynight-mobile bundle
 
 The `bundle` command writes Metro output for both platforms to `.tmp/bundles/`
 under this package. It does not compile native code or verify device behavior.
+The independent `verify (mobile)` CI job runs these checks when selected by the
+[repository routing rules](../../README.md#ci-selection).
 For a runtime smoke check, open the app on each platform, confirm it starts on
 My Work, switch to Projects and Assistants, and return to My Work.
