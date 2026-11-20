@@ -65,6 +65,9 @@ describe('graph-local prerequisite inspection', () => {
     expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(2);
     expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(0);
     view.rerender(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
+    await ready(view.container, 2);
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '收起到概览' }));
     await ready(view.container);
     expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(3);
   });
