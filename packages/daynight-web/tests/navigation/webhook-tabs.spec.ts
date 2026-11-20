@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { id, install, now, teamId, userId } from './webhook-select-fixture';
 
@@ -224,4 +226,42 @@ test('delivery generation filter scales in the actual dialog', async ({ page }) 
   await page.addStyleTag({ content: 'html { font-size: 24px; }' });
   await page.locator('.delivery-row').click();
   await expect(page.locator('.delivery-generation-filter input')).toHaveCSS('font-size', '24px');
+});
+
+test('webhook navigation reflows and remains keyboard accessible at 200% browser zoom', async ({ playwright }, info) => {
+  const temporary = fileURLToPath(new URL('../../../../.tmp/webhook-tabs/', import.meta.url));
+  await mkdir(temporary, { recursive: true });
+  const profile = await mkdtemp(`${temporary}/zoom-profile-`);
+  try {
+    await mkdir(`${profile}/Default`);
+    // Chromium stores native page zoom as a logarithmic level under partition key "x":
+    // https://github.com/chromium/chromium/blob/114f7fa6d7fe2cfe3860cc634d4751fc84fc7ab5/chrome/browser/ui/zoom/chrome_zoom_level_prefs.cc#L32-L38
+    await writeFile(`${profile}/Default/Preferences`, JSON.stringify({ partition: { default_zoom_level: { x: Math.log(2) / Math.log(1.2) } } }));
+    const executable = process.env.DAYNIGHT_BROWSER_EXECUTABLE;
+    const context = await playwright.chromium.launchPersistentContext(profile, {
+      channel: 'chromium', headless: true, viewport: null, args: ['--window-size=1280,900', '--force-device-scale-factor=1'],
+      ...(executable === undefined ? {} : { executablePath: executable }),
+    });
+    try {
+      const page = await context.newPage();
+      const state = await setup(page, 'en', { count: 120 });
+      await page.goto(`http://127.0.0.1:4193${address('personal', 'deliveries')}`);
+      const zoom = await page.evaluate(() => ({ ratio: devicePixelRatio, width: innerWidth, screenWidth: outerWidth, cssZoom: getComputedStyle(document.documentElement).zoom, visualScale: visualViewport!.scale }));
+      expect(zoom.ratio).toBeCloseTo(2, 1); expect(zoom.width).toBeLessThan(800);
+      expect(zoom.cssZoom).toBe('1'); expect(zoom.visualScale).toBe(1);
+      await selectedVisible(page, 'deliveries');
+      await expect(page.locator('.detail-name h2')).toBeVisible();
+      expect(await page.locator('.detail-name h2').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+      expect((await geometry(track(page))).outerOverflow).toBeLessThanOrEqual(0);
+      await tab(page, 'deliveries').focus();
+      for (const [key, expected] of [['Home', 'configuration'], ['ArrowRight', 'subscriptions'], ['End', 'deliveries']] as const) {
+        await page.keyboard.press(key); await selectedVisible(page, expected); await expect(tab(page, expected)).toBeFocused();
+      }
+      const tabGeometry = await geometry(track(page));
+      expect(new Set(tabGeometry.tabs.map(item => item.top)).size).toBe(1);
+      expect(state.writes).toEqual([]); expect(state.unexpected).toEqual([]);
+      await info.attach('browser-200-percent-zoom', { body: JSON.stringify({ zoom, tabGeometry }), contentType: 'application/json' });
+      await page.screenshot({ path: info.outputPath('browser-200-percent-webhooks.png') });
+    } finally { await context.close(); }
+  } finally { await rm(profile, { recursive: true, force: true }); }
 });
