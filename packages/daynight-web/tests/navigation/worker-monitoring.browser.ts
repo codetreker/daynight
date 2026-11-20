@@ -1,13 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerId, workerPage, workerSummary } from '../helpers/workers';
 import { configurationResource } from '../helpers/worker-configuration';
+import type { MonitoringActivity } from '../../src/api/worker-monitoring';
 
 const target = workerId(1), projectId = workerId(301), taskId = workerId(201), personalId = workerId(90);
-const scope = { kind: 'claim', projectId, taskId, claimId: workerId(401) };
+const scope = { kind: 'claim' as const, projectId, taskId, claimId: workerId(401) };
 const longTitle = `Long task ${'monitoring-'.repeat(28)}`;
 const longPath = `../retained/${'工作目录-long-path-'.repeat(18)}task`;
 const longWorkerName = `Worker ${'long-name-'.repeat(12)}`;
-const association = { kind: 'task', projectName: 'Monitoring project', title: longTitle };
+const association = { kind: 'task' as const, projectName: 'Monitoring project', title: longTitle };
+const cleanupActivity = (n: number, overrides: Partial<MonitoringActivity> = {}): MonitoringActivity => ({ operationId: workerId(n), kind: 'cleanup', phase: 'observation', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME, ...overrides });
 const retainedOwners = Array.from({ length: 5 }, (_, index) => ({
   scope: { kind: 'claim', projectId, taskId: workerId(202 + index), claimId: workerId(402 + index) },
   association: { kind: 'task', projectName: 'Monitoring project', title: index === 0 ? longTitle : `Retained task ${index + 1}` },
@@ -26,7 +28,7 @@ const retainedObservation = () => ({
 });
 const install = async (page: Page, retained = false, locale = 'zh-CN', partial = false) => {
   const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle;
-  const state = { fail: false, detailFail: false, activity: true, detailReads: 0, monitoringReads: 0, detail };
+  const state = { fail: false, detailFail: false, activity: true, activities: null as readonly MonitoringActivity[] | null, partial, detailReads: 0, monitoringReads: 0, detail };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -47,12 +49,13 @@ const install = async (page: Page, retained = false, locale = 'zh-CN', partial =
     if (path === `/api/v1/me/workers/${target}`) { state.detailReads++; return state.detailFail ? send(failure, 503) : send(state.detail, 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
-    if (path === `/api/v1/me/workers/${target}/monitoring`) { state.monitoringReads++; return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: partial ? 'partial' : 'complete', permissionProjection: partial ? 'restricted' : 'current', data: {
+    if (path === `/api/v1/me/workers/${target}/monitoring`) { state.monitoringReads++; return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: state.partial ? 'partial' : 'complete', permissionProjection: state.partial ? 'restricted' : 'current', data: {
       runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
       admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
-      currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: null, detailCoverage: partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
+      currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: null, detailCoverage: state.partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
       ...(retained ? retainedObservation() : {}),
+      ...(state.activities === null ? {} : { activities: state.activities }),
     } }); }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -60,6 +63,62 @@ const install = async (page: Page, retained = false, locale = 'zh-CN', partial =
 };
 
 const releaseTitle = 'Review the cross-platform release checklist and confirm the failing tests';
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`task cleanup filtering and links at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, locale);
+  const otherActivities = [
+    cleanupActivity(610, { kind: 'execution', phase: 'waiting', association: { ...association, title: 'Execution waiting only' } }),
+    cleanupActivity(611, { kind: 'maintenance', phase: 'reconciliation', scope: { kind: 'worker' }, association: null }),
+    cleanupActivity(612, { scope: { kind: 'worker' }, association: null }),
+    cleanupActivity(613, { scope: { kind: 'project', projectId }, association: { kind: 'project', projectName: 'Project cleanup only' } }),
+  ];
+  state.activities = [
+    otherActivities[0]!, cleanupActivity(614), otherActivities[1]!,
+    cleanupActivity(615, { phase: 'archive', status: 'running', waitReason: null, association: { ...association, title: 'Running task cleanup' } }),
+    ...otherActivities.slice(2),
+    cleanupActivity(616, { association: { kind: 'labels-omitted' }, scope: { ...scope, taskId: workerId(207) } }),
+  ];
+  await page.goto(`/workers/${target}`);
+  const panel = page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..');
+  const rows = panel.locator('.monitoring-activities > li');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).getByRole('link')).toHaveText(longTitle);
+  await expect(rows.nth(0)).toContainText(locale === 'zh-CN' ? '清理 · 观测' : 'Cleanup · Observation');
+  await expect(rows.nth(0)).toContainText(locale === 'zh-CN' ? '重试退避' : 'Retry backoff');
+  await expect(rows.nth(1).getByRole('link')).toHaveText('Running task cleanup');
+  await expect(rows.nth(1)).toContainText(locale === 'zh-CN' ? '运行中' : 'Running');
+  const fallback = rows.nth(2).getByRole('link');
+  await expect(fallback).toHaveText(`${locale === 'zh-CN' ? '任务' : 'Task'} · ${workerId(207)}`);
+  await expect(fallback).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${workerId(207)}`));
+  await expect(rows.nth(2)).toContainText(locale === 'zh-CN' ? '标签已省略' : 'Labels omitted');
+  await expect(panel).not.toContainText('Execution waiting only'); await expect(panel).not.toContainText('Project cleanup only');
+  await expect(page.locator('.worker-task-table').getByRole('link', { name: longTitle })).toBeVisible();
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '调度阶段' : 'Scheduler phase' })).toBeVisible();
+  await expect(page.locator('.monitoring-issue')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  if (width <= 390) expect(await rows.nth(0).getByRole('link').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  await panel.screenshot({ path: testInfo.outputPath('tasks-in-cleanup.png') });
+  state.fail = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  const alert = page.getByRole('alert').filter({ hasText: locale === 'zh-CN' ? '运行监控更新失败' : 'Runtime monitoring could not be updated' });
+  await expect(alert).toContainText(locale === 'zh-CN' ? '保留上次确认的观测。' : 'The last confirmed observation remains visible.');
+  await expect(rows).toHaveCount(3);
+  state.fail = false;
+  await alert.getByRole('button', { name: locale === 'zh-CN' ? '重试' : 'Retry' }).click(); await expect(alert).toHaveCount(0);
+  await fallback.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${workerId(207)}`));
+  await page.goBack(); await expect(rows).toHaveCount(3);
+  state.activities = otherActivities;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(panel).toContainText(locale === 'zh-CN' ? '没有清理中的任务。' : 'No tasks in cleanup.');
+  await expect(rows).toHaveCount(0);
+  state.partial = true;
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect(panel).toContainText(locale === 'zh-CN' ? '本次观测没有可见的清理任务。' : 'No visible cleanup tasks in this observation.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
 const lineCount = (selector: string) => (page: Page) => page.locator(selector).first().evaluate(element => {
   const range = document.createRange(); range.selectNodeContents(element);
   return new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top))).size;
@@ -210,7 +269,7 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   const after = await issue.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
   state.activity = false;
   await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
-  await expect(page.getByText('未报告活动。')).toBeVisible(); await expect(issue).toHaveAttribute('open', '');
+  await expect(page.getByText('没有清理中的任务。')).toBeVisible(); await expect(issue).toHaveAttribute('open', '');
   await expect(issue.locator('summary')).toBeFocused(); expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(longPath);
   state.fail = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
   const alert = page.getByRole('alert').filter({ hasText: '运行监控更新失败' }); await expect(alert).toBeVisible();
@@ -260,8 +319,9 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await expect(retained.locator('xpath=following-sibling::dd[1]')).toHaveText('5');
   await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '容量责任' : 'Capacity responsibilities' })).toHaveCount(0);
   await expect(page.locator('.monitoring-reservations')).toHaveCount(0);
-  expect(await page.locator('.monitoring-grid').evaluate(element => Boolean(element.nextElementSibling?.querySelector('.monitoring-activities')))).toBe(true);
-  await expect(page.locator('.monitoring-activities > li')).toHaveCount(1);
+  const cleanup = page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..');
+  await expect(cleanup).toContainText(locale === 'zh-CN' ? '没有清理中的任务。' : 'No tasks in cleanup.');
+  await expect(cleanup.locator('li')).toHaveCount(0);
   const issues = page.locator('.monitoring-issue'); await expect(issues).toHaveCount(5);
   for (const [index, owner] of retainedOwners.entries()) {
     const issue = issues.nth(index); await issue.locator('summary').click();
@@ -313,6 +373,6 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await expect(page.getByText(locale === 'zh-CN' ? '部分详情已省略。' : 'Some details were omitted.')).toBeVisible();
   await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '容量责任' : 'Capacity responsibilities' })).toHaveCount(0);
   await expect(page.locator('.monitoring-reservations')).toHaveCount(0);
-  expect(await page.locator('.monitoring-grid').evaluate(element => Boolean(element.nextElementSibling?.querySelector('.monitoring-activities')))).toBe(true);
+  await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..')).toContainText(locale === 'zh-CN' ? '本次观测没有可见的清理任务。' : 'No visible cleanup tasks in this observation.');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
