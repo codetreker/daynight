@@ -12,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -37,19 +38,40 @@ func (h *taskStepsHandler) decodeObject(w http.ResponseWriter, request *http.Req
 }
 
 func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
+	registerTaskStepsRoutes(mux, steps, auth, logger, nil)
+}
+
+type StepScopeRoute struct {
+	Pattern    string
+	Operations []scopepolicy.Operation
+	Fallback   bool
+}
+
+func registerTaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger, observe func(StepScopeRoute)) {
 	handler := newTaskStepsHandler(steps, logger)
+	handle := func(pattern string, handler http.HandlerFunc, operations ...scopepolicy.Operation) {
+		mux.HandleFunc(pattern, handler)
+		if observe != nil {
+			entry := StepScopeRoute{Pattern: pattern, Operations: operations, Fallback: len(operations) == 0}
+			observe(entry)
+			if strings.HasPrefix(pattern, "GET ") {
+				entry.Pattern = "HEAD " + strings.TrimPrefix(pattern, "GET ")
+				observe(entry)
+			}
+		}
+	}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
-	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, stepBotRefusal, handler.add)))
-	mux.HandleFunc("GET "+path, auth.Require(handler.get))
-	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("GET "+path+"/{stepId}", auth.Require(handler.get))
-	mux.HandleFunc("PATCH "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)))
-	mux.HandleFunc("DELETE "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.delete)))
-	mux.HandleFunc(path+"/{stepId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
-	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)))
-	mux.HandleFunc(path+"/{stepId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
-	mux.HandleFunc("PUT "+path+"/{stepId}/position", auth.Require(declaredBot(logger, stepBotRefusal, handler.move)))
-	mux.HandleFunc(path+"/{stepId}/position", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
+	handle("POST "+path, auth.Require(declaredBot(logger, stepBotRefusal, handler.add)), scopepolicy.StepWrite, scopepolicy.StepRead)
+	handle("GET "+path, auth.Require(handler.get), scopepolicy.StepRead)
+	handle(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	handle("GET "+path+"/{stepId}", auth.Require(handler.get), scopepolicy.StepRead)
+	handle("PATCH "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)), scopepolicy.StepWrite, scopepolicy.StepRead)
+	handle("DELETE "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.delete)), scopepolicy.StepWrite, scopepolicy.StepRead)
+	handle(path+"/{stepId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
+	handle("PUT "+path+"/{stepId}/status", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)), scopepolicy.StepWrite, scopepolicy.StepRead)
+	handle(path+"/{stepId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
+	handle("PUT "+path+"/{stepId}/position", auth.Require(declaredBot(logger, stepBotRefusal, handler.move)), scopepolicy.StepWrite, scopepolicy.StepRead)
+	handle(path+"/{stepId}/position", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 }
 
 func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -240,7 +262,7 @@ func stepsErrorResponse(err error) (int, api.Error) {
 			status = http.StatusUnauthorized
 		case "invalid_input":
 			status = http.StatusBadRequest
-		case "forbidden":
+		case "forbidden", "insufficient_scope":
 			status = http.StatusForbidden
 		case "not_found":
 			status = http.StatusNotFound
@@ -251,6 +273,9 @@ func stepsErrorResponse(err error) (int, api.Error) {
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
+			if fault.Code == "insufficient_scope" {
+				response.Code = "forbidden"
+			}
 			if fault.StepsLimit != nil {
 				limits := fault.StepsLimit
 				response.Details = &api.ErrorDetails{EncodedBytes: &limits.EncodedBytes, MaxEncodedBytes: &limits.MaxEncodedBytes}
@@ -267,6 +292,9 @@ func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.
 	}
 	httpx.CloseUnreadBody(w, request)
 	status, response := stepsErrorResponse(err)
+	if fault, pure := taskservice.TaskStepsFault(err); pure && fault.Code == "insufficient_scope" {
+		w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
+	}
 	cause := httpx.ErrorKind(err)
 	if response.Code == "internal_error" {
 		if _, business := httpx.KnownFault(err); business {

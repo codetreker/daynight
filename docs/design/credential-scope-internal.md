@@ -62,6 +62,29 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Steps 与讨论准入
+
+Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合，MCP 写响应
+也包含已有数据，因此写入需要 `step:write` 与 `step:read`。权限检查在原项目
+访问及写入角色检查后、读取 Steps 内容或修改之前执行；版本、排序、容量和
+事务完成语义保持原有规则。项目资源检查不隐含 `task:read` 或 `project:read`。
+
+讨论读取使用 `thread:read`，发帖和回复使用 `thread:post`。REST 原响应包含
+既有作者资料，因此还需要 `thread:read`；指定 `Daynight-Return: receipt-v1`
+时仅返回项目、任务和新消息 ID，并回显 header。MCP 按事务中的当前策略选择
+原消息响应或最小回执。项目访问、有效凭据和指定 claim 的真实执行归属仍分别
+检查。发帖在原 Thread 事务中读取当前策略，OAuth 按 grant、access 顺序锁定，
+与 grant 编辑保持互斥；读取使用原快照中的当前策略。失败继续区分确定未提交
+和提交结果未知。
+
+REST 的 Steps 集合及单项 GET（包括自动 HEAD）对应读取，集合 POST、单项
+PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执行业务。
+讨论 messages GET（包括自动 HEAD）对应读取，POST 对应发帖。MCP 的
+`task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
+`task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
+`task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
+复用原解析与资源检查，原产品装配保持不变。
+
 ## 账户与集成准入
 
 账户资料、Worker 与 Reviewer Prompt、用户可见用量及 GitHub 用户操作的
@@ -131,7 +154,7 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Steps、讨论、Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方

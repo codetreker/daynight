@@ -21,6 +21,30 @@ type threadOperations interface {
 	Post(context.Context, model.Principal, string, string, taskservice.CreateThreadMessage) (taskservice.ThreadMessageDocument, error)
 }
 
+type ScopedThreadOperations interface {
+	List(context.Context, model.CredentialAuthorization, string, string, taskservice.ThreadListRequest) (taskservice.ThreadPageDocument, error)
+	Post(context.Context, model.CredentialAuthorization, string, string, taskservice.CreateThreadMessage) (taskservice.ThreadMessageDocument, error)
+}
+
+type scopedThreadAdapter struct {
+	threads ScopedThreadOperations
+	auth    model.CredentialAuthorization
+}
+
+func (s scopedThreadAdapter) List(ctx context.Context, p model.Principal, project, task string, in taskservice.ThreadListRequest) (taskservice.ThreadPageDocument, error) {
+	if p != s.auth.Principal {
+		return taskservice.ThreadPageDocument{}, model.Unauthenticated(nil)
+	}
+	return s.threads.List(ctx, s.auth, project, task, in)
+}
+func (s scopedThreadAdapter) Post(ctx context.Context, p model.Principal, project, task string, in taskservice.CreateThreadMessage) (taskservice.ThreadMessageDocument, error) {
+	if p != s.auth.Principal {
+		return taskservice.ThreadMessageDocument{}, model.Unauthenticated(nil)
+	}
+	in.AutoReceipt = true
+	return s.threads.Post(ctx, s.auth, project, task, in)
+}
+
 type threadTools struct{ threads threadOperations }
 
 type threadReadInput struct {
@@ -55,6 +79,51 @@ func RegisterThreadTools(e *Entry, threads threadOperations) error {
 		return err
 	}
 	return RegisterTypedTool(e, byName["task_thread_post"], BudgetControl, h.post, "projectId", "taskId", "body", "replyTo", "claimId")
+}
+
+// RegisterScopedThreadTools keeps discovery unchanged and forwards the request's
+// authenticated policy to the shared Thread business operations.
+func RegisterScopedThreadTools(e *Entry, threads ScopedThreadOperations) error {
+	if e == nil || threads == nil {
+		return fmt.Errorf("thread tool dependencies are required")
+	}
+	var tools []*sdk.Tool
+	if err := json.Unmarshal(threadToolsJSON, &tools); err != nil {
+		return fmt.Errorf("decode Thread tools: %w", err)
+	}
+	byName := make(map[string]*sdk.Tool, len(tools))
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+	if err := registerTypedReadTool(e, byName["task_thread_read"], BudgetControl, func(ctx context.Context, actor RequestActor, in threadReadInput) (ToolResult, error) {
+		a, err := TagAuthorizationFromActor(ctx, actor)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return (&threadTools{threads: scopedThreadAdapter{threads, a}}).read(ctx, actor, in)
+	}, "projectId", "taskId", "beforeId", "afterId"); err != nil {
+		return err
+	}
+	if err := RegisterTypedTool(e, byName["task_thread_post"], BudgetControl, func(ctx context.Context, actor RequestActor, in threadPostInput) (ToolResult, error) {
+		a, err := TagAuthorizationFromActor(ctx, actor)
+		if err != nil {
+			return ToolResult{WriteOutcome: "not_committed", Phase: "prepare"}, err
+		}
+		result, err := (&threadTools{threads: scopedThreadAdapter{threads, a}}).post(ctx, actor, in)
+		if err == nil {
+			result.SuccessMetadata = true
+			result.Phase = "commit"
+		}
+		return result, err
+	}, "projectId", "taskId", "body", "replyTo", "claimId"); err != nil {
+		return err
+	}
+	if e.scopedTools == nil {
+		e.scopedTools = make(map[string]bool)
+	}
+	e.scopedTools["task_thread_read"] = true
+	e.scopedTools["task_thread_post"] = true
+	return nil
 }
 
 func (h *threadTools) read(ctx context.Context, actor RequestActor, in threadReadInput) (ToolResult, error) {

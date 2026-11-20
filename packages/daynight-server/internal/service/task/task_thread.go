@@ -21,7 +21,9 @@ type TaskThreads struct {
 		store.SnapshotReader
 		store.ThreadWriter
 	}
-	capturer Capturer
+	capturer  Capturer
+	admitRead func(store.ThreadCredential) error
+	admitPost func(store.ThreadCredential) error
 }
 
 func NewTaskThreads(database interface {
@@ -32,9 +34,11 @@ func NewTaskThreads(database interface {
 }
 
 type CreateThreadMessage struct {
-	Body    string
-	ReplyTo *string
-	ClaimID *string
+	Body        string
+	ReplyTo     *string
+	ClaimID     *string
+	Receipt     bool
+	AutoReceipt bool
 }
 
 type ThreadListRequest struct {
@@ -138,6 +142,11 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 		if err := threadPresence(presence); err != nil {
 			return err
 		}
+		if s.admitPost != nil {
+			if err := s.admitPost(credential); err != nil {
+				return err
+			}
+		}
 		actor, err := sourceActor(ctx, tx, principal)
 		if err != nil {
 			return err
@@ -179,7 +188,8 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 	}
 	var result ThreadPageDocument
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
+		credential, err := snapshot.CredentialDAO().Credential(ctx, principal)
+		if err != nil {
 			return threadCredentialError(err)
 		}
 		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
@@ -191,6 +201,11 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 		}
 		if err := threadPresence(presence); err != nil {
 			return err
+		}
+		if s.admitRead != nil {
+			if err := s.admitRead(credential); err != nil {
+				return err
+			}
 		}
 		page, encoded, err := threadcore.ReadPage(ctx, snapshot.TaskDAO(), taskID, pageRequest)
 		if err != nil {

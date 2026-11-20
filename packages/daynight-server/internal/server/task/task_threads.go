@@ -18,6 +18,7 @@ import (
 type taskThreadHandler struct {
 	threads ThreadService
 	logger  *slog.Logger
+	scoped  bool
 }
 
 func TaskThreadRoutes(mux *http.ServeMux, threads ThreadService, auth RouteAuthentication, logger *slog.Logger) {
@@ -103,6 +104,14 @@ func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, p
 		writeThreadError(w, request, logger, "admission", err)
 		return
 	}
+	if h.scoped {
+		values := request.Header.Values("Daynight-Return")
+		if len(values) > 1 || len(values) == 1 && values[0] != "receipt-v1" {
+			writeThreadError(w, request, logger, "admission", httpx.InvalidInput("invalid Daynight-Return"))
+			return
+		}
+		input.Receipt = len(values) == 1
+	}
 	document, err := h.threads.Post(request.Context(), principal, projectID, taskID, input)
 	if err != nil {
 		writeThreadError(w, request, logger, "append", err)
@@ -111,6 +120,9 @@ func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, p
 	logger = logger.With("message_id", document.Message.ID)
 	logger = threadExecutionLogger(logger, document.Message.Author.Execution)
 	logger.InfoContext(request.Context(), "thread message committed", "type", "resource", "component", "task_thread", "phase", "commit", "request_id", httpx.RequestID(request.Context()))
+	if input.Receipt {
+		w.Header().Set("Daynight-Return", "receipt-v1")
+	}
 	writeThreadJSON(w, request, logger, http.StatusCreated, document.JSON)
 }
 
