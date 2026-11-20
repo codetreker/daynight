@@ -126,3 +126,45 @@ test("a local fallback notice cannot discard an unrelated root stream", () => {
   stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} }); stream({ type: "message_stop" });
   expect(facts).toHaveLength(1);
 });
+
+test("synthetic refusal closure cannot commit before the delayed fallback notice", () => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  const stream = (event: unknown) => collector.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  stream({ type: "message_start", message: { ...event().message, usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+  stream({ type: "content_block_start", index: 0, content_block: { type: "text" } });
+  stream({ type: "message_delta", delta: { stop_reason: "refusal" }, usage: { input_tokens: 0 } });
+  stream({ type: "message_stop" });
+  expect(facts).toEqual([]);
+  collector.observe({ type: "system", subtype: "model_refusal_fallback" });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 60 } });
+  stream({ type: "message_stop" });
+  collector.observe(event());
+  expect(facts).toEqual([]); expect(gaps.length).toBeGreaterThan(0);
+  const refusal = { ...event(), message: { ...event().message, stop_reason: "refusal" } };
+  expect(mapClaudeUsageEvent(refusal)).toBeNull();
+  const isolated = createClaudeUsageCollector(value => facts.push(value), () => {});
+  isolated.observe(refusal); isolated.observe(event());
+  expect(facts).toEqual([]);
+  stream({ type: "message_start", message: { ...event().message, id: "msg_after_refusal" } });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} });
+  stream({ type: "message_stop" });
+  expect(facts).toHaveLength(1);
+  expect(mapClaudeUsageEvent(facts[0])?.sourceKey).toBe("claude-message-input-v1:msg_after_refusal");
+});
+
+test("complete new-ID retry retires a failed stream without accepting provisional wrappers", () => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  collector.observe({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { ...event().message, id: "msg_failed_stream" } } });
+  collector.observe({ ...event(), message: { ...event().message, id: "msg_failed_stream" } });
+  collector.observe({ ...event(), message: { ...event().message, id: "msg_provisional_retry", stop_reason: null } });
+  collector.observe({ ...event(), parent_tool_use_id: "child" });
+  collector.observe({ ...event(), message: { ...event().message, id: undefined } });
+  expect(facts).toEqual([]); expect(gaps).toEqual([]);
+  collector.observe(event());
+  collector.discard(); // The provider discards any unfinished stream on result.
+  expect(gaps).toEqual(["gap"]); expect(facts).toHaveLength(1);
+  expect(mapClaudeUsageEvent(facts[0])?.metrics.inputTokens).toBe("60");
+  expect(mapClaudeUsageEvent(facts[0])?.sourceKey).toBe("claude-message-input-v1:msg_native");
+});

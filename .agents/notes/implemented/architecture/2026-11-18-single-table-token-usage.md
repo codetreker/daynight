@@ -94,6 +94,10 @@ and commits at message_stop after a terminal stop_reason. Unfinished streams are
 discarded with a recovery gap on replacement, interruption, result, disconnect
 or shutdown; a child stream cannot terminate its parent. Complete non-streamed
 wrappers require their own terminal stop_reason and no aborted/error marker.
+A complete new-ID wrapper retires an unfinished stream with a recovery gap;
+the CLI consumes its streaming-fallback marker internally and cannot emit a
+tombstone when the failed stream produced no completed block. Same-ID wrappers
+cannot finalize a pending stream.
 
 CLI 2.1.247 can replace a message's model during server refusal fallback without
 changing its native ID, while filtering the internal fallback block from public
@@ -102,6 +106,9 @@ delta usage.iterations therefore invalidates the initial model's attribution.
 Collection discards and suppresses that message through subsequent deltas, stop
 and complete wrappers, recording a recovery gap until a new message_start.
 Explicitly local or child-agent notices leave the unrelated root stream intact.
+Client refusal fallback also synthesizes a refusal delta and stop before its
+public fallback notice. Refusal closures and wrappers therefore record a gap
+and suppress the old message immediately, including when no notice arrives.
 
 ## Alternatives
 
@@ -117,6 +124,13 @@ does not imply a stable model: server fallback can update the native message
 in place. Guessing a split or trusting its initial model would assign input to
 the wrong model. Suppressing an ambiguous source preserves honest partial
 coverage and avoids an irreversible immutable attribution.
+
+**Waiting for a public refusal-fallback notice before suppressing usage.** The
+CLI's synthetic refusal close can precede that notice, so provisional zeroes
+would already be immutable by the time suppression runs. Excluding refusal
+closures preserves the existing bounded collector and normal message-stop
+latency, at the cost of also excluding genuine refusals that cannot be
+distinguished from synthetic ones through the public SDK stream.
 
 **Measurements without execution coverage.** This cannot distinguish a complete
 empty execution from an unregistered or failed collector. A state row in the

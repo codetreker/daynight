@@ -25,7 +25,7 @@ export const mapClaudeUsageEvent = (input: unknown) => {
   if (event.type !== "assistant" || event.parent_tool_use_id !== null) return null;
   if (event.aborted === true || event.isApiErrorMessage === true || event.error !== undefined && event.error !== null) return null;
   const message = object(event.message), usage = object(message.usage);
-  if (!text(message.stop_reason, 128)) return null;
+  if (!text(message.stop_reason, 128) || message.stop_reason === "refusal") return null;
   if (!text(message.id, 232) || !text(message.model, 128)) throw new Error("collector_failed");
   const reasons = new Set(["subagent_scope_unknown"]);
   const nativeMetrics = {
@@ -65,9 +65,15 @@ export const createClaudeUsageCollector = (observe: (event: unknown) => void, ga
       if (wrapper.type === "assistant") {
         if (suppressed) return;
         if (wrapper.aborted === true || wrapper.error !== undefined && wrapper.error !== null || wrapper.isApiErrorMessage === true) { discard(); return; }
-        // A non-streamed complete message already carries its own terminal proof.
-        // Block wrappers have null stop_reason and cannot commit immutable usage.
-        if (!pending && text(object(wrapper.message).stop_reason, 128)) observe(wrapper);
+        // A failed stream can be replaced by an independently complete
+        // non-streamed retry without exposing the CLI's internal fallback marker.
+        // A same-ID block wrapper cannot finalize the pending stream.
+        const message = object(wrapper.message);
+        if (message.stop_reason === "refusal") { suppress(); return; }
+        if (text(message.stop_reason, 128) && text(message.id, 232) && (!pending || message.id !== pending.id)) {
+          discard();
+          observe(wrapper);
+        }
         return;
       }
       if (wrapper.type !== "stream_event") return;
@@ -81,6 +87,9 @@ export const createClaudeUsageCollector = (observe: (event: unknown) => void, ga
         pending = { id: message.id, model: message.model, usage: { input_tokens: usage.input_tokens, cache_read_input_tokens: usage.cache_read_input_tokens, cache_creation_input_tokens: usage.cache_creation_input_tokens }, stopReason: null };
       } else if (event.type === "message_delta") {
         const usage = object(event.usage), delta = object(event.delta);
+        // The CLI synthesizes a refusal close before forwarding its fallback
+        // notice. Its current input values are still provisional at that point.
+        if (delta.stop_reason === "refusal") { suppress(); return; }
         if (Array.isArray(usage.iterations) && usage.iterations.some(item => object(item).type === "fallback_message")) { suppress(); return; }
         if (suppressed) return;
         if (!pending) { gap(); return; }

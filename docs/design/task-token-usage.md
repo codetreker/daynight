@@ -217,7 +217,10 @@ message_delta 中存在且非 null 的输入项覆盖原值，未提供的项保
 immutable 事实。子代理流不结束 root 缓冲；缺少 start、完成证明、原生身份或模型时
 记录 native_recovery_gap，不猜关联。新的 start 覆盖未完成消息、结果返回、取消、
 断连和停止均丢弃未完成缓冲并保留缺口。非流式包装消息仅在自身 stop_reason 非空、
-没有 aborted/error 标记且没有待完成流时可直接使用；中途 block 包装消息不入账。
+没有 aborted/error 标记且原生 ID 有效时可使用；如果其 ID 不同于待完成流，
+先为旧流记录缺口，再接收独立完成的新消息。CLI 的 streaming_fallback_began
+不会转发给 SDK 消费者，没有完成 block 的失败流也没有 tombstone，不能依赖这两种
+信号清理旧流。同 ID 包装消息不能替代待完成流；中途 block 包装消息不入账。
 原生流语义以固定发布包
 [SDK 0.3.247 类型](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.247/sdk.d.ts)
 中的 SDKAssistantMessage 与 SDKPartialAssistantMessage 为准。
@@ -230,6 +233,12 @@ native_recovery_gap，直到新的 message_start 才恢复接收；旧消息后�
 及完整 assistant 包装消息都不能绕过抑制重新入账。明确 scope=local 或带子代理
 parent_tool_use_id 的通知不清除无关 root 消息。不从 fallback 提示猜测或拆分 token
 到新旧模型，也不以本地修订改写 immutable 事实。
+
+CLI 的客户端 refusal fallback 还会在通知转发之前，使用临时 usage 合成
+stop_reason=refusal 的 message_delta 和 message_stop。因此 refusal 关闭和完整包装
+消息均不准入，立即记录 native_recovery_gap 并抑制旧消息，直到新的 message_start。
+此限制也会排除无法与合成关闭区分的真实 refusal；保留部分覆盖，不把临时零值当作
+最终事实，不等待延迟通知来撤销已经入账的 immutable 来源。
 
 只有原生 profile 到达后才固定当前代次身份；提前到达的消息记录缺口。
 backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒充 Anthropic 语义。
