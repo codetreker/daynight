@@ -132,7 +132,9 @@ func (e *Entry) EnableScopedAuthentication(auth ScopedAuthenticator) error {
 		return errors.New("scoped MCP authentication is required")
 	}
 	e.scopedAuth = auth
-	e.scopedTools = make(map[string]bool)
+	if e.scopedTools == nil {
+		e.scopedTools = make(map[string]bool)
+	}
 	return nil
 }
 

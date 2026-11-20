@@ -12,12 +12,12 @@ current PR and Worker protocols.
 
 ## Decision
 
-The server periodically reconciles saved open PR observations against enabled,
+The server periodically reconciles eligible saved open PR observations against enabled,
 online Workers whose target configuration covers the Project and whose account
 currently has access. A bounded keyset scan advances through Workers, Projects
 and PR pages. A short transaction locks and rechecks the mutable facts before
 inserting an account, Project, repository and GitHub PR identity with a unique
-key. Existing assignments are retained. The independent authenticated read
+key. Existing assignments are retained. The [default-branch eligibility decision](../feature/2026-11-20-review-assignment-default-branch.md) narrows first assignment while preserving those records. The independent authenticated read
 returns only the caller's assignment and current Worker status.
 
 The [assignment design](../../../../docs/design/pr-review-assignment.md) owns

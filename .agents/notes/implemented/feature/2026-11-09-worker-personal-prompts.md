@@ -10,6 +10,8 @@ Workers need user-specific instructions at user, project and Worker scope, while
 
 The server stores three independently revisioned personal resources under the authenticated user and exact scope key. Editors use identity-bound CAS; clearing preserves the row and its revision. The [contract](../../../../docs/spec/worker-prompts.md) owns the API and errors, and the [design](../../../../docs/design/worker-prompts.md) owns storage and transaction boundaries.
 
+Reviewer instructions have separate resources and revisions at the same three logical scopes. The existing table uses distinct scope keys for this purpose, preserving authorization and the Worker report's development prompt semantics. Reviewer text is limited to 32 KiB of decoded UTF-8 per resource.
+
 A bounded selector batch shares the existing configuration report and acknowledgment. Only a confirmed native report is followed by a separate read snapshot; unchanged, unavailable and transient errors remain distinct from an empty value. Prompt data does not become native desired configuration or a task claim.
 
 The Worker retains the received values only in memory and appends the latest available user, project and Worker text to newly assembled inputs. The existing reporter owns bounded catch-up; generation checks reject stale project results. Unknown or oversized input waits without consuming recovery budget, and each native path validates its complete input before submission. Existing delivery evidence continues to own already assembled text.
@@ -21,6 +23,8 @@ The Worker retains the received values only in memory and appends the latest ava
 **Aggregate every project into configuration.** Independent legal texts could exceed a single response and make synchronization fail as the project set grows. Exact bounded selectors preserve complete values without imposing a project quota.
 
 **Poll separate editing resources.** Independent requests would not use the existing configuration exchange and would add another synchronization schedule. The report header preserves the existing request body budget.
+
+**Add Reviewer values to the Worker report.** Reviewer consumers need independent resources, while changing that exchange would couple Reviewer reads to the development Worker's report and alter its established contract. Reviewer uses the separate resources without changing the report.
 
 ## Consequences
 
