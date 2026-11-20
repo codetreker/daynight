@@ -71,7 +71,7 @@ func credentialRoute(path string) bool {
 			continue
 		}
 		id, end, ok := strings.Cut(suffix, "/")
-		if ok && id != "" && end == "description" {
+		if ok && id != "" && (end == "description" || end == "scopes") {
 			return true
 		}
 	}

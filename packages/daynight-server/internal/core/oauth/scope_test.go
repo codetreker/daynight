@@ -16,6 +16,9 @@ import (
 
 type scopeFake struct {
 	store.OAuthScopeDAO
+	t                                              *testing.T
+	expectedContext                                context.Context
+	expectedSession                                model.Principal
 	steps                                          []string
 	grant                                          store.OAuthGrant
 	identity                                       store.OAuthAccessIdentity
@@ -45,9 +48,13 @@ func (f *scopeFake) LockGrantScope(_ context.Context, owner, grant string) (stor
 	f.lockedOwner, f.lockedGrant = owner, grant
 	return f.grant, f.readErr
 }
-func (f *scopeFake) LockOwnerSession(_ context.Context, _ model.Principal, now time.Time) error {
+func (f *scopeFake) LockOwnerSession(ctx context.Context, principal model.Principal, now time.Time) error {
 	f.steps = append(f.steps, "session")
 	f.sessionCalls++
+	if ctx != f.expectedContext || principal != f.expectedSession || f.sessionCalls > 2 {
+		f.t.Errorf("unexpected session check: context=%v principal=%+v call=%d", ctx == f.expectedContext, principal, f.sessionCalls)
+		return errors.New("unexpected session check")
+	}
 	if f.sessionCalls == 1 && now != f.now || f.sessionCalls == 2 && now != f.fresh {
 		return errors.New("wrong session time")
 	}
@@ -82,7 +89,7 @@ func scopeTestFake(t *testing.T) (*scopeFake, model.Principal) {
 	}
 	grant := store.OAuthGrant{ID: uuid.NewString(), UserID: owner.UserID, Resource: "https://server.example/mcp", Scope: Scope, ExpiresAt: now.Add(time.Hour), ScopePolicy: &policy}
 	identity := store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: owner.UserID, CredentialID: uuid.NewString()}, GrantID: grant.ID, ExpiresAt: now.Add(time.Hour), ScopePolicy: &policy}
-	return &scopeFake{grant: grant, identity: identity, now: now, fresh: now.Add(time.Minute)}, owner
+	return &scopeFake{t: t, expectedContext: t.Context(), expectedSession: owner, grant: grant, identity: identity, now: now, fresh: now.Add(time.Minute)}, owner
 }
 func scopeFault(t *testing.T, err error, code string) {
 	t.Helper()
