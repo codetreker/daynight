@@ -2,7 +2,9 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,11 +22,16 @@ type descriptionDAO struct {
 	changed, exists bool
 	value, expected *string
 	stored          model.PersonalAccessToken
+	fail            string
+	cause           error
 }
 
 func (d *descriptionDAO) LockSession(_ context.Context, _ model.Principal, now time.Time) error {
 	d.calls = append(d.calls, "lock")
 	d.lockCount++
+	if d.fail == "first lock" && d.lockCount == 1 || d.fail == "final lock" && d.lockCount == 2 {
+		return d.cause
+	}
 	if d.lockCount == 2 && (!now.Equal(d.fresh) || d.expire) {
 		return model.ErrNotFound
 	}
@@ -32,19 +39,31 @@ func (d *descriptionDAO) LockSession(_ context.Context, _ model.Principal, now t
 }
 func (d *descriptionDAO) CleanupCredentials(context.Context, time.Time) error {
 	d.calls = append(d.calls, "cleanup")
+	if d.fail == "cleanup" {
+		return d.cause
+	}
 	return nil
 }
 func (d *descriptionDAO) InsertPAT(_ context.Context, token model.PersonalAccessToken) error {
 	d.calls = append(d.calls, "insert")
 	d.stored = token
+	if d.fail == "insert" {
+		return d.cause
+	}
 	return nil
 }
 func (d *descriptionDAO) FreshPATTime(context.Context, time.Time) (time.Time, error) {
 	d.calls = append(d.calls, "fresh")
+	if d.fail == "fresh" {
+		return time.Time{}, d.cause
+	}
 	return d.fresh, nil
 }
 func (d *descriptionDAO) ListAllPATs(context.Context, string) ([]model.PersonalAccessToken, error) {
 	d.calls = append(d.calls, "list")
+	if d.fail == "list" {
+		return nil, d.cause
+	}
 	return []model.PersonalAccessToken{{ID: "retained"}}, nil
 }
 func (d *descriptionDAO) ComparePATDescription(_ context.Context, _, _ string, expected, value *string) (bool, error) {
@@ -131,5 +150,107 @@ func TestPATDescriptionCreateAndListRecheckSession(t *testing.T) {
 		} else if err != nil || len(items) != 1 {
 			t.Fatalf("list %v %v", items, err)
 		}
+	}
+}
+
+func TestPATOwnerRequiresSessionAndCanonicalMatchingAccount(t *testing.T) {
+	user := "123e4567-e89b-12d3-a456-426614174000"
+	p := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: uuid.NewString()}
+	for _, tc := range []struct {
+		name           string
+		principal      model.Principal
+		expected, code string
+	}{
+		{"non-session", model.Principal{Kind: model.PATCredential, UserID: user}, user, "forbidden"},
+		{"malformed", p, "not-a-uuid", "invalid_input"},
+		{"noncanonical", p, strings.ToUpper(user), "invalid_input"},
+		{"different account", p, uuid.NewString(), "forbidden"},
+		{"matching account", p, user, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePATOwner(tc.principal, tc.expected)
+			if tc.code == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				checkFault(t, err, tc.code)
+			}
+		})
+	}
+}
+
+func TestPATCreateRejectsWithoutReturningCredential(t *testing.T) {
+	now := time.Now().UTC()
+	p := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	cause := errors.New("storage failure")
+	bad := "a\nb"
+	for _, tc := range []struct {
+		name        string
+		principal   model.Principal
+		expected    string
+		input       CreatePAT
+		description *string
+		fail, code  string
+		calls       []string
+	}{
+		{"wrong account", p, uuid.NewString(), CreatePAT{Name: "test"}, nil, "", "forbidden", nil},
+		{"invalid description", p, p.UserID, CreatePAT{Name: "test"}, &bad, "", "invalid_input", nil},
+		{"invalid name", p, p.UserID, CreatePAT{}, nil, "", "invalid_input", nil},
+		{"initial session failure", p, p.UserID, CreatePAT{Name: "test"}, nil, "first lock", "", []string{"lock"}},
+		{"cleanup failure", p, p.UserID, CreatePAT{Name: "test"}, nil, "cleanup", "", []string{"lock", "cleanup"}},
+		{"insert failure", p, p.UserID, CreatePAT{Name: "test"}, nil, "insert", "", []string{"lock", "cleanup", "insert"}},
+		{"fresh time failure", p, p.UserID, CreatePAT{Name: "test"}, nil, "fresh", "", []string{"lock", "cleanup", "insert", "fresh"}},
+		{"final session failure", p, p.UserID, CreatePAT{Name: "test"}, nil, "final lock", "", []string{"lock", "cleanup", "insert", "fresh", "lock"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &descriptionDAO{fresh: now.Add(time.Minute), fail: tc.fail, cause: cause}
+			result, err := NewIdentity("").CreatePATV2(t.Context(), d, d, tc.principal, tc.expected, tc.input, tc.description, now)
+			if tc.code != "" {
+				checkFault(t, err, tc.code)
+			} else if !errors.Is(err, cause) {
+				t.Fatalf("lost underlying failure: %v", err)
+			}
+			if !reflect.DeepEqual(result, MintedPAT{}) {
+				t.Fatal("credential escaped rejected creation")
+			}
+			if !reflect.DeepEqual(d.calls, tc.calls) {
+				t.Fatalf("calls %v, want %v", d.calls, tc.calls)
+			}
+		})
+	}
+}
+
+func TestPATListRejectsWithoutReturningMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	p := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	cause := errors.New("storage failure")
+	for _, tc := range []struct {
+		name       string
+		principal  model.Principal
+		fail, code string
+		calls      []string
+	}{
+		{"non-session", model.Principal{Kind: model.PATCredential}, "", "forbidden", nil},
+		{"initial session failure", p, "first lock", "", []string{"lock"}},
+		{"list failure", p, "list", "", []string{"lock", "list"}},
+		{"fresh time failure", p, "fresh", "", []string{"lock", "list", "fresh"}},
+		{"final session failure", p, "final lock", "", []string{"lock", "list", "fresh", "lock"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &descriptionDAO{fresh: now.Add(time.Minute), fail: tc.fail, cause: cause}
+			result, err := NewIdentity("").ListPATsV2(t.Context(), d, d, tc.principal, now)
+			if tc.code != "" {
+				checkFault(t, err, tc.code)
+			} else if !errors.Is(err, cause) {
+				t.Fatalf("lost underlying failure: %v", err)
+			}
+			if result != nil {
+				t.Fatal("metadata escaped refused read")
+			}
+			if !reflect.DeepEqual(d.calls, tc.calls) {
+				t.Fatalf("calls %v, want %v", d.calls, tc.calls)
+			}
+		})
 	}
 }
