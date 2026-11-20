@@ -21,7 +21,7 @@ export const graph: GraphMessages = {
   noMachineRecord: '暂无执行机器记录',
   claimMachine: ({ name }) => `认领机器：${name}`,
   recordedMachine: ({ name }) => `执行机器记录：${name}`,
-  currentWorkerName: ({ name }) => `Worker：${name}`,
+  currentWorkerName: ({ name }) => `执行器别名：${name}`,
   childTasks: ({ count }) => `子任务 · ${number(count)}`,
   representativeTaskDetails: '查看任务详情',
   representativeTaskDetailsLabel: ({ title }) => `${title}，查看任务详情`,

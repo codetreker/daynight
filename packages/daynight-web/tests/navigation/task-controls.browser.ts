@@ -1354,7 +1354,7 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (cons
     if (kind === 'standalone') await page.locator('#project-task-tab-standalone').click();
     else await page.locator('.root-toggle').first().click();
     const row = page.locator('.task-row-item').filter({ has: page.getByRole('link', { name: kind === 'standalone' ? 'Target task' : 'History origin', exact: true }) });
-    await expect(row.locator('.task-row-machine')).toContainText(alias);
+    await expect(row.locator('.task-row-machine')).toHaveText(`${locale === 'zh-CN' ? '执行器别名：' : 'Worker: '}${alias}`);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(await row.locator('.task-row-machine').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
     await row.locator('.task-row-machine').scrollIntoViewIfNeeded();
