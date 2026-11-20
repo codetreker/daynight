@@ -38,7 +38,7 @@ export const TaskPlatformSelect = ({ detail, disabled, describedBy, onReview }: 
 }) => {
   const { messages: { platform: m } } = useI18n();
   const saved = detail.requiredPlatform === null ? '' : detail.requiredPlatform;
-  return <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.title} id={`${describedBy}-tip`}><NativeSelect density="compact" layout="content" focusTone="task" aria-label={m.title} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined}
+  return <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.title} id={`${describedBy}-tip`}><NativeSelect density="compact" layout="content" focusTone="task" textSize="xs" aria-label={m.title} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined}
     title={detail.status === 'in_progress' ? undefined : m.help} value={saved} disabled={disabled}
     onChange={(event) => {
       const selected = event.currentTarget.value === '' ? null : executionPlatform(event.currentTarget.value);

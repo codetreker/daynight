@@ -145,6 +145,7 @@
 .task-control-tip-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .task-status-trigger { max-width: 100%; min-width: 0; border: 1px solid #e1e5ed; border-radius: 4px; padding: 3px 24px 3px 7px; background-color: #f6f7fa; color: var(--task-helper); font: inherit; font-size: var(--text-sm); line-height: 1.5; min-height: 24px; box-shadow: none; cursor: pointer; }
+.task-detail-state-controls .task-status-trigger { font-size: var(--text-xs); }
 .task-status-trigger:disabled { opacity: .55; cursor: not-allowed; }
 .task-status-trigger:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 3px; }
 .task-platform-feedback:empty { display: none; }
