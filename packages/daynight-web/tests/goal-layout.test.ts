@@ -18,7 +18,7 @@ const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDi
   const nodes = new Map(layout.nodes.map((node) => [node.id, node]));
   for (const [index, node] of layout.nodes.entries()) {
     expect(node.kind).toBe(input.mainIds.has(node.id) ? 'main' : 'external');
-    expect([node.width, node.height]).toEqual([360, 184]);
+    expect([node.width, node.height]).toEqual([320, 144]);
     expect(node.position.x).toBeGreaterThanOrEqual(0); expect(node.position.y).toBeGreaterThanOrEqual(0);
     expect(node.position.x + node.width).toBeLessThanOrEqual(layout.width); expect(node.position.y + node.height).toBeLessThanOrEqual(layout.height);
     for (const other of layout.nodes.slice(index + 1)) expect(node.position.x + node.width <= other.position.x || other.position.x + other.width <= node.position.x ||

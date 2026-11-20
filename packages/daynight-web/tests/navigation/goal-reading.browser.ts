@@ -3091,10 +3091,11 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await expect(nested).toHaveCount(0);
 });
 
-for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal compact graph frames independent tasks at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const rootSize of [16, 32]) test(`Goal compact graph frames independent tasks at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
   const fixture = await install(page, locale); fixture.independentGoalTasks();
   await page.goto(`/projects/${projectId}`);
+  await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
   await page.locator(`#project-goal-graph-${goalId}`).click();
@@ -3102,6 +3103,10 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   const nodes = dialog.locator('.react-flow__node');
   const viewport = dialog.locator('.react-flow__viewport');
   await expect(nodes).toHaveCount(30);
+  expect(await nodes.evaluateAll((elements, scale) => elements.every(element => {
+    const card = element.querySelector<HTMLElement>('.task-node')!;
+    return card.offsetWidth === 320 * scale && card.offsetHeight === 144 * scale;
+  }), rootSize / 16)).toBe(true);
   expect(await nodes.first().evaluate(element => {
     const node = element.querySelector('.task-node')!.getBoundingClientRect();
     const details = element.querySelector('.task-node-details')!.getBoundingClientRect();
@@ -3130,7 +3135,8 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     expect(new Set(positions.map(point => point.y)).size).toBeGreaterThan(1);
   };
   await expectGrid();
-  await expect.poll(zoom).toBeGreaterThanOrEqual(0.8);
+  const minimumZoom = await dialog.locator('.react-flow').evaluate((element, scale) => Math.max(0.2, Math.min(0.8, (element.clientWidth - 40) / (320 * scale))), rootSize / 16);
+  await expect.poll(zoom).toBeGreaterThanOrEqual(minimumZoom - 0.001);
   expect(await zoom()).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const topFit = dialog.locator('.graph-reset-overview');
@@ -3140,7 +3146,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await dialog.locator('[data-direction="vertical"]').click();
   await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
   await expectGrid();
-  await expect.poll(zoom).toBeGreaterThanOrEqual(0.8);
+  await expect.poll(zoom).toBeGreaterThanOrEqual(minimumZoom - 0.001);
   const bottomFit = dialog.getByRole('button', { name: locale === 'en' ? 'Fit to canvas' : '适应画布', exact: true });
   await bottomFit.click();
   await expect(bottomFit).toBeFocused();

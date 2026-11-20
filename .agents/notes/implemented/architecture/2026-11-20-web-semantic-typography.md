@@ -38,9 +38,11 @@ scrolling where needed. Webhook detail tabs use a locally scrollable single row
 with selected-item visibility, as defined by the later
 [detail-tab decision](../bug-fix/2026-11-20-webhook-detail-tabs.md), so increased
 browser fonts do not hide navigation. Graph layout coordinates grow
-with the root font size so fixed node boxes accommodate text independently of
-graph zoom. Overview progress rows rearrange at narrow widths; chart axes preserve
-horizontal scrolling and provide room for enlarged labels.
+with the root font size so node boxes accommodate text independently of graph
+zoom. The later [compact card decision](../bug-fix/2026-11-20-compact-graph-cards.md)
+reduces the base geometry while retaining that scaling. Overview progress rows
+rearrange at narrow widths; chart axes preserve horizontal scrolling and provide
+room for enlarged labels.
 
 Public landing and Setup pages, and standalone login, invitation, device
 authorization and OAuth consent pages, use the semantic roles at all viewport
