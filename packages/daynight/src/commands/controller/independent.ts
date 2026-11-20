@@ -440,7 +440,9 @@ export const runIndependentController = async (input: IndependentControllerInput
         // Usage has its own ACK and must remain retryable even if history fails.
         let usagePending = false;
         try {
-          usagePending = (await replayStoppedControllerUsage({ journalPath: journal, ticket, serverToken: config.serverToken })).pending > 0;
+          const usage = await replayStoppedControllerUsage({ journalPath: journal, ticket, serverToken: config.serverToken });
+          usagePending = usage.retryable;
+          if (usage.pending > 0 && !usage.retryable) context.stderr(`Native execution stopped; usage is incomplete and cannot be replayed with the retained grant. Original journal retained in ${directory}.\n`);
         } catch (error) {
           usagePending = true;
           if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and usage replay failed.");

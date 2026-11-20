@@ -227,7 +227,9 @@ Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失
 按已确认停止证据补 missing_final，而不是推断 complete。
 独立 Test 在本地确认停止后尝试原 journal/grant 的有界补传；
 controller archive 重试同样重放原执行。用量与服务端停止回执、历史上传及历史 ACK
-独立，任一路失败仍尝试另一路，未确认用量保留 journal 并提供同一 archive 重试入口。
+独立，任一路失败仍尝试另一路。未确认用量保留 journal；有效原 grant 仍有待传事件时
+提供同一 archive 重试入口。无 grant、已过期/撤销或仅剩冲突证据时明确报告不可补传
+的覆盖缺口，历史成功不因这些保留证据而被判为归档失败。
 
 ## Codex Controller 能力上报
 
@@ -248,7 +250,10 @@ Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止
 后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
 firstParty 且生效环境、settings 与官方 endpoint 检查一致时才映射 anthropic。
 Mantle、Anthropic AWS、Anthropic Google Cloud 等选择器和缺失/矛盾的原生读回
-均不能借用 Anthropic qualification；账户其他字段不进入 profile。
+均不能借用 Anthropic qualification；账户其他字段不进入 profile。原生初始化不属于
+进程证明及版本探针的期限：helper 先完成后者，pending profile 不建立用量身份，
+实际初始化读回完成后发布最终 backend，再返回初始化结果。原生启动期限保持由
+Provider 的既有初始化入口负责，计量资格等待不能缩短它。
 `claude-message-input-0.3.247-v1` 仅接收实际 SDK=0.3.247、实际 CLI 版本已知、
 backend=anthropic 的实时 root 消息完成流；providerVersion 编码为
 `<sdk>/<cli>/<backend>`，服务端还必须精确公布该组合的 qualification。

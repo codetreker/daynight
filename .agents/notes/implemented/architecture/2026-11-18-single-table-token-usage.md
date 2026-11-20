@@ -78,8 +78,11 @@ uses the original journal and retained grant without reopening native execution,
 and runs independently of history archiving. Standalone Test shutdown and its
 archive retry use the same bounded original-journal replay after local stop
 proof, independently of server stop receipts and history upload outcomes.
-Pending usage keeps a retry entry even when history succeeds. Pending or
-quarantined measurements
+Retryable usage keeps an archive retry entry even when history succeeds.
+Retained evidence without a valid original grant, or only quarantined conflicts,
+reports a usage limitation without turning successful history archival into a
+permanent failure. Its pending evidence count remains unchanged for retention.
+Pending or quarantined measurements
 and unresolved local source-conflict evidence retain their sole journal during
 explicit and automatic recording discard. Local conflicts have no uploadable
 event; acknowledging the accepted measurement and partial state cannot resolve
@@ -113,7 +116,10 @@ in addition to consistent effective settings and endpoint checks. Mantle and
 the separate Anthropic AWS and Google Cloud providers cannot inherit the
 Anthropic profile merely because older environment selectors are absent. Only
 the provider discriminator crosses the profile channel; account details stay
-native-private. Unknown backends never lend their values to the Anthropic plane.
+native-private. Process proof and version probing do not wait for native
+initialization. A pending profile cannot establish a usage identity; the final
+backend is published before returning the original initialization result. This
+keeps the existing native startup deadline independent of usage qualification. Unknown backends never lend their values to the Anthropic plane.
 Missing
 profile evidence cannot create a temporary identity that would later conflict
 with the same generation. Transcript rows lack original version provenance, so

@@ -28,17 +28,23 @@ const enableControlledImageInput = () => {
   });
 };
 
-test.each(["firstParty", "mantle", undefined])("SDK helper requires first-party native provider evidence: %s", async apiProvider => {
+test.each(["firstParty", "mantle", undefined])("SDK helper probes independently of held initialization, then qualifies provider %s", async apiProvider => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-backend-"));
+  const gate = path.join(root, "initialize-release");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CLAUDE_CODE_USE_") && key !== "ANTHROPIC_BASE_URL" && key !== "DAYNIGHT_TEST_CLAUDE_API_PROVIDER"));
-  Object.assign(env, { ANTHROPIC_BASE_URL: "https://api.anthropic.com", ...(apiProvider === undefined ? {} : { DAYNIGHT_TEST_CLAUDE_API_PROVIDER: apiProvider }) });
+  Object.assign(env, { ANTHROPIC_BASE_URL: "https://api.anthropic.com", DAYNIGHT_TEST_CLAUDE_INITIALIZE_GATE: gate, ...(apiProvider === undefined ? {} : { DAYNIGHT_TEST_CLAUDE_API_PROVIDER: apiProvider }) });
   let child!: ChildProcess; const proofs: ProcessProof[] = [];
   const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId: randomUUID(), settingSources: [], pathToClaudeCodeExecutable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env } }, { cwd: root, env, onSpawn: (process: ChildProcess) => { child = process; }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); } } as unknown as ProviderOptions);
   try {
-    await native.initializationResult();
+    let initialized = false;
+    const initialization = native.initializationResult(); void initialization.then(() => { initialized = true; }, () => {});
+    await vi.waitFor(() => expect(native.profile).toMatchObject({ sdkVersion: "0.3.247", cliVersion: "2.1.247", backend: "unknown", backendPending: true }), { timeout: 10_000 });
+    expect(initialized).toBe(false);
+    await writeFile(gate, "release"); await initialization;
     expect(native.profile).toMatchObject({ sdkVersion: "0.3.247", cliVersion: "2.1.247", backend: apiProvider === "firstParty" ? "anthropic" : "unknown" });
     expect(Object.keys(native.profile!).sort()).toEqual(["backend", "cliVersion", "executable", "sdkVersion"]);
   } finally {
+    await writeFile(gate, "release");
     native.close(); await native.join();
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
     for (const proof of proofs) expect(await inspectProcessProof(proof)).toBe("stopped");

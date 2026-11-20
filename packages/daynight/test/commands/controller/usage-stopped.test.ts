@@ -19,7 +19,7 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
-const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot", standalone = false) => {
+const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot", standalone = false, grant: "valid" | "expired" | "none" = "valid") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/usage-stopped-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const executionId = randomUUID();
@@ -28,7 +28,7 @@ const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifec
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
   const journalPath = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0", provider);
-  journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, "1");
+  if (grant !== "none") journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + (grant === "valid" ? 3_600_000 : -3_600_000)).toISOString() }, "1");
   if (provider === "copilot") journal.usage.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
   journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original content" }] });
   prepare?.(journal);
@@ -57,7 +57,7 @@ test.each([false, true])("replays original grants after native stop without shar
     const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; events.push(...body.events);
     return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
   };
-  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0 });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0, retryable: false });
   expect(events.filter(event => event.kind === "measurement")).toHaveLength(1);
   expect(events.find(event => event.kind === "execution_state")).toMatchObject({ collectionState: "partial", seal: true, reasonCodes: ["missing_final", "native_recovery_gap"] });
   expect(paths.some(value => value.endsWith("registrations") || value.endsWith("grant"))).toBe(false);
@@ -83,11 +83,41 @@ test.each([false, true])("retains pending evidence after a failed late upload wi
     return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
   };
   const result = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
-  expect(result.pending).toBeGreaterThan(0); expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
+  expect(result.pending).toBeGreaterThan(0); expect(result.retryable).toBe(true); expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
   unavailable = false;
-  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0 });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0, retryable: false });
   expect(f.read().usage).toEqual([]);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each([
+  { grant: "none", provider: "codex" }, { grant: "expired", provider: "codex" },
+  { grant: "none", provider: "copilot" }, { grant: "expired", provider: "copilot" },
+] as const)("standalone $provider evidence with $grant grant is retained without promising a late upload", async ({ grant, provider }) => {
+  const f = await fixture(undefined, provider, true, grant), before = f.read();
+  const request = vi.fn<typeof fetch>(async input => {
+    expect(new URL(String(input)).pathname).toBe("/api/usage/v1/capabilities");
+    return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] });
+  });
+  expect(before.usage).toHaveLength(provider === "copilot" ? 1 : 0);
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
+  expect(f.read()).toEqual(before);
+  expect(countStoppedControllerUsage(f)).toBe(provider === "copilot" ? 1 : 0);
+});
+
+test("a revoked original grant leaves measurements retained without recommending archive retries", async () => {
+  const f = await fixture(undefined, "copilot", true), before = f.read();
+  const request: typeof fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: capability.profileId, provider: "copilot", capability, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    return new Response(null, { status: 403 });
+  };
+  const result = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(result.pending).toBeGreaterThan(0); expect(result.retryable).toBe(false);
+  expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
+  expect(f.read().usage).toContainEqual(before.usage[0]);
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
 });
 
@@ -114,7 +144,7 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
     expect(new URL(String(input)).pathname.endsWith("capabilities")).toBe(true);
     return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] });
   };
-  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1 });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
   let task = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, serverOrigin: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, worktreeId: f.ticket.worktreeId, claimId: f.ticket.claimId, status: "done", cleanup: { kind: "terminal", discardRecording: mode === "explicit" }, webExecution: { executionId: f.ticket.executionId, executionGeneration: f.ticket.executionGeneration, launchId: f.ticket.launchId, sessionId: f.ticket.sessionId } } as LocalTask;
   if (mode === "explicit") {
     await expect(deleteWebRecording(f.home, task, () => task, () => true)).rejects.toThrow("unresolved local conflicts");
@@ -154,7 +184,7 @@ test("stopped Codex capability stays unsupported instead of becoming a failed co
       return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(event => ({ eventId: event.eventId, sourceKey: null, sourceRevision: null, stateSequence: event.stateSequence, finality: null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: rows.find(row => row.event_id === event.eventId)!.body_hash })) });
     } finally { db.close(); }
   };
-  expect(await replayStoppedControllerUsage({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "parent-token", request })).toEqual({ pending: 0 });
+  expect(await replayStoppedControllerUsage({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "parent-token", request })).toEqual({ pending: 0, retryable: false });
   expect(events).toHaveLength(1);
   expect(events[0]).toMatchObject({ kind: "execution_state", collectionState: "unsupported", reasonCodes: ["provider_unsupported"], seal: true });
 });

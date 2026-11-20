@@ -662,8 +662,8 @@ test("Claude missing native profile records a gap without interpreting usage", a
   } finally { await provider.close(); }
 });
 
-test("Claude late native profile fixes the first usage identity without an unverified state", async () => {
-  const fixture = nativeFixture(), versions: string[] = [];
+test.each(["missing", "pending"])("Claude %s native profile fixes the first usage identity without an unverified state", async kind => {
+  const fixture = nativeFixture(true, kind === "pending" ? { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "unknown", backendPending: true } : undefined), versions: string[] = [];
   const usageRuntime = {
     ready: vi.fn((value: { nativeSessionId: string; providerVersion: string }) => {
       if (versions.length && versions[0] !== value.providerVersion) throw new Error("Usage generation identity changed.");

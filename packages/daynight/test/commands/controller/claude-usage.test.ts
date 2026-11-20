@@ -47,6 +47,8 @@ test("stream frames, cumulative results, subagents and synthetic errors are not 
 test("qualification records actual CLI and backend without widening the fixed SDK profile", () => {
   expect(claudeUsageProviderVersion(profile)).toBe("0.3.247/2.1.247/anthropic");
   expect(claudeUsageProfileSupported(profile)).toBe(true);
+  expect(claudeUsageProviderVersion({ ...profile, backendPending: true })).toBe("unverified");
+  expect(claudeUsageProfileSupported({ ...profile, backendPending: true })).toBe(false);
   for (const value of [null, { ...profile, sdkVersion: "0.3.248" }, { ...profile, cliVersion: "unknown" }, { ...profile, backend: "unknown" as const }, { ...profile, backend: "bedrock" as const }]) expect(claudeUsageProfileSupported(value)).toBe(false);
   expect(claudeUsageProviderVersion({ ...profile, backend: "unknown" })).toBe("0.3.247/2.1.247/unknown");
 });

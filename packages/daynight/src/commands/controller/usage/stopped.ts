@@ -37,11 +37,11 @@ export const countStoppedControllerUsage = (options: { journalPath: string; tick
 export const replayStoppedControllerUsage = async (options: {
   journalPath: string; ticket: ControllerLaunchTicket; serverToken: string;
   signal?: AbortSignal; request?: typeof fetch; onDiagnostic?(message: string): void;
-}): Promise<{ pending: number }> => {
+}): Promise<{ pending: number; retryable: boolean }> => {
   const { ticket } = options;
   const access = stoppedUsageAccess(options.journalPath, ticket);
   const pending = access.pending();
-  if (!pending && access.store.states().every(state => state.stopped)) return { pending: 0 };
+  if (!pending && access.store.states().every(state => state.stopped)) return { pending: 0, retryable: false };
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
   const uploader = createUsageUploader({
     serverOrigin: ticket.serverOrigin, store: access.store,
@@ -67,5 +67,11 @@ export const replayStoppedControllerUsage = async (options: {
     }
   }
   finally { await uploader.close(); }
-  return { pending: Math.max(access.pending(), access.store.states().filter(state => !state.stopped).length) };
+  const states = access.store.states();
+  // Stopped generations cannot acquire or renew a grant. Retention also covers
+  // unregistered states and quarantined conflicts which another upload cannot fix.
+  const retryable = states.some(state => state.grant !== null && Date.parse(state.grant.expiresAt) > Date.now()
+    && !state.reasons.some(reason => ["permission_revoked", "upload_expired"].includes(reason))
+    && (!state.stopped || access.store.pending(state.stateId, 1).length > 0));
+  return { pending: Math.max(access.pending(), states.filter(state => !state.stopped).length), retryable };
 };

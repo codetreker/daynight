@@ -52,7 +52,9 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
   // Replay the original grant independently of history and server stop receipts.
   let usageFailure: unknown;
   try {
-    if ((await replayStoppedControllerUsage({ journalPath, ticket, serverToken: config.serverToken })).pending > 0) throw new Error("Test Session usage upload remains pending; the original journal is retained. Retry the same archive command.");
+    const usage = await replayStoppedControllerUsage({ journalPath, ticket, serverToken: config.serverToken });
+    if (usage.retryable) throw new Error("Test Session usage upload remains pending; the original journal is retained. Retry the same archive command.");
+    if (usage.pending > 0) context.stderr("Test Session usage is incomplete and cannot be replayed with the retained grant. Original journal retained; history archival continues.\n");
   } catch (error) { usageFailure = error; }
   try {
     // A retry may close a still-active server record after local stop was already proven.

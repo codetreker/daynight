@@ -111,7 +111,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.acquireJob.mockReset().mockResolvedValue({}); f.releaseJob.mockReset();
   f.journalIo.mockReturnValue(false);
   f.archive.mockResolvedValue({ state: "ready" });
-  f.usage.mockReset().mockResolvedValue({ pending: 0 });
+  f.usage.mockReset().mockResolvedValue({ pending: 0, retryable: false });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
     if (action.kind === "observe") { if (prompt === null) process.emit("SIGINT", "SIGINT"); return { snapshot: { lifecycle: "ready", nativeSessionId: null } }; }
@@ -607,7 +607,7 @@ test("history upload failure reports stopped execution and a native-free retry c
 });
 test.each(["pending", "failure"])("usage %s retains a native-free retry without blocking history", async kind => {
   const v = await setup(null);
-  if (kind === "pending") f.usage.mockResolvedValueOnce({ pending: 1 });
+  if (kind === "pending") f.usage.mockResolvedValueOnce({ pending: 1, retryable: true });
   else f.usage.mockRejectedValueOnce(new Error("usage offline"));
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
   expect(f.archive).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
@@ -623,6 +623,30 @@ test("SQLite usage failure remains visible while history still archives", async 
   await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toBe(failure);
   expect(f.archive).toHaveBeenCalledOnce();
   expect(v.err.join("")).toContain("usage upload is pending");
+});
+
+test("unreplayable usage reports a limitation while shutdown and archive retry succeed", async () => {
+  const v = await setup(null);
+  f.usage.mockResolvedValue({ pending: 1, retryable: false });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(v.err.join("")).toContain("cannot be replayed with the retained grant");
+  expect(v.err.join("")).not.toContain("usage upload is pending");
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  await expect(retryIndependentArchive({ provider: "codex", sessionId: id }, v.context)).resolves.toBeUndefined();
+  expect(v.err.join("")).toContain("Original journal retained; history archival continues");
+  expect(v.out.join("")).toContain("Test Session history archived");
+  expect(f.archive).toHaveBeenCalledTimes(2); expect(f.spawn).toHaveBeenCalledOnce();
+});
+
+test("archive retry keeps a retryable usage batch pending after history succeeds", async () => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (process.platform === "win32") await writeFile(path.join(v.home, ".daynight", "controller", "executions", v.requests.find(request => request.url.endsWith("/test-sessions"))!.body.testExecutionId, "journal.sqlite"), "fixture");
+  f.usage.mockResolvedValueOnce({ pending: 1, retryable: true });
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  await expect(retryIndependentArchive({ provider: "codex", sessionId: id }, v.context)).rejects.toThrow("usage upload remains pending");
+  expect(f.archive).toHaveBeenCalledTimes(2); expect(f.spawn).toHaveBeenCalledOnce();
 });
 test.each(["direct", "aggregate"] as const)("%s SQLite archive failure stays visible after Ctrl+C without invalidating proven stop or lease release", async wrapper => {
   const v = await setup(null);

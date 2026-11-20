@@ -6,7 +6,7 @@ const version = (value: unknown): value is string => typeof value === "string" &
 
 /** Backend identity is part of qualification, including for the same SDK and CLI. */
 export const claudeUsageProviderVersion = (profile: ClaudeRuntimeProfile | null | undefined): string => {
-  if (!profile || !version(profile.sdkVersion) || !version(profile.cliVersion) || !["anthropic", "bedrock", "vertex", "unknown"].includes(profile.backend)) return "unverified";
+  if (!profile || profile.backendPending || !version(profile.sdkVersion) || !version(profile.cliVersion) || !["anthropic", "bedrock", "vertex", "unknown"].includes(profile.backend)) return "unverified";
   const result = `${profile.sdkVersion}/${profile.cliVersion}/${profile.backend}`;
   return Buffer.byteLength(result) <= 128 ? result : "unverified";
 };
