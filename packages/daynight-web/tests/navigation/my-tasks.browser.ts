@@ -351,7 +351,7 @@ for (const width of [320, 1280]) {
     const goalDialog = page.getByRole('dialog', { name: longGoal });
     await expect(goalDialog.getByText('Goal description')).toBeVisible();
     const information = goalDialog.getByRole('complementary', { name: 'Goal information' });
-    await expect(information.getByRole('alert')).toBeVisible();
+    await expect(information.locator('.goal-information-error')).toBeVisible();
     await information.getByRole('button', { name: 'Retry refresh' }).click();
     await expect(information.getByText('Total tasks')).toBeVisible();
     await page.evaluate(id => window.selectMyTasksChild(id), taskId(1));
