@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
@@ -44,7 +45,14 @@ func (s *Workers) Configuration(ctx context.Context, principal model.Principal, 
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result, err = snapshot.WorkerDAO().WorkerConfiguration(ctx, principal.UserID, workerID)
-		return configurationNotFound(err)
+		if err = configurationNotFound(err); err != nil {
+			return err
+		}
+		if s.authorization != nil {
+			authorization, err := s.authorization.Read(ctx, snapshot, principal)
+			return requireAuthorization(principal, authorization, err, scopepolicy.WorkerRead)
+		}
+		return nil
 	})
 	if err != nil {
 		return model.WorkerConfigurationResource{}, workerConfigurationError("get worker configuration", err)
@@ -70,6 +78,12 @@ func (s *Workers) PutConfiguration(ctx context.Context, principal model.Principa
 	}
 	var result model.WorkerConfigurationResource
 	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
+		if s.authorization != nil {
+			authorization, err := s.authorization.WorkerWrite(ctx, scope, principal)
+			if err := requireAuthorization(principal, authorization, err, scopepolicy.WorkerConfigure, scopepolicy.WorkerRead); err != nil {
+				return err
+			}
+		}
 		var err error
 		result, err = s.putConfiguration(ctx, scope.WorkerDAO(), principal, workerID, expected, value)
 		return err

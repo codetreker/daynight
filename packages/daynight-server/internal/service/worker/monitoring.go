@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
@@ -47,10 +48,13 @@ func (s *Workers) SetMonitoringStore(m store.MonitoringStore) { s.monitoring = m
 func monitoringUnavailable(err error) error {
 	return &model.Fault{Code: "monitoring_unavailable", Message: "Worker monitoring is unavailable.", Cause: err}
 }
-func (s *Workers) monitoringResources(ctx context.Context, principal model.Principal, ids []string, projects, tasks []string) (store.WorkerMonitoringSources, error) {
+func (s *Workers) monitoringResources(ctx context.Context, principal model.Principal, ids []string, projects, tasks []string, operations ...scopepolicy.Operation) (store.WorkerMonitoringSources, error) {
 	var sources store.WorkerMonitoringSources
 	var refusal error
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if err := s.readAdmission(ctx, snapshot, principal, operations...); err != nil {
+			return err
+		}
 		now, err := snapshot.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -115,7 +119,7 @@ func (s *Workers) saveDirectMonitoring(ctx context.Context, p model.Principal, w
 	sampleID := sample.String()
 	o := monitoring.LegacyObservationForDirect(direct, sampleID)
 	projects, tasks := rules.scopes(o)
-	sources, err := s.monitoringResources(ctx, p, []string{workerID}, projects, tasks)
+	sources, err := s.monitoringResources(ctx, p, []string{workerID}, projects, tasks, scopepolicy.WorkerReport)
 	if err != nil {
 		return empty, "", err
 	}
@@ -165,7 +169,7 @@ func (s *Workers) putMonitoring(ctx context.Context, p model.Principal, workerID
 		return monitoring.Receipt{}, err
 	}
 	projects, tasks := rules.scopes(o)
-	sources, err := s.monitoringResources(ctx, p, []string{workerID}, projects, tasks)
+	sources, err := s.monitoringResources(ctx, p, []string{workerID}, projects, tasks, scopepolicy.WorkerReport)
 	if err != nil {
 		return monitoring.Receipt{}, err
 	}
@@ -220,7 +224,7 @@ func (s *Workers) getMonitoring(ctx context.Context, p model.Principal, id strin
 	if err := validateMonitoringIDs([]string{id}); err != nil {
 		return out, err
 	}
-	if _, err := s.monitoringResources(ctx, p, []string{id}, nil, nil); err != nil {
+	if _, err := s.monitoringResources(ctx, p, []string{id}, nil, nil, scopepolicy.WorkerRead); err != nil {
 		return out, err
 	}
 	if s.monitoring == nil {
@@ -239,7 +243,7 @@ func (s *Workers) getMonitoring(ctx context.Context, p model.Principal, id strin
 		return monitoring.DetailResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
 	}
 	projects, tasks := rules.scopes(o)
-	sources, err := s.monitoringResources(ctx, p, []string{id}, projects, tasks)
+	sources, err := s.monitoringResources(ctx, p, []string{id}, projects, tasks, scopepolicy.WorkerRead)
 	if err != nil {
 		return monitoring.DetailResponse{}, err
 	}
@@ -269,7 +273,7 @@ func (s *Workers) queryMonitoring(ctx context.Context, p model.Principal, ids []
 	if err := validateMonitoringIDs(ids); err != nil {
 		return out, err
 	}
-	if _, err := s.monitoringResources(ctx, p, ids, nil, nil); err != nil {
+	if _, err := s.monitoringResources(ctx, p, ids, nil, nil, scopepolicy.WorkerRead); err != nil {
 		return out, err
 	}
 	if s.monitoring == nil {
@@ -299,7 +303,7 @@ func (s *Workers) queryMonitoring(ctx context.Context, p model.Principal, ids []
 	projects, tasks := rules.summaryScopes(stored)
 	// Access may change while Redis is being read. Recheck all Workers and
 	// qualify references together in the same current PostgreSQL snapshot.
-	sources, err := s.monitoringResources(ctx, p, ids, projects, tasks)
+	sources, err := s.monitoringResources(ctx, p, ids, projects, tasks, scopepolicy.WorkerRead)
 	if err != nil {
 		return monitoring.QueryResponse{}, err
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -172,6 +173,16 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		w := sc.WebhookWriter()
 		existing, e := w.Operation(ctx, o, m.OperationID)
 		if e == nil {
+			manage, authErr := authorize(ctx, sc, p, o)
+			if authErr != nil {
+				return authErr
+			}
+			if !manage && existing.ActorID != p.UserID {
+				return fault("forbidden", "Access to this operation is denied.")
+			}
+			if authErr = requireScope(ctx, sc, p, mutationScopeOperations(m)...); authErr != nil {
+				return authErr
+			}
 			op = existing
 			replay = true
 			conflict = existing.Fingerprint != fp
@@ -200,6 +211,11 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		}
 		var plannedVersion int64
 		var plannedSubscriptions []wm.Subscription
+		if m.Kind == "endpoint.create" {
+			if e = requireScope(ctx, sc, p, mutationScopeOperations(m)...); e != nil {
+				return e
+			}
+		}
 		if m.Kind != "endpoint.create" {
 			planned, e := w.Endpoint(ctx, o, m.EndpointID)
 			if e != nil {
@@ -207,6 +223,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			}
 			if planned.DeletedAt != nil {
 				return fault("not_found", "Webhook resource was not found.")
+			}
+			if e = requireScope(ctx, sc, p, mutationScopeOperations(m)...); e != nil {
+				return e
 			}
 			plannedVersion = planned.ConfigVersion
 			if plannedVersion != m.IfVersion {
@@ -287,15 +306,16 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		}
 		keys := append([]wm.SigningKey(nil), oldKeys...)
 		changed := false
+		redirected := false
 		deleted := false
 		var overlap *time.Time
 		switch m.Kind {
 		case "endpoint.create":
-			if !s.ConfigurationExpansionAvailable {
-				return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
-			}
 			if m.Name == nil || m.Enabled == nil || m.Destination == nil || !m.HasSubscriptions {
 				return fault("invalid_input", "Missing endpoint configuration.")
+			}
+			if *m.Enabled && !s.ConfigurationExpansionAvailable {
+				return fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
 			}
 			id, e := s.newID()
 			if e != nil {
@@ -345,6 +365,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 					if e != nil {
 						return e
 					}
+					redirected = true
 					ep.DestinationRevision++
 					ep.DestinationKind = m.Destination.Kind
 					ep.AdapterVersion = m.Destination.AdapterVersion
@@ -428,6 +449,13 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e = checkTime(m.IssuedAt, now, policy); e != nil {
 			return e
 		}
+		operations := mutationScopeOperations(m)
+		if (m.Kind == "endpoint.create" && ep.Enabled) || (m.Kind == "endpoint.update" && ((!oldEP.Enabled && ep.Enabled) || redirected || subscriptionChanges.reconfirmed || (ep.Enabled && subscriptionChanges.expanded))) {
+			operations = append(operations, scopepolicy.WebhookDeliver)
+		}
+		if e = requireScope(ctx, sc, p, operations...); e != nil {
+			return e
+		}
 		if changed {
 			ep.UpdatedAt = now
 			if m.Kind == "endpoint.create" {
@@ -485,6 +513,9 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 	if completion.Outcome != store.TransactionCommitted {
 		return Result{}, fault("write_outcome_unknown", "The write outcome is unknown. Check the original operation.")
 	}
+	if m.ReturnReceipt && !replay {
+		return Result{Body: map[string]any{"operationId": op.ID, "resourceId": op.TargetID}}, nil
+	}
 	var body any
 	err = s.DB.ReadWebhookSnapshot(ctx, func(sc store.WebhookReadScope) error {
 		manage, e := authorize(ctx, sc, p, o)
@@ -504,6 +535,23 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e = requireLiveOperation(ctx, sc, cur, "operation_expired"); e != nil {
 			return e
 		}
+		operation := scopepolicy.WebhookWrite
+		if m.Kind == "endpoint.delete" {
+			operation = scopepolicy.WebhookDelete
+		}
+		if m.Kind == "signing.rotate" {
+			operation = scopepolicy.WebhookSecret
+		}
+		if e = requireScope(ctx, sc, p, operation); e != nil {
+			return e
+		}
+		if m.ReturnReceipt {
+			body = map[string]any{"operationId": cur.ID, "resourceId": cur.TargetID}
+			return nil
+		}
+		if e = requireScope(ctx, sc, p, scopepolicy.WebhookRead); e != nil {
+			return e
+		}
 		if m.Kind == "signing.rotate" {
 			body = map[string]any{"operation": opView(cur), "signing": map[string]any{"activeKeyId": cur.ActiveKeyID, "overlapUntil": utcTime(cur.OverlapUntil)}}
 			return nil
@@ -512,7 +560,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		if e != nil {
 			return notFound(e)
 		}
-		view, e := s.endpointView(ctx, sc, ep, p.UserID, manage)
+		view, e := s.endpointView(ctx, sc, ep, p, manage)
 		if e != nil {
 			return e
 		}

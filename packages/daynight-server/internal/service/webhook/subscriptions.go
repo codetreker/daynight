@@ -15,6 +15,8 @@ type subscriptionChanges struct {
 	subscriptions []wm.Subscription
 	bindings      []wm.Binding
 	changed       bool
+	expanded      bool
+	reconfirmed   bool
 }
 
 // configurationProjects collects the old and requested scope before source locks.
@@ -143,7 +145,8 @@ func (s *Service) planSubscriptions(ctx context.Context, sc store.WebhookWriteSc
 		var sub wm.Subscription
 		newSub := input.ID == nil
 		if newSub {
-			if !s.ConfigurationExpansionAvailable {
+			result.expanded = true
+			if ep.Enabled && !s.ConfigurationExpansionAvailable {
 				return result, fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
 			}
 			if err := requireEligible(input.ProjectID); err != nil {
@@ -167,6 +170,8 @@ func (s *Service) planSubscriptions(ctx context.Context, sc store.WebhookWriteSc
 				if !s.ConfigurationExpansionAvailable {
 					return result, fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
 				}
+				result.expanded = true
+				result.reconfirmed = true
 				sub.AuthorizationState = "active"
 				sub.UpdatedAt = now
 				result.subscriptions = append(result.subscriptions, sub)
@@ -181,7 +186,8 @@ func (s *Service) planSubscriptions(ctx context.Context, sc store.WebhookWriteSc
 		for _, event := range input.EventTypes {
 			selected[event] = true
 			if _, ok := oldEvents[event]; !ok {
-				if !s.ConfigurationExpansionAvailable {
+				result.expanded = true
+				if ep.Enabled && !s.ConfigurationExpansionAvailable {
 					return result, fault("webhooks_unavailable", "Webhook configuration expansion is unavailable.")
 				}
 				if err := requireEligible(sub.ProjectID); err != nil {
