@@ -12,6 +12,13 @@ import (
 // strict runs account writes without the device polling runner's refusal commits.
 func (s *Identity) strict(ctx context.Context, operation func(store.IdentityScope) error) error {
 	completion, err := s.writer.WriteIdentity(ctx, operation)
+	if completion.Outcome == store.TransactionUnknown {
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && transaction.Outcome == store.TransactionUnknown {
+			return err
+		}
+		return &store.TransactionError{Phase: "confirmation", Outcome: store.TransactionUnknown, Cause: err}
+	}
 	if err != nil {
 		return err
 	}

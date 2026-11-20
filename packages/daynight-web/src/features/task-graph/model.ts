@@ -178,3 +178,16 @@ export const tracePrerequisites = (index: GraphIndex, taskId: string): ReadonlyS
   }
   return result;
 };
+
+export const traceSuccessors = (index: GraphIndex, taskId: string): ReadonlySet<string> => {
+  if (!index.nodes.has(taskId)) return rejectGraph();
+  const result = new Set<string>();
+  const pending = [taskId];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (result.has(id)) continue;
+    result.add(id);
+    for (const target of index.successors.get(id)!) pending.push(target);
+  }
+  return result;
+};

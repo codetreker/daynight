@@ -76,6 +76,7 @@ func (h *Authentication) cookie(name, value string, expires time.Time, maxAge in
 
 func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
 	h.registerDeviceRoutes(mux)
+	h.registerCredentialRoutes(mux)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)

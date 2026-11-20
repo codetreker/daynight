@@ -76,6 +76,17 @@ func userREST(path string, nativePaths []string) bool {
 	if !strings.HasPrefix(path, "/api/v1/") && !strings.HasPrefix(path, "/api/v2/") {
 		return false
 	}
+	// Account credential management is available only to main-site sessions.
+	const tokens = "/api/v2/me/tokens"
+	if path == tokens {
+		return false
+	}
+	if suffix, ok := strings.CutPrefix(path, tokens+"/"); ok {
+		id, end, found := strings.Cut(suffix, "/")
+		if found && id != "" && end == "description" {
+			return false
+		}
+	}
 	// Public OAuth and native login retain their independent browser policies.
 	for _, native := range append([]string{"/api/v1/auth/login", "/api/v1/auth/providers", "/api/v1/auth/device/code", "/api/v1/auth/device/token", "/api/v1/controller-channel"}, nativePaths...) {
 		if path == native {

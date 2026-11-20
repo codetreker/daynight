@@ -175,12 +175,12 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 		// Only stable classifications may leave a redacted boundary.
 		upstreamID = ""
 		switch kind {
-		case "canceled", "deadline", "database", "protocol", "network", "internal", "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "write_outcome_unknown":
+		case "canceled", "deadline", "database", "protocol", "network", "internal", "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "version_conflict", "timeout", "write_outcome_unknown":
 		default:
 			kind = "internal"
 		}
 		switch code {
-		case "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "write_outcome_unknown", "internal_error":
+		case "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "user_not_found", "personal_team_immutable", "version_conflict", "timeout", "write_outcome_unknown", "internal_error":
 		default:
 			code = "internal_error"
 		}

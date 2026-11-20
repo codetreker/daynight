@@ -1508,3 +1508,53 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
     expect(field.height - field.padding - field.border).toBeGreaterThanOrEqual(field.line - 0.02);
   } finally { await context.close(); }
 });
+
+for (const coarse of [false, true]) test(`search fields scale and keep selected tags reachable with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch: coarse });
+  try {
+    const page = await context.newPage();
+    const state = await install(page, 'en');
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const search = page.locator('.task-search-form input[type="text"]');
+    const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+    await filter.locator('summary').click();
+    const tagSearch = filter.locator('input[type="search"]');
+    for (const rootSize of [12, 16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      const expected = `${coarse ? Math.max(rootSize, 16) : rootSize * .875}px`;
+      await expect(search).toHaveCSS('font-size', expected);
+      await expect(tagSearch).toHaveCSS('font-size', expected);
+      const geometry = await tagSearch.evaluate(element => {
+        const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return { height: box.height, content: box.height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth), line: parseFloat(style.lineHeight) };
+      });
+      expect(geometry.height).toBeGreaterThanOrEqual(44);
+      expect(geometry.content).toBeGreaterThanOrEqual(geometry.line - 1);
+    }
+    await tagSearch.fill('Goal');
+    await filter.getByLabel('Goal label').check();
+    await expect(filter.locator('..').getByRole('button', { name: 'Remove Goal label' })).toBeVisible();
+    expect(state.writes).toEqual([]);
+  } finally { await context.close(); }
+});
+
+test('project Task row keeps its primary status and Worker at metadata size', async ({ page }) => {
+  const state = await install(page, 'en');
+  const worker = { claimId: id(80), state: 'active' as const, userId: TEST_VIEWER_ID, workerId: id(81), machine: { id: id(82), name: 'Project machine' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: id(83), phase: 'executing' as const, nativeSessionId: null, claimedAt: time };
+  state.tasks = state.tasks.map(item => item.id === standalone.id ? { ...item, status: 'in_progress', startedAt: time, properties: { worker } } : item);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const row = page.locator(`#standalone-task-${standalone.id}`).locator('..').locator('..').locator('..');
+  const status = row.locator('.task-row-primary-status');
+  const machine = row.locator('.task-row-machine');
+  await expect(status).toHaveCount(1);
+  await expect(machine).toContainText('Project machine');
+  for (const [rootSize, expected] of [[16, '12px'], [24, '18px']] as const) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await expect(status).toHaveCSS('font-size', expected);
+    await expect(machine).toHaveCSS('font-size', expected);
+  }
+  expect(state.writes).toEqual([]);
+});

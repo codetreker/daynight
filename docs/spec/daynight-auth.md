@@ -100,6 +100,10 @@ Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝�
 须由用户显式读取当前状态，读回结果不声称恢复了原请求的历史回执。身份准入暂停时，撤销的本地等待结束并保留已确认或未知结果；未派发的取消不视为未知提交。暂停期间保留列表，不自动读取或重放。已确认结果的后续读取仍须通过原身份准入，旧结果不能关闭较新的对话框。后台身份与数据检查保留已有界面和草稿；
 确认账户变化或会话失效时隔离旧账户数据。
 
+账户凭据管理 API 支持为每条 PAT 和 OAuth grant 保存独立的可空描述。描述是单行文本，先拒绝无效 Unicode、NUL 和行分隔符，再裁剪首尾 Unicode White_Space；空结果表示无描述，非空最多 100 个 Unicode 码点。描述修改只改变该字段，不改变秘密、期限、撤销、刷新、最近使用时间或清理行为。仍保留的过期 PAT 和过期或撤销的 OAuth grant 可以编辑；删除记录时描述随之删除。旧记录、设备签发和新 OAuth 授权的描述初始为 null。
+
+`GET /api/v2/me/tokens` 包含仍保存的过期 PAT，`POST /api/v2/me/tokens` 接受绑定当前账户的 `expectedUserId` 和可选描述，确认创建后只交付一次秘密。`GET /api/v3/oauth/grants` 保留 v2 元数据并增加必有的可空描述。两类记录分别通过 `PATCH /api/v2/me/tokens/{id}/description` 和 `PATCH /api/v3/oauth/grants/{id}/description`，以必填 `expectedUserId`、`expectedDescription` 和 `description` 保存；观察值必须是 null 或服务返回的规范值。观察值变化返回 409，不存在或不属于当前账户返回 404。新入口只接受主站浏览器会话，写入校验精确 Origin 和账户；拒绝 query、HEAD 和显式 Authorization，响应 no-store。提交未知不能当作成功或自动重放。旧 PAT v1 和 OAuth v1/v2 表示及设备、OAuth 签发协议保持兼容。
+
 PAT 和 OAuth grant 的内部元数据可保存最后一次已记录的真实合格使用事件时间。新建和升级后的
 既有记录初始均为 null，不从历史数据推断或回填；null 只表示没有已记录值。对同一对象，较旧、
 相同时间或错误账户的事件不能使记录回退或改变其他对象。迟到事件不能复活已删除对象；仍保留的

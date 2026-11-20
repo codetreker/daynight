@@ -1096,7 +1096,13 @@ configuration and startup validation before route registration; this includes
 `/mcp`, `/login`, `/auth/complete`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace, `/api/v1/webhook-event-types`, `/api/v1/auth/preview` and `/auth/sso`. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
-starting the server. Login return loops, including `/login` and `/auth/complete`, are rejected before a
+starting the server. Before upgrading for credential descriptions, also check the
+exact paths `/api/v2/me/tokens`, `/api/v3/oauth/grants`, and each path's
+single-ID `/description` form. If a callback overlaps, move it on the old service
+and in UniAuth and verify login before upgrading. The migration adds nullable
+columns and requires table locks; use the existing backup and maintenance process.
+An old binary rejects the new migration ledger, so recover forward with a compatible
+binary after migration. Login return loops, including `/login` and `/auth/complete`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
 known callback failure redirects to the explicit login error page and retains the
 validated target, including when local session creation fails. A successful callback
@@ -1410,7 +1416,7 @@ The inner `internal/service/application` suite verifies the business-module
 construction shared by protocol adapters. It records Projects, Tasks and
 Attachments constructor arguments and returned module identities through the
 same production assembly body. Identity construction receives the original writer,
-client and callback, and its concrete result occupies the 18-method output used
+client and callback, and its concrete result occupies the identity output used
 by Authentication and MCP. The wrappers call real pure constructors; fixed
 business data does not require Project/Task/Attachment or Identity workflows or
 PostgreSQL.

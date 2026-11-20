@@ -61,6 +61,15 @@ type IdentityDAO interface {
 	ConsumeDevice(context.Context, string) error
 }
 
+// PATManagementDAO is the transaction-bound capability for account metadata.
+// An IdentityDAO provided by the production identity scope also implements it.
+type PATManagementDAO interface {
+	FreshPATTime(context.Context, time.Time) (time.Time, error)
+	ListAllPATs(context.Context, string) ([]model.PersonalAccessToken, error)
+	ComparePATDescription(context.Context, string, string, *string, *string) (bool, error)
+	PATExists(context.Context, string, string) (bool, error)
+}
+
 type PersonalTeamDAO interface {
 	InsertPersonalTeam(context.Context, string, string, time.Time) (bool, error)
 	InsertPersonalOwner(context.Context, string, string, time.Time) error

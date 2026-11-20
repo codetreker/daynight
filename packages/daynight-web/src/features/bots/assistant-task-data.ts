@@ -15,6 +15,6 @@ export async function collectAssistantPages<T>(read: (cursor?: string) => Promis
 }
 export const loadAssistantTasks = (scope: TaskCacheScope, signal: AbortSignal) => collectAssistantPages(cursor => listAssistantTasks({limit:200,...(cursor ? {cursor} : {})},signal,assistantTaskAdmission(scope)), entry => entry.id);
 export const assistantTaskState = (task: AssistantTask) => task.state === 'paused' ? 'paused' : task.claimState === 'pending' ? 'binding' : task.claimState;
-export const assistantTaskUrl = (id: string, tab?: 'manual'|'records'|'proposals', recordId?: string) => `/bots/tasks/${id}${tab ? `?tab=${tab}${recordId ? `&recordId=${encodeURIComponent(recordId)}` : ''}` : ''}`;
+export const assistantTaskUrl = (id: string, tab?: 'manual'|'records'|'proposals'|'inbox', recordId?: string) => `/bots/tasks/${id}${tab ? `?tab=${tab}${recordId ? `&recordId=${encodeURIComponent(recordId)}` : ''}` : ''}`;
 
 export const assistantTaskEventItem = (payload: unknown): string | null => payload !== null && typeof payload === 'object' && !Array.isArray(payload) && 'itemId' in payload && typeof payload.itemId === 'string' ? payload.itemId : null;

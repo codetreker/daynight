@@ -94,7 +94,7 @@ describe('localized task graph presentation', () => {
     const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
     fireEvent.click(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, outside the selected dependency path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, successor of the selected task' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, prerequisite of the selected task' })).toBeTruthy();
     const initialTransform = viewport(view.baseElement).style.transform;
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
@@ -106,6 +106,8 @@ describe('localized task graph presentation', () => {
     const routes = paths.map((path) => path.getAttribute('d'));
     const rootToggle = view.baseElement.querySelector('#task-root-A');
     const relation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task A → subsequent task C, selected dependency path' });
+    const successorRelation = screen.getByRole('img', { name: 'Ordinary dependency: prerequisite task C → subsequent task D, successor dependency path' });
+    expect(screen.getByText('Successors', { selector: '.graph-foot *' })).toBeVisible();
     const canvas = view.baseElement.querySelector('.task-graph-canvas');
     expect(within(screen.getByRole('dialog')).queryByRole('combobox')).toBeNull();
     view.setLocale('zh-CN');
@@ -114,8 +116,10 @@ describe('localized task graph presentation', () => {
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
     expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪，不在所选依赖路径中' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪，所选任务的后继' })).toBeTruthy();
     expect(screen.getByRole('img', { name: '普通依赖：前置任务 A → 后续任务 C，所选依赖路径' })).toBe(relation);
+    expect(screen.getByRole('img', { name: '普通依赖：前置任务 C → 后续任务 D，所选任务的后继依赖路径' })).toBe(successorRelation);
+    expect(screen.getByText('后继', { selector: '.graph-foot *' })).toBeVisible();
     expect(screen.getByRole('group', { name: '任务依赖关系' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '放大' })).toHaveAttribute('title', '放大'));
     expect(screen.getByRole('button', { name: '缩小' })).toBeTruthy();
