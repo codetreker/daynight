@@ -198,3 +198,39 @@ func TestScopedWebhookDoesNotDiscloseVersionsBeforeAdmission(t *testing.T) {
 		r.noEffects()
 	}
 }
+
+func TestScopedWebhookDisabledDraftAndReconfirmation(t *testing.T) {
+	t.Run("disabled draft without delivery", func(t *testing.T) {
+		f, auth, _ := scopedMutationFixture(t, "webhook:write")
+		f.service.ConfigurationExpansionAvailable = false
+		m := f.mutation("endpoint.create")
+		m.EndpointID = ""
+		m.IfVersion = 0
+		m.ReturnReceipt = true
+		m.Name = mgmtPtr("Draft")
+		m.Enabled = mgmtPtr(false)
+		m.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/draft"}
+		m.HasSubscriptions = true
+		result, err := f.service.MutateAuthorized(f.ctx, auth, f.owner, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt := result.Body.(map[string]any)
+		if len(receipt) != 2 || receipt["operationId"] != m.OperationID || receipt["resourceId"] != mgmtRandomID(0) || len(f.effects.endpoints) != 1 || f.effects.endpoints[0].Enabled {
+			t.Fatalf("receipt=%v effects=%+v", receipt, f.effects)
+		}
+	})
+	t.Run("reconfirmation requires delivery", func(t *testing.T) {
+		f, auth, _ := scopedMutationFixture(t, "webhook:write")
+		f.endpoint.Enabled = false
+		sub, bindings := mgmtSubscription(f)
+		sub.AuthorizationState = "confirmation_required"
+		mgmtInstallSubscriptions(f, []wm.Subscription{sub}, map[string][]wm.Binding{sub.ID: bindings})
+		m := f.mutation("endpoint.update")
+		m.ReturnReceipt = true
+		m.ConfirmProjectIDs = []string{sub.ProjectID}
+		_, err := f.service.MutateAuthorized(f.ctx, auth, f.owner, m)
+		mgmtWantFault(t, err, "insufficient_scope")
+		f.noEffects()
+	})
+}
