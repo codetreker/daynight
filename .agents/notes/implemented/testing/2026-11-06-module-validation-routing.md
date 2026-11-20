@@ -14,12 +14,14 @@ input as a Go input adds validation without a Go dependency on that tooling.
 PR application jobs follow module directories. `packages/daynight/` and installer
 tooling in `scripts/` select CLI; `packages/daynight-server/` selects both the Go
 module and [startup/shutdown job](2026-11-09-independent-go-startup-shutdown.md);
-`packages/daynight-web/` and `deployment/` select Web. Implementations, fixtures
-and test tooling follow the same ownership, without cross-module file lists.
+`packages/daynight-web/` and `deployment/` select Web; `packages/mobile/` selects
+Mobile. Implementations, fixtures and test tooling follow the same ownership,
+without cross-module file lists.
 
 Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` and the
-`patches/` directory select CLI and Web. Selection accumulates across paths, so
-those inputs combined with a Go-directory change select all three modules.
+`patches/` directory select CLI, Web and Mobile. Selection accumulates across
+paths, so those inputs combined with a Go-directory change select all four
+modules.
 
 Independent Go API integration and product E2E follow their own runtime inputs.
 API integration selects server inputs and the production Web build inputs
@@ -32,7 +34,10 @@ Product E2E selects its framework and actual production build inputs. Production
 code/configuration can select E2E alongside its module; module-only tests and
 fixtures retain their module validation and any selected API integration. The
 [product E2E decision](2026-11-08-self-contained-product-e2e.md) owns that complete
-runtime boundary, without restoring cross-module unit-test routing.
+runtime boundary, without restoring cross-module unit-test routing. Mobile is
+not a consumer in either cross-module workflow: its separate Linux job checks
+Expo dependency compatibility, TypeScript and both Metro bundles without
+building or running native apps.
 
 Documentation, repository instructions, the root `.gitignore` and manual
 publication workflow retain their exclusions. Bundled CLI source Markdown
@@ -42,7 +47,7 @@ product E2E. Complete merge-base diffs retain deletions and both sides of rename
 every main push selects them all, subject to the [main concurrency policy](../process/2026-11-19-bounded-main-ci-runs.md).
 Final checks retain failure and cancellation
 propagation and explicitly require selected CLI, Go module, startup/shutdown,
-API, Web quality and product E2E jobs to succeed.
+API, Web quality, Mobile and product E2E jobs to succeed.
 
 This routing originally selected real-shell completion with CLI and assistant
 browser validation with Web. The

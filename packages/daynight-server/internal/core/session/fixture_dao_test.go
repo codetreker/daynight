@@ -56,6 +56,7 @@ type fixtureDAO struct {
 	DeleteBotSessionFn                  func(context.Context, string, string) error
 	RedactDeletedBotFn                  func(context.Context, string) error
 	SessionOperationFn                  func(context.Context, string, string) (store.SessionOperation, error)
+	SessionOperationExistsFn            func(context.Context, string, string) (bool, error)
 	InsertSessionOperationFn            func(context.Context, store.SessionOperation) error
 	SetSessionOperationReceiptFn        func(context.Context, sp.Operation) error
 	SetSessionOperationEpochFn          func(context.Context, string, string, int64) error
@@ -75,6 +76,11 @@ type fixtureDAO struct {
 	TerminalArchiveFn                   func(context.Context, string) (v2.ArchiveStatus, *v2.Receipt, string, error)
 	CurrentTerminalSessionFn            func(context.Context, string, string, string) (string, error)
 	TerminalHistoryFn                   func(context.Context, string, string, *time.Time, *string, int) ([]store.TerminalHistoryRow, error)
+}
+
+func (d *fixtureDAO) SessionOperationExists(ctx context.Context, session, operation string) (bool, error) {
+	d.invoke(ctx, "SessionOperationExists", d.SessionOperationExistsFn != nil)
+	return d.SessionOperationExistsFn(ctx, session, operation)
 }
 
 func newFixtureDAO(t *testing.T) *fixtureDAO {

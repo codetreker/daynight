@@ -20,13 +20,23 @@ fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly. PAT storage supports explicit
 policies with an independent version and rejects absent or malformed policies
 on scoped reads. The preparation migration leaves historical and legacy-writer
-rows unscoped until the coordinated backfill and cutover. Device records reserve
-the approved selection without changing the existing redemption flow. OAuth
-stores an MCP policy and its independent version on the grant; access and
-refresh credentials retain their original family identity. Scoped reads reject
-missing or malformed MCP policy while fixed API grants have no policy. OAuth
-authorization records can retain an explicit approved selection without changing
-the existing approval or code-exchange entry points.
+rows unscoped until the coordinated backfill and cutover. The opt-in device flow
+records the approved selection with the decision and uses that exact selection
+when redemption creates the PAT. Device decisions and redemptions check expiry
+using database time after locking the device record. OAuth stores an MCP policy
+and its independent version on the grant; access and refresh credentials retain
+their original family identity. Scoped reads reject missing or malformed MCP
+policy while fixed API grants have no policy. The opt-in OAuth browser flow binds
+explicit selections to the same immutable MCP catalog snapshot exposed to the
+browser. Only a live pending inspection
+advertises its catalog revision. Decisions retain the original session, account,
+Cookie and callback bindings and atomically save the approved selection with the
+code hash. Code redemption creates the grant policy from that selection in the
+original issuance transaction. Refresh retains the grant's current policy,
+including owner edits, while public OAuth scope remains `daynight:mcp`. The
+legacy approval method rejects approval in scoped assembly so an old page cannot
+bypass explicit selection; its existing request can be read after refresh.
+Production constructors and routes retain the original behavior until cutover.
 
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
@@ -63,6 +73,15 @@ existing Worker resource checks, including for MCP grants.
 The optional Bot attention projection requires Assistant Task read permission;
 its creation response is admitted before the definition is written.
 
+Session command admission classifies messages by their operation, including
+image-only messages, and treats other commands as control. The scoped execution
+reads the original actor's current policy in the Session transaction at submit,
+offer and final begin. A replay first probes only operation existence and requires
+Session read before loading its intent or receipt. A refusal before dispatch is
+committed with the operation receipt; an already dispatched fact is retained.
+The Session transaction exposes its credential DAOs without transferring their
+lifetime to the caller. The legacy production assembly remains unchanged.
+
 ## Alternatives
 
 **Group grants.** Treating a selected group as an enduring grant would authorize
@@ -95,5 +114,6 @@ authorization source must read current authority at each supplied boundary and
 preserve the principal; it cannot substitute a stale request snapshot for an
 existing transactional recheck. The current production assembly retains the
 existing credential paths; scoped assembly requires authenticated policy
-snapshots and transaction-bound policy readers. Device issuance integration,
-historical backfill and production activation remain independent work.
+snapshots and transaction-bound policy readers. Historical backfill and
+production activation remain independent work; the original production device
+assembly remains in place until cutover.

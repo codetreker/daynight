@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -105,6 +106,9 @@ func (s *Execution) TaskOperation(ctx context.Context, p model.Principal, projec
 		return out, conflict()
 	}
 	err := s.browserRun(ctx, p, project, taskID, id, TaskReceiptAccess, func(a *Access) error {
+		if err := s.admitCommand(ctx, a.tx, p, scopepolicy.SessionRead); err != nil {
+			return err
+		}
 		operation, err := a.tx.dao.SessionOperation(ctx, id, operationID)
 		if err != nil {
 			return err

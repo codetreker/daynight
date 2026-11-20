@@ -31,6 +31,25 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { for (const controller of controllers.splice(0)) controller.retire(); vi.useRealTimers(); });
 
 describe('Thread controller continuous reading', () => {
+  it('resets the message window and reply target on history change while retaining the draft', async () => {
+    const { controller, list } = make();
+    const old = message(10), stale = deferred<ThreadPage>(), fresh = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([old], true)); await start(controller);
+    controller.setDraft('unsent text'); controller.setReply(old.id); await controller.openDetails(old.id);
+    list.mockReturnValueOnce(stale.promise); const pending = controller.refresh(); await flush();
+    const oldCall = list.mock.calls.at(-1)!;
+    list.mockReturnValueOnce(fresh.promise); controller.resetHistory(); await flush();
+    expect(oldCall[2].aborted).toBe(true); expect(() => oldCall[3].assertCurrent()).toThrow();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(controller.snapshot()).toMatchObject({ visible: [], incomingCount: 0, consumedAfterId: null, hasMoreBefore: false, hasMoreAfter: false, initialized: false, draft: 'unsent text', replyTo: null, detailsMessage: null });
+    stale.resolve(page([message(11, 'old history')])); await pending;
+    expect(controller.snapshot().visible).toEqual([]);
+    controller.admitHistory(); await flush();
+    expect(list.mock.calls.at(-1)![1]).toEqual({ count: 50 });
+    fresh.resolve(page([message(20, 'new history')])); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ visible: [message(20, 'new history')], consumedAfterId: id(20), draft: 'unsent text', replyTo: null });
+    controller.retire(); expect(controller.snapshot()).toMatchObject({ visible: [], draft: '', replyTo: null });
+  });
   it('does not work while mounted inactive and cancels hidden reads before late publication', async () => {
     const { controller, list } = make();
     const pending = deferred<ThreadPage>(); list.mockReturnValueOnce(pending.promise);
@@ -225,6 +244,54 @@ describe('Thread scope and replies', () => {
 });
 
 describe('Thread sending', () => {
+  it.each(['confirmed', 'unknown', 'refused'] as const)('settles an old dispatched post as %s without publishing its receipt or replaying it', async outcome => {
+    const { controller, list, post } = make();
+    list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    const result = deferred<ThreadMessage>();
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => {
+      admission.onDispatch?.(); const item = await result.promise; admission.onConfirmed?.(item); return item;
+    });
+    controller.setDraft('submitted'); controller.setReply(id(10));
+    const sending = controller.send(); await flush();
+    list.mockResolvedValueOnce(page([message(20, 'fresh')]));
+    controller.resetHistory(); controller.admitHistory(); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ draft: 'submitted', replyTo: null, visible: [message(20, 'fresh')] });
+    if (outcome === 'confirmed') result.resolve({ ...message(11, 'submitted'), replyTo: id(10) });
+    else result.reject(new ThreadPostError(outcome, new ApiError(outcome === 'unknown' ? 'network' : 'server', outcome === 'unknown' ? null : 503)));
+    await sending; await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: outcome, postOutcome: outcome, sending: false, draft: 'submitted', replyTo: null, visible: [message(20, 'fresh')] });
+    expect(controller.snapshot().postError === null).toBe(outcome === 'confirmed');
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pre-dispatch post on history change and never sends its old reply target', async () => {
+    const entered = deferred<void>(); let hold = false;
+    const ready = async (signal: AbortSignal) => {
+      if (hold) { entered.resolve(); await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }
+    };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    controller.setDraft('draft'); controller.setReply(id(10)); hold = true;
+    const sending = controller.send(); await entered.promise;
+    controller.setActive(false); controller.resetHistory(); await sending;
+    expect(controller.snapshot()).toMatchObject({ draft: 'draft', replyTo: null, remoteOutcome: 'not_sent', sending: false });
+    expect(post).not.toHaveBeenCalled();
+    hold = false; controller.admitHistory(); controller.setActive(true); await controller.refresh();
+    post.mockImplementationOnce(async (_scope, input, _signal, admission) => { expect(input).toEqual({ body: 'draft' }); admission.onDispatch?.(); return message(20, 'draft'); });
+    await controller.send(); expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels pending publication of a previously confirmed receipt on history change', async () => {
+    const gate = deferred<void>(); let hold = false, signal: AbortSignal | undefined;
+    const ready = async (value: AbortSignal) => { if (hold) { signal = value; await gate.promise; } };
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(message(11, 'submitted')); hold = true; return message(11, 'submitted'); });
+    controller.setDraft('submitted'); await controller.send(); await flush();
+    expect(controller.snapshot().remoteOutcome).toBe('confirmed');
+    controller.setActive(false); controller.resetHistory(); expect(signal?.aborted).toBe(true);
+    hold = false; gate.resolve(); await flush(); controller.admitHistory(); controller.setActive(true); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ visible: [], draft: 'submitted', remoteOutcome: 'confirmed', postOutcome: 'confirmed' });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
   it('keeps revisions edited during an in-flight POST and does not abort for a hidden tab', async () => {
     const { controller, list, post } = make(); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
     const pending = deferred<ThreadMessage>();
