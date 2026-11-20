@@ -1,5 +1,5 @@
 .task-tag-list { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; max-width: 100%; margin-top: 5px; }
-.task-tag { min-width: 0; max-width: 100%; padding: 2px 7px; border: 1px solid #e4e7ee; border-radius: 5px; background: #f0f1f6; color: #566176; font-size: var(--text-interface); line-height: 1.4; overflow-wrap: anywhere; }
+.task-tag { min-width: 0; max-width: 100%; padding: 2px 7px; border: 1px solid #e4e7ee; border-radius: 5px; background: #f0f1f6; color: #566176; font-size: var(--text-sm); line-height: 1.4; overflow-wrap: anywhere; }
 .task-tags-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; max-width: 100%; }
 .task-tags-summary > .task-tag-list { display: contents; margin: 0; }
 .task-tags-summary .task-tag { box-sizing: border-box; }
@@ -18,5 +18,5 @@
 .task-tag { display: inline-flex; align-items: center; gap: 5px; background: transparent; color: #344054; }
 .task-tag-dot { flex: none; box-sizing: border-box; width: 9px; height: 9px; border: 1px solid #526174; border-radius: 50%; }
 .task-tag-missing { border-style: dashed; }
-.task-tag-color-feedback { display: inline; color: #344054; font-size: var(--text-interface); overflow-wrap: anywhere; }
+.task-tag-color-feedback { display: inline; color: #344054; font-size: var(--text-sm); overflow-wrap: anywhere; }
 .task-tag-color-feedback button { color: #285b9f; cursor: pointer; }

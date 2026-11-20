@@ -35,7 +35,10 @@ Mermaid's current configuration receives individual entries, so its surrounding
 files and configuration objects retain normal inspection. The workspace shell and
 shared selection controls use the public sizes directly; the shared selection CSS
 owns touch text adjustments and sizes controls from their actual text instead of
-private font aliases. The zero-legacy mode refuses the bridge and all remaining baseline
+private font aliases. Project and personal Task lists, Goal cards, tags and
+search select the public scale directly. Their search inputs use the shared
+coarse-pointer adjustment; the tag input derives its height from its line box
+and padding with a 44px minimum. The zero-legacy mode refuses the bridge and all remaining baseline
 uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 

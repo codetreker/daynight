@@ -158,6 +158,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   const worker = page.locator('.task-row-machine');
   await expect(worker).toBeVisible();
   await expect(worker).toHaveCSS('font-size', '12px');
+  await expect(page.locator('.task-row-primary-status')).toHaveCSS('font-size', '12px');
   await expect.poll(() => worker.textContent()).toBe(`Claim machine: ${replacement}`);
   const layout = await worker.evaluate(el => {
     const node = el.firstChild!;
@@ -175,6 +176,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   expect(layout.tailLastTop).toBeGreaterThan(layout.tailFirstTop);
   await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
   await expect(worker).toHaveCSS('font-size', '18px');
+  await expect(page.locator('.task-row-primary-status')).toHaveCSS('font-size', '18px');
   expect(await worker.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await expect(page.getByText(`Claim machine: ${longWorker}`)).toHaveCount(0);

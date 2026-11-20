@@ -2515,7 +2515,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const copy = card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
   const initialUrl = page.url();
   await expect(id).toHaveText(goalId);
-  await expect(id).toHaveCSS('font-size', '11px');
+  await expect(id).toHaveCSS('font-size', '12px');
   await expectCopyButtonSkin(page, copy);
   await card.locator('.goal-list-title').focus(); await page.keyboard.press('Tab');
   await expect(copy).toBeFocused();
