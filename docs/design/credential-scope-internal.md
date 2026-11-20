@@ -113,6 +113,43 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## 附件准入
+
+`service/attachment.NewScopedAttachments` 显式接收授权事实，复用普通附件服务的
+资源检查、上传容量和文件 gate。项目与 Task 可见性先于 scope 拒绝，附件元数据、
+内容和文件副作用均在 scope 准入之后访问。项目可见性检查不要求额外的
+`project:read` 或 `task:read` scope。
+
+| 操作 | 所需 scope | 准入与输出 |
+| --- | --- | --- |
+| List | `attachment:read` | 同一读取快照中准入后获取目录及分页元数据 |
+| Open | `attachment:read` | 取得目标 gate 后权威读取原凭据当前授权，再获取元数据和稳定文件句柄 |
+| Put、PutRetained | `attachment:upload` 与 `attachment:read` | 开始上传前同时准入，返回原完整附件元数据 |
+| Delete | `attachment:delete` | 原变更事务确认资源访问后准入，删除字节和元数据 |
+
+上传完整响应包含覆盖前保留的创建时间，因此写入前也要求读取权限；仅有上传
+权限不能先发布文件再因读取权限不足拒绝回执。删除返回原最小成功结果，不要求
+附件读取权限。已准入的上传或已打开的单次流保持原有完成语义，scope 编辑不使
+文件与元数据的既有完成事实失效。
+
+Open 的权威读取保留原 Principal 和 profile，校验当前策略；缺少复核能力、
+凭据失效或身份不匹配均拒绝交付。原 request context 穿过 gate 等待、授权与文件
+操作；打开后不为每个字节重新鉴权，也不在流 I/O 期间持有凭据行锁。
+
+REST 的显式 `RegisterScopedRoutes` 复用原解析与流响应。附件列表及自动 HEAD、
+文件 GET 及自动 HEAD 对应读取，PUT 对应上传完整响应，DELETE 对应删除。
+主站 preview GET 保留原无需业务授权的跳转；preview HEAD 必须经过 scoped Open。
+独立 preview host 仍只通过原 preview Cookie 路径读取，不新增 PAT/MCP 预览入口。
+实际注册同时提供按 host 区分的观察记录，覆盖自动 HEAD、preview HEAD 读取分支、
+公开跳转、Cookie 专用入口和方法回退，供全量启用时核对。
+方法回退保留原认证和 405。权限不足沿用 403 `forbidden`，并附加
+`Daynight-Scope-Status: insufficient_scope`。
+
+普通 MCP 的显式 `RegisterScopedAttachmentTools` 为 `task_attachment_list` 和
+`task_attachment_remove` 传递原调用授权，分别执行读取和删除准入。工具 schema、
+发现和原完成结果不变；权限拒绝为 `insufficient_scope`，删除拒绝标为
+`not_committed`。私有分片上传、下载票据及其事务复核由独立传输服务负责。
+
 ## 账户与集成准入
 
 账户资料、Worker 与 Reviewer Prompt、用户可见用量及 GitHub 用户操作的
@@ -239,13 +276,33 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+启用时，同一 Session 服务必须同时装配命令和生产者准入；各自的 scoped
+构造入口只安装其对应的规则。
+
+## Session 生产者准入
+
+Session 与用量生产的 scoped 装配在实际操作所属事务或快照中读取原 PAT 的
+当前策略，要求 `session:produce`。Task 注册检查实际调用凭据；后续 Controller
+操作使用连接绑定的父凭据，保留原 claim、执行代次和连接 fence。Test 与 Bot
+Session 的当前 grant 父凭据和活动连接父凭据可能不同：同代重连更换 grant 后，
+旧连接仍须分别复核两者的有效性和生产权限。同一凭据只需一次策略检查。
+Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再参与新 grant 的
+消费；正常同代重连保留旧 lease 时仍分别复核两者。
+用量上传凭据保留原父凭据和资源绑定，不能凭新连接的权限替代原父凭据。
+
+注册、签发及新生产操作在相应阶段拒绝权限不足；已有持久结果不因撤权改写。
+恢复和重试仍遵循各自的原身份、回执和完成语义。固定 profile 继续受原协议和
+资源约束，受限入口不将缺失的 PAT 策略解释为无限权限。具体权衡见
+[Session 生产者准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-producer-scope.md)。
 
 ## 装配边界
 
-生产仍使用原有 Worker、Tag、Team、Bot、Session、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有附件、Worker、Tag、Team、Bot、Session、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方
-已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
+已认证的策略快照；附件 Open 的权威读取与 scoped Bot 授权事实来源由启用阶段
+接入对应凭据的当前读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
+附件准入与完整上传回执的取舍见[附件决策](../../.agents/notes/implemented/architecture/2026-11-20-attachment-scope-admission.md)。

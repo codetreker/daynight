@@ -252,7 +252,8 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
-	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, t task, _ bool) error {
+	err := s.browserRun(ctx, p, project, taskID, id, ProducerAccess, func(a *Access) error {
+		tx, r, t := a.tx, a.record, a.task
 		if r.BotID != nil {
 			return denied()
 		}

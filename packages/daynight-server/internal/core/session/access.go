@@ -23,7 +23,7 @@ type TaskAccess struct{ task task }
 
 type Authority struct {
 	Purpose                                                        BrowserPurpose
-	Test                                                           bool
+	Test, ConnectionLeasePresent                                   bool
 	ProjectID, OwnerID, ParentCredentialID, ConnectionCredentialID string
 }
 
@@ -37,7 +37,7 @@ func (op *Operation) CheckRegistration(t *TaskAccess, p model.Principal, input s
 
 func (a *Access) Authority() Authority {
 	r := a.record
-	return Authority{Test: r.Snapshot.TestExecutionID != "", ProjectID: r.Snapshot.Identity.ProjectID, OwnerID: r.Owner, ParentCredentialID: r.Parent, ConnectionCredentialID: r.ConnectionParent}
+	return Authority{Test: r.Snapshot.TestExecutionID != "", ConnectionLeasePresent: r.ConnectionExpiry != nil, ProjectID: r.Snapshot.Identity.ProjectID, OwnerID: r.Owner, ParentCredentialID: r.Parent, ConnectionCredentialID: r.ConnectionParent}
 }
 
 // LockTask leaves independent Test Sessions without a Task lock.

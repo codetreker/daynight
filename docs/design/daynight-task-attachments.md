@@ -24,7 +24,12 @@
 该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
-凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。Web 使用 Task 独立 origin 与预览凭据，保留普通 iframe 和相对资源。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
+生产凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。显式 scoped 服务
+另按[凭据 Scope 内部合同](credential-scope-internal.md#附件准入)在资源可见性确认后、
+元数据或文件副作用前检查对应业务权限；其 Open 在取得目标 gate 后权威复核原凭据，
+已经打开的流保留原有完成语义。完整上传回执保留原创建时间，因此准入同时需要上传
+和读取权限。生产装配继续使用原入口，scoped 入口尚未公开启用。
+Web 使用 Task 独立 origin 与预览凭据，保留普通 iframe 和相对资源。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
 
 ## 目标与操作单位
 
@@ -311,7 +316,7 @@ body { background: white; }
 JSON 路由；正常既有路由行为保持原义。
 所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败保留原始错误链与 requestId；除独立预览的文档失败页外，使用既有 HTTP 错误信封和日志规则。
 
-主站原始读取使用 attachment 和 nosniff，Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。主站预览 GET 跳转至 Task Host，HEAD 留在主站鉴权并检查文件。
+主站原始读取使用 attachment 和 nosniff，Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。主站预览 GET 跳转至 Task Host，HEAD 留在主站鉴权并检查文件。显式 scoped 注册的 HEAD 进入同一 Open 读取准入；GET 跳转与独立 Task Host 的 preview Cookie 认证保持原合同。
 列表与可覆盖的文件使用 `Cache-Control: no-store`，刷新后读取当前内容。
 `path_conflict` 映射 409；存储记录存在而磁盘内容缺失仍为 500，不能被 not_found
 错误链误判。流式中止只记录附件操作错误，现有日志包装器直接重抛 ErrAbortHandler，
