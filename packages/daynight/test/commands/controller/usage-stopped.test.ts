@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -20,7 +21,7 @@ import { mapClaudeUsageEvent } from "../../../src/commands/controller/providers/
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
-const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" | "claude" = "copilot", standalone = false, grant: "valid" | "expired" | "none" = "valid") => {
+const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" | "claude" = "copilot", standalone = false, grant: "valid" | "expired" | "none" = "valid", beforeMeasurement?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/usage-stopped-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const executionId = randomUUID();
@@ -30,6 +31,7 @@ const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifec
   const journalPath = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : provider === "claude" ? "0.3.247/2.1.247/anthropic" : "0.169.0", provider);
   if (grant !== "none") journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + (grant === "valid" ? 3_600_000 : -3_600_000)).toISOString() }, "1");
+  beforeMeasurement?.(journal);
   if (provider === "copilot") journal.usage.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
   if (provider === "claude") journal.usage.enqueueMeasurement(state.stateId, mapClaudeUsageEvent({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_stopped", stop_reason: "end_turn", model: "claude-test", usage: { input_tokens: 17, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })!);
   journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original content" }] });
@@ -142,6 +144,44 @@ test.each(["claude", "copilot"] as const)("unqualified %s measurements remain re
   expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
   expect(batches).toHaveLength(1);
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each(["promoted", "demoted", "metrics-changed", "reordered"] as const)("stopped Claude isolates incompatible state snapshots before selecting eligible measurements (%s)", async change => {
+  const verified = { ...capability, profileId: "claude-message-input-0.3.247-v1" };
+  const previous = change === "promoted" ? { ...verified, qualification: "unverified" } : verified;
+  const current = change === "demoted" ? { ...verified, qualification: "unverified" }
+    : change === "metrics-changed" ? { ...verified, metrics: { ...verified.metrics, inputTokens: "supported" } }
+    : change === "reordered" ? Object.fromEntries(Object.entries({ ...verified, metrics: Object.fromEntries(Object.entries(verified.metrics).reverse()) }).reverse()) : verified;
+  // More than one batch of old states precedes the measurement, including for
+  // canReplay's limit=1 selection after the upload.
+  const oldCount = change === "promoted" ? 101 : 1;
+  const f = await fixture(undefined, "claude", true, "valid", journal => {
+    const state = journal.usage.states()[0]!;
+    for (let i = 0; i < oldCount; i++) journal.usage.enqueueState(state.stateId, { collectionState: previous.qualification === "unverified" ? "unavailable" : "partial", capability: previous, reasonCodes: ["profile_unverified", "native_recovery_gap", "subagent_scope_unknown"], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+  }), before = f.read(), batches: Record<string, unknown>[][] = [];
+  let invalidBatches = 0;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: verified.profileId, provider: "claude", capability: current, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability: current }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; batches.push(body.events);
+    // The real service validates every state capability before applying any
+    // measurement or checking whether the state revision is stale.
+    if (body.events.some(event => event.kind === "execution_state" && !isDeepStrictEqual(event.capability, current))) {
+      invalidBatches++; return Response.json({ error: { code: "invalid_state" } }, { status: 400 });
+    }
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
+  const retained = change === "reordered" ? 0 : oldCount + (change === "demoted" ? 1 : 0);
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: retained, retryable: false });
+  expect(invalidBatches).toBe(0);
+  expect(batches.flat().filter(event => event.kind === "measurement")).toHaveLength(change === "demoted" ? 0 : 1);
+  const remaining = f.read();
+  if (change !== "reordered") expect(remaining.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state")).toEqual(before.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state"));
+  const db = new Database(f.journalPath, { readonly: true });
+  try { expect((db.prepare("SELECT count(*) AS count FROM usage_outbox WHERE quarantined=1").get() as { count: number }).count).toBe(change === "reordered" ? 0 : oldCount); }
+  finally { db.close(); }
+  expect(remaining.execution).toEqual(before.execution); expect(remaining.outbox).toEqual(before.outbox);
 });
 
 test.each([200, 401, 404, 501, 503])("known capability refusal differs from a transient failure (%s) with measurement-only retention", async status => {

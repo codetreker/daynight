@@ -84,7 +84,11 @@ reports a usage limitation without turning successful history archival into a
 permanent failure. Retry advice uses the uploader's current event-kind filter:
 known unqualified measurements alone cannot become a retryable batch, while a
 transient capability lookup failure remains distinguishable. Its pending
-evidence count remains unchanged for retention.
+evidence count remains unchanged for retention. State events must match the
+complete current capability before joining a batch. A qualification or other
+capability change leaves incompatible old state bodies unacknowledged as
+evidence while eligible measurements upload and receive independent ACKs.
+Filtering precedes the batch limit so retained states cannot starve delivery.
 Pending or quarantined measurements
 and unresolved local source-conflict evidence retain their sole journal during
 explicit and automatic recording discard. Local conflicts have no uploadable

@@ -206,7 +206,10 @@ Controller journal 格式 014 包含独立的 `usage_sources`、`usage_outbox` �
 上传器使用独立 HTTP 请求，能力和注册使用原服务的 PAT，batch 只用该 state 的
 usage grant。只有 `qualifiedVersions` 精确匹配时才发送 measurement；未验证版本
 保留本地计量，只上报 unavailable/profile_unverified 状态。未发送 measurement
-不能阻挡这种状态事件。每次 flight 固定准确 eventId/hash 集合，完整核验每项回执
+不能阻挡这种状态事件。execution_state 的完整 capability 必须匹配本次服务能力；
+资格或其他能力字段变化后，旧状态正文作为未 ACK 证据保留，不与当前允许的
+measurement 混批，也不阻挡其独立上传与 ACK。筛选在批次上限之前完成，
+避免旧状态占满窗口。每次 flight 固定准确 eventId/hash 集合，完整核验每项回执
 后才能原子删除；未知、缺项或异文回执不清队列。stale state 额外核对服务器来源
 状态。明确来源冲突隔离具体 poison event，保留证据并上报 partial，其余来源继续。
 

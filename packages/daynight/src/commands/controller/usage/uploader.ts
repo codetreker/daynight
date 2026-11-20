@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { UsageAck, UsagePayload, UsageQueuedEvent, UsageState, UsageStore } from "./types.js";
 
 import { usageProfileId } from "./profiles.js";
@@ -37,7 +38,18 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     return value;
   };
   const qualified = (state: UsageState): boolean => capability(state)?.qualification === "verified";
-  const pendingUpload = (state: UsageState, limit: number) => store.pending(state.stateId, limit, qualified(state) ? undefined : "execution_state");
+  const pendingUpload = (state: UsageState, limit: number) => {
+    const current = capability(state), kind = qualified(state) ? undefined : "execution_state";
+    for (;;) {
+      const flight = store.pending(state.stateId, limit, kind);
+      const obsolete = current === null ? [] : flight.filter(item => item.payload.kind === "execution_state" && !isDeepStrictEqual(item.payload.capability, current));
+      if (!obsolete.length) return flight;
+      // The service validates capability before stale/duplicate handling. Keep
+      // the original payload and hash, but isolate it before forming any batch.
+      for (const item of obsolete) store.quarantine(item.eventId, "profile_unverified");
+      diagnose("Usage state capability changed; the original event was retained locally.");
+    }
+  };
   /** A failed capability read remains retryable; a known refusal or profile filter does not. */
   const canReplay = (state: UsageState): boolean => {
     if (disabled || blocked.has(state.stateId)) return false;
