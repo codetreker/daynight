@@ -163,6 +163,16 @@ type fixedAuth struct{}
 func (fixedAuth) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) { next(w, r, model.Principal{}) }
 }
+func TestUsageRoutesOmitUnavailableService(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, nil, fixedAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/usage/v1/capabilities", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unavailable usage service: got %d", w.Code)
+	}
+}
+
 func TestUsageRoutesKeepOrdinaryAndGrantAuthenticationSeparate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service, err := app.New(nil, app.Options{})

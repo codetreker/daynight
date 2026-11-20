@@ -103,6 +103,10 @@ func TestGrantAndCursorBoundaries(t *testing.T) {
 	code(t, err, "cursor_expired")
 	_, err = s.decodeCursor(encoded+"tamper", now, true)
 	code(t, err, "invalid_cursor")
+	c.LastTime = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err = s.encodeCursor(c); err == nil {
+		t.Fatal("out-of-range timestamp must not produce a cursor")
+	}
 }
 
 type summaryDAO struct {
