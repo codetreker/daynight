@@ -1642,3 +1642,19 @@ test('Task tag editor keeps content sizes and touch input minimums', async ({ pa
   await expect(edit).toBeFocused();
   await expect(picker).toHaveCount(0);
 });
+
+test('Task parent Goal link uses the information content size', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000060';
+  const details = [detailFixture(projectId, taskId, { version: 5n, parentId: goalId }),
+    detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Parent Goal' })];
+  await install(page, false, false, 'unused', details);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const link = page.locator('.task-detail-aside .task-goal-link');
+  await expect(link).toBeVisible();
+  for (const root of [16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(link).toHaveCSS('font-size', `${root * 0.75}px`);
+  }
+  await expect(link).toHaveAttribute('href', new RegExp(`/tasks/${goalId}`));
+});
