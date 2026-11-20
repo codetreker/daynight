@@ -125,7 +125,9 @@ func TestMaterialRoundTripsAndDeleteIsolation(t *testing.T) {
 	ctx := t.Context()
 	stamp := f.task.CreatedAt
 	manual := model.AssistantTaskManual{OwnerUserID: f.owner, TaskID: f.task.ID, Body: "Manual", Rules: json.RawMessage(`[]`), Source: "initial", Version: 1, CreatedAt: stamp}
-	appendix := model.AssistantTaskAppendix{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Text: "Lesson", State: "active", RequestFingerprint: "appendix", SourceRecords: []string{}, Version: 1, CreatedAt: stamp, UpdatedAt: stamp}
+	appendix := model.AssistantTaskAppendix{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Text: "Lesson", State: "active", RequestFingerprint: "appendix", SourceRecords: []string{}, Version: 1, CreatedAt: stamp, UpdatedAt: stamp,
+		Scope: model.AssistantTaskAppendixScope{ProjectIDs: []string{uuid.NewString()}, EventTypes: []string{"report"}, ItemCategories: []string{"build failure"}}, SuccessCount: 1, FailureCount: 2, LastValidatedAt: &stamp}
+	validation := model.AssistantTaskAppendixValidation{OwnerUserID: f.owner, TaskID: f.task.ID, AppendixID: appendix.ID, OutcomeRecordID: uuid.NewString(), Outcome: "effective", ValidatorBotID: uuid.NewString(), CreatedAt: stamp}
 	proposal := model.AssistantTaskProposal{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Body: "Revision", Reason: "Evidence", Status: "pending", RequestFingerprint: "proposal", BaseVersion: 1, Rules: json.RawMessage(`[]`), EvidenceRecords: []string{}, CreatedAt: stamp}
 	item := model.AssistantTaskItem{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Key: "work", State: "open", Category: "fact", RequestFingerprint: "item", Episode: 1, Version: 1, AppState: json.RawMessage(`{}`), CreatedAt: stamp, UpdatedAt: stamp}
 	record := model.AssistantTaskRecord{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Author: "user", Kind: "note", Text: "Evidence", RequestFingerprint: "record", Refs: json.RawMessage(`[]`)}
@@ -135,7 +137,7 @@ func TestMaterialRoundTripsAndDeleteIsolation(t *testing.T) {
 		if err := d.InsertManual(ctx, manual); err != nil {
 			return err
 		}
-		for _, insert := range []func() (bool, error){func() (bool, error) { return d.InsertAppendix(ctx, appendix) }, func() (bool, error) { return d.InsertProposal(ctx, proposal) }, func() (bool, error) { return d.InsertItem(ctx, item) }, func() (bool, error) { return d.InsertEvent(ctx, event) }, func() (bool, error) { return d.InsertInquiry(ctx, inquiry) }} {
+		for _, insert := range []func() (bool, error){func() (bool, error) { return d.InsertAppendix(ctx, appendix) }, func() (bool, error) { return d.InsertProposal(ctx, proposal) }, func() (bool, error) { return d.InsertItem(ctx, item) }, func() (bool, error) { return d.InsertEvent(ctx, event) }, func() (bool, error) { return d.InsertInquiry(ctx, inquiry) }, func() (bool, error) { return d.InsertAppendixValidation(ctx, validation) }} {
 			ok, err := insert()
 			if err != nil {
 				return err
@@ -171,7 +173,7 @@ func TestMaterialRoundTripsAndDeleteIsolation(t *testing.T) {
 	f.write(t, func(d store.AssistantTaskDAO) error { return d.DeleteTaskContent(ctx, uuid.NewString(), f.task.ID) })
 	f.write(t, func(d store.AssistantTaskDAO) error { _, err := d.Manual(ctx, f.owner, f.task.ID, 1); return err })
 	f.write(t, func(d store.AssistantTaskDAO) error { return d.DeleteTaskContent(ctx, f.owner, f.task.ID) })
-	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix", "assistant_task_manual_versions"} {
+	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix_validations", "assistant_task_appendix", "assistant_task_manual_versions"} {
 		var count int
 		if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE task_id=$1`, f.task.ID).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("purge left %s rows: %d %v", table, count, err)

@@ -175,9 +175,19 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	}
 	appendix := requestJSON[api.AssistantTaskAppendix](t, secondClient, http.MethodPost, base+"/appendix", protected(map[string]any{
 		"id": uuid.NewString(), "text": "Preserve existing references when organizing notes.", "sourceRecords": []string{record.ID},
+		"scope": map[string]any{"eventTypes": []string{"report"}, "itemCategories": []string{"notes"}},
 	}, secondToken, "2"), http.StatusOK)
+	if appendix.Scope == nil || !reflect.DeepEqual(appendix.Scope.EventTypes, []string{"report"}) || !reflect.DeepEqual(appendix.Scope.ItemCategories, []string{"notes"}) || len(appendix.Scope.ProjectIDs) != 0 || appendix.Validation != nil {
+		t.Fatalf("appendix scope differs: %+v", appendix)
+	}
+	validated := requestJSON[api.AssistantTaskAppendix](t, secondClient, http.MethodPost, base+"/appendix/"+appendix.ID+"/validations", protected(map[string]any{
+		"outcomeRecordId": outcome.ID,
+	}, secondToken, "2"), http.StatusOK)
+	if validated.Validation == nil || validated.Validation.SuccessCount != 1 || validated.Validation.FailureCount != 0 || validated.Version != appendix.Version {
+		t.Fatalf("appendix validation differs: %+v", validated)
+	}
 	appendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, firstClient, http.MethodGet, base+"/appendix", nil, http.StatusOK)
-	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) {
+	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) || !reflect.DeepEqual(value.Scope, appendix.Scope) || !reflect.DeepEqual(value.Validation, validated.Validation) {
 		t.Fatalf("appendix readback differs: %+v", value)
 	}
 	attentionFixture := *f
@@ -291,15 +301,15 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 		t.Fatal("resume did not persist")
 	}
 	editedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodPatch, base+"/appendix/"+appendix.ID, map[string]any{
-		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.",
+		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.", "scope": map[string]any{"itemCategories": []string{"archive"}},
 	}, http.StatusOK)
-	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) {
+	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) || editedAppendix.Scope == nil || !reflect.DeepEqual(editedAppendix.Scope.ItemCategories, []string{"archive"}) || len(editedAppendix.Scope.EventTypes) != 0 || !reflect.DeepEqual(editedAppendix.Validation, validated.Validation) {
 		t.Fatalf("appendix edit differs: %+v", editedAppendix)
 	}
 	deletedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodDelete, base+"/appendix/"+appendix.ID, map[string]any{
 		"ifVersion": strconv.FormatInt(readTask().Version, 10),
 	}, http.StatusOK)
-	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 {
+	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 || deletedAppendix.Scope != nil || deletedAppendix.Validation != nil {
 		t.Fatalf("appendix deletion differs: %+v", deletedAppendix)
 	}
 	deletedAppendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, f, http.MethodGet, base+"/appendix?state=deleted", nil, http.StatusOK)

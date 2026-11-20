@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
@@ -37,6 +38,23 @@ func (p *inputFields) ids(key string) []string {
 		}
 	}
 	return values
+}
+
+// appendixScope returns nil when the request omits scope; core then keeps or
+// defaults the stored scope. An omitted set inside a declared scope is empty.
+func (p *inputFields) appendixScope() *model.AssistantTaskAppendixScope {
+	if p.err != nil || p.fields["scope"] == nil {
+		return nil
+	}
+	fields, err := jsonobject.Decode(p.fields["scope"], "scope", "projectIds", "eventTypes", "itemCategories")
+	if err != nil {
+		p.err = httpx.InvalidInput(err.Error())
+		return nil
+	}
+	scope := inputFields{fields: fields}
+	result := &model.AssistantTaskAppendixScope{ProjectIDs: scope.strings("projectIds"), EventTypes: scope.strings("eventTypes"), ItemCategories: scope.strings("itemCategories")}
+	p.err = scope.err
+	return result
 }
 func (p *inputFields) mutation(taskID, id string, claim bool) core.Mutation {
 	if id == "" {
@@ -94,8 +112,8 @@ func (h *handler) remove(w http.ResponseWriter, r *http.Request, a core.Actor, t
 	return taskResponse(value), err
 }
 func (h *handler) addAppendix(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
-	p := decode(w, r, "id", "claimToken", "claimGeneration", "text", "sourceRecords")
-	input := core.AppendixInput{Mutation: p.mutation(taskID, "", true), Text: p.text("text", true), SourceRecords: p.ids("sourceRecords")}
+	p := decode(w, r, "id", "claimToken", "claimGeneration", "text", "sourceRecords", "scope")
+	input := core.AppendixInput{Mutation: p.mutation(taskID, "", true), Text: p.text("text", true), SourceRecords: p.ids("sourceRecords"), Scope: p.appendixScope()}
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -103,8 +121,8 @@ func (h *handler) addAppendix(w http.ResponseWriter, r *http.Request, a core.Act
 	return appendixResponse(value), err
 }
 func (h *handler) updateAppendix(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, id string) (any, error) {
-	p := decode(w, r, "ifVersion", "text", "sourceRecords")
-	input := core.AppendixInput{Mutation: core.Mutation{TaskID: taskID, ID: id, IfVersion: p.integer("ifVersion", true, false)}, Text: p.text("text", true), SourceRecords: p.ids("sourceRecords"), State: "edited"}
+	p := decode(w, r, "ifVersion", "text", "sourceRecords", "scope")
+	input := core.AppendixInput{Mutation: core.Mutation{TaskID: taskID, ID: id, IfVersion: p.integer("ifVersion", true, false)}, Text: p.text("text", true), SourceRecords: p.ids("sourceRecords"), State: "edited", Scope: p.appendixScope()}
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -118,6 +136,15 @@ func (h *handler) deleteAppendix(w http.ResponseWriter, r *http.Request, a core.
 		return nil, p.err
 	}
 	value, err := h.tasks.UpdateAppendix(r.Context(), a, input)
+	return appendixResponse(value), err
+}
+func (h *handler) validateAppendix(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, id string) (any, error) {
+	p := decode(w, r, "claimToken", "claimGeneration", "outcomeRecordId")
+	input := core.AppendixValidationInput{Mutation: p.mutation(taskID, id, true), OutcomeRecordID: p.id("outcomeRecordId", true)}
+	if p.err != nil {
+		return nil, p.err
+	}
+	value, err := h.tasks.ValidateAppendix(r.Context(), a, input)
 	return appendixResponse(value), err
 }
 func (h *handler) propose(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {

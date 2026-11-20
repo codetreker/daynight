@@ -1,11 +1,15 @@
 package assistanttask_test
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
 
@@ -89,4 +93,124 @@ func TestInquiryItemFilterRunsBeforePagination(t *testing.T) {
 		}
 		return err
 	})
+}
+
+func appendixFixture(f fixture) model.AssistantTaskAppendix {
+	return model.AssistantTaskAppendix{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Text: "Lesson", State: "active", RequestFingerprint: "appendix", SourceRecords: []string{}, Version: 1, CreatedAt: f.task.CreatedAt, UpdatedAt: f.task.CreatedAt,
+		Scope: model.AssistantTaskAppendixScope{ProjectIDs: []string{}, EventTypes: []string{}, ItemCategories: []string{}}}
+}
+
+func TestAppendixScopeAndCountsSaveWithoutVersionChange(t *testing.T) {
+	f := setup(t)
+	f.create(t)
+	ctx := t.Context()
+	appendix := appendixFixture(f)
+	f.write(t, func(d store.AssistantTaskDAO) error { _, err := d.InsertAppendix(ctx, appendix); return err })
+	stamp := f.task.CreatedAt.Add(time.Minute)
+	appendix.Scope = model.AssistantTaskAppendixScope{ProjectIDs: []string{uuid.NewString()}, EventTypes: []string{"report", "escalation"}, ItemCategories: []string{"build"}}
+	appendix.SuccessCount, appendix.FailureCount, appendix.LastValidatedAt = 4, 1, &stamp
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		if ok, err := d.SaveAppendix(ctx, appendix, 2); err != nil || ok {
+			t.Fatalf("stale version saved: %v %v", ok, err)
+		}
+		ok, err := d.SaveAppendix(ctx, appendix, 1)
+		if err == nil && !ok {
+			t.Fatal("current version refused")
+		}
+		return err
+	})
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		page, err := d.Appendices(ctx, store.AssistantTaskQuery{OwnerUserID: f.owner, TaskID: f.task.ID, Limit: 10})
+		if err == nil && (len(page) != 1 || !reflect.DeepEqual(page[0], appendix)) {
+			t.Fatalf("scope and counts did not round-trip: %#v", page)
+		}
+		return err
+	})
+}
+
+func TestAppendixValidationIsUniquePerOutcomeAndRemovedWithAppendix(t *testing.T) {
+	f := setup(t)
+	f.create(t)
+	ctx := t.Context()
+	first, second := appendixFixture(f), appendixFixture(f)
+	outcome := uuid.NewString()
+	validation := func(appendix string) model.AssistantTaskAppendixValidation {
+		return model.AssistantTaskAppendixValidation{OwnerUserID: f.owner, TaskID: f.task.ID, AppendixID: appendix, OutcomeRecordID: outcome, Outcome: "effective", ValidatorBotID: uuid.NewString(), CreatedAt: f.task.CreatedAt}
+	}
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		for _, appendix := range []model.AssistantTaskAppendix{first, second} {
+			if _, err := d.InsertAppendix(ctx, appendix); err != nil {
+				return err
+			}
+			if ok, err := d.InsertAppendixValidation(ctx, validation(appendix.ID)); err != nil || !ok {
+				t.Fatalf("first validation of %s refused: %v %v", appendix.ID, ok, err)
+			}
+		}
+		ok, err := d.InsertAppendixValidation(ctx, validation(first.ID))
+		if err == nil && ok {
+			t.Fatal("duplicate validation counted")
+		}
+		return err
+	})
+	count := func(appendix string) int {
+		var n int
+		if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_task_appendix_validations WHERE appendix_id=$1`, appendix).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// Another owner's delete cannot remove the registrations.
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		return d.DeleteAppendixValidations(ctx, uuid.NewString(), f.task.ID, first.ID)
+	})
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		return d.DeleteAppendixValidations(ctx, f.owner, f.task.ID, first.ID)
+	})
+	if count(first.ID) != 0 || count(second.ID) != 1 {
+		t.Fatalf("validation removal scope: %d %d", count(first.ID), count(second.ID))
+	}
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		ok, err := d.InsertAppendixValidation(ctx, validation(first.ID))
+		if err == nil && !ok {
+			t.Fatal("removed validation still blocks registration")
+		}
+		return err
+	})
+}
+
+func TestConcurrentDuplicateValidationWaitsAndIsRefused(t *testing.T) {
+	f := setup(t)
+	f.create(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	appendix, outcome := uuid.NewString(), uuid.NewString()
+	blocker, err := f.db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackDatabase(t, blocker)
+	if _, err := blocker.Exec(ctx, `INSERT INTO assistant_task_appendix_validations(owner_user_id,task_id,appendix_id,outcome_record_id,outcome,validator_bot_id,created_at) VALUES($1,$2,$3,$4,'effective',$5,clock_timestamp())`, f.owner, f.task.ID, appendix, outcome, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	result := asyncDatabase(t, ctx, func(ctx context.Context) error {
+		_, err := f.db.WriteAssistantTask(ctx, func(s store.AssistantTaskScope) error {
+			ok, err := s.AssistantTaskDAO().InsertAppendixValidation(ctx, model.AssistantTaskAppendixValidation{OwnerUserID: f.owner, TaskID: f.task.ID, AppendixID: appendix, OutcomeRecordID: outcome, Outcome: "ineffective", ValidatorBotID: uuid.NewString(), CreatedAt: f.task.CreatedAt})
+			if err == nil && ok {
+				t.Error("concurrent duplicate validation inserted")
+			}
+			return err
+		})
+		return err
+	})
+	testutil.WaitForQueryLock(t, f.db.Pool, "INSERT INTO assistant_task_appendix_validations")
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.ReceiveQueryResult(t, ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	var outcomeValue string
+	if err := f.db.Pool.QueryRow(ctx, `SELECT outcome FROM assistant_task_appendix_validations WHERE appendix_id=$1`, appendix).Scan(&outcomeValue); err != nil || outcomeValue != "effective" {
+		t.Fatalf("committed validation changed: %s %v", outcomeValue, err)
+	}
 }

@@ -37,8 +37,15 @@ func manualResponse(value model.AssistantTaskManual) api.AssistantTaskManual {
 	return api.AssistantTaskManual{TaskID: value.TaskID, Version: value.Version, Body: value.Body, Rules: value.Rules, Source: value.Source, ProposalID: value.ProposalID, CreatedAt: value.CreatedAt.UTC()}
 }
 func appendixResponse(value model.AssistantTaskAppendix) api.AssistantTaskAppendix {
-	return api.AssistantTaskAppendix{ID: value.ID, TaskID: value.TaskID, Text: value.Text, SourceRecords: append([]string{}, value.SourceRecords...),
+	result := api.AssistantTaskAppendix{ID: value.ID, TaskID: value.TaskID, Text: value.Text, SourceRecords: append([]string{}, value.SourceRecords...),
 		AuthorBotID: value.AuthorBotID, State: value.State, Version: value.Version, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC()}
+	if scope := value.Scope; len(scope.ProjectIDs)+len(scope.EventTypes)+len(scope.ItemCategories) > 0 {
+		result.Scope = &api.AssistantTaskAppendixScope{ProjectIDs: append([]string{}, scope.ProjectIDs...), EventTypes: append([]string{}, scope.EventTypes...), ItemCategories: append([]string{}, scope.ItemCategories...)}
+	}
+	if value.LastValidatedAt != nil {
+		result.Validation = &api.AssistantTaskAppendixValidation{SuccessCount: value.SuccessCount, FailureCount: value.FailureCount, LastValidatedAt: value.LastValidatedAt.UTC()}
+	}
+	return result
 }
 func proposalResponse(value model.AssistantTaskProposal) api.AssistantTaskProposal {
 	return api.AssistantTaskProposal{ID: value.ID, TaskID: value.TaskID, BaseVersion: value.BaseVersion, Body: value.Body, Rules: value.Rules, Reason: value.Reason,
