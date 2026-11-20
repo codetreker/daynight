@@ -80,6 +80,33 @@ const second = detailFixture(projectId, secondId, { parentId: goalId, title: 'Se
 const single = detailFixture(projectId, singleId, { parentId: goalId, title: 'Standalone task' });
 const all = [goal, first, second, single];
 const graph = graphFixture(all);
+
+for (const width of [1440, 320]) test(`Goal successor inspection keeps keyboard focus and viewport at ${width}px`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 1000 });
+  await install(page);
+  await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  const dialog = page.locator(`#task-graph-${goalId}`);
+  const selected = dialog.locator(`.react-flow__node[data-id="${firstId}"] .task-node-body`);
+  const successor = dialog.locator(`.react-flow__node[data-id="${secondId}"] .task-node`);
+  await expect(selected).toBeVisible();
+  await selected.focus();
+  const viewport = dialog.locator('.react-flow__viewport');
+  const before = await viewport.getAttribute('style');
+  await selected.press('Enter');
+  await expect(selected).toBeFocused();
+  await expect(successor).toHaveAttribute('data-inspection', 'successor');
+  await expect(successor).toHaveCSS('outline-color', 'rgb(8, 127, 140)');
+  await expect(successor.locator('.task-node-body')).toHaveAccessibleName(/successor of the selected task/);
+  await expect(dialog.locator('.task-dependency-edge')).toHaveAttribute('data-inspection', 'successor');
+  await expect(dialog.locator('.graph-successor-legend')).toHaveText('Successors');
+  await page.screenshot({ path: info.outputPath('successor-goal.png') });
+  await expect(viewport).toHaveAttribute('style', before!);
+  await selected.press('Enter');
+  await expect(successor).toHaveAttribute('data-inspection', 'normal');
+  await expect(viewport).toHaveAttribute('style', before!);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);

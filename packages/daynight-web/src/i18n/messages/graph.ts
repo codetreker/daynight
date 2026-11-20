@@ -37,9 +37,12 @@ export type GraphMessages = {
   readonly detailsLabel: (args: { title: string }) => string;
   readonly expandExternal: string;
   readonly expandExternalLabel: (args: { title: string }) => string;
-  readonly inspectionSuffix: Readonly<Record<'normal' | 'selected' | 'prerequisite' | 'unrelated', string>>;
+  readonly inspectionSuffix: Readonly<Record<'normal' | 'selected' | 'prerequisite' | 'successor' | 'unrelated', string>>;
   readonly hiddenPrerequisites: (args: { count: number }) => string;
   readonly dependencyHighlightedSuffix: string;
+  readonly dependencySuccessorSuffix: string;
+  readonly prerequisiteLegend: string;
+  readonly successorLegend: string;
   readonly expandTitle: (args: { direction: 'prerequisites' | 'successors'; tasks: number }) => string;
   readonly expandSummary: (args: { edges: number; remaining: number }) => string;
   readonly expandLabel: (args: { direction: 'prerequisites' | 'successors'; tasks: number; edges: number; remaining: number }) => string;

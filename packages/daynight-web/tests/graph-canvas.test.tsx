@@ -90,7 +90,7 @@ describe('task dependency canvas', () => {
         expansions: { prerequisites: emptyExpansion, successors: emptyExpansion }, revealRequest: null } } }];
     const dimensions = vi.fn();
     const reset = vi.fn();
-    const inspection = { selectedTaskId: null, highlightedIds: new Set<string>() };
+    const inspection = { selectedTaskId: null, highlightedIds: new Set<string>(), successorIds: new Set<string>() };
     const canvas = (zoom: number, revision: number | null, framingReady = true) => <TaskGraphCanvas canvasId="independent"
       nodes={nodes} geometry={geometry} inspection={inspection} onClearInspection={noop} viewportFactory={() => ({ x: 10, y: 20, zoom })}
       framingKey="independent" framingRevision={revision} onFramingReset={reset} minZoom={0.05} maxZoom={1.8}
@@ -527,7 +527,7 @@ describe('task dependency canvas', () => {
     expect(svg).toHaveAttribute('focusable', 'false');
     expect(svg).toHaveAttribute('role', 'group');
     expect(svg).toHaveAttribute('aria-label', '任务依赖关系');
-    expect(svg.querySelectorAll('marker')).toHaveLength(3);
+    expect(svg.querySelectorAll('marker')).toHaveLength(4);
     const marker = svg.querySelector('marker')!;
     expect(marker).toHaveAttribute('markerWidth', '16');
     expect(marker).toHaveAttribute('markerHeight', '16');

@@ -7,9 +7,10 @@ import { type CanvasLayout, type GraphDirection } from './layout';
 import { layoutGoalGraph, type GoalLayoutSize } from './goal-layout';
 import { scaleGraph, useGraphFontScale } from './graph-scale';
 import { projectGoal, goalTopologyKey } from './goal-projection';
-import { tracePrerequisites, type GraphIndex, type GraphProjection } from './model';
+import { tracePrerequisites, traceSuccessors, type GraphIndex, type GraphProjection } from './model';
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
 import { TaskGraphToolbar } from './TaskGraphToolbar';
+import { InspectionLegend } from './inspection';
 import type { TaskFlowNode } from './TaskNode';
 
 type Props = {
@@ -57,7 +58,8 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
   const selectedTaskId = selection.goalId === goalId && selection.taskId !== null && visibleIds.has(selection.taskId) ? selection.taskId : null;
   if (selection.goalId !== goalId || selection.taskId !== selectedTaskId) setSelection({ goalId, taskId: selectedTaskId });
   const highlightedIds = useMemo(() => selectedTaskId === null ? emptyHighlight : tracePrerequisites(index, selectedTaskId), [index, selectedTaskId]);
-  const inspection = useMemo(() => ({ selectedTaskId, highlightedIds }), [selectedTaskId, highlightedIds]);
+  const successorIds = useMemo(() => selectedTaskId === null ? emptyHighlight : traceSuccessors(index, selectedTaskId), [index, selectedTaskId]);
+  const inspection = useMemo(() => ({ selectedTaskId, highlightedIds, successorIds }), [selectedTaskId, highlightedIds, successorIds]);
   const hiddenUpstreamCount = useMemo(() => [...highlightedIds].filter((id) => !visibleIds.has(id)).length, [highlightedIds, visibleIds]);
   const onInspectTask = useCallback((id: string) => {
     setSelection((current) => ({ goalId, taskId: current.goalId === goalId && current.taskId === id ? null : id }));
@@ -146,6 +148,6 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
           minZoom={minZoom} maxZoom={1.8} fitViewOptions={fitViewOptions} framingReady={geometry !== null} onSizeChange={onSizeChange} onFitView={fit}
           emptyState={!hasTasks ? <div className="graph-error">{m.goalEmpty}</div> : undefined}
           overlay={result.error ? <div className="graph-error" role="alert"><h3>{m.layoutErrorTitle}</h3><p>{m.goalLayoutError}</p><button type="button" className="button" onClick={retry}>{project.retryRefresh}</button></div> : undefined} /></UsageProjectProvider>
-    {hasTasks && !result.error && <div className="graph-foot"><span>{m.directionLegend}</span><span>{m.goalExternalLegend}</span></div>}
+    {hasTasks && !result.error && <div className="graph-foot"><span>{m.directionLegend}</span><InspectionLegend /><span>{m.goalExternalLegend}</span></div>}
   </div>;
 };

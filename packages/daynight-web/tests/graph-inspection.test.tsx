@@ -53,6 +53,45 @@ const geometry = (container: HTMLElement) => ({
 beforeEach(installGraphMeasurements);
 
 describe('graph-local prerequisite inspection', () => {
+  it('clears successor paint when its selected external task leaves the updated projection', async () => {
+    const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
+    await ready(view.container);
+    fireEvent.click(body(view.container, 'C'));
+    expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'successor');
+    const changed = buildGraphIndex({ ...graph, tasks: graph.tasks.map(task => task.id === 'D' ? { ...task, dependsOn: ['A'], externalDependsOn: [] } : task) });
+    view.rerender(<TaskGraph index={changed} rootId="A" onOpenTask={noop} />);
+    await ready(view.container, 2);
+    expect(card(view.container, 'C')).toBeNull();
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(2);
+    expect(view.container.querySelectorAll('.task-dependency-edge[data-inspection="successor"]')).toHaveLength(0);
+    view.rerender(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
+    await ready(view.container, 2);
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '收起到概览' }));
+    await ready(view.container);
+    expect(view.container.querySelectorAll('.task-node-normal')).toHaveLength(3);
+  });
+
+  it('distinguishes both directions from bypasses and sibling branches without changing geometry', async () => {
+    const data = buildGraphIndex({ ...graph, tasks: graph.tasks.map(task => task.id === 'C' ? { ...task, dependsOn: ['B', 'A'] }
+      : task.id === 'D' ? { ...task, dependsOn: ['A', 'B', 'C'], externalDependsOn: ['C'] }
+      : task.id === 'X' ? { ...task, dependsOn: ['B'] } : task) });
+    const view = render(<TaskGraph index={data} rootId="A" onOpenTask={noop} />);
+    await ready(view.container, 5);
+    const before = geometry(view.container);
+    fireEvent.click(body(view.container, 'C'));
+    for (const id of ['A', 'B']) expect(card(view.container, id)).toHaveAttribute('data-inspection', 'prerequisite');
+    expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'successor');
+    expect(card(view.container, 'X')).toHaveAttribute('data-inspection', 'unrelated');
+    const edge = (source: string, target: string) => view.container.querySelector(`[data-id="${source}->${target}"].task-dependency-edge`)!;
+    for (const [source, target] of [['A', 'D'], ['B', 'D'], ['B', 'X']]) expect(edge(source!, target!)).toHaveAttribute('data-inspection', 'unrelated');
+    expect(edge('C', 'D')).toHaveAttribute('data-inspection', 'successor');
+    expect(edge('C', 'D')).toHaveAttribute('data-external', 'true');
+    expect(geometry(view.container)).toEqual(before);
+    fireEvent.click(body(view.container, 'C'));
+    expect(view.container.querySelectorAll('.task-node-successor')).toHaveLength(0);
+  });
+
   it('highlights visible prerequisites and counts ancestors beyond the one-hop external boundary', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
@@ -72,7 +111,8 @@ describe('graph-local prerequisite inspection', () => {
     const states = () => [...view.container.querySelectorAll<HTMLElement>('.task-dependency-edge')].map((edge) => [edge.dataset.id, edge.dataset.inspection]);
     expect(states()).toEqual([['A->D', 'highlighted'], ['C->D', 'highlighted']]);
     fireEvent.click(body(view.container, 'C'));
-    expect(states()).toEqual([['A->D', 'unrelated'], ['C->D', 'unrelated']]);
+    expect(states()).toEqual([['A->D', 'unrelated'], ['C->D', 'successor']]);
+    expect(card(view.container, 'D')).toHaveAttribute('data-inspection', 'successor');
     expect(card(view.container, 'A')).toHaveAttribute('data-inspection', 'unrelated');
     expect(card(view.container, 'A')).toHaveAttribute('data-task-status', 'done');
     expect(view.container.querySelector('.task-graph')).toHaveAttribute('data-hidden-upstream-count', '1');
@@ -155,7 +195,7 @@ describe('graph-local prerequisite inspection', () => {
     expect(compile).toHaveBeenCalledTimes(2);
     expect(geometry(view.container)).toEqual(before);
     expect([...view.container.querySelectorAll('.react-flow__edge-path,.task-dependency-paint-piece')]).toEqual(shapes);
-    expect(view.container.querySelectorAll('marker')).toHaveLength(3);
+    expect(view.container.querySelectorAll('marker')).toHaveLength(4);
     for (const edge of view.container.querySelectorAll('.task-dependency-edge')) {
       expect(edge.querySelector('.task-dependency-body')).toHaveAttribute('stroke', '#6762ce');
       const marker = edge.querySelector('.react-flow__edge-path')!.getAttribute('marker-end')!.slice(5, -1);
