@@ -98,7 +98,7 @@ const anchor = (page: Page) => page.locator(`${visiblePane} .session-timeline`).
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`${viewport.width}px Bot viewport`, () => {
     test.use({ viewport });
-    test('bounds long history, preserves A/B/A reading and drafts, and scrolls the list independently', async ({ page }, testInfo) => {
+    for (const gated of [false, true]) test(`bounds long history, preserves A/B/A reading and drafts, and scrolls the list independently${gated ? ' with a held history page' : ''}`, async ({ page }, testInfo) => {
       const writes = await install(page), errors: string[] = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(`/bots/${botId(1)}`);
@@ -143,9 +143,21 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(Math.abs(restored.offset - retained.offset)).toBeLessThanOrEqual(3);
       await page.waitForTimeout(600);
       expect((await geometry(page)).metrics.before).toBe(0);
+      if (gated) await page.evaluate(() => { window.botViewportOptions = { scenario: 'long', holdBefore: true }; });
       await page.locator(`${visiblePane} .session-timeline`).hover();
       await page.mouse.wheel(0, -100_000);
       await expect.poll(async () => (await geometry(page)).metrics.before).toBeGreaterThan(0);
+      if (gated) {
+        const topAnchor = await anchor(page);
+        expect(topAnchor.key).toBe(`${botId(1)}-1901`);
+        await page.evaluate(() => window.botViewport.releaseBefore());
+        await expect(page.locator(`${visiblePane} .session-entry`)).toHaveCount(200);
+        const originalEntry = page.locator(`${visiblePane} [data-entry-key="${topAnchor.key}"]`);
+        await expect.poll(() => originalEntry.evaluate((node, offset) => Math.abs(node.getBoundingClientRect().top - node.closest('.session-timeline')!.getBoundingClientRect().top - offset), topAnchor.offset)).toBeLessThanOrEqual(1);
+        const earlierEntry = page.locator(`${visiblePane} [data-entry-key="${botId(1)}-1801"]`);
+        await expect(earlierEntry).toBeVisible();
+        await expect(earlierEntry).toContainText('Message 1801');
+      }
       await page.waitForTimeout(600);
       const final = await geometry(page);
       expect(final.metrics.before).toBeLessThanOrEqual(2);

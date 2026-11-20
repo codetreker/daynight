@@ -62,10 +62,8 @@
 .session-pending-request > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-pending-request > span:last-child { flex: none; }
 .session-interaction:focus { outline: 2px solid #6262ba; outline-offset: 2px; }
-@container session-timeline-shell (max-height: 120px) {
-  .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 45%; gap: 4px; padding: 2px; pointer-events: none; }
-  .session-pending-request { flex: 1 1 0; }
-  .session-latest { flex: none; }
-  .session-pending-prefix { display: none; }
-  .session-timeline-navigation .button { min-height: 36px; padding-inline: 4px; pointer-events: auto; }
-}
+.session-timeline-shell-compact .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 45%; gap: 4px; padding: 2px; pointer-events: none; }
+.session-timeline-shell-compact .session-pending-request { flex: 1 1 0; }
+.session-timeline-shell-compact .session-latest { flex: none; }
+.session-timeline-shell-compact .session-pending-prefix { display: none; }
+.session-timeline-shell-compact .session-timeline-navigation .button { min-height: 36px; padding-inline: 4px; pointer-events: auto; }
