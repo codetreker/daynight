@@ -124,6 +124,8 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `WorkersPage` 和 `WorkerDetailPage` 在既有按 `user.id:generation` 重挂载的认证工作空间内呈现 `/workers` 与 `/workers/{workerId}`。它们直接挂载在 `WorkspaceRoutes`，项目目录只为侧栏供给数据，成功与否不控制 Worker 页面准入。详情将运行观测与配置作为独立资源组合，即使近期观测不存在，仍保留 Worker ID 与配置入口。路由沿用规范 UUID 解析、登录 returnPath、原生 history、标题与面包屑；Worker 任务链接通过现有 taskDetailUrl 打开当前完整任务。
 
+活动任务和保留快照共用 `TaskRows`。表格外容器按自身内宽切换布局：不超过 430px 时用可换行布局将任务身份放在全宽，状态与阶段和 Agent 放在下一行；空间不足时执行信息可继续换行。表头仅视觉隐藏，显式表格角色和单元格表头关联维持重排后的语义。宽布局保留三列。两种布局使用同一任务数据和链接，刷新只更新对应行。
+
 `api/workers.ts` 拥有 Worker 摘要、详情和 Probe 的严格读取器，以及列表和详情 GET。请求复用现有同源、no-store、取消、401 和 requestId 机制；在 JSON 解码或 404 处理前对每个非 401 响应执行 principal 校验。读取器区分 unknown/observed/stale 清单，验证显式 null、任务计数和数组一致、重复引用、Worker 请求身份、联合分支、时间与数值范围。客户端采样时间不与数据库时间强制排序。版本为实际非空文本，不在展示层加入 semver 或最低版本拒绝。
 
 `useWorkers`、`useWorker` 通过共享 `useWorkerObservation` 持有页面内存。既有 TaskCacheScope 提供认证生命周期、ready gate、mismatch 失效回调及 Project 撤权事件；Worker 数据不进入其项目集合或 IndexedDB。读取开始前捕获用户 Project generation，发布前核对取消信号、请求 generation 和资源身份。独立投影按其读取快照判断撤权事件；匹配或未知代际使旧读取失效，较新代际不受旧事件影响。snapshot 换代与缓存失效在同一事务保存完整代际关系，撤权 ticket 携带祖先，因此换代提示丢失或乱序时仍可撤回祖先投影。损坏使前驱不可证明时隔离无法比较的内容并重新读取；可证明为后继的准入不受旧提示影响。存储不可用时隐藏项目私有投影，仍读取 Worker 身份和遥测并显示错误；单项目 generation 损坏只隔离该项目。Workspace 传入 readEnabled；账户变化等待刷新时取消私有读取并暂停计时，保留旧内存和展示。scope gate 还阻止身份状态尚未完成 React 重绘时的旧响应发布。
@@ -271,6 +273,7 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 - 桌面左侧竖向导航，窄屏改为内容上方横排；`tablist` 的 `aria-orientation`、方向键、稳定的 tab/panel ID 和实际方向一致。空项目、首屏加载、失败及保留旧快照的刷新错误继续由同一项目 owner 管理，外层导航不依赖任务总数。
 - 任务区首次选择后才挂载，后续以 `hidden` / `inert` 隐藏而不卸载，保留列表与独立偏好；主动外层离开任务列表或内层离开当前图所属类别时关闭图浮层并清除临时定位任务，主动返回后不自动打开；历史遍历可恢复此前的图选择。详情对话框位于两个内容面板之外，切换不会建立新的详情会话。内层“独立任务 / 任务链 / Goal”容器保留稳定关联 ID，只有活动类别挂载列表内容。该层次区分的历史取舍见[项目分区决策](../../.agents/notes/archived/feature/2026-10-25-project-overview-task-sections.md)。
 - 内层默认任务链，后续新访问恢复该项目保存的选择。独立任务和任务链只包含 `parentId=null` 的普通 Task；Goal 页签读取 typed 摘要，空项目也保留三个页签。普通图先按完整可见普通依赖构造分量，再与所选 Parent 求交：完整多成员分量在某个范围只有一个成员时仍是任务链。链进度仅计算当前范围的唯一普通 Task，Goal 列表以实际直接孩子计算进度，Goal 自身不进入普通图。
+- 类别页签根据自身容器宽度布局：420px 及以下按标签和计数的自然宽度分配空间，保留完整词及不可压缩的计数，必要时在自然边界换行；更宽时保留原有布局。极窄内容或较大计数使页签带横向滚动，选择或聚焦的页签在带内显露，不改变页面滚动。按钮保留原有名称、选择、键盘导航与计数语义，窄布局至少 44px 高，并随字号增长。取舍见[类别页签布局决策](../../.agents/notes/implemented/bug-fix/2026-11-20-project-task-tab-width.md)。
 - 代表任务仍为完整分量中的真实代表，用作链标题与图 witness；范围外代表不作为范围内 Task 显示负责人或状态。范围内每个 Task 包括代表恰好展示一次，链图保留完整可见依赖和原有普通/外部边分类。范围内独立 Task 直接展示；项目 Goal 列表单层展示全部直接孩子，Goal 详情只展示资源内容与分类统计。
 - 普通任务链分享使用项目根路由的 `tab=tasks&chain={taskId}` 查询；路由 helper 严格解析单个 canonical UUID 并生成同源绝对地址。`ProjectPage` 在完整索引和现有访问准入就绪后复用外部链导航，历史 owner 原子提交阅读选择并替换 URL 清除入口；无效目标也消费，主动切换节区丢弃等待中的入口。有效查询优先于旧 fragment，消费时一并清除 fragment，避免重复导航。登录返回仍只接受原有受约束的 pathname 与 search。详细锚点和菜单机制见[任务链浏览设计](daynight-task-inspection.md)。
 

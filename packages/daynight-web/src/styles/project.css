@@ -30,9 +30,12 @@
 
 @container standalone-list (max-width:650px){.standalone-row{gap:8px;padding:9px 11px;align-items:flex-start}.task-row-status{flex-direction:column;align-items:flex-end;gap:4px}.standalone-chevron{display:none}}
 
-@media (max-width: 600px) {
+.project-task-tabs-container { container: project-task-tabs / inline-size; min-width: 0; }
+.project-task-tabs { overflow-x: auto; scrollbar-width: thin; }
+.project-task-tab:focus-visible { outline-offset: -3px; }
+@container project-task-tabs (max-width: 420px) {
   .project-task-tabs { gap: 8px; }
-  .project-task-tab { flex: 1 1 0; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
+  .project-task-tab { flex: 1 1 max-content; min-width: min-content; min-height: 44px; gap: 4px; justify-content: center; padding-block: 0; overflow-wrap: normal; }
   .project-task-tab .graph-count-pill { flex: none; }
 }
 
