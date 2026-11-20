@@ -22,8 +22,9 @@ at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum; count badges use the metadata role. Markdown code and tables
 use the interface role; Bot first-paragraph emphasis retains its weight without a
 separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
-owns role uses and sizes. Touch fields use the shared `--text-touch-field` size
-to preserve a 16 CSS px minimum while responding to larger browser font preferences.
+owns role uses and sizes. Touch fields, including Step title and Markdown editors
+on coarse pointers, use the shared `--text-touch-field` size to preserve a 16 CSS
+px minimum while responding to larger browser font preferences.
 Terminal recordings use a shared `--text-terminal` base, multiplied by their
 independent zoom scale; reading-role changes do not affect terminal output.
 

@@ -8,6 +8,7 @@
 .step-add-form { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid #dce0e8; border-radius: 7px; background: #fcfcfe; min-width: 0; }
 .step-add-form label { display: grid; gap: 6px; color: #45516a; font-size: var(--text-interface); font-weight: 600; }
 .step-add-form input, .step-add-form textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #dce0e8; border-radius: 5px; padding: 8px; background: #fff; color: #344258; font: inherit; font-size: var(--text-interface); }
+@media (pointer: coarse) { .step-add-form input, .step-add-form textarea { font-size: var(--text-touch-field); } }
 .step-add-form textarea { min-height: 120px; resize: vertical; }
 .step-add-form textarea.step-title-editor { min-height: 40px; }
 .step-add-form input:focus-visible, .step-add-form textarea:focus-visible, .step-editor-heading button:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
