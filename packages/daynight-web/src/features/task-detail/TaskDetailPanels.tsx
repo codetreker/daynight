@@ -1,4 +1,4 @@
-import { useId, useState, useLayoutEffect, type KeyboardEvent, type ReactNode } from 'react';
+import { useId, useRef, useState, useLayoutEffect, type KeyboardEvent, type ReactNode } from 'react';
 import type { TaskDetailTab } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { KeptMountedSlot } from './DetailFrame';
@@ -28,11 +28,36 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
   useLayoutEffect(() => { if (active !== requested && requested !== 'description') { setLocalActive(active); onChange?.(active); } }, [active, requested, onChange]);
   const setActive = (tab: OrdinaryTaskTab) => { setLocalActive(tab); onChange?.(tab); };
   const id = useId();
+  const barRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ start: false, end: false });
   const tabId = (tab: OrdinaryTaskTab) => `${id}-tab-${tab}`;
   const panelId = (tab: OrdinaryTaskTab) => `${id}-panel-${tab}`;
-  const reveal = (tab: OrdinaryTaskTab) => document.getElementById(tabId(tab))?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  // The selected font and translated label can widen a tab after native focus.
-  useLayoutEffect(() => { reveal(active); }, [id, active, messages]);
+  const updateEdges = () => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const start = bar.scrollLeft > 1, end = bar.scrollWidth - bar.clientWidth - bar.scrollLeft > 1;
+    setEdges(previous => previous.start === start && previous.end === end ? previous : { start, end });
+  };
+  const reveal = (tab: OrdinaryTaskTab) => {
+    const bar = barRef.current, item = document.getElementById(tabId(tab));
+    if (!bar || !item || bar.clientWidth === 0) return;
+    const outer = bar.getBoundingClientRect(), inner = item.getBoundingClientRect();
+    if (inner.left < outer.left + 12) bar.scrollLeft += inner.left - outer.left - 12;
+    else if (inner.right > outer.right - 12) bar.scrollLeft += inner.right - outer.right + 12;
+    updateEdges();
+  };
+  // Observe label and container geometry, not scrolling, so manual swipes keep their position.
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const refresh = () => { reveal(active); updateEdges(); };
+    refresh();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(refresh);
+    observer.observe(bar);
+    for (const child of bar.children) observer.observe(child);
+    return () => observer.disconnect();
+  }, [id, active, messages, session !== undefined, usage !== undefined, discussion !== undefined, suspended]);
   const labels = { overview: messages.inspection.detail.overview, steps: messages.inspection.steps.title, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, session: 'Session', usage: locale === 'zh-CN' ? '用量' : 'Usage' };
   const slots = { steps, attachments, discussion, session, usage };
   const content = (tab: OrdinaryTaskTab) => {
@@ -42,7 +67,7 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
   };
   const activate = (tab: OrdinaryTaskTab) => {
     setActive(tab);
-    document.getElementById(tabId(tab))!.focus();
+    document.getElementById(tabId(tab))!.focus({ preventScroll: true });
     reveal(tab);
   };
   const navigate = (event: KeyboardEvent<HTMLButtonElement>, tab: OrdinaryTaskTab) => {
@@ -56,8 +81,12 @@ export const TaskDetailPanels = ({ overview, steps, attachments, discussion, ses
   };
 
   return <div className="task-detail-panels" hidden={suspended} inert={suspended} style={suspended ? { display: 'none' } : undefined}>
-    <div className="task-detail-tabs" role="tablist" aria-label={messages.inspection.detail.title}>
-      {tabs.map((tab) => <button key={tab} className="task-detail-tab" id={tabId(tab)} role="tab" type="button" aria-selected={active === tab} aria-controls={panelId(tab)} tabIndex={active === tab ? 0 : -1} onClick={() => activate(tab)} onKeyDown={(event) => navigate(event, tab)}>{labels[tab]}</button>)}
+    <div className="ordinary-task-tabs-wrap">
+      <div ref={barRef} className="task-detail-tabs" role="tablist" aria-label={messages.inspection.detail.title} onScroll={updateEdges}>
+        {tabs.map((tab) => <button key={tab} className="task-detail-tab" id={tabId(tab)} role="tab" type="button" aria-selected={active === tab} aria-controls={panelId(tab)} tabIndex={active === tab ? 0 : -1} onClick={() => activate(tab)} onKeyDown={(event) => navigate(event, tab)}>{labels[tab]}</button>)}
+      </div>
+      <span className="ordinary-task-tabs-edge start" data-visible={edges.start} aria-hidden="true" />
+      <span className="ordinary-task-tabs-edge end" data-visible={edges.end} aria-hidden="true" />
     </div>
     {tabs.map((tab) => <KeptMountedSlot key={tab} id={panelId(tab)} className={`task-detail-panel task-detail-panel-${tab}`} role="tabpanel" aria-labelledby={tabId(tab)} active={active === tab}>{content(tab)}</KeptMountedSlot>)}
   </div>;
