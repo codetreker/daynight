@@ -132,8 +132,7 @@ func TestWorkerRouteClassificationMatchesMux(t *testing.T) {
 	RegisterRoutesWithScopeObserver(mux, nil, require, logger, observe)
 	broker := ro.New(func(context.Context, model.Principal, string) error { return nil })
 	defer broker.Close()
-	readonly := NewReadOnlyRoutes(broker, nil, logger)
-	readonly.auth = principalOnlyAuth{require}
+	readonly := NewScopedReadOnlyRoutes(broker, fixedScopedWorkerAuth{}, logger)
 	readonly.RegisterRoutesWithScopeObserver(mux, observe)
 	for pattern, entry := range entries {
 		if !entry.Fallback && len(entry.Operations) == 0 {
@@ -158,12 +157,34 @@ func TestWorkerRouteClassificationMatchesMux(t *testing.T) {
 	}
 }
 
-type principalOnlyAuth struct {
-	require func(httpx.AuthenticatedHandler) http.HandlerFunc
+type fixedScopedWorkerAuth struct{}
+
+func (fixedScopedWorkerAuth) RequireScoped(next func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r, model.CredentialAuthorization{Principal: defaultHTTPPrincipal(), Profile: model.ScopedPATProfile})
+	}
 }
 
-func (a principalOnlyAuth) Require(next httpx.AuthenticatedHandler) http.HandlerFunc {
-	return a.require(next)
+func TestScopedReadOnlyRegistrationRejectsMissingDependencies(t *testing.T) {
+	broker := ro.New(func(context.Context, model.Principal, string) error { return nil })
+	defer broker.Close()
+	for _, tc := range []struct {
+		name   string
+		broker *ro.Broker
+		auth   ScopedAuthentication
+	}{
+		{"broker", nil, fixedScopedWorkerAuth{}},
+		{"authentication", broker, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("missing dependency admitted")
+				}
+			}()
+			NewScopedReadOnlyRoutes(tc.broker, tc.auth, slog.Default())
+		})
+	}
 }
 
 func TestScopedWorkerRegistrationRejectsLegacyService(t *testing.T) {

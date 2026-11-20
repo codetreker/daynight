@@ -45,8 +45,8 @@ func (s *Workers) Configuration(ctx context.Context, principal model.Principal, 
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
 		result, err = snapshot.WorkerDAO().WorkerConfiguration(ctx, principal.UserID, workerID)
-		if err != nil {
-			return configurationNotFound(err)
+		if err = configurationNotFound(err); err != nil {
+			return err
 		}
 		if s.authorization != nil {
 			authorization, err := s.authorization.Read(ctx, snapshot, principal)
