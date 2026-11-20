@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
@@ -14,10 +15,11 @@ import (
 )
 
 type Teams struct {
-	writer store.TeamWriter
-	reader store.SnapshotReader
-	now    func() time.Time
-	core   teamOperations
+	admission *scopeAdmission
+	writer    store.TeamWriter
+	reader    store.SnapshotReader
+	now       func() time.Time
+	core      teamOperations
 }
 
 type teamOperations struct {
@@ -45,6 +47,7 @@ type teamOperations struct {
 	inspectInvitation        func(context.Context, store.TeamReader, model.Principal, model.TeamInvitation) (core.TeamInvitationInspection, error)
 	requireActor             func(model.Principal, string) error
 	acceptInvitation         func(context.Context, store.TeamWriteDAO, model.Principal, string, func() time.Time) (core.TeamInvitationAcceptance, error)
+	acceptInvitationReceipt  func(context.Context, store.TeamWriteDAO, model.Principal, string, func() time.Time) (core.TeamInvitationReceipt, error)
 	refreshEligibility       func(context.Context, store.WebhookEligibilityDAO, store.WebhookEligibilityFilter) error
 }
 
@@ -77,6 +80,7 @@ func NewTeams(database interface {
 		inspectInvitation:        core.InspectInvitation,
 		requireActor:             core.RequireActor,
 		acceptInvitation:         core.AcceptInvitation,
+		acceptInvitationReceipt:  core.AcceptInvitationReceipt,
 		refreshEligibility:       webhook.RefreshEligibility,
 	}}
 }
@@ -111,6 +115,9 @@ func (e *CreationError) Error() string { return e.Cause.Error() }
 func (e *CreationError) Unwrap() error { return e.Cause }
 
 func (s *Teams) Create(ctx context.Context, p model.Principal, input core.CreateTeam) (model.Team, error) {
+	if err := s.admission.require(ctx, p, scopepolicy.TeamWrite); err != nil {
+		return model.Team{}, err
+	}
 	if err := s.core.validateCreate(p, input); err != nil {
 		return model.Team{}, err
 	}
@@ -128,6 +135,7 @@ func (s *Teams) Create(ctx context.Context, p model.Principal, input core.Create
 	return result, nil
 }
 func (s *Teams) Get(ctx context.Context, p model.Principal, id string) (model.Team, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return model.Team{}, err
@@ -146,6 +154,7 @@ func (s *Teams) Get(ctx context.Context, p model.Principal, id string) (model.Te
 	return result, nil
 }
 func (s *Teams) List(ctx context.Context, p model.Principal, request model.PageRequest) (core.TeamPage, error) {
+	ctx = s.admission.context(ctx)
 	if err := model.RequirePrincipal(p); err != nil {
 		return core.TeamPage{}, err
 	}
@@ -165,6 +174,7 @@ func (s *Teams) List(ctx context.Context, p model.Principal, request model.PageR
 }
 
 func (s *Teams) Rename(ctx context.Context, p model.Principal, id string, input core.ChangeTeam) (model.Team, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateChange(p, id, input)
 	if err != nil {
 		return model.Team{}, err
@@ -182,6 +192,7 @@ func (s *Teams) Rename(ctx context.Context, p model.Principal, id string, input 
 	return result, nil
 }
 func (s *Teams) Delete(ctx context.Context, p model.Principal, id string, input core.ChangeTeam) error {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateChange(p, id, input)
 	if err != nil {
 		return err
@@ -195,6 +206,7 @@ func (s *Teams) Delete(ctx context.Context, p model.Principal, id string, input 
 	})
 }
 func (s *Teams) Members(ctx context.Context, p model.Principal, id string) ([]model.TeamMemberProfile, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return nil, err
@@ -213,6 +225,7 @@ func (s *Teams) Members(ctx context.Context, p model.Principal, id string) ([]mo
 	return result, nil
 }
 func (s *Teams) MembersPage(ctx context.Context, p model.Principal, id string, request model.PageRequest) (core.MemberPage, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return core.MemberPage{}, err
@@ -239,6 +252,7 @@ func (s *Teams) MembersPage(ctx context.Context, p model.Principal, id string, r
 }
 
 func (s *Teams) Member(ctx context.Context, p model.Principal, id, userID string) (model.TeamMember, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return model.TeamMember{}, err
@@ -261,6 +275,7 @@ func (s *Teams) Member(ctx context.Context, p model.Principal, id, userID string
 	return result, nil
 }
 func (s *Teams) changeMember(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, remove bool) (core.TeamMemberResult, error) {
+	ctx = s.admission.context(ctx)
 	id, target, err := s.core.validateMemberChange(p, id, user, input, remove)
 	if err != nil {
 		return core.TeamMemberResult{}, err
@@ -287,6 +302,7 @@ func (s *Teams) RemoveMember(ctx context.Context, p model.Principal, id, user st
 	return s.changeMember(ctx, p, id, user, input, true)
 }
 func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, id, expected string) (core.MintedTeamInvitation, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateInvitationWrite(p, id, expected)
 	if err != nil {
 		return core.MintedTeamInvitation{}, err
@@ -304,6 +320,7 @@ func (s *Teams) CreateInvitation(ctx context.Context, p model.Principal, id, exp
 	return result, nil
 }
 func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, id string) ([]model.TeamInvitation, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return nil, err
@@ -318,6 +335,7 @@ func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, id strin
 }
 
 func (s *Teams) ListInvitationPage(ctx context.Context, p model.Principal, id string, request model.PageRequest) (core.InvitationPage, error) {
+	ctx = s.admission.context(ctx)
 	id, err := s.core.validateRead(p, id)
 	if err != nil {
 		return core.InvitationPage{}, err
@@ -332,6 +350,7 @@ func (s *Teams) ListInvitationPage(ctx context.Context, p model.Principal, id st
 }
 
 func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, id, inviteID, expected string) (bool, error) {
+	ctx = s.admission.context(ctx)
 	id, inviteID, err := s.core.validateInvitationRevoke(p, id, inviteID, expected)
 	if err != nil {
 		return false, err
@@ -371,6 +390,7 @@ func (s *Teams) inspect(ctx context.Context, p model.Principal, secret string, o
 	return nil
 }
 func (s *Teams) InspectInvitation(ctx context.Context, p model.Principal, secret string) (core.TeamInvitationInspection, error) {
+	ctx = s.admission.context(ctx)
 	var result core.TeamInvitationInspection
 	err := s.inspect(ctx, p, secret, func(dao store.TeamReader, i model.TeamInvitation) error {
 		var err error
@@ -380,6 +400,7 @@ func (s *Teams) InspectInvitation(ctx context.Context, p model.Principal, secret
 	return result, err
 }
 func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret, expected string) (core.TeamInvitationAcceptance, error) {
+	ctx = s.admission.context(ctx)
 	if err := s.core.requireActor(p, expected); err != nil {
 		return core.TeamInvitationAcceptance{}, err
 	}
@@ -402,6 +423,34 @@ func (s *Teams) AcceptInvitation(ctx context.Context, p model.Principal, secret,
 	}
 	if err != nil {
 		return core.TeamInvitationAcceptance{}, err
+	}
+	return result, nil
+}
+
+func (s *Teams) AcceptInvitationReceipt(ctx context.Context, p model.Principal, secret, expected string) (core.TeamInvitationReceipt, error) {
+	ctx = s.admission.context(ctx)
+	if err := s.core.requireActor(p, expected); err != nil {
+		return core.TeamInvitationReceipt{}, err
+	}
+	var id string
+	if err := s.inspect(ctx, p, secret, func(_ store.TeamReader, i model.TeamInvitation) error { id = i.TeamID; return nil }); err != nil {
+		return core.TeamInvitationReceipt{}, err
+	}
+	var result core.TeamInvitationReceipt
+	err := s.write(ctx, id, func(scope store.TeamWriteScope) error {
+		dao := scope.TeamDAO()
+		var err error
+		result, err = s.core.acceptInvitationReceipt(ctx, dao, p, secret, s.now)
+		if err != nil {
+			return err
+		}
+		return s.core.refreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{TeamID: id, UserID: p.UserID})
+	})
+	if fault, classified := core.WriteFault(err); classified && fault.Code == "not_found" {
+		return core.TeamInvitationReceipt{}, model.InvitationUnavailable(nil)
+	}
+	if err != nil {
+		return core.TeamInvitationReceipt{}, err
 	}
 	return result, nil
 }

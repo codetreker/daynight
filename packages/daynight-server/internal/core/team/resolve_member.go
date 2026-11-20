@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -28,6 +29,9 @@ func ValidateResolveMember(p model.Principal, id string, input ResolveTeamMember
 
 func ResolveMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, externalID string) (*model.TeamMember, error) {
 	if err := AuthorizeAddMember(ctx, dao, p); err != nil {
+		return nil, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return nil, err
 	}
 	member, err := dao.MemberByExternalID(ctx, externalID)

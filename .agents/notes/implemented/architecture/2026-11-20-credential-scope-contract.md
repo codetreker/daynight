@@ -19,6 +19,16 @@ the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly.
 
+Team operations apply that contract at their business admission points, after
+the existing visibility and role checks and before protected output or mutation.
+The scoped service constructors require explicit credential authorization
+providers; operations with an existing transaction-bound credential recheck use
+the current authorization from that same transaction or snapshot. The existing
+production constructors retain their original profile until scoped assembly is
+enabled. Team invitation acceptance has its own permission and does not require
+project reading. Its minimal service receipt needs only acceptance permission;
+the existing full response also requires permission to read the invitation.
+
 ## Alternatives
 
 **Group grants.** Treating a selected group as an enduring grant would authorize
@@ -36,4 +46,4 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
+itself. Persistence, production assembly and issuance remain independent work.

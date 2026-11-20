@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -29,6 +30,9 @@ func ValidateAddExistingMember(p model.Principal, teamID, expectedUserID, target
 // The caller must execute this operation within the Team write scope.
 func AddExistingMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, target string) (ExistingMemberResult, error) {
 	if err := AuthorizeAddMember(ctx, dao, p); err != nil {
+		return ExistingMemberResult{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return ExistingMemberResult{}, err
 	}
 	candidate, err := dao.MemberCandidate(ctx, target)

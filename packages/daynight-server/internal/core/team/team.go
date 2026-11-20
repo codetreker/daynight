@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -86,12 +87,22 @@ func ValidateRead(p model.Principal, id string) (string, error) {
 	}
 	return CanonicalID(id)
 }
-func Get(ctx context.Context, dao store.TeamReader, p model.Principal, id string) (model.Team, error) {
+func lookupTeam(ctx context.Context, dao store.TeamReader, p model.Principal, id string) (model.Team, error) {
 	result, err := dao.Team(ctx, p.UserID, id)
 	if errors.Is(err, model.ErrNotFound) {
 		return model.Team{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
 	}
 	return result, err
+}
+func Get(ctx context.Context, dao store.TeamReader, p model.Principal, id string) (model.Team, error) {
+	result, err := lookupTeam(ctx, dao, p, id)
+	if err != nil {
+		return model.Team{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
+		return model.Team{}, err
+	}
+	return result, nil
 }
 func List(ctx context.Context, dao store.TeamReader, p model.Principal, request model.PageRequest) (TeamPage, error) {
 	if err := model.RequirePrincipal(p); err != nil {
@@ -100,6 +111,9 @@ func List(ctx context.Context, dao store.TeamReader, p model.Principal, request 
 	scope := query.ListScope{Kind: "teams", UserID: p.UserID}
 	page, err := query.ListPage(request, scope)
 	if err != nil {
+		return TeamPage{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return TeamPage{}, err
 	}
 	result, err := dao.Teams(ctx, p.UserID, page)
@@ -155,6 +169,9 @@ func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 	if err != nil {
 		return model.Team{}, err
 	}
+	if err := checkScope(ctx, p, scopepolicy.TeamWrite, scopepolicy.TeamRead); err != nil {
+		return model.Team{}, err
+	}
 	if *t.Name == input.Name {
 		return t, nil
 	}
@@ -169,6 +186,9 @@ func Rename(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, inpu
 func Delete(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, input ChangeTeam) error {
 	t, err := writableTeam(ctx, dao, p, input)
 	if err != nil {
+		return err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamDelete); err != nil {
 		return err
 	}
 	if *t.Name != input.Name {

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -59,7 +60,10 @@ func AuthorizeAddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Pri
 	if err != nil {
 		return err
 	}
-	return authorizeOrdinaryAdmin(t)
+	if err := authorizeOrdinaryAdmin(t); err != nil {
+		return err
+	}
+	return checkScope(ctx, p, scopepolicy.TeamMembers)
 }
 
 func authorizeOrdinaryAdmin(t model.Team) error {
@@ -74,6 +78,9 @@ func authorizeOrdinaryAdmin(t model.Team) error {
 
 func AddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, target string, role model.ProjectRole) (DirectMemberResult, error) {
 	if err := AuthorizeAddMember(ctx, dao, p); err != nil {
+		return DirectMemberResult{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return DirectMemberResult{}, err
 	}
 	member, err := dao.Member(ctx, target)
