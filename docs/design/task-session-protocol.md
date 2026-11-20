@@ -266,7 +266,11 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 菜单的默认高亮与明确候选选择分离，直接 Enter 不消费仅前缀匹配的默认项。临时候选随输入、目录和菜单生命周期变化重置；目录按 revision、错误及命令字段的稳定签名比较，等值快照重建 controls 对象不清除明确选择。显式选择带参数命令产生独立的 commandId 与命令头意图，参数编辑、目录刷新和菜单关闭保留它，修改命令头、清空草稿或切换 Session 才清除。提交使用当前 controls revision 验证同一 ID 与完整名称，不能冻结旧 revision，也不能在移除、替换、不可用或歧义后退回普通消息。原生命令草稿仍沿用 revision 与受理回执绑定；execute_command 的拒绝、失败或 unknown 不调用普通发送路径。运行中目录查询错误通过 refresh_controls 重新读取；只读与失效投影深拷贝后关闭 mutable/available，不能改写持久能力。没有命令目录时，普通消息仍由原有发送权限决定。
 
-已核实的排队取消使用 input_cancelled，Claude 实时主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted；Codex 根据匹配轮次的 interrupted 状态识别中断。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
+已核实的排队取消使用 input_cancelled，Claude 实时主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted；Codex 根据匹配轮次的 interrupted 状态识别中断；Copilot 根据顶层原生 `abort.reason=user_abort|user_initiated` 识别用户中断。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
+
+Copilot 实时与原生历史共用取消投影，以原生 abort event ID 建立稳定的 `turn_interrupted` 条目。工具按原生 owner 和用户 interaction 归属：非 steering 的用户输入建立边界，内部 agentic loop 的 `assistant.turn_start` 不独自划分用户轮次；明确的 interaction 变化或 idle/abort 后的新 start 建立新作用域。`assistant.turn_end` 可能先于 abort，不能清除工具归属。已知直接 `parentId` 关系优先确定先后；其余事件用原生时间戳定位到已观察的边界，时间戳相同或缺失时沿用到达顺序；历史读取仍按原生 cursor 顺序完成，再处理缓冲实时事件。
+
+同一取消作用域内仍 running 的工具转为既有 `failed`，追加 `Interrupted by the user before a completion result was recorded.`，保留 entryId、callId、输入、部分输出和截断标志，不伪造 exit code 或原生 complete 事件。journal 按实际内容变化递增 revision。重复取消不重复发布；已终态工具不被取消覆盖或迟到 start 复活。子代理取消只影响自身 owner，并显示带 owner 的 `subagent_interrupted`，不宣告主轮次中断。普通 `session.error`、连接丢失及没有用户取消依据的 abort 原因不归类为用户中断；旧不可变归档不改写。取舍见[Copilot 中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-19-copilot-interruption-projection.md)。
 
 Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[Request interrupted by user for tool use]` 的单文本 user 消息。适配层不将它投影为用户发言或输入受理证据；实时路径仍等待上述中断确认，历史路径则直接将顶层合成消息投影为 `turn_interrupted`。实时确认后的标记复用合成消息的原生 UUID，与历史投影使用同一 entryId，避免恢复重复；子 Agent 标记不代表主 turn 中断。SDK 的实时合成标识不覆盖这类消息，历史读取又不保留来源元数据，因此只匹配完整单文本，不裁剪空白、不匹配前后缀或混合内容。用户恰好发送完全相同的独立文本时，原生历史无法与合成消息区分。既有归档文件保持不变。识别取舍见[Claude 中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-claude-interruption-projection.md)。
 
