@@ -678,7 +678,10 @@ apply to both documentation and protocol requests. An Origin must match
 `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin. The
 [OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
 [architecture](../../docs/design/daynight-mcp-oauth.md) describe discovery,
-the browser journey and protocol composition.
+the browser journey and protocol composition. Explicit scoped authorization construction
+and v2 browser route registration are available for coordinated activation;
+production keeps the original assembly. The [internal scope contract](../../docs/design/credential-scope-internal.md#mcp-应用授权准备入口)
+owns catalog revisions, explicit selections and approval-to-grant policy transfer.
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
@@ -1767,7 +1770,7 @@ records the test boundary and cost constraints.
 
 ### OAuth service tests
 
-The complete `internal/service/oauth` suite runs without PostgreSQL or UniAuth
+The `internal/service/oauth` unit tests run without PostgreSQL or UniAuth
 fixtures. Clients and Authorizations use instance-owned direct Core/business
 operation bindings; tests execute their actual construction, callbacks and
 orchestration with independently configured callback errors, transaction
@@ -1790,7 +1793,9 @@ handling with controlled operation results. PostgreSQL DAO and AuthorizationScop
 tests retain actual advisory/row locks, fresh time, client pinning and cleanup,
 large JSONB readback, rollback and single-connection release. The service tests
 retain session rechecks, DCR pin ordering, code retry/admission and transaction
-completion precedence. MetadataFetcher keeps its real TLS/HTTP, DNS, cache,
+completion precedence. Scoped authorization PostgreSQL tests use the isolated
+database to prove approval readback, policy issuance, one-time code exchange and
+refresh retaining the current edited grant policy. MetadataFetcher keeps its real TLS/HTTP, DNS, cache,
 concurrency and cancellation tests. The
 [operation-boundary decision](../../.agents/notes/implemented/testing/2026-11-10-oauth-service-operation-boundaries.md)
 records ownership, receiver migration and verification cost.

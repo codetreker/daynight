@@ -73,6 +73,27 @@ const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
 describe('Goal task lists', () => {
+  it('passes the ordinary representative or a visible scoped member to chain usage', async () => {
+    const user = userEvent.setup();
+    const onOpenChainUsage = vi.fn();
+    const index = indexOf();
+    const renderList = (scopedMembers?: ReadonlyMap<string, readonly string[]>) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']} {...(scopedMembers === undefined ? {} : { scopedMembers })} openGraphTarget={null} onOpenChain={noop} onOpenChainUsage={onOpenChainUsage} onCloseChain={noop} onOpenTask={noop} />;
+    const view = render(renderList());
+    await user.click(disclosure());
+    const usage = screen.getByRole('button', { name: 'Goal，Token 用量' });
+    const details = screen.getByRole('button', { name: 'Goal，查看任务详情' });
+    expect(usage.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(usage);
+    expect(onOpenChainUsage).toHaveBeenLastCalledWith('Goal', usage);
+    view.setLocale('en');
+    expect(usage).toHaveAccessibleName('Goal, Token usage');
+    view.rerender(renderList(new Map([['Goal', ['Implementation', 'Acceptance']]])));
+    await user.click(disclosure());
+    const scopedUsage = screen.getByRole('button', { name: 'Goal, Token usage' });
+    await user.click(scopedUsage);
+    expect(onOpenChainUsage).toHaveBeenLastCalledWith('Implementation', scopedUsage);
+  });
+
   it('renders the localized graph action as a decorative icon', () => {
     const view = render(list(indexOf()));
     const check = (name: string, title: string) => {

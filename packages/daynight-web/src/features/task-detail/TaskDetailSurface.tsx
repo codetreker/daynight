@@ -56,6 +56,7 @@ type TaskDetailCommonProps = {
   readonly detailUrl?: (taskId: string, navigation: TaskDetailNavigation) => string;
   readonly projectId: string;
   readonly taskId: string;
+  readonly retainHistoryDraft?: boolean;
   readonly parentGoalId?: string;
   readonly onNavigateParent?: (href: string) => void;
   readonly snapshot?: GraphSnapshot | null;
@@ -103,7 +104,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
 
 type TaskDetailState = ReturnType<typeof useTaskDetail>;
 
-const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen, task, parentGoalId, onNavigateParent }: TaskDetailSurfaceProps & { readonly task: TaskDetailState }) => {
+const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen, task, parentGoalId, onNavigateParent, retainHistoryDraft = false }: TaskDetailSurfaceProps & { readonly task: TaskDetailState }) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const requestTaskAction = useRequestTaskDraftAction();
@@ -135,17 +136,24 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   if (readingScope.current !== null && readingScope.current !== readingIdentity) readingScope.current = null;
   if (detail !== null) readingScope.current = readingIdentity;
   if (error instanceof ApiError && (error.code === 'not_found' || error.code === 'task_deleted')) readingScope.current = null;
+  const retainedReading = useRef<string | null>(null);
+  if (detail !== null && readingScope.current === readingIdentity) retainedReading.current = scope;
+  if (isThreadScopeLoss(error)) retainedReading.current = null;
   const copyAccess = useRef({ identity: readingIdentity, retired: false });
   if (copyAccess.current.identity !== readingIdentity) copyAccess.current = { identity: readingIdentity, retired: false };
   if (isThreadScopeLoss(error) || isThreadScopeLoss(task.mutation.reconciliationError)) copyAccess.current.retired = true;
   else if (error === null && task.mutation.reconciliationError === null && detail !== null && status === 'ready' && !task.refreshing && !task.requiresFreshRead) copyAccess.current.retired = false;
-  const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
-  const sessionRecords = useTaskSessionRecords(projectId, taskId, detail !== null && (worker === undefined || direct && selection.tab === 'attachments'), direct, worker === undefined);
+  const observedWorker = detail === null ? undefined : readWorkerClaim(detail.properties);
+  const retainedWorker = useRef<{ scope: string; worker: typeof observedWorker }>({ scope, worker: undefined });
+  if (retainedWorker.current.scope !== scope) retainedWorker.current = { scope, worker: undefined };
+  if (detail !== null) retainedWorker.current.worker = observedWorker;
+  const worker = detail === null && retainHistoryDraft ? retainedWorker.current.worker : observedWorker;
+  const sessionRecords = useTaskSessionRecords(projectId, taskId, detail !== null && (observedWorker === undefined || direct && selection.tab === 'attachments'), direct, observedWorker === undefined);
   const hasSession = useRef(false);
   const sessionScope = useRef(readingIdentity);
-  if (sessionScope.current !== readingIdentity) { sessionScope.current = readingIdentity; hasSession.current = false; }
-  if (detail !== null) hasSession.current = worker !== undefined || !sessionRecords.confirmedEmpty || sessionRecords.error !== null || sessionRecords.denied;
-  const currentClaim = worker?.state === 'active' ? worker : null;
+  if (sessionScope.current !== readingIdentity) { sessionScope.current = readingIdentity; if (!retainHistoryDraft) hasSession.current = false; }
+  if (detail !== null) hasSession.current = observedWorker !== undefined || !sessionRecords.confirmedEmpty || sessionRecords.error !== null || sessionRecords.denied;
+  const currentClaim = observedWorker?.state === 'active' ? observedWorker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
   const access = useProjectAccess(projectId);
@@ -300,7 +308,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
               </div>
             </>
           )}
-          {readingScope.current === readingIdentity && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${readingIdentity}`} projectId={projectId} taskId={taskId} available={detail !== null} usage={(active: boolean) => <TaskUsagePanel projectId={projectId} taskId={taskId} active={active} />} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(hasSession.current ? { session: (active: boolean) => <TaskSessionHost direct={direct} {...(worker === undefined ? {} : { mode: worker.agentControlMode, claimId: worker.claimId, ownerUserId: worker.userId })} projectId={projectId} taskId={taskId} records={sessionRecords} completed={(detail?.status === 'done' || detail?.status === 'cancelled') || worker !== undefined && worker.state !== 'active'} active={active} current={direct ? task.sessionCurrent : !task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords direct={direct} projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection} {...(direct ? { records: sessionRecords } : {})}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
+          {(readingScope.current === readingIdentity || retainHistoryDraft && retainedReading.current === scope) && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && (!retainHistoryDraft || !isThreadScopeLoss(error)) && <TaskDetailReading key={retainHistoryDraft ? scope : readingIdentity} projectId={projectId} taskId={taskId} retainDraftsWhileUnavailable={retainHistoryDraft} available={detail !== null && readingScope.current === readingIdentity} usage={(active: boolean) => <TaskUsagePanel key={retainHistoryDraft ? `${readingIdentity}/${viewer.getProjectRevision(projectId)}` : readingIdentity} projectId={projectId} taskId={taskId} active={active && (!retainHistoryDraft || !task.requiresFreshRead)} isolated={retainHistoryDraft} />} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} trackDraft={retainHistoryDraft} preserveHistoryDraft={retainHistoryDraft} historyRevision={viewer.getProjectRevision(projectId)} historyAdmitted={detail !== null && task.status === "ready" && !task.requiresFreshRead && task.error === null} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(hasSession.current ? { session: (active: boolean) => <TaskSessionHost key={readingIdentity} direct={direct} {...(worker === undefined ? {} : { mode: worker.agentControlMode, claimId: worker.claimId, ownerUserId: worker.userId })} projectId={projectId} taskId={taskId} records={sessionRecords} completed={(detail?.status === 'done' || detail?.status === 'cancelled') || worker !== undefined && worker.state !== 'active'} active={active} current={direct ? task.sessionCurrent : !task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords direct={direct} projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection} {...(direct ? { records: sessionRecords } : {})}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className={`task-detail-section${detail.description === '' ? '' : ' task-detail-description-section'}`} aria-label={m.description}>

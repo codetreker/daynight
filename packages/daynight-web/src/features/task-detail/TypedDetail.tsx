@@ -58,8 +58,14 @@ export const TypedDetail = (props: Props) => {
   const restoreLoading = useRef(true);
   const activeGoal = useRef<string | null>(null);
   const parentAdmitted = useRef(false);
+  const admittedTask = useRef<{ identity: string; scope: typeof scope } | null>(null);
+  if (admittedTask.current?.identity !== identity || admittedTask.current.scope !== scope || scope.isInvalidated || scope.hasIdentityMismatch || scope.isProjectSuspended(props.projectId) || task.status === 'deleted' || isThreadScopeLoss(task.error)) admittedTask.current = null;
   const detail = waitingForSummary ? null : task.detail;
   if (detail === null) {
+    if (props.retainHistoryDraft && admittedTask.current !== null) {
+      activeGoal.current = null; restoreLoading.current = false;
+      return <TaskDetailSurface {...props} resourceState={task} />;
+    }
     activeGoal.current = null; restoreLoading.current = true;
     return <TypedDetailLoading {...props} task={task} restoreOnUnmount={() => restoreLoading.current} />;
   }
@@ -68,7 +74,11 @@ export const TypedDetail = (props: Props) => {
     parentAdmitted.current = true;
   }
   restoreLoading.current = false;
-  if (detail.type === 'task') { activeGoal.current = null; return <TaskDetailSurface {...props} resourceState={task} />; }
+  if (detail.type === 'task') {
+    if (task.status === 'ready' && !task.requiresFreshRead) admittedTask.current = { identity, scope };
+    activeGoal.current = null; return <TaskDetailSurface {...props} resourceState={task} />;
+  }
+  admittedTask.current = null;
   const goalKey = `${props.projectId}/${props.taskId}/${task.historyGeneration}`;
   activeGoal.current = goalKey;
   return props.presentation === 'dialog'

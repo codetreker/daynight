@@ -65,6 +65,15 @@ func TestLoginCompletionCallbackPathReserved(t *testing.T) {
 	}
 }
 
+func TestScopedDeviceCallbackPathReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/api/v2/auth/device", "/api/v2/auth/device/inspect", "/api/v2/auth/device/decision"} {
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			t.Fatalf("callback overlaps scoped device path %s", path)
+		}
+	}
+}
+
 func TestTeamHTTPReservedIdentityCallbackPaths(t *testing.T) {
 	for _, path := range []string{"/api/v1/teams", "/api/v1/teams/" + uuid.NewString(), "/teams", "/teams/" + uuid.NewString()} {
 		_, _, err := ValidateAuthSettings(AuthSettings{PublicOrigin: "https://example.com"}, "https://example.com"+path)

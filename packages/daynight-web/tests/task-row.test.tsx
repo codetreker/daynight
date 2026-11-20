@@ -28,6 +28,24 @@ const tree = (model: TaskRowModel, open = vi.fn(), session = vi.fn(), instanceId
     assignee={<span>Assignee: Unassigned</span>} onOpenTask={open} onOpenSession={session} /></ul></ClockInputProvider>;
 
 describe('shared task row', () => {
+  it('localizes the current alias while preserving machine labels and values', () => {
+    const alias = 'personal-worker (office-linux)';
+    const machine = 'DEVBOX-WIN-JE';
+    const view = renderWithLocale(tree({ ...base, worker: { kind: 'active', name: machine, currentName: alias } }), { locale: 'zh-CN' });
+    expect(screen.getByText(`执行器别名：${alias}`)).toBeVisible();
+    view.setLocale('en');
+    expect(screen.getByText(`Worker: ${alias}`)).toBeVisible();
+    view.setLocale('zh-CN');
+    view.rerender(tree({ ...base, worker: { kind: 'active', name: machine } }));
+    expect(screen.getByText(`认领机器：${machine}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'active', name: machine, currentName: machine } }));
+    expect(screen.getByText(`认领机器：${machine}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'historical', name: machine, currentName: alias } }));
+    expect(screen.getByText(`执行器别名：${alias}`)).toBeVisible();
+    view.rerender(tree({ ...base, worker: { kind: 'historical', name: machine } }));
+    expect(screen.getByText(`执行机器记录：${machine}`)).toBeVisible();
+  });
+
   it('distinguishes a current alias from a recorded execution hostname', () => {
     const view = renderWithLocale(tree({ ...base, worker: { kind: 'historical', name: 'worker host', currentName: 'Current office' } }), { locale: 'en' });
     expect(screen.getByText('Worker: Current office')).toBeVisible();

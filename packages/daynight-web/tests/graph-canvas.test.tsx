@@ -118,7 +118,7 @@ describe('task dependency canvas', () => {
       useEffect(() => { nestedContext(owner); }, [owner]);
       return null;
     };
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop}
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop}
       onRootChange={rootChange} renderNested={(owner) => { nestedOwner = owner; return <Nested />; }} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
@@ -180,7 +180,7 @@ describe('task dependency canvas', () => {
 
   it('changes direction with keyboard, retains inspection, and restores a saved choice after reopening', async () => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const horizontal = toolbarActions(view.baseElement).getByRole('radio', { name: '水平' });
     const vertical = toolbarActions(view.baseElement).getByRole('radio', { name: '垂直' });
@@ -194,14 +194,14 @@ describe('task dependency canvas', () => {
     expect(nodeShell('合流实现…')).toHaveClass('task-node-selected');
     expect(view.baseElement.querySelector('.react-flow')).toBe(canvas);
     view.unmount();
-    const reopened = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const reopened = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     expect(toolbarActions(reopened.baseElement).getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -246,7 +246,7 @@ describe('task dependency canvas', () => {
   it('contains keyboard focus in the modal and handles only local Escape one layer at a time', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<><button type="button">图外按钮</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
+    const view = render(<><button type="button">图外按钮</button><TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     expect(view.baseElement.querySelector('.task-chain-close')).toHaveFocus();
@@ -272,7 +272,7 @@ describe('task dependency canvas', () => {
   it.each(['.task-chain-heading h2', '.graph-toolbar-summary', '.task-graph-canvas'])('closes with Escape after clicking noninteractive content at %s', async (target) => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     await user.click(view.baseElement.querySelector<HTMLElement>(target)!);
@@ -285,7 +285,7 @@ describe('task dependency canvas', () => {
   it('leaves fullscreen before closing after clicking blank canvas content', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     const canvas = view.baseElement.querySelector('.task-graph-canvas');
@@ -307,7 +307,7 @@ describe('task dependency canvas', () => {
 
   it.each([false, true])('keeps Tab navigation inside the modal after clicking its canvas (shift: %s)', async (shift) => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     await user.click(view.baseElement.querySelector<HTMLElement>('.task-graph-canvas')!);
@@ -323,7 +323,7 @@ describe('task dependency canvas', () => {
     document.body.append(portal);
     const Wrapper = () => {
       const [opened, setOpened] = useState(false);
-      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
+      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
     };
     const view = render(<Wrapper />);
     view.container.id = 'root';
@@ -357,7 +357,7 @@ describe('task dependency canvas', () => {
     const onClose = vi.fn();
     const originalRestore = vi.fn();
     const latestRestore = vi.fn();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     fireEvent.click(dialog);
@@ -375,7 +375,7 @@ describe('task dependency canvas', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(view.baseElement.querySelector('.task-chain-close')!);
     expect(onClose).toHaveBeenCalledTimes(2);
-    view.rerender(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
+    view.rerender(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
     view.unmount();
     expect(originalRestore).not.toHaveBeenCalled();
     expect(latestRestore).toHaveBeenCalledOnce();
@@ -383,7 +383,7 @@ describe('task dependency canvas', () => {
 
   it('wraps both keyboard boundaries and recovers focus entering from outside the modal', async () => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog usageMode="shown" projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.baseElement);
     const dialog = screen.getByRole('dialog');
     const first = within(dialog.querySelector<HTMLElement>('.task-chain-header')!).getByRole('button', { name: '关闭依赖图' });
