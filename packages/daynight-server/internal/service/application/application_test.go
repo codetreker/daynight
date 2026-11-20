@@ -100,6 +100,15 @@ func (m *strictIdentity) CreatePAT(context.Context, model.Principal, identitycor
 func (m *strictIdentity) ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
 	return nil, m.unexpected("ListPATs")
 }
+func (m *strictIdentity) CreatePATV2(context.Context, model.Principal, string, identitycore.CreatePAT, *string) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("CreatePATV2")
+}
+func (m *strictIdentity) ListPATsV2(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
+	return nil, m.unexpected("ListPATsV2")
+}
+func (m *strictIdentity) UpdatePATDescription(context.Context, model.Principal, string, string, *string, *string) (string, *string, error) {
+	return "", nil, m.unexpected("UpdatePATDescription")
+}
 func (m *strictIdentity) RevokePAT(context.Context, model.Principal, string) error {
 	return m.unexpected("RevokePAT")
 }

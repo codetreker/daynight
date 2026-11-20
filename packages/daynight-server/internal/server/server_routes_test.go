@@ -2690,11 +2690,15 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("POST", "/api/v1/auth/logout")
 	add("GET POST", "/api/v1/me/tokens")
 	add("PATCH DELETE", "/api/v1/me/tokens/{tokenId}")
+	add("GET POST", "/api/v2/me/tokens")
+	add("PATCH", "/api/v2/me/tokens/{tokenId}/description")
 	for _, op := range []string{"inspect", "decision", "logout"} {
 		add("POST", "/api/v1/auth/device/"+op)
 	}
 	add("GET", "/api/v1/oauth/grants")
 	add("GET", "/api/v2/oauth/grants")
+	add("GET", "/api/v3/oauth/grants")
+	add("PATCH", "/api/v3/oauth/grants/{id}/description")
 	add("POST", "/api/v1/oauth/grants/{id}/revoke")
 	addPlain("GET", "/api/v1/oauth/requests/{id}")
 	routes = append(routes, rootRoute{method: "POST", path: "/api/v1/oauth/requests/{id}/decision", pattern: "/api/v1/oauth/requests/{id}/decision", origin: true})
@@ -2829,6 +2833,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	// Unsupported methods must reach the protected fallback.
 	for _, path := range []string{
 		"/api/v1/me", "/api/v1/auth/logout", "/api/v1/me/tokens", "/api/v1/me/tokens/{tokenId}",
+		"/api/v2/me/tokens", "/api/v2/me/tokens/{tokenId}/description", "/api/v3/oauth/grants", "/api/v3/oauth/grants/{id}/description",
 		"/api/v1/auth/device/inspect", "/api/v1/auth/device/decision", "/api/v1/auth/device/logout",
 		"/api/v1/oauth/grants", "/api/v2/oauth/grants", "/api/v1/oauth/grants/{id}/revoke",
 		"/api/v1/projects", p, p + "/deletion-preview", p + "/access", p + "/transfer-preview", p + "/transfer", p + "/settings",
@@ -2894,7 +2899,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			continue
 		}
 		head := rootRoute{method: "HEAD", path: route.path, pattern: route.pattern}
-		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" ||
+		explicit := route.path == "/api/v1/oauth/grants" || route.path == "/api/v2/oauth/grants" || route.path == "/api/v3/oauth/grants" || route.path == "/api/v2/me/tokens" ||
 			route.path == worker+"/monitoring" || route.path == worker+"/readonly/channel" ||
 			route.path == "/api/v1/session-capabilities" || route.path == "/api/v1/test-session-capabilities" ||
 			route.path == "/api/v1/test-sessions" || route.path == testSession ||

@@ -34,14 +34,16 @@ CSS geometry and statically readable TypeScript strings and style operations.
 Mermaid's current configuration receives individual entries, so its surrounding
 files and configuration objects retain normal inspection. The workspace shell,
 public landing and setup pages, authentication styles, shared selection controls,
-Team member search, GitHub management and Webhook consumers use public sizes
-directly. The shared selection CSS owns touch text adjustments and sizes controls
-from their actual text instead of private font aliases. Management dialog fields
-and invitation secret text use the shared responsive adjustment, while ordinary
-account tokens retain their inherited size. Its marked field rule overrides form
-typography so responsive inputs retain the minimum size. The zero-legacy mode
-refuses the bridge and all remaining baseline
-uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
+Team member search, GitHub management, Webhook consumers, Project and personal
+Task lists, Goal cards, tags and search use public sizes directly. The shared
+selection CSS owns touch text adjustments and sizes controls from their actual
+text instead of private font aliases. Management dialog fields and invitation
+secret text use the shared responsive adjustment, while ordinary account tokens
+retain their inherited size. Its marked field rule overrides form typography so
+responsive inputs retain the minimum size. Project and Task search inputs use the
+shared coarse-pointer adjustment; the tag input derives its height from its line
+box and padding with a 44px minimum. The zero-legacy mode refuses the bridge and
+all remaining baseline uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 
 ## Alternatives

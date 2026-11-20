@@ -259,13 +259,16 @@ func ValidateCreatePAT(p model.Principal, input CreatePAT, now time.Time) (*time
 	return validatedTokenExpiry(input.ExpiresAt, now.Truncate(time.Microsecond))
 }
 func (s *Identity) CreatePAT(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, now time.Time) (MintedPAT, error) {
+	return s.createPAT(ctx, dao, p, input, nil, now)
+}
+func (s *Identity) createPAT(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, description *string, now time.Time) (MintedPAT, error) {
 	now = now.Truncate(time.Microsecond)
 	expiry, err := ValidateCreatePAT(p, input, now)
 	if err != nil {
 		return MintedPAT{}, err
 	}
 	result := MintedPAT{Secret: secret.Random("dnpat_")}
-	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry}
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry, Description: description}
 	if err = s.StorePAT(ctx, dao, p, result.Credential); err != nil {
 		return MintedPAT{}, err
 	}
