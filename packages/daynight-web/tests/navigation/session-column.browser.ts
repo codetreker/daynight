@@ -479,8 +479,8 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
       await page.keyboard.press('Space');
       await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
       await rows.nth(1).evaluate(node => node.scrollIntoView({ block: 'center' }));
-      await rows.nth(1).click(); await expect(checks.nth(1)).not.toBeChecked();
-      await rows.nth(1).tap();
+      await rows.nth(1).click({ position: { x: 12, y: 10 } }); await expect(checks.nth(1)).not.toBeChecked();
+      await rows.nth(1).tap({ position: { x: 12, y: 10 } });
       await page.setViewportSize({ width: 1360, height: 900 });
       await page.setViewportSize({ width: 320, height: 640 });
       await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
