@@ -10,12 +10,12 @@ space and reduce the amount of graph visible at a readable scale.
 
 ## Decision
 
-Both graphs use the dimensions defined by `layout.ts` and the compact shared
-card content described in the [inspection design](../../../../docs/design/daynight-task-inspection.md#责任与数据流).
-The body retains the two-line title, metadata, optional numeric usage, status,
-execution information and independent Details action. Direction and external
-navigation controls retain their separate footer. Root font scaling applies to
-the geometry and coordinates independently of graph zoom.
+Both graphs adopted shared dimensions in `layout.ts`, a two-line title, metadata,
+optional numeric usage, status, execution information and independent Details.
+Direction and external navigation controls retained their separate footer. Root
+font scaling applied to geometry and coordinates independently of graph zoom.
+The later [compact reading decision](2026-11-20-compact-graph-readings.md) replaces
+the card content and dimensions while retaining shared geometry and scaling.
 
 This changes the base card dimensions chosen by the [semantic typography
 decision](../architecture/2026-11-20-web-semantic-typography.md), while preserving
@@ -34,6 +34,6 @@ would compromise readability. Shared geometry keeps those calculations aligned.
 ## Consequences
 
 More cards fit within the same graph area without changing the visible task set
-or usage reads. The smaller content budget depends on compact graph-only badges,
+or usage reads. The original smaller content budget depended on compact graph-only badges,
 truncatable ownership and separate footer and Details positions. Browser geometry
 checks remain necessary for long text, both languages and larger root fonts.

@@ -205,3 +205,41 @@ type AssistantTaskPage[T any] struct {
 	NextCursor *string   `json:"nextCursor"`
 	ObservedAt time.Time `json:"observedAt"`
 }
+
+// AssistantTaskInbox is the readable inbox state. It never carries a token or
+// token digest; a task without an enabled inbox reports enabled=false and null
+// identity and times.
+type AssistantTaskInbox struct {
+	InboxID         *string    `json:"inboxId"`
+	Enabled         bool       `json:"enabled"`
+	CreatedAt       *time.Time `json:"createdAt"`
+	RotatedAt       *time.Time `json:"rotatedAt"`
+	OverlapUntil    *time.Time `json:"overlapUntil"`
+	SuppressedCount int64      `json:"suppressedCount,string"`
+}
+
+// AssistantTaskInboxOperation is the committed receipt of an inbox management
+// operation.
+type AssistantTaskInboxOperation struct {
+	OperationID        string    `json:"operationId"`
+	Kind               string    `json:"kind"`
+	TaskID             string    `json:"taskId"`
+	RequestFingerprint string    `json:"requestFingerprint"`
+	AdmittedAt         time.Time `json:"admittedAt"`
+	ResultingVersion   int64     `json:"resultingVersion,string"`
+}
+
+// AssistantTaskInboxResult answers disable requests and receipt reads.
+type AssistantTaskInboxResult struct {
+	Operation AssistantTaskInboxOperation `json:"operation"`
+	Inbox     AssistantTaskInbox          `json:"inbox"`
+}
+
+// AssistantTaskInboxTokenResult answers enable and rotate requests. Token is
+// present only in the response of the request that generated it; a replay of
+// the same operation returns null.
+type AssistantTaskInboxTokenResult struct {
+	AssistantTaskInboxResult
+	Token *string `json:"token"`
+}
+

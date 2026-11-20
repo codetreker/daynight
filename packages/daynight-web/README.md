@@ -1439,9 +1439,7 @@ its title and `aria-describedby` provide exact endpoints, elapsed duration and
 saved threshold. Button names stay
 stable across ticks, and no live region announces every update.
 
-The renderer preserves 220×96/136 cards, independent Details/inspection/expansion
-controls, external context borders and selected/prerequisite
-outlines. A 42px bottom reserve keeps English Details clear of elapsed text.
+The renderer uses 300×124 cards and a 60px action footer where needed, with independent Details/inspection/expansion controls, external context borders and selected/prerequisite outlines. Graph duration uses at most two adjacent units; the canvas exposes the complete reading on hover, keyboard focus or touch while preserving inspection.
 Standalone visual timing is excluded from button-name calculation while its
 accessible description retains the warning meaning. Goal child rows reuse
 `useTaskExecution` and `TaskExecutionDuration` after their title, with a clock icon
@@ -1515,7 +1513,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
+features retain their own asynchronous flows. See the [shared copy button design](../../docs/design/web-copy-button.md)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -1985,10 +1983,7 @@ controls adding at most twenty hidden direct neighbors in P, with exact new-task
 new-induced-edge and remaining counts. Manual expansion has no edge cap. Every
 real edge with both endpoints in S appears, without shortcuts or aggregate cards.
 
-Ordinary member cards are 220 by 96 pixels without hidden direct neighbors, using a 94px body
-and two border pixels with no footer or separator. Cards with expansion controls
-are 220 by 136, including a 40px two-column footer; an unused direction retains
-its column. External cards remain 220 by 136 with an independent Expand footer.
+Ordinary member cards are 300 by 124 pixels without hidden direct neighbors. Cards with expansion controls are 300 by 184, including a 60px two-column footer; an unused direction retains its column. External chain cards retain the independent Expand footer. Cards show up to three title lines and no Goal ownership; external context has a short label.
 Each visible snapshot derives expansion data once. Layout, React
 Flow, route ports, viewport fitting and keyboard reveal share actual dimensions.
 The canvas separates native body inspection from sibling Details
@@ -2557,7 +2552,7 @@ and reports both causes if rollback also fails.
 The shared decorative `BrandMark` uses the actual light or dark surface palette;
 its parent owns its name and navigation. The matching favicon is emitted as a
 hashed SVG in `/assets/` and adapts to the browser color scheme. See the
-[brand rules](../../docs/ui-design.md#brand-mark).
+[brand specification](../../docs/design/web-visual-tokens.md#品牌标志).
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean production server builds require this explicit build first.
 The Go module check uses its own unit-test Web resource overlay; see the
@@ -2578,22 +2573,60 @@ including unreferenced inputs; failures include relative paths and line numbers.
 No legacy exemption list is used. Static ownership does not establish rendered
 geometry or system-menu behavior.
 
-`scripts/typography-policy.test.mts` checks valid and invalid stylesheet and inline
-font declarations, location diagnostics, source enumeration and the production
-tree. The harness also runs `scripts/typography-policy.mts` against every CSS,
-TS and TSX file under `src/`. Run that scan independently with
-`pnpm --filter @codetreker/daynight-web test:typography-policy`. The
-[UI standard](../../docs/ui-design.md#web-typography) owns shared role definitions,
-registered selection parameters, terminal scaling, the external diagram boundary
-and static-analysis limits. Fixed sizes, numeric fallbacks, unknown aliases and
-local role overrides fail, including declarations superseded by later rules.
-Browser checks remain responsible for reflow, clipping and interaction continuity.
+### Typography validation
+
+The [Web typography specification](../../docs/spec/web-typography.md) owns the
+allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
+`src/styles/typography.css` owns the six numeric scale values. Its fixed transitional
+role mappings preserve unmigrated consumers, including the terminal's `xs` base
+and the touch-field `max(var(--text-base), 16px)` minimum.
+
+The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
+TSX file under `src/`, including unreferenced sources. Run the scan independently:
+
+```bash
+pnpm --filter @codetreker/daynight-web test:typography-policy
+```
+
+Strict rules accept the six shared sizes and inheritance, reject fixed sizes,
+fallbacks, unauthorized aliases, local overrides and invalid font shorthands,
+and inspect declarations even when later rules supersede them. Shared rendering
+adjustments are restricted to their owning stylesheet. CSS AST inspection tracks
+retired identifiers in every declaration, including geometry. TypeScript AST
+inspection covers statically recognizable constants, strings, JSX, DOM style
+assignments, `setProperty`, `cssText`, `setAttribute` and renderer configuration.
+
+`scripts/typography-policy-baseline.json` grants temporary permission to exact
+legacy occurrences by path, diagnostic category, normalized value, syntax context
+and count, with a module owner for each entry. Selection aliases and the existing
+Mermaid font setting receive individual entries. Unrecorded uses, increased
+counts and stale entries fail. A module migration must remove or reduce its own
+entries in the same change; review baseline diffs to ensure they only shrink.
+Retired definitions must remain present while collected consumers reference
+them, even if their definition entries are removed from the baseline.
+The production check never regenerates or expands the baseline. Formatting and
+line-number changes do not change occurrence identity.
+
+The closing migration gate is:
+
+```bash
+pnpm --filter @codetreker/daynight-web exec node scripts/typography-policy.mts --zero-legacy
+```
+
+It refuses remaining transitional definitions and legacy references without
+consulting the baseline. After consumers migrate, remove the bridges, baseline
+and transitional matching code together. The [migration decision](../../.agents/notes/implemented/architecture/2026-11-20-web-typography-migration-policy.md)
+records why these permissions are bounded. Static analysis cannot execute arbitrary
+runtime code; browser checks remain responsible for actual font sizes, renderer
+output, resizing, reflow, clipping and interaction continuity.
 The `typography-ownership-playwright.config.ts` configuration exercises remaining
 shared notices, task controls, attachment metadata and Bot creation against the
 production shell, with controlled API responses. It checks English and Chinese,
 desktop and 320px layouts, larger browser fonts, draft selection, dialog focus and
 readable metadata. Its generated reports and captures belong to
 `.tmp/typography-j/`; they are not product resources.
+
+### Workspace quality checks
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
@@ -3030,8 +3063,8 @@ ordinary component. Progress and aggregate chain status count main members only,
 and each task has one ordinary-component membership. Complete ancestry remains
 available to inspection through the full project index. The Dagre
 adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
-220px-wide visible cards with 96px compact or 136px action-footer heights.
-External cards retain the 136px footer for their independent Expand action. The
+300px-wide visible cards with 124px bodies or 184px action-footer heights.
+External chain cards retain the footer for their independent Expand action. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
@@ -3058,7 +3091,7 @@ leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
 Goal graphs use a separate compact component and rank-grid layout, with a
 readable initial viewport and an explicit full overview. Their complete projection
 contains every direct member and its accessible direct prerequisites outside the
-Goal. Every 220×96 card has a native inspection body and a sibling Details button;
+Goal. Every 300×124 card has a native inspection body and a sibling Details button;
 Goal cards provide no expansion or external navigation. Complete project ancestry
 drives the shared selection, prerequisite, real-edge and arrow styles, while the
 current projection determines visible highlights and the deduplicated hidden

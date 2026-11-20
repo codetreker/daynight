@@ -28,6 +28,32 @@ const enableControlledImageInput = () => {
   });
 };
 
+test.each(["firstParty", "mantle", undefined])("SDK helper probes independently of held initialization, then qualifies provider %s", async apiProvider => {
+  await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-backend-"));
+  const gate = path.join(root, "initialize-release");
+  const configurationKeys = new Set(["ANTHROPIC_BASE_URL", "ANTHROPIC_UNIX_SOCKET", "ANTHROPIC_CONFIG_DIR", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_CUSTOM_OAUTH_URL", "CLAUDE_CODE_HOST_CREDS_FILE", "HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "DAYNIGHT_TEST_CLAUDE_API_PROVIDER"]);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("CLAUDE_CODE_USE_") && !configurationKeys.has(key.toUpperCase())));
+  Object.assign(env, { CLAUDE_CONFIG_DIR: root, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root, ANTHROPIC_CONFIG_DIR: root });
+  Object.assign(env, { ANTHROPIC_BASE_URL: "https://api.anthropic.com", DAYNIGHT_TEST_CLAUDE_INITIALIZE_GATE: gate, ...(apiProvider === undefined ? {} : { DAYNIGHT_TEST_CLAUDE_API_PROVIDER: apiProvider }) });
+  let child!: ChildProcess; const proofs: ProcessProof[] = [];
+  const native = queryClaudeLive({ prompt: (async function* () {})(), options: { cwd: root, sessionId: randomUUID(), settingSources: [], pathToClaudeCodeExecutable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env } }, { cwd: root, env, onSpawn: (process: ChildProcess) => { child = process; }, onNativeProcessProof: (proof: ProcessProof) => { proofs.push(proof); } } as unknown as ProviderOptions);
+  try {
+    let initialized = false;
+    const initialization = native.initializationResult(); void initialization.then(() => { initialized = true; }, () => {});
+    await vi.waitFor(() => expect(native.profile).toMatchObject({ sdkVersion: "0.3.247", cliVersion: "2.1.247", backend: "unknown", backendPending: true }), { timeout: 10_000 });
+    expect(initialized).toBe(false);
+    await writeFile(gate, "release"); await initialization;
+    expect(native.profile).toMatchObject({ sdkVersion: "0.3.247", cliVersion: "2.1.247", backend: apiProvider === "firstParty" ? "anthropic" : "unknown" });
+    expect(Object.keys(native.profile!).sort()).toEqual(["backend", "cliVersion", "executable", "sdkVersion"]);
+  } finally {
+    await writeFile(gate, "release");
+    native.close(); await native.join();
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    for (const proof of proofs) expect(await inspectProcessProof(proof)).toBe("stopped");
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20_000);
+
 test("actual SDK helper joins its native child, preserves control RPC and transfers image bytes through bounded frames", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-live-process-")), log = path.join(root, "native.jsonl"), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
   const bytes = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), Buffer.alloc(80_003, 72)]), sessionId = randomUUID(), uuid = randomUUID(); await writeFile(imagePath, bytes, { mode: 0o400 });

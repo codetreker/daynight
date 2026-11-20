@@ -204,6 +204,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, compactDesktopGoal: () => {
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = [{ ...goal, title: 'Goal reading', assignedTo: TEST_VIEWER_ID },
+      { ...first, status: 'in_progress', startedAt: time, properties: { worker, paused: true } },
+      { ...second, status: 'cancelled', cancelledAt: time },
+      ...Array.from({ length: 79 }, (_, i) => detailFixture(projectId,
+        `00000000-0000-4000-8000-${String(1000 + i).padStart(12, '0')}`,
+        { parentId: goalId, title: `Completed task ${i}`, status: 'done', completedAt: time }))];
+    sessionStates = { [firstId]: 'working' };
+    currentGraph = graphFixture(details);
   }, mixedLayoutGoal: () => {
     const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
@@ -336,7 +346,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
   }, addComplexExternalGoalTask: (title: string) => {
     details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false },
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'A very long external owner name that should truncate', ready: false }),
-      detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-22T08:00:00Z',
+      detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-08T08:21:00Z',
         allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } })];
     currentGraph = graphFixture(details);
   }, addTwoExternalTasks: () => {
@@ -2092,6 +2102,7 @@ for (const { viewport, contentWidth } of [
   { viewport: 320 }, { viewport: 390 }, { viewport: 1440 },
   { viewport: 739 }, { viewport: 740 }, { viewport: 741 },
   { viewport: 1440, contentWidth: 599 }, { viewport: 1440, contentWidth: 600 }, { viewport: 1440, contentWidth: 601 },
+  { viewport: 1440, contentWidth: 739 }, { viewport: 1440, contentWidth: 740 }, { viewport: 1440, contentWidth: 741 },
 ]) test(`Goal prefix aligns with the task chain at viewport ${viewport}, card ${contentWidth ?? 'natural'}`, async ({ page }) => {
   await page.setViewportSize({ width: viewport, height: 800 });
   const fixture = await install(page, 'en', 'Owner');
@@ -2151,25 +2162,170 @@ for (const { viewport, contentWidth } of [
   });
   expect(geometry.buttonWidth).toBeCloseTo(22, 1);
   expect(geometry.buttonHeight).toBeGreaterThanOrEqual(34);
-  expect(geometry.iconWidth).toBeCloseTo(20, 1);
-  expect(geometry.iconHeight).toBeCloseTo(20, 1);
-  expect(geometry.iconGap).toBeCloseTo(8, 1);
-  expect(geometry.buttonGap).toBeCloseTo(4, 1);
-  expect(geometry.titleGap).toBeCloseTo(8, 1);
   expect(geometry.mainWidth).toBeGreaterThanOrEqual(40);
-  expect(geometry.titleLeft - geometry.origin).toBeCloseTo(chainCollapsed.width <= 600 ? 61 : 65, 1);
-  expect(geometry.inside).toBe(true);
   expect(geometry.hits).toEqual([true, true]);
   expect(geometry.outline).toBe(true);
-  if (viewport <= 740 || chainCollapsed.width <= 600) {
+  if (chainCollapsed.width <= 740) {
+    expect(geometry.iconWidth).toBe(0);
+    expect(geometry.iconHeight).toBe(0);
+    expect(geometry.titleLeft - geometry.origin).toBeCloseTo(chainCollapsed.width <= 600 ? 33 : 37, 1);
     expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
     expect(Math.abs(geometry.progressLeft - geometry.titleLeft)).toBeLessThanOrEqual(1);
+  } else {
+    expect(geometry.iconWidth).toBeCloseTo(20, 1);
+    expect(geometry.iconHeight).toBeCloseTo(20, 1);
+    expect(geometry.iconGap).toBeCloseTo(8, 1);
+    expect(geometry.buttonGap).toBeCloseTo(4, 1);
+    expect(geometry.titleGap).toBeCloseTo(8, 1);
+    expect(geometry.titleLeft - geometry.origin).toBeCloseTo(65, 1);
+    expect(geometry.inside).toBe(true);
+    expect(geometry.progressTop).toBeLessThan(geometry.mainBottom - 1);
   }
   const icon = card.locator('svg.goal-list-icon');
   await expect(icon).toHaveAttribute('aria-hidden', 'true');
   await expect(icon.locator('circle')).toHaveCount(3);
   await expect(icon.locator('circle').nth(0)).toHaveAttribute('r', '6');
   await expect(icon.locator('circle').nth(1)).toHaveAttribute('r', '3');
+});
+
+for (const constrained of [false, true]) test(`Goal header reflows at narrow desktop width (${constrained ? 'constrained' : 'natural'})`, async ({ page }) => {
+  await page.setViewportSize({ width: 864, height: 900 });
+  const fixture = await install(page, 'en', 'Owner');
+  fixture.compactDesktopGoal();
+  await page.goto(`/projects/${projectId}`);
+  if (constrained) await page.addStyleTag({ content: `[data-goal-id="${goalId}"] { width: 620px !important; }` });
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await expect(card.locator('.goal-list-title')).toHaveText('Goal reading');
+  await expect(card.locator('.task-row-id')).toHaveText(goalId);
+  await expect(card.locator('.assignee-name')).toHaveText('Owner');
+  await expect(card.locator('.goal-in-progress')).toHaveText('1 in progress');
+  await expect(card.locator('.task-pause-count')).toHaveText('1 blocked');
+  await expect(card.locator('.chain-worker-active')).toBeVisible();
+  await expect(card.locator('.session-status-annotation')).toHaveText('working');
+  await expect(card.locator('.goal-list-progress')).toHaveText('79/80 completed');
+  await expect(card.locator('.goal-list-meta')).toContainText('81');
+  const geometry = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const main = box('.goal-list-main'), progress = box('.goal-list-progress');
+    const session = box('.goal-list-session'), detail = box('.goal-list-detail'), graph = box('.goal-list-graph');
+    const id = element.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const range = document.createRange(); range.selectNodeContents(id);
+    const idRects = [...range.getClientRects()];
+    const copy = box('.task-copy-button');
+    return { width: element.clientWidth, outerWidth: element.getBoundingClientRect().width,
+      mainBottom: main.bottom, mainLeft: main.left, progressTop: progress.top, progressLeft: progress.left, progressBottom: progress.bottom,
+      sessionTop: session.top, sessionBottom: session.bottom, sessionRight: session.right,
+      detailTop: detail.top, detailBottom: detail.bottom, detailLeft: detail.left, detailWidth: detail.width, detailHeight: detail.height,
+      graphTop: graph.top, graphBottom: graph.bottom, graphLeft: graph.left, graphWidth: graph.width, graphHeight: graph.height,
+      idLines: idRects.length, idTop: idRects[0]!.top, idBottom: idRects[0]!.bottom, copyTop: copy.top, copyBottom: copy.bottom };
+  });
+  if (constrained) {
+    expect(geometry.outerWidth).toBe(620);
+    expect(geometry.width).toBeGreaterThan(600);
+  }
+  expect(geometry.width).toBeLessThanOrEqual(740);
+  expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
+  expect(Math.abs(geometry.progressLeft - geometry.mainLeft)).toBeLessThanOrEqual(1);
+  expect(geometry.sessionTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.detailTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.graphTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.sessionBottom).toBeGreaterThan(geometry.detailTop);
+  expect(geometry.sessionTop).toBeLessThan(geometry.detailBottom);
+  expect(geometry.graphBottom).toBeGreaterThan(geometry.detailTop);
+  expect(geometry.graphTop).toBeLessThan(geometry.detailBottom);
+  expect(geometry.sessionRight).toBeLessThanOrEqual(geometry.detailLeft + 1);
+  expect(geometry.detailLeft).toBeLessThan(geometry.graphLeft);
+  expect([geometry.detailWidth, geometry.detailHeight, geometry.graphWidth, geometry.graphHeight]).toEqual([32, 32, 32, 32]);
+  expect(geometry.idLines).toBe(1);
+  expect(geometry.copyBottom).toBeGreaterThan(geometry.idTop);
+  expect(geometry.copyTop).toBeLessThan(geometry.idBottom);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const scenario of ['desktop-620', 'phone', 'very-narrow', 'wide'] as const) test(`Goal ID and progress layout at ${scenario} in ${locale}`, async ({ page, context }) => {
+  const phone = scenario === 'phone' || scenario === 'very-narrow';
+  await page.setViewportSize({ width: phone ? 320 : scenario === 'wide' ? 1440 : 864, height: 900 });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await install(page, locale, 'Owner'); fixture.compactDesktopGoal();
+  await page.goto(`/projects/${projectId}`);
+  const outerWidth = scenario === 'desktop-620' ? 620 : scenario === 'very-narrow' ? 180 : null;
+  if (outerWidth !== null) await page.addStyleTag({ content: `[data-goal-id="${goalId}"] { width: ${outerWidth}px !important; }` });
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const id = card.locator('.goal-list-id .task-row-id');
+  const copy = card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
+  const toggle = card.locator('.goal-list-toggle');
+  await expect(id).toHaveText(goalId);
+  await expect(copy).toBeVisible();
+  const layout = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const id = element.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const range = document.createRange(); range.selectNodeContents(id);
+    const lines = [...range.getClientRects()]; const last = lines.at(-1)!;
+    const copy = box('.task-copy-button'), track = box('.goal-list-track'), progress = box('.goal-list-progress');
+    const main = box('.goal-list-main'), icon = box('.goal-list-icon'), card = element.getBoundingClientRect();
+    return { contentWidth: element.clientWidth, outerWidth: card.width, idLines: lines.length,
+      lastTop: last.top, lastBottom: last.bottom, idRight: id.getBoundingClientRect().right,
+      copyTop: copy.top, copyBottom: copy.bottom, copyLeft: copy.left, copyRight: copy.right,
+      trackLeft: track.left, trackWidth: track.width, progressLeft: progress.left, mainLeft: main.left,
+      mainBottom: main.bottom, progressTop: progress.top, iconWidth: icon.width,
+      contained: copy.right <= card.right && track.right <= card.right && element.scrollWidth <= element.clientWidth };
+  });
+  if (outerWidth !== null) expect(layout.outerWidth).toBe(outerWidth);
+  expect(layout.contained).toBe(true);
+  expect(layout.trackWidth).toBeLessThanOrEqual(145);
+  if (scenario === 'wide') {
+    expect(layout.contentWidth).toBeGreaterThan(740);
+    expect(layout.iconWidth).toBe(20);
+    expect(layout.progressTop).toBeLessThan(layout.mainBottom - 1);
+    expect(layout.trackWidth).toBeCloseTo(145, 1);
+  } else {
+    expect(layout.contentWidth).toBeLessThanOrEqual(740);
+    expect(layout.iconWidth).toBe(0);
+    expect(layout.progressTop).toBeGreaterThanOrEqual(layout.mainBottom - 1);
+    expect(Math.abs(layout.trackLeft - layout.mainLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(layout.progressLeft - layout.mainLeft)).toBeLessThanOrEqual(1);
+    expect(layout.copyBottom).toBeGreaterThan(layout.lastTop);
+    expect(layout.copyTop).toBeLessThan(layout.lastBottom);
+    expect(layout.copyLeft - layout.idRight).toBeGreaterThanOrEqual(0);
+    expect(layout.copyLeft - layout.idRight).toBeLessThanOrEqual(5);
+    if (scenario === 'desktop-620') expect(layout.idLines).toBe(1);
+    if (scenario === 'very-narrow') { expect(layout.idLines).toBeGreaterThan(1); expect(layout.trackWidth).toBeLessThan(145); }
+  }
+  const copyPosition = () => copy.evaluate(element => {
+    const button = element.getBoundingClientRect(), card = element.closest('.goal-list-card')!.getBoundingClientRect();
+    return { left: button.left - card.left, top: button.top - card.top };
+  });
+  const initialPosition = await copyPosition();
+  await copy.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  await expect(card.getByRole('status')).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+  if (scenario !== 'wide') expect(await copyPosition()).toEqual(initialPosition);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+  await copy.click();
+  const alert = card.getByRole('alert');
+  await expect(alert).toHaveText(locale === 'en' ? 'Could not copy the Goal ID. Select and copy it manually.' : '无法复制 Goal ID，请选中并手动复制。');
+  if (scenario !== 'wide') {
+    expect(await copyPosition()).toEqual(initialPosition);
+    expect(await alert.evaluate(element => {
+      const bounds = element.getBoundingClientRect(), card = element.closest('.goal-list-card')!.getBoundingClientRect();
+      const button = element.parentElement!.querySelector('.task-copy-button')!.getBoundingClientRect();
+      return bounds.left >= card.left && bounds.right <= card.right && bounds.top >= button.bottom - 1
+        && element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1;
+    })).toBe(true);
+  }
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+  await copy.focus(); await page.keyboard.press('Enter');
+  await expect(card.getByRole('status')).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+  if (scenario !== 'wide') expect(await copyPosition()).toEqual(initialPosition);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click(); await expect(toggle).toHaveAttribute('aria-expanded', 'false');
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
@@ -2187,7 +2343,13 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const content = card.locator(`#project-goal-children-${goalId}`);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(content).toBeHidden();
-  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
+  const icon = card.locator('.goal-list-icon');
+  const compact = await card.evaluate(element => element.clientWidth <= 740);
+  if (compact) await expect(icon).toBeHidden();
+  else await expect(icon).toBeVisible();
+  const targets = ['.goal-disclosure', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status'];
+  if (!compact) targets.push('.goal-list-icon');
+  for (const selector of targets) {
     const target = card.locator('.goal-list-row').locator(selector);
     await target.click();
     await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
@@ -3135,9 +3297,9 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await expect(nested).toHaveCount(0);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 32]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 740, 390, 320]) for (const rootSize of [16, 20, 24, 32]) {
   test(`Goal graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
-    const title = locale === 'en' ? 'A task title long enough to occupy two lines in this card' : '这是一个用于验证依赖图卡片双行标题显示和完整布局的任务';
+    const title = locale === 'en' ? 'A long task title deliberately occupying three lines while the external marker and compact readings remain visible in this dense card' : '这是一个用于验证依赖图卡片三行标题与外部标记以及紧凑读数同时保持可读的非常长的任务标题';
     const fixture = await install(page, locale); fixture.addComplexExternalGoalTask(title);
     await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
     await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
@@ -3160,23 +3322,29 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     const graph = page.locator(`#task-graph-${goalId}`);
     const external = graph.locator(`.react-flow__node[data-id="${otherTaskId}"] .task-node`);
     await expect(external.locator('.task-node-usage')).toBeVisible();
-    await expect(external.locator('.task-node-owner')).toContainText('A very long external owner');
+    await expect(external.locator('.task-node-owner')).toHaveCount(0);
     await expect(external.locator('.task-external-label')).toBeVisible();
     await expect(external.locator('.task-node-expansions')).toHaveCount(0);
     await expectGraphCardBadges(external);
-    const geometry = await external.evaluate(element => {
+    const measure = async () => external.evaluate(element => {
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;
       const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
-      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-node-bottom > *', '.task-node-details']
-        .flatMap(selector => [...card.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-duration', '.task-node-state', '.task-node-details']
+        .flatMap(selector => [...card.querySelectorAll(selector)].map(part => ({ selector, box: part.getBoundingClientRect() })));
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
-      return { width: card.offsetWidth, height: card.offsetHeight, twoLines: title.offsetHeight > lineHeight * 1.5 && title.scrollHeight <= title.clientHeight + 1,
-        inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
-        separate: parts.every((part, index) => parts.slice(index + 1).every(other => separate(part, other))) };
+      return { width: card.offsetWidth, height: card.offsetHeight, threeLines: title.offsetHeight >= lineHeight * 2.8 && title.offsetHeight <= lineHeight * 3.1,
+        inside: parts.every(({ box: part }) => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
+        overlaps: parts.flatMap((part, index) => parts.slice(index + 1).filter(other => !separate(part.box, other.box)).map(other => ({ a: part.selector, b: other.selector, aBox: part.box.toJSON(), bBox: other.box.toJSON() }))) };
     });
-    expect(geometry).toEqual({ width: 320 * rootSize / 16, height: 144 * rootSize / 16, twoLines: true, inside: true, separate: true });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await measure()).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
+    expect(await graph.locator('.graph-orientation').evaluate(element => {
+      const box = element.getBoundingClientRect(), dialog = element.closest('[role="dialog"]')!.getBoundingClientRect();
+      return box.left >= dialog.left && box.right <= dialog.right;
+    })).toBe(true);
+    await graph.locator('[data-direction="vertical"]').click();
+    await expect(graph.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+    expect(await measure()).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, threeLines: true, inside: true, overlaps: [] });
   });
 }
 
@@ -3194,7 +3362,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(nodes).toHaveCount(30);
   expect(await nodes.evaluateAll((elements, scale) => elements.every(element => {
     const card = element.querySelector<HTMLElement>('.task-node')!;
-    return card.offsetWidth === 320 * scale && card.offsetHeight === 144 * scale;
+    return card.offsetWidth === 300 * scale && card.offsetHeight === 124 * scale;
   }), rootSize / 16)).toBe(true);
   expect(await nodes.first().evaluate(element => {
     const node = element.querySelector('.task-node')!.getBoundingClientRect();
@@ -3224,7 +3392,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     expect(new Set(positions.map(point => point.y)).size).toBeGreaterThan(1);
   };
   await expectGrid();
-  const minimumZoom = await dialog.locator('.react-flow').evaluate((element, scale) => Math.max(0.2, Math.min(0.8, (element.clientWidth - 40) / (320 * scale))), rootSize / 16);
+  const minimumZoom = await dialog.locator('.react-flow').evaluate((element, scale) => Math.max(0.2, Math.min(0.8, (element.clientWidth - 40) / (300 * scale))), rootSize / 16);
   await expect.poll(zoom).toBeGreaterThanOrEqual(minimumZoom - 0.001);
   expect(await zoom()).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

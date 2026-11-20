@@ -46,6 +46,11 @@ type operations interface {
 	Ask(ctx context.Context, actor core.Actor, input core.InquiryInput) (model.AssistantTaskInquiry, error)
 	Answer(ctx context.Context, actor core.Actor, input core.AnswerInput) (model.AssistantTaskInquiry, error)
 	ClearAttention(context.Context, core.Actor, string) error
+	GetInbox(ctx context.Context, actor core.Actor, taskID string) (core.InboxView, error)
+	EnableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error)
+	RotateInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error)
+	DisableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error)
+	InboxOperation(ctx context.Context, actor core.Actor, taskID, operationID string) (core.InboxResult, error)
 }
 
 type authentication interface {
@@ -119,6 +124,11 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 	register("/api/v1/assistant-task-events/attention", "POST", map[string]requestOperation{"POST": h.clearAttention})
 	register("/api/v1/bots/{id}/attention/seen", "POST", map[string]requestOperation{"POST": h.botAttentionSeen})
 	register(task+"/inquiries", "GET, HEAD, POST", map[string]requestOperation{"GET": h.inquiries, "POST": h.ask})
+	register(task+"/inbox", "GET, HEAD", map[string]requestOperation{"GET": h.inbox})
+	for _, kind := range []string{"enable", "rotate", "disable"} {
+		register(task+"/inbox/"+kind, "POST", map[string]requestOperation{"POST": h.manageInbox(kind)})
+	}
+	register(task+"/inbox-operations/{id}", "GET, HEAD", map[string]requestOperation{"GET": h.inboxOperation})
 	register(task+"/inquiries/{id}/answer", "POST", map[string]requestOperation{"POST": h.answer})
 }
 

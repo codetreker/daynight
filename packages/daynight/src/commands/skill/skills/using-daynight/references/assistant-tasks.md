@@ -115,6 +115,12 @@ Rollback appends a new version with the selected historical content. Pausing
 stops application work while allowing claims and renewal. Deletion removes the
 resource and its materials; it is separate from releasing a claim.
 
+`inbox show <task-id>` reads the task's inbox state for a user or Bot; it never
+returns a token. Only user terminals may run `inbox enable`, `inbox rotate
+--mode overlap|immediate`, `inbox disable` (each with `--if-version`) and
+`inbox operation <task-id> <operation-id>`. Enable and rotate print the full
+token once; a replay or receipt read cannot recover it.
+
 ## Events and write outcomes
 
 `events pull` reads a page globally or for one task. `events ack <task-id>

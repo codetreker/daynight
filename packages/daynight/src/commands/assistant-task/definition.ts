@@ -27,7 +27,7 @@ const write = [operation, ...common];
 const page = [limit, cursor];
 const leaf = (name: string, description: string, options: readonly CommandOption[], arguments_: readonly CommandArgument[] = [task], details?: string): CommandDefinition => ({ name, description, arguments: arguments_, options, ...(details === undefined ? {} : { details }) });
 const group = (name: string, description: string, commands: readonly CommandDefinition[]): CommandDefinition => ({ name, description, commands, options: [help] });
-const unknown = "Writes are sent once. On an unknown outcome, read the original resource and operation before deciding again. --operation-id identifies the request locally; only claim operations, event acknowledgements and resource additions have server-side operation/ID deduplication.";
+const unknown = "Writes are sent once. On an unknown outcome, read the original resource and operation before deciding again. --operation-id identifies the request locally; only claim and inbox operations, event acknowledgements and resource additions have server-side operation/ID deduplication.";
 const itemFields = [option("--key", "Stable application item key", true), option("--episode", "Positive int64 episode", true), option("--state", "Item state", true, ["open", "closed"]), option("--category", "Application category", true, undefined, true), option("--app-state", "Application state JSON (default: {})")];
 
 export const assistantTaskDefinition: CommandDefinition = {
@@ -50,6 +50,13 @@ export const assistantTaskDefinition: CommandDefinition = {
     leaf("release", "Release the current claim without deleting task material", [option("--if-version", "Observed task version; required for a user release"), generation, ...write]),
     leaf("transfer", "Transfer responsibility to another Bot", [version, generation, { ...target, required: true }, ...write]),
     group("claim-operation", "Read the original claim operation without replaying it", [leaf("show", "Verify a historical receipt and its separate current claim", common, [task, id("operation")])]),
+    group("inbox", "Read and manage the task's inbound message inbox as its user", [
+      leaf("show", "Read the inbox state; tokens are never returned", common),
+      leaf("enable", "Enable an inbox and print its token once", [version, ...write], [task], "The full token appears only in this response. Store it for the external sender; a replay of the same operation returns null. " + unknown),
+      leaf("rotate", "Replace the inbox token and print the new token once", [version, option("--mode", "overlap keeps the previous token valid for 24 hours; immediate revokes it", true, ["overlap", "immediate"]), ...write], [task], "While a previous token is still in its overlap period, only immediate rotation is accepted. " + unknown),
+      leaf("disable", "Disable the inbox permanently; enabling again creates a new inbox ID", [version, ...write]),
+      leaf("operation", "Read the original inbox operation receipt without replaying it; tokens are never returned", common, [task, id("operation")]),
+    ]),
     group("manual", "Read manual versions and restore a historical version", [
       leaf("show", "Read the current or specified manual", [option("--version", "Positive manual version; omitted selects current"), ...common]),
       leaf("list", "Read one page of manual versions", [...page, ...common]),

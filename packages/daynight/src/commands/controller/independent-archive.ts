@@ -10,6 +10,7 @@ import { parseRegistrationResponse } from "../../session/controller-protocol.js"
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { recordStoppedControllerGeneration } from "./lifecycle-store.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
+import { replayStoppedControllerUsage } from "./usage/stopped.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 
 /** Archive retry has no process launch, native resume, or business-input path. */
@@ -48,17 +49,30 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
     body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof: { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt } };
     writeDurableJson(proofPath, body);
   }
-  // A retry may close a still-active server record after local stop was already proven.
+  // Replay the original grant independently of history and server stop receipts.
+  let usageFailure: unknown;
   try {
-    const pending = await fetch(`${config.serverUrl}/api/v1/test-sessions/${ticket.sessionId}/archive`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${config.serverToken}`, "content-type": "application/json" }, body: JSON.stringify({ ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, state: "pending", errorCode: null }), signal: AbortSignal.timeout(10_000) });
-    await pending.body?.cancel();
-  } catch { /* Metadata publication must not prevent stop reconciliation. */ }
-  const response = await fetch(`${config.serverUrl}/api/v1/test-sessions/${ticket.sessionId}/stop`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${config.serverToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`Native execution is stopped; server stop reconciliation failed (${response.status}).`);
-  const result = parseRegistrationResponse(await response.json()).session;
-  assertSessionFence(result, ticket);
-  if (result.lifecycle !== "archived") throw new Error("Native execution is stopped; server session closure is unconfirmed.");
-  writeDurableJson(path.join(execution, "stop-result.json"), { session: result });
-  await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken });
-  context.stdout(`Test Session history archived: ${new URL(`/test-sessions/${ticket.sessionId}`, config.serverUrl).href}\n`);
+    const usage = await replayStoppedControllerUsage({ journalPath, ticket, serverToken: config.serverToken });
+    if (usage.retryable) throw new Error("Test Session usage upload remains pending; the original journal is retained. Retry the same archive command.");
+    if (usage.pending > 0) context.stderr("Test Session usage is incomplete and cannot be replayed with the retained grant. Original journal retained; history archival continues.\n");
+  } catch (error) { usageFailure = error; }
+  try {
+    // A retry may close a still-active server record after local stop was already proven.
+    try {
+      const pending = await fetch(`${config.serverUrl}/api/v1/test-sessions/${ticket.sessionId}/archive`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${config.serverToken}`, "content-type": "application/json" }, body: JSON.stringify({ ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, state: "pending", errorCode: null }), signal: AbortSignal.timeout(10_000) });
+      await pending.body?.cancel();
+    } catch { /* Metadata publication must not prevent stop reconciliation. */ }
+    const response = await fetch(`${config.serverUrl}/api/v1/test-sessions/${ticket.sessionId}/stop`, { method: "POST", redirect: "error", headers: { authorization: `Bearer ${config.serverToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`Native execution is stopped; server stop reconciliation failed (${response.status}).`);
+    const result = parseRegistrationResponse(await response.json()).session;
+    assertSessionFence(result, ticket);
+    if (result.lifecycle !== "archived") throw new Error("Native execution is stopped; server session closure is unconfirmed.");
+    writeDurableJson(path.join(execution, "stop-result.json"), { session: result });
+    await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken });
+    context.stdout(`Test Session history archived: ${new URL(`/test-sessions/${ticket.sessionId}`, config.serverUrl).href}\n`);
+  } catch (error) {
+    if (usageFailure !== undefined) throw new AggregateError([usageFailure, error], "Test Session usage and history retry failed.");
+    throw error;
+  }
+  if (usageFailure !== undefined) throw usageFailure;
 };
