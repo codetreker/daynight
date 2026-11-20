@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ApiError, listProjects } from '../../api/client';
 import { assistantTaskInboxUrl, type AssistantTask } from '../../api/assistant-tasks';
 import type { Project } from '../../api/types';
@@ -110,14 +110,20 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
   // The user's selection while editing; null shows the loaded configuration. Every load discards it.
   const [draft, setDraft] = useState<Selection | null>(null);
   const [saving, setSaving] = useState(false), [failure, setFailure] = useState<unknown>(null), [invalid, setInvalid] = useState(false);
+  // The parent keeps this panel mounted across tabs. Becoming active again loads only what has not been loaded yet, so
+  // edits and a pending conflict survive a tab switch; only Retry, Reload or a confirmed change requests a new load.
+  const loaded = useRef<{ readonly inboxUrl: string; readonly scope: TaskCacheScope; readonly reload: number } | null>(null);
   useEffect(() => {
     if (!active) return;
+    const last = loaded.current;
+    if (last !== null && last.inboxUrl === inboxUrl && last.scope === scope && last.reload === reload) return;
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
     void (async () => {
       try {
         await scope.ready(signal);
         const value = await loadDirectory(scope, inboxUrl, signal);
         if (signal.aborted) return;
+        loaded.current = { inboxUrl, scope, reload };
         setData(value); setDraft(null); setFailure(null); setInvalid(false); setLoadError(null);
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
