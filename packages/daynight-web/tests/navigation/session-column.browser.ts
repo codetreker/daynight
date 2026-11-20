@@ -226,6 +226,22 @@ test('a located form retains values through a real response command', async ({ b
   } finally { await context.close(); }
 });
 
+for (const entry of ['task', 'test'] as const) test(`${entry} uses its narrow desktop container height for the locator`, async ({ page }) => {
+  await page.setViewportSize({ width: 1360, height: 900 });
+  const { observations } = await open(page, 'en', 'waiting_input', entry, 'tall-form');
+  const root = page.locator('.task-agent-session'), timeline = page.locator('.session-timeline');
+  await root.evaluate(node => { node.style.width = '375px'; node.style.height = '400px'; node.style.flex = 'none'; });
+  const jump = page.locator('.session-pending-request');
+  await expect(jump).toContainText('↑');
+  await jump.click();
+  await expect(page.locator('.session-interaction')).toBeFocused();
+  const dimensions = await timeline.evaluate(node => ({ width: innerWidth, height: node.getBoundingClientRect().height, heading: node.querySelector('h4')!.getBoundingClientRect().toJSON(), bounds: node.getBoundingClientRect().toJSON() }));
+  expect(dimensions.width).toBe(1360);
+  expect(dimensions.heading.top).toBeGreaterThanOrEqual(dimensions.bounds.top);
+  expect(dimensions.heading.bottom).toBeLessThanOrEqual(dimensions.bounds.bottom);
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+});
+
 for (const entry of ['task', 'test', 'assistant'] as const) for (const content of ['short', 'long', 'empty'] as const) {
   test(`${entry} ${content} aligns the production reading and input columns`, async ({ page }, info) => {
     await page.setViewportSize({ width: 1920, height: 1080 });
