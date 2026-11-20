@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
 // AuthorizationWriter binds request, client and credential operations to one transaction.
@@ -17,6 +19,8 @@ type AuthorizationScope interface {
 	IdentityDAO() IdentityDAO
 }
 type OAuthAuthorization struct {
+	// ApprovedScopes is nil for pending, denied and fixed-profile requests.
+	ApprovedScopes                                                   []scopepolicy.ScopeID
 	ID                                                               string
 	BindingHash                                                      []byte
 	Client                                                           json.RawMessage
