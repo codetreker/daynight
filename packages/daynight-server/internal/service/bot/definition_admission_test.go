@@ -526,3 +526,34 @@ func TestScopedCreationDoesNotWriteAfterDiscoveryRefusal(t *testing.T) {
 		t.Fatalf("discovery refusal: %v", err)
 	}
 }
+
+type scopedDiscoveryRequester struct{ calls int }
+
+func (r *scopedDiscoveryRequester) Request(_ context.Context, principal model.Principal, workerID string, request ro.Request) (ro.Message, error) {
+	r.calls++
+	return nativeResponse(principal, workerID, request), nil
+}
+
+func TestScopedNativeDiscoveryConstruction(t *testing.T) {
+	p := testPrincipal()
+	worker := uuid.NewString()
+	snapshot := &snapshotToken{}
+	db := &definitionStore{snapshot: snapshot}
+	requester := &scopedDiscoveryRequester{}
+	if service, err := NewScopedWithNativeDiscovery(db, requester, nil); err == nil || service != nil {
+		t.Fatalf("missing authorization source: service=%v err=%v", service, err)
+	}
+	source := &definitionSource{read: scopedAuthorization(t, "bot:read", "bot:write", "session:read")}
+	service, err := NewScopedWithNativeDiscovery(db, requester, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.authorization != source || service.models != requester {
+		t.Fatal("construction replaced the authorization source or requester")
+	}
+	base := nativeBase(worker)
+	result, err := service.readModels(t.Context(), p, base, base.Model, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)
+	if err != nil || len(result.Models) == 0 || requester.calls != 1 || source.readScope != snapshot {
+		t.Fatalf("scoped discovery: result=%+v calls=%d err=%v", result, requester.calls, err)
+	}
+}
