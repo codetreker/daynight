@@ -162,3 +162,45 @@ func TestLegacyControllerGrantKeepsOriginalParentChecks(t *testing.T) {
 		t.Fatalf("legacy grant changed: called=%v err=%v", called, err)
 	}
 }
+
+func TestProducerAdmissionRejectsUnusableAuthority(t *testing.T) {
+	p := model.Principal{Kind: model.PATCredential, UserID: producerOwner, CredentialID: grantParent}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"session:produce"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceErr := errors.New("authority unavailable")
+	for _, tc := range []struct {
+		name       string
+		caller     model.Principal
+		auth       model.CredentialAuthorization
+		err        error
+		wantSource bool
+	}{
+		{name: "source failure", caller: p, err: sourceErr, wantSource: true},
+		{name: "different credential", caller: p, auth: model.CredentialAuthorization{Principal: model.Principal{Kind: model.PATCredential, UserID: producerOwner, CredentialID: connectionParent}, Profile: model.ScopedPATProfile, Policy: &policy}, wantSource: true},
+		{name: "wrong profile", caller: p, auth: model.CredentialAuthorization{Principal: p, Profile: model.SessionProfile}, wantSource: true},
+		{name: "non PAT", caller: model.Principal{Kind: model.SessionCredential, UserID: producerOwner, CredentialID: grantParent}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			svc := &Service{producerAuthorization: func(_ context.Context, _ store.SessionScope, got model.Principal) (model.CredentialAuthorization, error) {
+				called = true
+				if got != tc.caller {
+					t.Fatalf("wrong principal: %#v", got)
+				}
+				return tc.auth, tc.err
+			}}
+			err := svc.requireProducer(t.Context(), nil, tc.caller)
+			if err == nil || called != tc.wantSource {
+				t.Fatalf("unexpected result: err=%v source=%v", err, called)
+			}
+			if tc.err != nil && !errors.Is(err, tc.err) {
+				t.Fatalf("lost source error: %v", err)
+			}
+		})
+	}
+	if err := (&Service{}).requireProducer(t.Context(), nil, p); err != nil {
+		t.Fatalf("legacy assembly changed: %v", err)
+	}
+}
