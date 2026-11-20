@@ -16,11 +16,12 @@ type botStore interface {
 	store.BotWriter
 }
 type Bots struct {
-	store         botStore
-	models        modelRequester
-	operations    botOperations
-	observer      sessionObserver
-	authorization DefinitionAuthorizationSource
+	store          botStore
+	models         modelRequester
+	creationModels creationModelRequester
+	operations     botOperations
+	observer       sessionObserver
+	authorization  DefinitionAuthorizationSource
 }
 
 func New(database botStore) *Bots { return &Bots{store: database, operations: defaultBotOperations()} }
@@ -205,7 +206,7 @@ func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overr
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}
-		final, err := s.resolveNative(ctx, principal, base, overrides, preference, baseline, scopepolicy.BotRead, scopepolicy.WorkerRead, scopepolicy.WorkerInspect)
+		final, err := s.resolveNative(ctx, principal, s.models, base, overrides, preference, baseline, scopepolicy.BotRead, scopepolicy.WorkerRead, scopepolicy.WorkerInspect)
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}

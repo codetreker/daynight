@@ -94,6 +94,11 @@ MCP 读取与写入注册各自只拥有所属工具，可组合到同一 Entry�
 只返回 `project.id`。MCP task_graph 缺少项目读取权限时采用相同最小投影，包含
 `dependsOnly`，其余节点、依赖、统计和 projection 声明保持原合同。
 
+完整 Graph 在初次读取和 live 采样后的最终快照中均复核当前凭据的
+`task:read`、`project:read`，以及本次采样所需的 `session:read`。任一权限
+撤回后不交付已读取的完整 Project。task-only Graph 保持窄投影，且不附加
+`project:read`；单次完整查询的要求不会改变共享服务的后续查询。
+
 缺少 `session:read` 时，普通组合查询不读取任何 Session 来源或采样 live 状态。
 Task 属性中的执行记录 `worker`、`sessionStartup` 被排除；普通自定义属性保留。
 `include=session` 的旧线协议仍返回可解析的 `unavailable/unknown` 观察，reason 为
@@ -286,8 +291,10 @@ access 的顺序锁定，原凭据、归属和删除协调检查继续生效。�
 HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影时，另需
 `assistant-task:read`；创建在写入前复核该权限。MCP 的 `bot_list`、`bot_show`、
 `bot_create`、`bot_delete` 保留既有输出，不请求该投影。创建所需的内部模型
-发现遵守 Bot 准入及原 Worker 资源检查，并在每次发现前复核当前权限；它不把
-独立 Worker 检查能力授予 Bot 定义凭据。
+发现使用本次创建的完整操作要求及原 Worker 资源检查；操作要求绑定到单次
+发现请求，在派发、结果投递和返回前读取当前权限复核，保留原请求是否需要
+`assistant-task:read` 的选择。该内部能力不要求或授予独立的 `worker:inspect`；
+Defaults 的独立检查继续使用 Worker 检查准入。
 
 既有 Bot 或指定 Worker 的可见性检查先于 scope 拒绝，分页读取、定义写入和
 删除屏障在授权后执行。可靠的 scope 拒绝在 REST 保留 403 `forbidden` 并附加
@@ -333,7 +340,7 @@ schema 与资源绑定。用户通道在握手及每次投递前复核当前权�
 | 带配置交换的报告 | `worker:report`、`worker:read` | 报告写入前；原回执包含完整 desired |
 | 报告实际改变 desired | 另需 `worker:configure` | 同一报告事务内的最终候选与已锁目标比较 |
 | 报告提交后的 Prompt 选择 | `prompt:read` | 独立 Prompt 快照；拒绝只影响逐项结果 |
-| readonly 主动请求 | `worker:inspect` | 派发前、结果交付及返回前复核原请求者 |
+| 独立 readonly 主动请求 | `worker:inspect` | 派发前、结果交付及返回前复核原请求者 |
 | readonly 生产者连接、检查与结果生产 | `worker:report` | 原 PAT 当前权限复核，失权关闭通道 |
 
 `core/worker.ExchangeConfigurationAuthorized` 在实际 desired 写入前检查配置
@@ -348,9 +355,11 @@ Bootstrap 或已采纳工具的无变化请求不额外要求配置权限；观�
 `service/worker.NewScopedReadOnly` 使用同一身份事务中的 `LockActivePAT` 与
 `PATScopeDAO.ReadLockedPATScope` 分别确认有效性及当前策略；原有效性查询本身
 不携带 Scope。Session 和固定 API OAuth 保留原身份及应用绑定。Broker 使用
-独立 requester、producer 授权函数，主动检查不隐含 Worker 配置读取许可，
-生产者不要求主动检查许可。请求者失权只拒绝对应结果，生产者失权断开共享
-连接并释放待处理请求。
+独立 requester、producer 授权函数；每个待处理请求保存其原请求者的授权函数，
+派发、结果投递和最终返回使用同一绑定。公共主动检查使用 `worker:inspect`，
+Bot 创建内部发现使用本次创建的操作要求，并继续检查 Worker 有效性与归属。
+主动检查不隐含 Worker 配置读取许可，生产者不要求主动检查许可。请求者失权
+只拒绝对应结果，生产者失权断开共享连接并释放待处理请求。
 
 Worker 的显式 scoped HTTP 注册复用原解析与响应，要求 scoped 服务和认证。
 readonly 注册配合 scoped Broker 使用。实际注册的 `ScopeRoute` 包含普通操作、

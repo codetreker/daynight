@@ -33,7 +33,7 @@ func TestReceivedOutcomeKeepsAuthorityFailureAfterCallerEnds(t *testing.T) {
 				return nil
 			})
 			defer broker.Close()
-			message, err := broker.receiveOutcome(tc.ctx, model.Principal{}, "", nil, outcome{err: tc.err})
+			message, err := broker.receiveOutcome(tc.ctx, model.Principal{}, "", nil, outcome{err: tc.err}, broker.requester)
 			if err != tc.err || len(message.Result) != 0 || requestContextError(tc.ctx, err) != tc.err {
 				t.Fatalf("received failure replaced after caller ended: %+v %v", message, err)
 			}
@@ -45,7 +45,7 @@ func TestReceivedOutcomeKeepsAuthorityFailureAfterCallerEnds(t *testing.T) {
 			return nil
 		})
 		defer broker.Close()
-		message, err := broker.receiveOutcome(cancelled, model.Principal{}, "", nil, outcome{message: Message{Type: "result"}})
+		message, err := broker.receiveOutcome(cancelled, model.Principal{}, "", nil, outcome{message: Message{Type: "result"}}, broker.requester)
 		if !errors.Is(err, context.Canceled) || message.Type != "" {
 			t.Fatalf("successful outcome returned after caller cancellation: %+v %v", message, err)
 		}

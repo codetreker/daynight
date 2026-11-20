@@ -23,12 +23,15 @@ after the report commits; denial becomes a per-selector error without exposing t
 or replacing the committed native result.
 
 Read-only Broker authorization has independent requester and producer callbacks.
-Current PAT policy is read through the scope DAO after locking the active PAT in
-the same identity transaction: the original validity query does not load policy.
-Inspectors require inspect permission at dispatch, producer delivery and final
-return; machine channels require report permission at their existing checks.
+The public requester reads current PAT policy through the scope DAO after locking
+the active PAT in the same identity transaction: the original validity query does
+not load policy. Public inspectors require inspect permission at dispatch,
+producer delivery and final return; machine channels require report permission
+at their existing checks. The public requester retains its Session and fixed API
+OAuth restrictions. [Internal Bot discovery](2026-11-21-bot-internal-discovery-authority.md)
+binds its own current credential authority and immutable operation set to pending
+work on those same channels, preserving Worker ownership and liveness checks.
 Requester denial affects its query, while producer denial closes the channel.
-Session and fixed API OAuth restrictions remain in force.
 
 The [internal design](../../../../docs/design/credential-scope-internal.md#worker-报告与检查准入)
 owns the operation mapping and assembly requirements. Production uses scoped constructors and HTTP registrations with

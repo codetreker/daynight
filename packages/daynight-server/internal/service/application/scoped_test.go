@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialpolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 )
 
@@ -81,5 +82,12 @@ func TestDeploymentCatalogOmitsUnavailableOperations(t *testing.T) {
 	}
 	if _, err := availableCatalog("invalid", nil); err == nil {
 		t.Fatal("unknown credential type accepted")
+	}
+}
+
+func TestScopedBotAssemblyRejectsMissingSharedBroker(t *testing.T) {
+	source := &credentialpolicy.Source{Origin: "https://daynight.test"}
+	if got, err := newScopedBots(nil, nil, source); got != nil || err == nil || !strings.Contains(err.Error(), "requester authority is required") {
+		t.Fatalf("missing producer broker published a Bot service: %v %v", got, err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialpolicy"
@@ -56,7 +57,7 @@ func NewScoped(database store.Transactions, files filestorage.Storage, client *u
 	if err != nil {
 		return nil, err
 	}
-	a.Bots, err = bot.NewScopedWithNativeDiscovery(database, a.WorkerReadOnly, source)
+	a.Bots, err = newScopedBots(database, a.WorkerReadOnly, source)
 	if err != nil {
 		return nil, err
 	}
@@ -96,4 +97,12 @@ func availableCatalog(kind scopepolicy.CredentialType, unavailable []scopepolicy
 		}
 	}
 	return scopepolicy.NewCatalogSnapshot(kind, ids)
+}
+
+func newScopedBots(database store.Transactions, broker *workerreadonly.Broker, source *credentialpolicy.Source) (*bot.Bots, error) {
+	creationDiscovery, err := worker.NewScopedReadOnlyRequester(database, broker, source.Current)
+	if err != nil {
+		return nil, err
+	}
+	return bot.NewScopedWithNativeDiscovery(database, broker, creationDiscovery, source)
 }

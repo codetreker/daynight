@@ -26,6 +26,7 @@ type Connection struct {
 }
 type pending struct {
 	actor     model.Principal
+	authorize Authorize
 	answer    chan outcome
 	operation string
 	provider  string
@@ -174,7 +175,30 @@ func unsafeAuthorityCompletion(err error) bool {
 	}
 	return false
 }
-func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
+
+// Requester binds a trusted service authority to requests on the shared channels.
+// The binding remains attached to pending work through producer-driven delivery.
+type Requester struct {
+	broker    *Broker
+	authorize Authorize
+}
+
+func (b *Broker) NewRequester(authorize Authorize) *Requester {
+	if authorize == nil {
+		panic("Worker read-only requester authorization is required")
+	}
+	return &Requester{broker: b, authorize: authorize}
+}
+
+func (r *Requester) Request(ctx context.Context, p model.Principal, worker string, request Request) (Message, error) {
+	return r.broker.request(ctx, p, worker, request, r.authorize)
+}
+
+func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (Message, error) {
+	return b.request(ctx, p, worker, r, b.requester)
+}
+
+func (b *Broker) request(ctx context.Context, p model.Principal, worker string, r Request, authorize Authorize) (result Message, err error) {
 	timeout := OperationTimeout(r.Operation)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -197,7 +221,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	if !validID(worker) {
 		return Message{}, fault("invalid_input", "Worker ID is invalid.")
 	}
-	if e := b.requester(ctx, p, worker); e != nil {
+	if e := authorize(ctx, p, worker); e != nil {
 		return Message{}, e
 	}
 	b.mu.Lock()
@@ -237,7 +261,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		b.mu.Unlock()
 		return Message{}, fault("invalid_input", "requestId was already used on this connection.")
 	}
-	work := &pending{actor: p, answer: make(chan outcome, 1), operation: r.Operation}
+	work := &pending{actor: p, authorize: authorize, answer: make(chan outcome, 1), operation: r.Operation}
 	if r.Operation == "model.list" {
 		var input ModelInput
 		_ = json.Unmarshal(r.Input, &input)
@@ -268,19 +292,19 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	}()
 	select {
 	case out := <-work.answer:
-		return b.receiveOutcome(ctx, p, worker, c, out)
+		return b.receiveOutcome(ctx, p, worker, c, out, work.authorize)
 	case <-ctx.Done():
 		return Message{}, ctx.Err()
 	}
 }
-func (b *Broker) receiveOutcome(ctx context.Context, p model.Principal, worker string, c *Connection, out outcome) (Message, error) {
+func (b *Broker) receiveOutcome(ctx context.Context, p model.Principal, worker string, c *Connection, out outcome, authorize Authorize) (Message, error) {
 	if out.err != nil {
 		return Message{}, out.err
 	}
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
 	}
-	if err := b.requester(ctx, p, worker); err != nil {
+	if err := authorize(ctx, p, worker); err != nil {
 		return Message{}, err
 	}
 	if err := b.Check(ctx, c); err != nil {
@@ -321,7 +345,7 @@ func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 			return fault("invalid_input", "Model capabilities belong to another Provider.")
 		}
 	}
-	authErr := b.requester(ctx, work.actor, c.WorkerID)
+	authErr := work.authorize(ctx, work.actor, c.WorkerID)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.connections[key(c.OwnerUserID, c.WorkerID)] != c || c.pending[m.RequestID] != work {
