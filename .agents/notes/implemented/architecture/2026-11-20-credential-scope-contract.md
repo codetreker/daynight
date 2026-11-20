@@ -38,6 +38,14 @@ legacy approval method rejects approval in scoped assembly so an old page cannot
 bypass explicit selection; its existing request can be read after refresh.
 Production constructors and routes retain the original behavior until cutover.
 
+The opt-in Web authorization pages use one catalog-driven selector, displaying
+actual IDs and server defaults for each credential type. They submit explicit
+nonempty selections against the inspected revision. A catalog conflict preserves
+the draft, exposes unavailable choices for explicit removal, and requires review.
+An unconfirmed decision remains protected across reloads; a pending read cannot
+prove that an earlier transaction has finished. The existing production pages
+remain assembled until the coordinated cutover.
+
 Opt-in account management exposes complete PAT and OAuth grant rows with their
 scope policies, and creates manual PATs with the CLI catalog. Scope edits bind
 the browser account, catalog revision and observed scope version. They retain or
