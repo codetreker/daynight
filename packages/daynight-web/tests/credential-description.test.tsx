@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import type { PersonalAccessToken } from "../src/api/auth";
@@ -18,6 +18,7 @@ const fixture = (items: readonly PersonalAccessToken[] = [token]) => ({
 });
 const page = (transport: TokenManagementApi, extra = {}) => <TokensPanel user={user} onIdentityMismatch={vi.fn()} transport={transport} {...extra} />;
 const edit = async (name = "CLI") => fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^Edit description: ${name}`) }));
+const openCreate = async () => { const button = screen.getByRole("button", { name: "Create token" }); await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button); };
 const change = (value: string) => fireEvent.change(screen.getByLabelText("Description"), { target: { value } });
 const save = () => fireEvent.submit(document.getElementById("credential-description-form")!);
 afterEach(() => { invalidateAuthRequests(); sessionStorage.clear(); });
@@ -95,7 +96,7 @@ describe("credential descriptions", () => {
   });
   it("shows a confirmed one-time secret despite post-create list failure and retries reads only", async () => {
     const transport = fixture(); transport.list.mockResolvedValueOnce([token]).mockRejectedValueOnce(new ApiError("network")).mockResolvedValue([other]); render(page(transport));
-    fireEvent.click(await screen.findByRole("button", { name: "Create token" })); fireEvent.change(screen.getByLabelText(/Token name/), { target: { value: "Build" } }); fireEvent.change(screen.getByLabelText(/Description/), { target: { value: "build description" } }); fireEvent.submit(document.getElementById("create-token-form")!);
+    await openCreate(); fireEvent.change(screen.getByLabelText(/Token name/), { target: { value: "Build" } }); fireEvent.change(screen.getByLabelText(/Description/), { target: { value: "build description" } }); fireEvent.submit(document.getElementById("create-token-form")!);
     expect(await screen.findByLabelText("One-time access token")).toHaveValue("one-time-secret");
     await screen.findByRole("button", { name: "Retry" }); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await act(async () => {}); expect(screen.getByLabelText("One-time access token")).toHaveValue("one-time-secret"); expect(transport.create).toHaveBeenCalledTimes(1); expect(transport.list).toHaveBeenCalledTimes(3);
@@ -112,7 +113,7 @@ describe("credential descriptions", () => {
   it("keeps creation unknown after failed reads and offers a keyboard-reachable read without replaying POST", async () => {
     const transport = fixture(); transport.create.mockRejectedValue(new ApiError("server", 503, "write_outcome_unknown"));
     transport.list.mockResolvedValueOnce([token]).mockRejectedValueOnce(new ApiError("server", 503, "internal", "create-read-failed")).mockResolvedValue([token, other]);
-    render(page(transport)); fireEvent.click(await screen.findByRole("button", { name: "Create token" }));
+    render(page(transport)); await openCreate();
     fireEvent.change(screen.getByLabelText(/Token name/), { target: { value: "Build" } }); fireEvent.submit(document.getElementById("create-token-form")!);
     const dialog = screen.getByRole("dialog");
     fireEvent.click(await within(dialog).findByRole("button", { name: "Read current state" })); await act(async () => {});

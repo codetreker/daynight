@@ -8,7 +8,7 @@ afterEach(() => invalidateAuthRequests());
 describe("credential panel admission", () => {
   it("queues full reads until a write publishes and prevents a new write throughout the read", async () => {
     const list = vi.fn().mockResolvedValue([record]);
-    const { result } = renderHook(() => useCredentialPanel("00000000-0000-4000-8000-000000000001", list, vi.fn()));
+    const { result } = renderHook(() => useCredentialPanel<typeof record>("00000000-0000-4000-8000-000000000001", list, vi.fn()));
     await act(async () => {});
     const commit = deferred<void>(), reading = deferred<readonly typeof record[]>(); list.mockReturnValueOnce(reading.promise);
     const operation = vi.fn(async () => { await commit.promise; result.current.setItems([{ ...record, description: "confirmed write" }]); });
@@ -23,7 +23,7 @@ describe("credential panel admission", () => {
   });
   it("holds an existing read during account verification and discards its result after invalidation", async () => {
     const response = deferred<readonly typeof record[]>(), list = vi.fn().mockReturnValue(response.promise);
-    const { result } = renderHook(() => useCredentialPanel("00000000-0000-4000-8000-000000000001", list, vi.fn()));
+    const { result } = renderHook(() => useCredentialPanel<typeof record>("00000000-0000-4000-8000-000000000001", list, vi.fn()));
     const resume = pauseAuthRequests(); await act(async () => response.resolve([record]));
     expect(result.current.items).toBeNull();
     await act(async () => { invalidateAuthRequests(); resume(); });
