@@ -923,12 +923,13 @@ export class ImageDraftController {
       } catch (error) { if (this.current(epoch)) this.recoveryErrors.set(recoveryKey(entry.submission), message(error)); }
       if (!this.current(epoch) || !this.networkAllowed()) return;
     }
-    await this.reconcileLegacySubmission(epoch);
+    if (!ref || this.pendingLegacy?.submission?.operationId === ref.operationId) await this.reconcileLegacySubmission(epoch);
     await this.refreshRecoveries(epoch); await this.reload();
   }
   checkStatus = async (ref?: ImageDraftRecoveryRef): Promise<void> => {
-    if (this.checking || !this.saved || !this.networkAllowed()) return; this.checking = true; this.publish();
-    try { await this.checkSubmissions(ref); await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
+    if (this.checking) { if (ref) throw new Error('image_check_in_progress'); return; }
+    if (!this.saved || !this.networkAllowed()) return; this.checking = true; this.publish();
+    try { await this.checkSubmissions(ref); if (!ref) await this.prepareUploads(true); } finally { this.checking = false; this.publish(); }
   };
   private stopObserving(): void { if (this.observeTimer) clearTimeout(this.observeTimer); this.observeTimer = null; this.observeStarted = 0; this.observeAttempt = 0; }
   private observeLater(reset = false): void {

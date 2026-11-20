@@ -56,9 +56,22 @@
 .session-actions .button-primary:disabled { background: #ededf5; color: #7e8398; border-color: #dce0e8; }
 .session-notice { color: var(--task-attention-ink); background: var(--task-attention-background); padding: 7px 10px; border-radius: 5px; font-size: var(--text-interface); margin: 0 0 9px; overflow-wrap: anywhere; }
 .session-error { margin: 8px 12px; color: var(--task-error-ink); font-size: var(--text-interface); overflow-wrap: anywhere; }
-.session-receipts { flex: none; max-height: 72px; overflow: auto; padding: 4px 26px; background: #fafbfe; font-size: var(--text-interface); color: #758096; }
+.session-receipts { flex: 0 1 auto; min-height: 0; max-height: min(160px, 50%); overflow: auto; padding: 4px 26px; background: #fafbfe; font-size: var(--text-interface); color: #758096; }
+.session-receipts.single { flex-shrink: 0; max-height: 50%; }
+.task-agent-session:not(.session-fullscreen):has(> .session-receipts) > .session-composer { min-height: var(--session-composer-min-height, 0px); }
+@media (max-width: 600px) {
+  .task-detail-panel-session .task-session-current:has(> .task-agent-session:not(.session-fullscreen) > .session-composer) { overflow: auto; overscroll-behavior: contain; }
+  .task-detail-panel-session .task-agent-session:not(.session-fullscreen):has(> .session-composer) { min-height: var(--session-receipt-panel-min-height, 0px); }
+  .task-detail-panel-session .task-agent-session:not(.session-fullscreen):has(> .session-composer) > .session-timeline-shell { min-height: 72px; }
+  .task-detail-panel-session .task-agent-session:not(.session-fullscreen) > .session-composer { min-height: var(--session-composer-min-height, 0px); }
+}
 .session-receipt > span { min-width: 0; overflow-wrap: anywhere; }
 .session-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 3px 0; }
+.session-receipt-id { width: 100%; color: var(--task-helper); font-size: var(--text-metadata); overflow-wrap: anywhere; }
+.session-receipt-message { min-width: 0; overflow-wrap: anywhere; }
+.session-receipt-message summary { width: fit-content; color: #5555b6; cursor: pointer; }
+.session-receipt-message summary:focus-visible, .session-receipt-detail:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
+.session-receipt-detail { max-height: 7em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .session-receipt.unknown, .session-receipt.expired { color: var(--task-attention-ink); }
 .session-receipt.failed, .session-receipt.rejected { color: var(--task-error-ink); }
 .session-resource { margin: 8px 0; font-size: var(--text-interface); }
@@ -71,7 +84,7 @@
   .session-header { padding: 9px 12px; }
   .session-timeline { padding: 16px 12px; }
   .session-interaction { padding: 12px; }
-  .session-receipts { padding-inline: 12px; max-height: 48px; }
+  .session-receipts { padding-inline: 12px; }
 }
 .session-image { display: block; max-width: 100%; max-height: 360px; object-fit: contain; border-radius: 6px; margin-bottom: 8px; }
 .task-detail-execution-mode { color: #777e96; font-size: var(--text-metadata); white-space: nowrap; }

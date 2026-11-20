@@ -43,7 +43,7 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   const imageUploads = new Map<string, string>();
   const originalOperations = new Map<string, SessionOperation>();
   const observations = { prepares: [] as string[], prepareSpecs: [] as ImageUploadSpec[], uploadQueries: [] as string[], identityConflicts: [] as { uploadId: string; imageId: string; originalUploadId: string }[], chunks: [] as { uploadId: string; offset: string; length: number }[], completes: [] as string[], releases: [] as string[], commands: [] as SessionCommand[], queries: [] as string[], errors: [] as string[] };
-  let dispatchMode: 'confirmed' | 'held' | 'lost' | 'capability_changed' = 'confirmed', queryState: SessionOperation['state'] | '404' = 'unknown';
+  let dispatchMode: 'confirmed' | 'held' | 'lost' | 'capability_changed' | 'failed' = 'confirmed', queryState: SessionOperation['state'] | '404' = 'unknown';
   let prepareMode: 'normal' | 'lost_before_create' = 'normal';
   let nextCompletion: 'failed' | 'expired' | 'released' | null = null;
   const held: Route[] = [];
@@ -70,7 +70,8 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
       if (dispatchMode === 'held') { held.push(route); return; }
       if (dispatchMode === 'lost') return route.abort('failed');
       if (dispatchMode === 'capability_changed') return send({ error: { code: 'capability_changed', message: 'Image capability changed before dispatch.', requestId: randomUUID() } }, 409);
-      return path.endsWith('/commands') ? send({ operation: operation(command, 'confirmed'), operationUrl: `${url.origin}${path.replace(/commands$/, `operations/${command.operationId}`)}` }, 202) : send(operation(command, 'confirmed'));
+      const result = dispatchMode === 'failed' ? { ...operation(command, 'failed'), error: { code: 'provider_failed', message: 'The provider did not accept the message. Check the current session status before trying again.' } } : operation(command, 'confirmed');
+      return path.endsWith('/commands') ? send({ operation: result, operationUrl: `${url.origin}${path.replace(/commands$/, `operations/${command.operationId}`)}` }, 202) : send(operation(command, 'confirmed'));
     }
     if (path.startsWith('/draft-fixture-api/operation/') || path.includes('/operations/')) {
       const id = path.split('/').at(-1)!; observations.queries.push(id);

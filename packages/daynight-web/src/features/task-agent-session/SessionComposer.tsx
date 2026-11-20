@@ -1,4 +1,4 @@
-import { operationErrorMessage } from './operation-error';
+import { operationErrorMessage, OperationRequestError } from './operation-error';
 import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
@@ -27,13 +27,15 @@ function classifySubmission(text: string, commands: readonly SessionNativeComman
   return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
 }
 
-export function SessionComposer({ state, connected, canInteract = true, actionAdmitted = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, attachments, onDraftChange, onSend, onCancel, operationProgress = new Map(), settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
+export function SessionComposer({ state, connected, canInteract = true, actionAdmitted = true, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, attachments, onDraftChange, onSend, onCancel, operationProgress = new Map(), visibleReceiptIds, checkableReceiptIds, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
   readonly presentation?: SessionComposerPresentation; readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly canInteract?: boolean; readonly actionAdmitted?: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
   readonly attachments?: ComposerAttachmentsBinding;
   readonly operationProgress?: SessionOperationProgress;
+  readonly visibleReceiptIds?: ReadonlySet<string>;
+  readonly checkableReceiptIds?: ReadonlySet<string>;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
   readonly onUpdateSetting?: (id: string, value: string, revision: string) => Promise<void>;
   readonly onExecuteCommand?: (id: string, args: string, revision: string, draftText?: string) => Promise<void>;
@@ -106,8 +108,15 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   const [cancelling, setCancelling] = useState(false);
   const [interruptedTurn, setInterruptedTurn] = useState<string | null>(null);
   const [errorCause, setError] = useState<string | Error | null>(null);
-  const error = operationErrorMessage(errorCause, state.operations, m.operationFailed);
   const errorKind = useRef<'send' | 'cancel'>('send');
+  const errorOperation = errorCause instanceof OperationRequestError ? state.operations.get(errorCause.operationId) : undefined;
+  const receiptState = errorOperation && operationPresentation(errorOperation, operationProgress);
+  const receiptOwnsError = errorCause instanceof OperationRequestError && errorKind.current === 'send' && errorOperation?.kind === 'send_message'
+    && visibleReceiptIds?.has(errorOperation.operationId) && (
+      errorCause.outcome === 'unknown' && receiptState === 'unknown'
+      || errorCause.outcome === 'terminal' && ['failed', 'rejected', 'expired'].includes(receiptState ?? '')
+    );
+  const error = receiptOwnsError ? null : operationErrorMessage(errorCause, state.operations, m.operationFailed);
   const previousSubmission = useRef<SessionDraft['submission']>(null);
   useEffect(() => {
     const operationId = previousSubmission.current?.operationId;
@@ -365,10 +374,12 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
   const cancelAllowed = actionAdmitted && cancelReady && !authPaused && !interruptRequested;
   const latest = useRef({ sendAllowed, pending, cancelAllowed, cancelling }); latest.current = { sendAllowed, pending, cancelAllowed, cancelling };
   let notice: string | null = null;
-  const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
+  const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown' && !(operation.kind === 'send_message' && visibleReceiptIds?.has(operation.operationId)));
+  const ownedUnknownInput = [...state.operations.values()].some(operation => operation.kind === 'send_message' && operationPresentation(operation, operationProgress) === 'unknown' && visibleReceiptIds?.has(operation.operationId));
   const unknownControl = [...state.operations.values()].some(operation => ['update_setting', 'refresh_controls'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
   if (unknownInput) notice = m.operationUnknown;
   else if (unknownControl) notice = m.settingUnknown;
+  else if (ownedUnknownInput) notice = null;
   else if (sessionNoticeOwned) notice = null;
   else if (!connected || state.recoveryRequired || !snapshot?.synchronized) notice = m.sessionSynchronizing;
   else if (hasPendingControls(state) || hasPendingOperation(state, 'execute_command') || hasPendingOperation(state, 'send_message')) notice = null;
@@ -401,9 +412,11 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
         const childStyle = getComputedStyle(child);
         required += (child.matches('.session-composer-surface, .session-command-menu') ? pixels(childStyle.minHeight) : child.offsetHeight) + pixels(childStyle.marginTop) + pixels(childStyle.marginBottom);
       }
+      form.style.setProperty('--session-composer-min-height', `${Math.ceil(required)}px`);
       for (const child of section.children) {
         if (child instanceof HTMLElement && child !== form && !child.classList.contains('session-timeline-shell')) required += outerHeight(child);
       }
+      section.style.setProperty('--session-receipt-panel-min-height', `${Math.ceil(required + 72)}px`);
       if (tabs) required += outerHeight(tabs);
       if (standalone) {
         const page = section.parentElement!;
@@ -421,7 +434,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     if (tabs) observer?.observe(tabs);
     for (const child of form.querySelectorAll('.session-composer-surface, .session-composer-footer, .session-command-heading')) observer?.observe(child);
     if (standalone) for (const child of section.parentElement!.children) if (child !== section) observer?.observe(child);
-    return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); };
+    return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); form.style.removeProperty('--session-composer-min-height'); section.style.removeProperty('--session-receipt-panel-min-height'); };
   }, [active, compactMenus, showCommands, controlView, text, error, notice]);
   async function send() {
     const currentIntent = commandIntent.current?.sessionId === snapshot?.sessionId && commandIntent.current?.name === parseCommand(currentText.current)?.[1] ? commandIntent.current : null;
@@ -532,7 +545,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">
-    {attachments ? <ComposerAttachments binding={attachments} active={active} editable={imageEditable} canRecover={active && canInteract && !authPaused} /> : null}
+    {attachments ? <ComposerAttachments binding={attachments} active={active} editable={imageEditable} canRecover={active && canInteract && !authPaused} checkableReceiptIds={checkableReceiptIds} /> : null}
     {imageDrop ? <span className="session-image-drop-hint">{imageMessages.drop}</span> : null}
     {input}
     {attachments ? <input ref={filesRef} className="session-image-file-input" type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label={imageMessages.add} tabIndex={-1} onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; addFiles(files); }} /> : null}

@@ -66,7 +66,7 @@ describe('production task session panel', () => {
     fireEvent.change(await editableInput(), { target: { value: 'do once' } });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await screen.findByText('Unable to confirm whether this operation completed. Check the original operation.');
+    await screen.findByText('Delivery outcome is unknown. Check this operation; do not resend it.');
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
     fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));

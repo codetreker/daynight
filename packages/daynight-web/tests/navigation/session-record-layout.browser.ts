@@ -41,7 +41,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
   const archive = (item: SessionHistoryItem): SessionArchive => ({ schemaVersion: 1, sessionId: item.sessionId, claimId: item.claimId, executionGeneration: item.executionGeneration,
     controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
     provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId, entries: entries(item.sessionId), resources: [] });
-  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
+  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, receiptPosts: [] as string[], items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
   await page.addInitScript(({ locale, key, item }) => { localStorage.setItem('daynight.web.locale', locale); sessionStorage.setItem(key, JSON.stringify(item)); sessionStorage.setItem('unrelated-session-key', 'preserve'); }, { locale, key: `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`, item: other });
   await page.routeWebSocket('**/channel*', socket => { state.channels++; socket.onMessage(message => state.sent.push(String(message))); socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })); });
   await page.route('**/api/v1/**', async route => {
@@ -76,6 +76,10 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     }
     if (path === `${root}/sessions/current`) { state.currentReads++; if (state.currentError) return failure(state.currentError); return send(state.registered ? { status: 'registered', session: snapshot } : { status: 'not_registered', claimId: source.claimId, agentControlMode: 'web' }); }
     if (path === `${root}/sessions/${source.sessionId}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries(source.sessionId), resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    if (path === `${root}/sessions/${source.sessionId}/commands` && request.method() === 'POST') {
+      const command = request.postDataJSON(); state.receiptPosts.push(command.operationId);
+      return send({ operation: { protocol: snapshot.protocol, sessionId: snapshot.sessionId, claimId: snapshot.claimId, executionGeneration: snapshot.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'failed', providerResult: null, error: { code: 'provider_failed', message: 'The provider did not accept the message. Check the current session status before trying again.' } }, operationUrl: `${root}/sessions/${source.sessionId}/operations/${command.operationId}` }, 202);
+    }
     for (const item of [record, other]) {
       if (path === `${root}/sessions/${item.sessionId}/archive`) { state.archiveReads++; return send({ archive: state.archiveState === 'ready' ? archiveStatus : { state: state.archiveState, sha256: null, byteLength: null, errorCode: state.archiveState === 'failed' ? 'archive_invalid' : null } }); }
       if (path === `${root}/sessions/${item.sessionId}/archive/content`) return send({ archive: archive(item) });
@@ -258,4 +262,31 @@ test('an already open working Session becomes readonly before its native lifecyc
   await returnToPage(page);
   await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
   await readonly(page); expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
+});
+
+
+for (const [width, height] of [[320, 640], [1360, 900]]) test(`Task Session preserves reading, controls and draft around a ${width}px send failure`, async ({ page }, info) => {
+  await page.setViewportSize({ width: width!, height: height! });
+  const state = await install(page, 'working', 'en'); await navigate(page);
+  const input = page.locator('.session-composer textarea'); await input.fill('Retained draft');
+  const composer = page.locator('.session-composer'), before = await composer.evaluate(node => node.getBoundingClientRect().height);
+  const send = composer.locator('button[type="submit"]'); await send.click();
+  const message = 'The provider did not accept the message. Check the current session status before trying again.';
+  await expect(page.locator('.session-receipt')).toHaveCount(1);
+  await expect(page.getByText(message, { exact: true })).toHaveCount(1);
+  await expect(composer).not.toContainText(message); await expect(input).toHaveValue('Retained draft');
+  expect(state.receiptPosts).toHaveLength(1);
+  expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
+  const after = await composer.evaluate(node => node.getBoundingClientRect().height);
+  expect(after).toBe(before);
+  const timeline = await page.locator('.session-timeline-shell').evaluate(node => node.getBoundingClientRect().height);
+  expect(timeline).toBeGreaterThanOrEqual(72);
+  await info.attach('task-geometry', { body: JSON.stringify({ width, height, before, after, timeline }), contentType: 'application/json' });
+  await input.focus(); await send.focus(); await expect(send).toBeFocused(); await expect(send).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: info.outputPath('task-receipt.png') });
+  await page.locator('.session-fullscreen-toggle').click();
+  await expect(page.locator('.session-receipt')).toBeVisible(); await expect(input).toHaveValue('Retained draft');
+  expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
+  await input.focus(); await send.focus(); await expect(send).toBeFocused(); await expect(send).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press('Escape'); await expect(input).toHaveValue('Retained draft');
 });
