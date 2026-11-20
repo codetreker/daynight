@@ -946,6 +946,129 @@ test('linked PR empty state survives relation errors and language changes in dir
   await expect(detail.getByRole('region', { name: '关联 PR' })).toContainText('暂无关联 PR');
 });
 
+test('overview paused selection preserves the task list assignee, category and page', async ({ page }) => {
+  const additionalTasks = Array.from({ length: 21 }, (_, index) => detailFixture(projectId,
+    `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`, { title: `Assigned task ${index}`, assignedTo: TEST_VIEWER_ID }));
+  const writes = await install(page, false, false, false, false, true, undefined, { assignedTo: TEST_VIEWER_ID }, {
+    previousChanges: { title: 'Unassigned blocked target', properties: { paused: true } }, additionalTasks,
+  });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const assignee = page.getByRole('button', { name: /^Assignee:/ });
+  await assignee.click();
+  await page.getByRole('option', { name: 'Assigned to me' }).click();
+  const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
+  await pagination.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(pagination).toContainText('Page 2 of 2');
+  const visibleIds = await page.locator('.task-row-item .root-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')));
+  expect(visibleIds.length).toBeGreaterThan(0);
+  await expect(page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count')).toContainText('1');
+  await page.locator('#project-section-tab-overview').click();
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await expect(badge).toContainText('2');
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').last().click();
+  await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Unassigned blocked target');
+  await page.locator('.task-detail-close').click();
+  await expect(badge).toBeFocused();
+  await page.locator('#project-section-tab-tasks').click();
+  await expect(assignee).toContainText('Assigned to me');
+  await expect(page.locator('#project-task-tab-standalone')).toHaveAttribute('aria-selected', 'true');
+  await expect(pagination).toContainText('Page 2 of 2');
+  expect(await page.locator('.task-row-item .root-title').evaluateAll(rows => rows.map(row => row.getAttribute('href')))).toEqual(visibleIds);
+  expect(writes).toEqual([]);
+});
+
+for (const [width, locale] of [[320, 'zh-CN'], [390, 'en']] as const) {
+  test(`overview paused menu supports touch selection at ${width}px in ${locale}`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ baseURL: baseURL!, viewport: { width, height: 480 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    try {
+      const writes = await install(page, false, false, false, false, true, undefined, {}, {
+        locale, previousChanges: { title: 'Second touch target', properties: { paused: true } },
+      });
+      await page.goto(`/projects/${projectId}`);
+      const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+      await badge.tap();
+      const menu = page.locator('.project-paused-menu');
+      await expect(menu.getByRole('menuitem')).toHaveCount(2);
+      await menu.getByRole('menuitem').last().tap();
+      await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Second touch target');
+      await page.locator('.task-detail-close').tap();
+      await expect(badge).toBeFocused();
+      await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+      expect(writes).toEqual([]);
+    } finally { await context.close(); }
+  });
+}
+
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused detail restores its source tab after the last badge item disappears`, async ({ page }) => {
+  let updateTask!: (changes: Partial<TaskDetail>) => void;
+  const writes = await install(page, false, false, false, false, true, undefined, {}, { exposeUpdate: update => { updateTask = update; } });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog).toHaveAccessibleName('Target task');
+  updateTask({ properties: { paused: false }, version: 6n, updatedAt: '2026-10-23T09:00:00Z' });
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+  await refreshed;
+  await expect(badge).toHaveCount(0);
+  await dialog.locator('.task-detail-close').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(section === 'overview' ? '#project-section-tab-overview' : '#project-task-tab-chains')).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
+test('overview paused menu retains admitted tasks on refresh failure and withdraws them on denied access', async ({ page }) => {
+  const writes = await install(page, false, false, false, false, true);
+  let failure: number | null = null;
+  await page.route(`**/api/v1/projects/${projectId}/task-sync**`, route => failure === null ? route.fallback() : route.fulfill({ status: failure,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: failure === 403 ? 'forbidden' : 'unavailable', message: 'Project snapshot unavailable', requestId: `snapshot-${failure}` } }),
+  }));
+  await page.goto(`/projects/${projectId}`);
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await badge.click();
+  const menu = page.locator('.project-paused-menu');
+  await expect(menu.getByRole('menuitem')).toBeFocused();
+  const refresh = async (status: number) => {
+    failure = status;
+    const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && result.status() === status);
+    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+    await response;
+  };
+  await refresh(503);
+  await expect(menu.getByRole('menuitem')).toBeFocused();
+  await expect(menu.getByRole('menuitem')).toContainText('Target task');
+  await refresh(403);
+  await expect(menu).toHaveCount(0);
+  await expect(badge).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+for (const status of [403, 503]) test(`overview paused selection displays the actual detail read failure (${status})`, async ({ page }) => {
+  const writes = await install(page, false, false, false, false, true);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${taskId}`, route => route.fulfill({ status,
+    headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: JSON.stringify({ error: { code: status === 403 ? 'forbidden' : 'unavailable', message: 'Selected task cannot be read', requestId: `selected-detail-${status}` } }),
+  }));
+  await page.goto(`/projects/${projectId}`);
+  const badge = page.locator('#project-section-panel-overview .project-section-heading .task-pause-count');
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').click();
+  const dialog = page.locator('.task-detail-dialog');
+  await expect(dialog.getByRole('alert')).toContainText(`selected-detail-${status}`);
+  await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+  await dialog.locator('.task-detail-close').click();
+  await expect(badge).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
   test(`semantic detail and Step roles stay readable at ${width}px in ${locale}`, async ({ page }) => {
     const stepStates = ['todo', 'in_progress', 'done', 'skipped'] as const;
@@ -992,8 +1115,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
   });
 }
 
-for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
-  test(`paused task popover supports keyboard, exact detail and history at ${width}px in ${locale}`, async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) for (const [width, locale] of [[320, 'zh'], [390, 'en'], [1280, 'en']] as const) {
+  test(`${section} paused task popover supports keyboard, exact detail and history at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 480 });
     const title = 'Long paused task title '.repeat(10);
     const writes = await install(page, false, false, false, false, true, undefined, { title }, {
@@ -1001,8 +1124,8 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     });
     if (locale === 'zh') await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
     await page.goto(`/projects/${projectId}`);
-    await page.locator('#project-section-tab-tasks').click();
-    const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+    await page.locator(`#project-section-tab-${section}`).click();
+    const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
     await expect(badge).toContainText('2');
     await badge.focus();
     await page.keyboard.press('Enter');
@@ -1030,6 +1153,7 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     const dialog = page.locator('.task-detail-dialog');
     await expect(dialog).toHaveAccessibleName('Second paused task');
     await expect(menu).toHaveCount(0);
+    await expect(page.locator(`#project-section-tab-${section}`)).toHaveAttribute('aria-selected', 'true');
     await page.goBack();
     await expect(dialog).toHaveCount(0);
     await expect(badge).toBeFocused();
@@ -1037,11 +1161,14 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
     await expect(dialog).toHaveAccessibleName('Second paused task');
     await page.goBack();
     await expect(badge).toBeFocused();
+    await badge.click();
+    await page.locator(`#project-section-tab-${section === 'overview' ? 'tasks' : 'overview'}`).click();
+    await expect(menu).toHaveCount(0);
     expect(writes).toEqual([]);
   });
 }
 
-test('paused popover preserves focus on refresh and moves it as tasks disappear', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused popover preserves focus on refresh and moves it as tasks disappear`, async ({ page }) => {
   let updateTask!: (changes: Partial<TaskDetail>) => void;
   let updatePrevious!: (changes: Partial<TaskDetail>) => void;
   let deleteTask!: () => void;
@@ -1050,10 +1177,12 @@ test('paused popover preserves focus on refresh and moves it as tasks disappear'
     exposePreviousUpdate: update => { updatePrevious = update; }, exposeDeleteTask: remove => { deleteTask = remove; },
   });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('button', { name: /^Assignee:/ }).click();
-  await page.getByRole('option', { name: 'Assigned to me' }).click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  if (section === 'tasks') {
+    await page.getByRole('button', { name: /^Assignee:/ }).click();
+    await page.getByRole('option', { name: 'Assigned to me' }).click();
+  }
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await badge.click();
   const menu = page.locator('.project-paused-menu');
   const rows = menu.getByRole('menuitem');
@@ -1085,23 +1214,23 @@ test('paused popover preserves focus on refresh and moves it as tasks disappear'
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('History origin');
   await expect(rows.first()).toBeFocused();
-  updatePrevious({ assignedTo: null, version: 6n, updatedAt: '2026-10-25T09:00:00Z' });
+  updatePrevious({ ...(section === 'overview' ? { properties: { paused: false } } : { assignedTo: null }), version: 6n, updatedAt: '2026-10-25T09:00:00Z' });
   await refresh();
   await expect(menu).toHaveCount(0);
   await expect(badge).toHaveCount(0);
-  await expect(page.locator('#project-task-tab-chains')).toBeFocused();
+  await expect(page.locator(section === 'overview' ? '#project-section-tab-overview' : '#project-task-tab-chains')).toBeFocused();
   expect(writes).toEqual([]);
 });
 
-test('many paused tasks scroll within the native popover and close on outside click', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} many paused tasks scroll within the native popover and close on outside click`, async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 360 });
   const additionalTasks = Array.from({ length: 20 }, (_, index) => detailFixture(projectId,
     `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
     { title: `Additional paused task ${index}`, properties: { paused: true } }));
   const writes = await install(page, false, false, false, false, true, undefined, {}, { additionalTasks });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await expect(badge).toContainText('21');
   await badge.click();
   const menu = page.locator('.project-paused-menu');
@@ -1146,15 +1275,15 @@ test('closing a chain graph after a paused detail restores its own trigger', asy
   await expect(graphTrigger).toBeFocused();
 });
 
-test('paused Goal child opens its own detail from the project badge', async ({ page }) => {
+for (const section of ['overview', 'tasks'] as const) test(`${section} paused Goal child opens its own detail from the project badge`, async ({ page }) => {
   const goalId = '30000000-0000-4000-8000-000000000001';
   const childId = '40000000-0000-4000-8000-000000000001';
   const goal = detailFixture(projectId, goalId, { type: 'goal', title: 'Parent Goal', properties: { paused: true } });
   const child = detailFixture(projectId, childId, { parentId: goalId, title: 'Goal child', properties: { paused: true } });
   const writes = await install(page, false, false, false, false, false, undefined, {}, { additionalTasks: [goal, child] });
   await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await page.locator(`#project-section-tab-${section}`).click();
+  const badge = page.locator(`#project-section-panel-${section} .project-section-heading .task-pause-count`);
   await expect(badge).toContainText('1');
   await badge.click();
   const rows = page.locator('.project-paused-menu').getByRole('menuitem');

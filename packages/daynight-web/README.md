@@ -1692,12 +1692,17 @@ cache, index or refresh loop. Task details remain outside either section panel.
 Inactive inner-category contents unmount while their associated tabpanel IDs
 remain stable.
 
-The Task list heading's nonzero pause badge opens a native popover containing
-exactly the assignee-scoped eligible ordinary tasks counted by the badge. Rows
+The Overview and Task list headings share a nonzero pause badge and native
+popover, including when only one task is eligible. Overview lists all eligible
+ordinary project tasks; Task list applies its assignee filter. Each badge counts
+exactly its menu's ordered, deduplicated tasks, including cancelled tasks and
+Goal children while excluding done tasks and Goals. Rows
 show title previews, truncation, short IDs and lifecycle labels; selection opens
 the exact task through the existing detail history while retaining list state.
-The badge is the focus return target, with the visible tab or project heading as
-a fallback if it disappears. Unchanged snapshot checks preserve the open menu,
+The originating badge is the focus return target for detail close and history
+return. If it disappears, Overview falls back to its visible section tab and then
+the project heading; Task list retains its category and section fallbacks. An
+empty open menu uses the same source fallback. Leaving its section closes the menu. Unchanged snapshot checks preserve the open menu,
 focus and scroll; eligibility changes update it without an extra detail read or
 polling loop. The [pause-list decision](../../.agents/notes/implemented/feature/2026-11-14-project-paused-task-list.md)
 records the navigation and data-scope trade-offs.
@@ -2812,9 +2817,11 @@ actual controller/UI publication before interaction. The full graph expansion
 and keyboard fixtures remain intact; the [project/graph query decision](../../.agents/notes/implemented/testing/2026-11-07-project-graph-query-owners.md)
 owns those query and receipt boundaries.
 
-The task controls browser suite exercises the project pause list using native
-popover behavior, including keyboard and focus restoration, history, dynamic
-snapshot updates and narrow viewports. Run `pnpm --filter
+The task controls browser suite exercises both project pause menus using native
+popover behavior, including exact task selection, retained filters, keyboard and
+touch input, detail errors, source focus and history, dynamic snapshots, unchanged
+refreshes, bilingual long titles and desktop/320px/390px layouts. Menu opening and
+selection must perform no business writes. Run `pnpm --filter
 @codetreker/daynight-web exec playwright test --config
 tests/navigation/task-controls-playwright.config.ts` after installing Chromium.
 
