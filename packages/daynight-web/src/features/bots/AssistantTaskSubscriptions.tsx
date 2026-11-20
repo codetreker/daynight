@@ -110,6 +110,10 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
   // The user's selection while editing; null shows the loaded configuration. Every load discards it.
   const [draft, setDraft] = useState<Selection | null>(null);
   const [saving, setSaving] = useState(false), [failure, setFailure] = useState<unknown>(null), [invalid, setInvalid] = useState(false);
+  // A requested reload keeps the form locked until it succeeds. After a confirmed write the loaded configuration is
+  // older than the service's, so editing it could submit a stale version or create a second endpoint; a failed read
+  // stays locked and is recovered with Retry, never by writing again.
+  const [refreshing, setRefreshing] = useState(false);
   // The parent keeps this panel mounted across tabs. Becoming active again loads only what has not been loaded yet, so
   // edits and a pending conflict survive a tab switch; only Retry, Reload or a confirmed change requests a new load.
   const loaded = useRef<{ readonly inboxUrl: string; readonly scope: TaskCacheScope; readonly reload: number } | null>(null);
@@ -124,7 +128,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
         const value = await loadDirectory(scope, inboxUrl, signal);
         if (signal.aborted) return;
         loaded.current = { inboxUrl, scope, reload };
-        setData(value); setDraft(null); setFailure(null); setInvalid(false); setLoadError(null);
+        setData(value); setDraft(null); setFailure(null); setInvalid(false); setLoadError(null); setRefreshing(false);
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
     return () => controller.abort();
@@ -133,10 +137,14 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
   const controller = useMemo(() => scope.isInvalidated ? null : new WebhookIntentController({ serviceOrigin, owner: { kind: 'personal', id: scope.userId }, admission: webhookAdmission(scope), signal: scope.signal }), [serviceOrigin, scope]);
   useEffect(() => () => controller?.dispose(), [controller]);
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? (() => idle));
-  // Inputs are disabled while a request is pending so the submitted choices are the ones on screen.
-  const locked = saving || intent.phase === 'preparing' || intent.phase === 'submitting' || intent.phase === 'unknown' || intent.reconciling;
-  const refresh = () => setReload(value => value + 1);
-  /** Submits one change; a confirmed change reloads the configuration, a rejected one is shown with the edits kept. */
+  // Inputs are disabled while a request or a requested reload is pending so the submitted choices are the ones on screen
+  // and a late read cannot replace newer edits or outcomes.
+  const locked = saving || refreshing || intent.phase === 'preparing' || intent.phase === 'submitting' || intent.phase === 'unknown' || intent.reconciling;
+  const refresh = () => { setRefreshing(true); setReload(value => value + 1); };
+  /**
+   * Submits one change; a confirmed change reloads the configuration, a rejected one is shown with the edits kept. The
+   * reload is requested before `saving` clears, so the form never becomes editable with the pre-write configuration.
+   */
   const run = async (input: WebhookIntentInput) => {
     if (controller === null || locked) return;
     setFailure(null); setInvalid(false); setSaving(true);

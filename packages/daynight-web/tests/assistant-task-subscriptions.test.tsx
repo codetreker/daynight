@@ -266,6 +266,35 @@ it('retries a failed subscription read', async () => {
   expect(await screen.findByRole('button', { name: 'Create subscription' })).toBeEnabled();
 });
 
+it('keeps the form locked after a confirmed create until the created endpoint is read', async () => {
+  const s = server(); mount();
+  await screen.findByRole('button', { name: 'Create subscription' });
+  const serve = s.fetch.getMockImplementation()!;
+  let release = () => undefined as void, fail = true;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  s.fetch.mockImplementation(async (url, options) => {
+    if (s.writes.length === 0 || (options?.method ?? 'GET') !== 'GET' || String(url) !== '/api/v1/me/webhooks?limit=100') return serve(url, options);
+    await held;
+    if (fail) { fail = false; return botError(500, 'internal'); }
+    return serve(url, options);
+  });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  // The write is confirmed but the follow-up read is pending: the pre-write form must not accept edits or a second create.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled());
+  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeDisabled();
+  release();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Webhook subscriptions.');
+  // A failed read stays locked and is recovered by reading again, never by writing again.
+  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByRole('button', { name: 'Save subscription' })).toBeEnabled();
+  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeEnabled();
+  expect(s.writes).toHaveLength(1);
+});
+
 it('disables the form while a save is pending', async () => {
   const s = server([endpoint(personalId, inboxUrl, [alphaCreated()])]); mount();
   await screen.findByRole('checkbox', { name: 'Alpha' });
