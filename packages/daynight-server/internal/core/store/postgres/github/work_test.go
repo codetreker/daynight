@@ -85,7 +85,8 @@ func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	if ok, err = w.AckAccessHint(ctx, lease, hint); err != nil || !ok {
 		t.Fatalf("access ack: %v %v", ok, err)
 	}
-	observed := store.GitHubRepositoryObservation{InstallationID: 20, RepositoryID: 30, InstallationAccountLogin: "org", RepositoryFullName: "org/renamed", RepositoryPrivate: true}
+	branch := "trunk"
+	observed := store.GitHubRepositoryObservation{InstallationID: 20, RepositoryID: 30, InstallationAccountLogin: "org", RepositoryFullName: "org/renamed", RepositoryPrivate: true, RepositoryDefaultBranch: &branch}
 	wrong := observed
 	wrong.RepositoryID = 31
 	if ok, err = w.PublishRepository(ctx, lease, wrong); err != nil || ok {
@@ -96,6 +97,10 @@ func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	}
 	if ok, err = w.PublishRepository(ctx, lease, observed); err != nil || !ok {
 		t.Fatalf("same observation: %v %v", ok, err)
+	}
+	var savedBranch *string
+	if err = tx.QueryRow(ctx, `SELECT repository_default_branch FROM project_github WHERE project_id=$1`, id).Scan(&savedBranch); err != nil || savedBranch == nil || *savedBranch != "trunk" {
+		t.Fatalf("default branch: %v %v", savedBranch, err)
 	}
 	var legacy int64
 	var sourceName string

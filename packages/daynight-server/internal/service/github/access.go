@@ -58,7 +58,7 @@ func (r *run) publishRepository(ctx context.Context, repo githubpr.RepositoryObs
 		if r.connection.InstallationAccountLogin != nil {
 			login = *r.connection.InstallationAccountLogin
 		}
-		ok, e := d.PublishRepository(c, r.lease, store.GitHubRepositoryObservation{InstallationID: *r.connection.InstallationID, RepositoryID: repo.ID, InstallationAccountLogin: login, RepositoryFullName: repo.FullName, RepositoryPrivate: repo.Private})
+		ok, e := d.PublishRepository(c, r.lease, store.GitHubRepositoryObservation{InstallationID: *r.connection.InstallationID, RepositoryID: repo.ID, InstallationAccountLogin: login, RepositoryFullName: repo.FullName, RepositoryPrivate: repo.Private, RepositoryDefaultBranch: repo.DefaultBranch})
 		return require(ok, e)
 	})
 	if e = committed(c, e); e != nil {

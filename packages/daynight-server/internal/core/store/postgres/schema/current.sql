@@ -1,4 +1,4 @@
--- Schema snapshot version: 105
+-- Schema snapshot version: 106
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -624,7 +624,8 @@ CREATE TABLE "project_github" (
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
     "credential_version" bigint,
-    "legacy_repository_id" bigint
+    "legacy_repository_id" bigint,
+    "repository_default_branch" "text"
 );
 
 CREATE TABLE "project_github_coverage" (

@@ -157,12 +157,13 @@ type GitHubClaim struct {
 	Until             time.Time
 }
 
-// GitHubRepositoryObservation updates presentation facts only when the
+// GitHubRepositoryObservation updates repository facts only when the
 // original installation and repository identities still match the binding.
 type GitHubRepositoryObservation struct {
 	InstallationID, RepositoryID                 int64
 	InstallationAccountLogin, RepositoryFullName string
 	RepositoryPrivate                            bool
+	RepositoryDefaultBranch                      *string
 }
 
 // GitHubRuntimeWrite contains only runtime facts controlled by the worker.
