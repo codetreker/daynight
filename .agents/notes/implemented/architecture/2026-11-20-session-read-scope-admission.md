@@ -36,9 +36,19 @@ lost permission.
 permission edits and tie database transactions to network I/O. A fresh admission
 before each delivery preserves the existing I/O ownership instead.
 
+**Enable scoped PAT image status with only read admission.** The status response
+can expose a retry action that also requires control permission, and the read can
+settle or resume work. Retry also returns the complete state. Until the complete
+image authorization is available, scoped PAT status and retry refuse before that
+work instead of returning a partial policy.
+
 ## Consequences
 
 Scoped callers must provide current authorization sources; missing or mismatched
 facts fail closed. Existing Session roles and protocol profiles remain separate
 from business scope. Production activation and complete cross-domain route
 classification remain with the coordinated scope cutover.
+Scoped PAT image status and retry remain unavailable until their read and control checks are
+implemented together with the existing settlement behavior. The separate route
+retains that integration point; fixed profiles and the existing production entry
+continue to use their original behavior.

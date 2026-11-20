@@ -182,6 +182,12 @@ schema 与资源绑定。用户通道在握手及每次投递前复核当前权�
 后续投递并关闭连接、释放资源；网络 I/O 不持有凭据事务。能力查询、生产者
 与命令入口保留各自的协议和准入责任。
 
+图片 occurrence 状态读取可能结算重试或调度复制，而 `retry_source` 另需
+`session:control`，主动重试还返回完整状态。在完整图片准入接入前，scoped
+装配对 PAT 的状态读取和重试在业务操作前失败关闭；Cookie 和固定 OAuth API
+profile 保持原有规则。图片
+状态及重试的完整权限与结算由图片准入实现负责。
+
 ## Session 命令准入
 
 `service/session.NewScopedCommands` 接收事务内授权来源。发送文字、纯图片或
