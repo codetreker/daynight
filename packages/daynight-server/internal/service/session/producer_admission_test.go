@@ -58,11 +58,12 @@ func TestControllerGrantRechecksEachOriginalParent(t *testing.T) {
 		{"connection scope removed", connectionParent, connectionParent, "", []string{grantParent, connectionParent}, false},
 		{"connection revoked", connectionParent, "", connectionParent, []string{grantParent}, false},
 		{"same parent checked once", grantParent, "", "", []string{grantParent}, true},
+		{"missing retained parent", "", "", "", []string{grantParent}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var locks, checked []string
 			expiry := time.Now().Add(time.Hour)
-			dao := &producerDAO{scopeTestDAO: &scopeTestDAO{calls: &locks, record: store.SessionRecord{Owner: producerOwner, Parent: grantParent, ConnectionParent: tc.connection, GrantHash: []byte("grant"), GrantExpiry: &expiry, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "session", TestExecutionID: "test", ExecutionGeneration: "1"}}, Identity: sp.Identity{OwnerUserID: producerOwner}, Lifecycle: "active"}}}, invalid: tc.invalid}
+			dao := &producerDAO{scopeTestDAO: &scopeTestDAO{calls: &locks, record: store.SessionRecord{Owner: producerOwner, Parent: grantParent, ConnectionParent: tc.connection, GrantHash: []byte("grant"), GrantExpiry: &expiry, ConnectionExpiry: &expiry, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "session", TestExecutionID: "test", ExecutionGeneration: "1"}}, Identity: sp.Identity{OwnerUserID: producerOwner}, Lifecycle: "active"}}}, invalid: tc.invalid}
 			scope := producerScope{dao: dao}
 			source := func(_ context.Context, got store.SessionScope, p model.Principal) (model.CredentialAuthorization, error) {
 				if got != scope || p.UserID != producerOwner || p.Kind != model.PATCredential {
@@ -155,7 +156,7 @@ func TestTaskRegistrationChecksActualCallerBeforeCreating(t *testing.T) {
 func TestLegacyControllerGrantKeepsOriginalParentChecks(t *testing.T) {
 	var locks []string
 	expiry := time.Now().Add(time.Hour)
-	dao := &producerDAO{scopeTestDAO: &scopeTestDAO{calls: &locks, record: store.SessionRecord{Owner: producerOwner, Parent: grantParent, ConnectionParent: connectionParent, GrantHash: []byte("grant"), GrantExpiry: &expiry, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "session", TestExecutionID: "test", ExecutionGeneration: "1"}}, Identity: sp.Identity{OwnerUserID: producerOwner}, Lifecycle: "active"}}}, invalid: connectionParent}
+	dao := &producerDAO{scopeTestDAO: &scopeTestDAO{calls: &locks, record: store.SessionRecord{Owner: producerOwner, Parent: grantParent, ConnectionParent: connectionParent, GrantHash: []byte("grant"), GrantExpiry: &expiry, ConnectionExpiry: &expiry, Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: "session", TestExecutionID: "test", ExecutionGeneration: "1"}}, Identity: sp.Identity{OwnerUserID: producerOwner}, Lifecycle: "active"}}}, invalid: connectionParent}
 	svc := New(producerWriter{producerScope{dao: dao}}, core.NewEngine(nil))
 	called := false
 	if err := svc.controllerGrant(t.Context(), []byte("grant"), func(*core.Access) error { called = true; return nil }); err != nil || !called {

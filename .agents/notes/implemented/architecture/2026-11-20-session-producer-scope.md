@@ -20,6 +20,10 @@ grant parent and the active connection parent. When these differ, each is
 checked independently; equal IDs are deduplicated. Existing identity, validity,
 resource and fence checks remain in force.
 
+An authorized Bot recovery explicitly retires the old connection lease in the
+grant transaction. A later connection does not require that retired parent;
+ordinary same-generation reconnects retain the old lease and check both parents.
+
 Usage grants retain their original parent and resource binding. Later production
 and delivery recheck that parent rather than substituting a newer controller
 credential. Existing persisted results and recovery receipts retain their original

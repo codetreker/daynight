@@ -133,7 +133,13 @@ func (s *Service) controllerGrant(ctx context.Context, hash []byte, work func(*s
 		if err = s.requireProducer(ctx, scope, parent); err != nil {
 			return err
 		}
-		if s.producerAuthorization != nil && authority.Test && authority.ConnectionCredentialID != "" && authority.ConnectionCredentialID != parent.CredentialID {
+		// Recovery invalidates the old connection by clearing its durable lease,
+		// while retaining its parent ID as historical binding. A normal grant
+		// replacement leaves the old lease in place until the new connection.
+		if s.producerAuthorization != nil && authority.Test && authority.ConnectionLeasePresent && authority.ConnectionCredentialID == "" {
+			return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+		}
+		if s.producerAuthorization != nil && authority.Test && authority.ConnectionLeasePresent && authority.ConnectionCredentialID != parent.CredentialID {
 			connection := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ConnectionCredentialID}
 			if err = op.LockCredential(ctx, scope, connection); err != nil {
 				return err
