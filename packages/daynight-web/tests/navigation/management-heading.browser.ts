@@ -21,7 +21,7 @@ const install = async (page: Page, locale: Locale) => {
     if (request.method() !== 'GET') {
       state.writes.push(`${request.method()} ${path}`);
       if (state.allowSecrets && request.method() === 'POST' && path === `/api/v1/teams/${teamId}/invitations`) return send({ id: '00000000-0000-4000-8000-000000000051', teamId, createdBy: userId, createdAt: time, expiresAt: '2099-10-27T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null, link: `${new URL(request.url()).origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` }, 201);
-      if (state.allowSecrets && request.method() === 'POST' && path === '/api/v1/me/tokens') return send({ id: '00000000-0000-4000-8000-000000000052', name: 'Device', createdAt: time, expiresAt: null, lastUsedAt: null, token: 'once-only-secret' }, 201);
+      if (state.allowSecrets && request.method() === 'POST' && path === '/api/v2/me/tokens') return send({ id: '00000000-0000-4000-8000-000000000052', name: 'Device', createdAt: time, expiresAt: null, description: null, lastUsedAt: null, token: 'once-only-secret' }, 201);
       return send({ error: { code: 'unexpected_write', message: 'Unexpected write', requestId: 'fixture' } }, 500);
     }
     state.reads.push(path);
@@ -30,13 +30,13 @@ const install = async (page: Page, locale: Locale) => {
     if (path === `/api/v1/teams/${personalId}` || path === `/api/v1/teams/${teamId}`) return send(team(path.split('/').at(-1)!));
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}/members`) return send({ items: [{ ...membership(teamId), profile: { name: 'Alice', email: null, avatarUrl: null } }] });
-    if (path === '/api/v1/me/tokens' || path === '/api/v2/oauth/grants' || path === `/api/v1/teams/${teamId}/invitations`) {
+    if (path === '/api/v2/me/tokens' || path === '/api/v3/oauth/grants' || path === `/api/v1/teams/${teamId}/invitations`) {
       const hold = state.hold;
       if (hold) await hold.promise;
       if (state.fail) return send({ error: { code: 'unavailable', message: 'Layout fixture could not read the list.', requestId: 'fixture' } }, 503);
       const credentialId = '00000000-0000-4000-8000-000000000051', expiresAt = '2099-10-20T09:00:00Z';
-      if (path === '/api/v2/oauth/grants') return send({ userId, grants: state.populated ? [{ id: credentialId, clientName: 'Local editor', clientId: 'https://editor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt: time, expiresAt, lastUsedAt: null, revokedAt: null, status: 'active' }] : [] });
-      if (path === '/api/v1/me/tokens') return send({ items: state.populated ? [{ id: credentialId, name: 'Local CLI', createdAt: time, expiresAt, lastUsedAt: null }] : [] });
+      if (path === '/api/v3/oauth/grants') return send({ userId, grants: state.populated ? [{ id: credentialId, clientName: 'Local editor', clientId: 'https://editor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt: time, expiresAt, description: null, lastUsedAt: null, revokedAt: null, status: 'active' }] : [] });
+      if (path === '/api/v2/me/tokens') return send({ items: state.populated ? [{ id: credentialId, name: 'Local CLI', createdAt: time, expiresAt, description: null, lastUsedAt: null }] : [] });
       return send({ items: state.populated ? [{ id: credentialId, teamId, createdBy: userId, createdAt: time, expiresAt, consumedBy: null, consumedAt: null, revokedAt: null }] : [] });
     }
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, text: '', revision: '0', updatedAt: null });
@@ -183,9 +183,9 @@ for (const locale of ['en', 'zh-CN'] as const) test(`header actions preserve poi
     }
     if (surface === 'account') {
       const refresh = headers.nth(1).locator(':scope > button');
-      const before = state.reads.filter(path => path === '/api/v2/oauth/grants').length;
+      const before = state.reads.filter(path => path === '/api/v3/oauth/grants').length;
       await refresh.tap();
-      await expect.poll(() => state.reads.filter(path => path === '/api/v2/oauth/grants').length).toBe(before + 1);
+      await expect.poll(() => state.reads.filter(path => path === '/api/v3/oauth/grants').length).toBe(before + 1);
       await expect(refresh).toBeEnabled();
     }
   }
@@ -234,7 +234,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const hasTouch of [false, tr
         await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
         await expect(menu.locator('.account-menu-item').first()).toHaveCSS('font-size', `${size * .875}px`);
       }
-      expect(state.writes).toEqual([`POST /api/v1/teams/${teamId}/invitations`, 'POST /api/v1/me/tokens']);
+      expect(state.writes).toEqual([`POST /api/v1/teams/${teamId}/invitations`, 'POST /api/v2/me/tokens']);
     } finally { await context.close(); }
   });
 }

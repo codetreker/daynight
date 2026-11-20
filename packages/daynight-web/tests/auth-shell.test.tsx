@@ -443,7 +443,7 @@ describe("authenticated application shell", () => {
   it.each([['tokens', '访问凭据'], ['prompt', '用户级 Prompt']] as const)("returns an anonymous account %s destination after login", async (tab, label) => {
     window.history.replaceState(null, "", `/account?tab=${tab}`);
     let anonymous = true;
-    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v1/me/tokens" ? json({ items: [] }) : url === "/api/v2/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
+    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v2/me/tokens" ? json({ items: [] }) : url === "/api/v3/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
     const login = vi.fn();
     const view = render(<AuthenticatedApp navigateToLogin={login} />);
     fireEvent.click(await screen.findByRole("button", { name: "使用 GitHub 登录" }));
@@ -644,11 +644,11 @@ describe("authenticated application shell", () => {
 
   it("does not dispatch token metadata reads after an account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = install(url => url === "/api/v1/me/tokens" ? json({ items: [] }) : defaults(url));
+    const fetcher = install(url => url === "/api/v2/me/tokens" ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: "账户菜单：Alice" });
     accountChange(otherId); await screen.findByText("账户已变化");
     fireEvent.click(screen.getByRole("link", { name: "访问凭据" })); await act(async () => {});
-    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v2/me/tokens")).toHaveLength(0);
   });
 
 
@@ -665,7 +665,7 @@ describe("authenticated application shell", () => {
 
   it("keeps a one-time PAT reveal mounted after account change", async () => {
     window.history.replaceState(null, "", "/account");
-    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
+    const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v2/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", description: null, lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("link", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());

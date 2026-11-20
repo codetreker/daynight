@@ -134,7 +134,7 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void, options: { readonly deferUnauthorized?: boolean } = {}): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
   const ordinary = url !== "/api/v1/me" && url !== "/api/v1/auth/logout";
@@ -161,7 +161,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   }
   networkSignal.throwIfAborted();
   responseSignals.set(response, networkSignal);
-  if (response.status === 401 && generation === authGeneration) {
+  if (response.status === 401 && generation === authGeneration && !options.deferUnauthorized) {
     for (const listener of unauthorizedListeners) listener();
     // A newer account marker turns this response into a retained pause; its
     // old operation must not clear recovery state for the displayed account.

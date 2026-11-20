@@ -13,7 +13,8 @@ not disrupt credential management or conceal protocol and identity failures.
 The account credentials page displays the recorded PAT and OAuth grant use time
 with a shared local display clock. A null value means no usage was recorded;
 a recorded value offers an approximate relative label and the full local time.
-The page reads the required PAT field and OAuth v2 representation described by
+The page reads the required PAT field and the OAuth v3 representation, which
+retains the v2 usage field described by
 the [HTTP metadata decision](../architecture/2026-11-12-credential-usage-http.md).
 Same-ID list and expiry receipts merge the latest recorded value without replacing
 the expiry observation or interaction state. The [authentication design](../../../../docs/design/daynight-auth.md#主站-session-与-pat)

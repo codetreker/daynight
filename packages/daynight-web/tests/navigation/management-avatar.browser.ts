@@ -36,8 +36,8 @@ const install = async (page: Page, src: string, png: string) => {
       { ...membership(memberId), profile: { name: 'Bob', email: 'bob@example.test', avatarUrl: src } },
     ] });
     if (path === `/api/v1/teams/${teamId}/invitations` || path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === '/api/v1/me/tokens') return send({ items: [] });
-    if (path === '/api/v2/oauth/grants') return send({ userId, grants: [] });
+    if (path === '/api/v2/me/tokens') return send({ items: [] });
+    if (path === '/api/v3/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });

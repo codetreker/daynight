@@ -430,6 +430,8 @@ HEAD 和其他方法。认证 callback 配置保留 `/api/v2/oauth` 及其后代
 凭据描述存于 PAT 和 OAuth grant 行的可空 `description`，与记录共用生命周期；设备和 OAuth 签发及旧版 PAT 创建默认写入 null。共享领域规则拒绝无效 Unicode、NUL 和行分隔符，再裁剪 Unicode White_Space，以 null 表示空结果，非空最多 100 个码点。观察值必须已是规范值，不在比较前重写。新 PAT v2 列表包含仍存的过期行，OAuth v3 列表保留 v2 字段并投影描述；旧版本的过滤和精确响应不变。新 PAT 创建在严格事务中同时保存描述和令牌，只有提交确认才返回明文。
 
 描述 PATCH 以记录 ID、owner 和可空观察值做原子条件更新，仅写描述；未命中按同一 owner 的存在性区分 404 和 409。PAT 按 Session → PAT 顺序持锁，OAuth 按 grant → Session 顺序持锁；相关行锁等待结束后以数据库新鲜时间复核持锁 Session。会话失效时事务回滚，未知提交不返回成功回执。新入口先拒绝显式 Authorization，再以独立 15 秒预算认证 Cookie；取得主体后设置身份头，写请求校验精确 Origin。正文读完后业务另有 15 秒预算，继承取消。错误和日志不包含描述或秘密。
+Web 账户页使用 PAT v2 与 OAuth v3 的描述表示。新路由 401 通过独立 `/api/v1/me` 复核后再判定真实会话失效、接口暂不可用或账户变化；回执在发布前校验身份、目标 ID 和必有规范描述。每个面板串行协调完整读取与写入，描述和期限回执只合并各自权威字段。草稿、未知结果及一次性秘密由账号绑定的账户 owner 保留，具体交互与恢复机制由[Web 设计](daynight-web.md#账户凭据描述)拥有。
+
 `POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
 重复撤销不改变 family。列表和撤销端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
 不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
