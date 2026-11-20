@@ -16,6 +16,8 @@ import (
 )
 
 type CreateTask struct {
+	// DefaultAssignedTo records the entry point default for scope classification.
+	DefaultAssignedTo       *string
 	TagIDs                  *[]string
 	Type                    model.TaskType
 	ParentID                *string

@@ -17,10 +17,10 @@ type historyLedgerOperation interface {
 	HistoryLedgerStatus(context.Context, sessioncore.ActiveHistoryWriter, string) (sp.ArchiveFileReceipt, error)
 }
 
-func (h *Routes) registerHistoryLedgerRoutes(mux *http.ServeMux) {
+func (h *Routes) registerHistoryLedgerRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
-		mux.HandleFunc("PUT "+base+"/image-history-ledger/{fileId}", h.archivePreflight(h.historyLedger))
-		mux.HandleFunc("GET "+base+"/image-history-ledger/{fileId}/status", h.archivePreflight(h.historyLedger))
+		registerProducerRoute(mux, "PUT "+base+"/image-history-ledger/{fileId}", h.archivePreflight(h.historyLedger), producerIndependent, observe)
+		registerProducerRoute(mux, "GET "+base+"/image-history-ledger/{fileId}/status", h.archivePreflight(h.historyLedger), producerIndependent, observe)
 	}
 }
 func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {

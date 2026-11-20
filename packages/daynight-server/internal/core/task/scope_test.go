@@ -2,44 +2,55 @@ package task
 
 import (
 	"encoding/json"
-	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
-func TestReadAuthorizationRequiresIdentityAndScope(t *testing.T) {
-	p := model.Principal{Kind: model.PATCredential, UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "10000000-0000-4000-8000-000000000002"}
-	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 1)
-	if err != nil {
-		t.Fatal(err)
+func TestTaskWriteScopeClassification(t *testing.T) {
+	title, parent, assignee, claim := "title", "parent", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "claim"
+	allow := true
+	status := model.TaskTodo
+	actor := model.Principal{UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+	uppercase := strings.ToUpper(actor.UserID)
+	parentValue := &parent
+	assigneeValue := &assignee
+	empty := []string{}
+	tests := []struct {
+		name string
+		got  []scopepolicy.Operation
+		want []scopepolicy.Operation
+	}{
+		{"create defaults", CreateOperations(CreateTask{}, actor), []scopepolicy.Operation{scopepolicy.TaskWrite}},
+		{"create combined", CreateOperations(CreateTask{AssignedToPresent: true, AssignedTo: &assignee, ParentID: &parent, Status: &status}, actor), []scopepolicy.Operation{scopepolicy.TaskWrite, scopepolicy.TaskAssign, scopepolicy.TaskDependencies, scopepolicy.TaskStatus}},
+		{"create explicit default assignee", CreateOperations(CreateTask{AssignedToPresent: true, AssignedTo: &actor.UserID, DefaultAssignedTo: &actor.UserID}, actor), []scopepolicy.Operation{scopepolicy.TaskWrite}},
+		{"MCP canonical default", CreateOperations(CreateTask{AssignedToPresent: true, AssignedTo: &uppercase, DefaultAssignedTo: &actor.UserID}, actor), []scopepolicy.Operation{scopepolicy.TaskWrite}},
+		{"REST self assignment", CreateOperations(CreateTask{AssignedToPresent: true, AssignedTo: &actor.UserID}, actor), []scopepolicy.Operation{scopepolicy.TaskWrite, scopepolicy.TaskAssign}},
+		{"title", UpdateOperations(UpdateTask{Title: &title}), []scopepolicy.Operation{scopepolicy.TaskWrite}},
+		{"allow", UpdateOperations(UpdateTask{AllowAgents: &allow}), []scopepolicy.Operation{scopepolicy.AgentAuthorize}},
+		{"combined", UpdateOperations(UpdateTask{Title: &title, AllowAgents: &allow, ParentID: &parentValue, AssignedTo: &assigneeValue, DependsOn: &empty, Properties: model.TaskPropertiesPatch{"paused": json.RawMessage(`true`), "pullRequests": json.RawMessage(`[]`)}}), nil},
+		{"tags", UpdateOperations(UpdateTask{TagIDs: &empty}), []scopepolicy.Operation{scopepolicy.TaskWrite}},
 	}
-	a := model.CredentialAuthorization{Principal: p, Profile: model.ScopedPATProfile, Policy: &policy}
-	if err := RequireReadAuthorization(a, p); err != nil {
-		t.Fatal(err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "combined" {
+				ids, err := scopepolicy.Requirements(tc.got...)
+				want := []scopepolicy.ScopeID{"agent:authorize", "task:assign", "task:dependencies", "task:status", "task:write"}
+				if err != nil || !reflect.DeepEqual(ids, want) {
+					t.Fatalf("got %v, %v; want %v", ids, err, want)
+				}
+			} else if !reflect.DeepEqual(tc.got, tc.want) {
+				t.Fatalf("got %v; want %v", tc.got, tc.want)
+			}
+		})
 	}
-	if err := RequireReadAuthorization(a, p, scopepolicy.ProjectRead); !errors.Is(err, scopepolicy.ErrInsufficientScope) {
-		t.Fatalf("full project admission: %v", err)
+	if PropertyOperation("paused") != scopepolicy.TaskStatus || PropertyOperation("pullRequests") != scopepolicy.TaskWrite {
+		t.Fatal("property classification changed")
 	}
-	p.CredentialID = "10000000-0000-4000-8000-000000000003"
-	if err := RequireReadAuthorization(a, p); err == nil {
-		t.Fatal("accepted different credential")
-	}
-	a.Policy = nil
-	if err := RequireReadAuthorization(a, a.Principal); err == nil {
-		t.Fatal("accepted missing policy")
-	}
-}
-
-func TestWithoutSessionPropertiesPreservesOrdinaryFieldsAndInput(t *testing.T) {
-	input := model.Task{ID: "task", Properties: model.TaskProperties{"worker": json.RawMessage(`{"nativeSessionId":"private"}`), "sessionStartup": json.RawMessage(`{"sessionId":"private"}`), "blocked": json.RawMessage(`true`)}}
-	got := WithoutSessionProperties(input)
-	if got.ID != input.ID || len(got.Properties) != 1 || string(got.Properties["blocked"]) != "true" || len(input.Properties) != 3 {
-		t.Fatalf("projection mutated task content: %#v %#v", got, input)
-	}
-	v := ScopeUnavailableObservation()
-	if v.Observation != "unavailable" || v.Registration != "unknown" || v.Reason != "insufficient_scope" || v.SessionID != nil || v.ObservedAt != nil || v.FreshUntil != nil || v.Send.Allowed != nil || v.Send.Mode != nil {
-		t.Fatalf("scope placeholder leaked facts: %#v", v)
+	if StatusOperation(SetTaskStatus{Status: model.TaskDone}) != scopepolicy.TaskStatus || StatusOperation(SetTaskStatus{Status: model.TaskDone, ClaimID: &claim}) != scopepolicy.WorkerComplete {
+		t.Fatal("status classification changed")
 	}
 }

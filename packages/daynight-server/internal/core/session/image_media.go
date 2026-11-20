@@ -47,10 +47,23 @@ func mediaIdentity(id, action string) string {
 	return uuid.NewSHA1(uuid.MustParse(id), []byte(action)).String()
 }
 func (s *Execution) controllerMedia(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any) (json.RawMessage, error) {
+	return s.controllerMediaFor(ctx, p, project, taskID, id, requestID, action, body, false)
+}
+
+func (s *Execution) controllerUploadMedia(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any) (json.RawMessage, error) {
+	return s.controllerMediaFor(ctx, p, project, taskID, id, requestID, action, body, true)
+}
+
+func (s *Execution) controllerMediaFor(ctx context.Context, p model.Principal, project, taskID, id, requestID, action string, body any, producer bool) (json.RawMessage, error) {
 	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
 		return s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 			if !write {
 				return denied()
+			}
+			if producer {
+				if err := s.authorizeProducer(ctx, tx, p, r); err != nil {
+					return err
+				}
 			}
 			return work(tx, r)
 		})

@@ -66,10 +66,16 @@ func newRoutes(service serviceCalls, auth *authhttp.RequestAuthentication, logge
 	return &Routes{service: service, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterRoutesWithProducerObserver(mux, nil)
+}
+
+// RegisterRoutesWithProducerObserver records the producer routes as they are
+// registered. Other Session operations have their own admission owners.
+func (h *Routes) RegisterRoutesWithProducerObserver(mux *http.ServeMux, observe func(ProducerRoute)) {
 	h.registerTerminalRoutes(mux)
-	h.registerTestRoutes(mux)
-	h.registerArchiveRoutes(mux)
-	h.registerImageRoutes(mux)
+	h.registerTestRoutes(mux, observe)
+	h.registerArchiveRoutes(mux, observe)
+	h.registerImageRoutes(mux, observe)
 	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 		if _, err := httpx.QueryValues(r); err != nil {
 			h.Failure(w, r, err)
@@ -105,21 +111,31 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 		if route == "GET "+sessionBase+"/{sessionId}/channel" {
 			mux.HandleFunc(route, h.requireUserChannel(h.Parameters(handler), false))
 		} else {
-			mux.HandleFunc(route, h.auth.Require(h.Parameters(handler)))
+			next := h.auth.Require(h.Parameters(handler))
+			if route == "POST "+sessionBase || route == "POST "+sessionBase+"/{sessionId}/controller-grant" {
+				registerProducerRoute(mux, route, next, producerCredential, observe)
+			} else {
+				mux.HandleFunc(route, next)
+			}
 		}
 	}
 	for path, methods := range map[string]string{sessionBase: "GET, POST", sessionBase + "/current": "GET", sessionBase + "/{sessionId}/controller-grant": "POST", sessionBase + "/{sessionId}/timeline": "GET", sessionBase + "/{sessionId}/commands": "POST", sessionBase + "/{sessionId}/operations/{operationId}": "GET", sessionBase + "/{sessionId}/resources/{resourceId}/content": "GET", sessionBase + "/{sessionId}/channel": "GET"} {
 		fallback := httpx.MethodNotAllowed(h.logger, methods)
-		mux.HandleFunc(path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) { fallback(w, r) }))
+		next := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) { fallback(w, r) })
+		if path == sessionBase || path == sessionBase+"/{sessionId}/controller-grant" {
+			registerProducerRoute(mux, path, next, producerFallback, observe)
+		} else {
+			mux.HandleFunc(path, next)
+		}
 		if methods == "GET" {
 			mux.HandleFunc("HEAD "+path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) { fallback(w, r) }))
 		}
 	}
-	mux.HandleFunc("GET /api/v1/controller-channel", h.controllerChannel)
-	mux.HandleFunc("HEAD /api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"))
-	mux.HandleFunc("/api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"))
-	mux.HandleFunc("PUT /api/v1/controller-resources/{resourceId}", h.putResource)
-	mux.HandleFunc("/api/v1/controller-resources/{resourceId}", httpx.MethodNotAllowed(h.logger, "PUT"))
+	registerProducerRoute(mux, "GET /api/v1/controller-channel", h.controllerChannel, producerIndependent, observe)
+	registerProducerRoute(mux, "HEAD /api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"), producerFallback, observe)
+	registerProducerRoute(mux, "/api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"), producerFallback, observe)
+	registerProducerRoute(mux, "PUT /api/v1/controller-resources/{resourceId}", h.putResource, producerIndependent, observe)
+	registerProducerRoute(mux, "/api/v1/controller-resources/{resourceId}", httpx.MethodNotAllowed(h.logger, "PUT"), producerFallback, observe)
 }
 func (h *Routes) Parameters(next httpx.AuthenticatedHandler) httpx.AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p model.Principal) {

@@ -83,7 +83,9 @@ OAuth access 与 refresh 不复制权限；按 access hash 读取原 grant 的�
 Task/Goal 的详情、列表、ready、搜索、属性、schema、依赖、分组、Graph 和 Sync
 读取要求 `task:read`。服务在原有凭据及项目可见性检查后、受保护数据读取前执行
 准入。搜索在自己的 TaskSearch 快照内执行同一规则。明确的 scoped 构造和路由
-注册复用原查询及分页；原生产装配维持既有行为。
+注册复用原查询及分页。REST 读取、搜索与写入入口可组合到同一 ServeMux；
+MCP 读取与写入注册各自只拥有所属工具，可组合到同一 Entry，且不重复注册。
+原生产装配维持既有行为。
 
 普通任务读取不要求 `project:read`。包含完整 Project 的 Graph 与 Sync 同时要求
 该权限；REST Graph 携带 `Daynight-Projection: task-only-v1` 时，服务回显该头并
@@ -138,6 +140,29 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Task 写入准入
+
+Task 写入服务按解析后的字段合并所需操作，项目访问、原有角色、版本、
+依赖和 claim 规则继续生效。创建的默认值不增加权限；显式非默认负责人和
+平台使用 `task:assign`，依赖与父 Goal 使用 `task:dependencies`，普通状态
+和阻塞属性使用 `task:status`。标题、普通属性和 Task Tag 关联使用
+`task:write`，显式 `allowAgents` 使用 `agent:authorize`。删除使用
+`task:delete`，带 claim 的完成使用 `worker:complete`。组合缺少任何一项
+时不执行部分写入；Task Tag 关联不授予 Tag 目录修改权限。无 `task:read`
+时，错误保留原错误码和完成结果，但不返回已有依赖的 Task ID。
+
+显式 scoped REST 与 MCP 写入口将认证策略和响应选择传给同一服务准入。
+原完整 Task 或属性响应需要在写入前取得 `task:read`。REST 请求
+`Daynight-Return: receipt-v1` 时成功响应回显该 header，并仅返回
+`projectId`、`taskId` 和数值 `version`。MCP 的 `returnView: "receipt"`
+返回相同身份和十进制字符串版本及既有写入结果；省略视图且受限凭据缺少
+`task:read` 时选择该回执，显式 summary/full 需要读取权限。省略 MCP
+版本时的现有预读同样需要 `task:read`。服务在提交前检查实际 MCP 回执的
+响应容量。Goal 依赖编辑保留原最小回执。
+
+直接写入使用本次认证的策略快照；既有生产装配保持原行为，scoped 写入
+入口由启用阶段接入。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
+
 ## 附件准入
 
 `service/attachment.NewScopedAttachments` 显式接收授权事实，复用普通附件服务的
@@ -174,6 +199,7 @@ REST 的显式 `RegisterScopedRoutes` 复用原解析与流响应。附件列表
 `task_attachment_remove` 传递原调用授权，分别执行读取和删除准入。工具 schema、
 发现和原完成结果不变；权限拒绝为 `insufficient_scope`，删除拒绝标为
 `not_committed`。私有分片上传、下载票据及其事务复核由独立传输服务负责。
+
 
 ## 账户与集成准入
 
@@ -301,10 +327,28 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+启用时，同一 Session 服务必须同时装配命令和生产者准入；各自的 scoped
+构造入口只安装其对应的规则。
+
+## Session 生产者准入
+
+Session 与用量生产的 scoped 装配在实际操作所属事务或快照中读取原 PAT 的
+当前策略，要求 `session:produce`。Task 注册检查实际调用凭据；后续 Controller
+操作使用连接绑定的父凭据，保留原 claim、执行代次和连接 fence。Test 与 Bot
+Session 的当前 grant 父凭据和活动连接父凭据可能不同：同代重连更换 grant 后，
+旧连接仍须分别复核两者的有效性和生产权限。同一凭据只需一次策略检查。
+Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再参与新 grant 的
+消费；正常同代重连保留旧 lease 时仍分别复核两者。
+用量上传凭据保留原父凭据和资源绑定，不能凭新连接的权限替代原父凭据。
+
+注册、签发及新生产操作在相应阶段拒绝权限不足；已有持久结果不因撤权改写。
+恢复和重试仍遵循各自的原身份、回执和完成语义。固定 profile 继续受原协议和
+资源约束，受限入口不将缺失的 PAT 策略解释为无限权限。具体权衡见
+[Session 生产者准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-producer-scope.md)。
 
 ## 装配边界
 
-生产仍使用原有 Task、附件、Worker、Tag、Team、Bot、Session、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用既有业务装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方
@@ -313,3 +357,26 @@ scoped 命令服务显式装配后使用这些能力，原生产装配保持不�
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
 附件准入与完整上传回执的取舍见[附件决策](../../.agents/notes/implemented/architecture/2026-11-20-attachment-scope-admission.md)。
+
+## Steps 与讨论准入
+
+Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合，MCP 写响应
+也包含已有数据，因此写入需要 `step:write` 与 `step:read`。权限检查在原项目
+访问及写入角色检查后、读取 Steps 内容或修改之前执行；版本、排序、容量和
+事务完成语义保持原有规则。项目资源检查不隐含 `task:read` 或 `project:read`。
+
+讨论读取使用 `thread:read`，发帖和回复使用 `thread:post`。REST 原响应包含
+既有作者资料，因此还需要 `thread:read`；指定 `Daynight-Return: receipt-v1`
+时仅返回项目、任务和新消息 ID，并回显 header。MCP 按事务中的当前策略选择
+原消息响应或最小回执。项目访问、有效凭据和指定 claim 的真实执行归属仍分别
+检查。发帖在原 Thread 事务中读取当前策略，OAuth 按 grant、access 顺序锁定，
+与 grant 编辑保持互斥；读取使用原快照中的当前策略。失败继续区分确定未提交
+和提交结果未知。
+
+REST 的 Steps 集合及单项 GET（包括自动 HEAD）对应读取，集合 POST、单项
+PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执行业务。
+讨论 messages GET（包括自动 HEAD）对应读取，POST 对应发帖。MCP 的
+`task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
+`task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
+`task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
+复用原解析与资源检查，原产品装配保持不变。

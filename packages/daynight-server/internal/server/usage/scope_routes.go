@@ -7,8 +7,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
-// ScopeRoute describes one registered usage endpoint. Producer operations are
-// classified separately from user reads; grant endpoints use their own token.
+// ScopeRoute describes one registered usage endpoint. Producer identifies the
+// existing restricted ingress in addition to its business operation; grant
+// endpoints use their own token and retain their original parent binding.
 type ScopeRoute struct {
 	Pattern            string
 	Operations         []scopepolicy.Operation
@@ -40,6 +41,7 @@ func (r routeRegistry) handle(pattern string, handler http.HandlerFunc, class ro
 		entry.CapabilityCheck = true
 	case routeProducer:
 		entry.Producer = true
+		entry.Operations = []scopepolicy.Operation{scopepolicy.SessionProduce}
 	case routeGrant:
 		entry.IndependentProfile = true
 	default:

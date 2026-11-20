@@ -4111,6 +4111,11 @@ For `T=/api/v1/projects/{projectId}/tasks/{taskId}`:
 | `POST` | `T/thread/messages` | `201`, committed default message; body, optional replyTo/claimId |
 | `GET` / `HEAD` | `T/thread/messages` | `200`, messages and actual-boundary hasMoreBefore/hasMoreAfter |
 
+When scoped credential admission is enabled, the original POST response requires
+`thread:post` and `thread:read`. `Daynight-Return: receipt-v1` requires only
+`thread:post` and returns `{projectId, taskId, messageId}` with the same response
+header. The existing production assembly continues to use the original response.
+
 GET accepts only beforeId/afterId (mutually exclusive), count=1..100 (default 50),
 details=true/false and internal fromBeginning=true/false. An explicit
 fromBeginning cannot accompany an Id boundary. Without a boundary, ordinary

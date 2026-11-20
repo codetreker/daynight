@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
@@ -100,6 +101,7 @@ func (s *Tasks) EditGoalDependencies(ctx context.Context, principal model.Princi
 	if err := taskcore.ValidateGoalDependencyEdit(input); err != nil {
 		return taskcore.GoalDependencyReceipt{}, err
 	}
+	ctx = withTaskWriteOperations(ctx, scopepolicy.TaskDependencies)
 	ctx, cancel := context.WithTimeout(ctx, goalLifecycleTimeout)
 	defer cancel()
 	var result taskcore.GoalDependencyReceipt
@@ -110,6 +112,12 @@ func (s *Tasks) EditGoalDependencies(ctx context.Context, principal model.Princi
 		}
 		facts, err := dao.Admission(ctx, goalID, principal.UserID, taskcore.GoalDependencyCandidates(input))
 		if err != nil {
+			return err
+		}
+		if err := taskcore.RequireGoalRelationSource(facts.Source, true); err != nil {
+			return err
+		}
+		if err := checkTaskWriteScope(ctx, principal); err != nil {
 			return err
 		}
 		edges, changed, err := taskcore.PrepareGoalRelations(ctx, dao, goalID, input, facts)
@@ -126,7 +134,7 @@ func (s *Tasks) EditGoalDependencies(ctx context.Context, principal model.Princi
 		return nil
 	})
 	if err != nil {
-		return taskcore.GoalDependencyReceipt{}, fmt.Errorf("edit Goal dependencies: %w", goalLifecycleError(projectcore.ProjectWriteError(err), true))
+		return taskcore.GoalDependencyReceipt{}, fmt.Errorf("edit Goal dependencies: %w", goalLifecycleError(redactTaskWriteError(ctx, projectcore.ProjectWriteError(err)), true))
 	}
 	if completion.Outcome != store.TransactionCommitted {
 		return taskcore.GoalDependencyReceipt{}, fmt.Errorf("edit Goal dependencies: transaction did not confirm commit")

@@ -327,3 +327,73 @@ func TestScopedTaskRegistrationRejectsMissingDependenciesAndDuplicates(t *testin
 		})
 	}
 }
+
+func TestScopedTaskReadAndWriteToolsComposeInEitherOrder(t *testing.T) {
+	for _, writeFirst := range []bool{false, true} {
+		name := "read first"
+		if writeFirst {
+			name = "write first"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			a := scopedTestAuthorization(t, "task:read", "task:write", "task:dependencies")
+			if err := f.entry.EnableScopedAuthentication(testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{"task": a}}); err != nil {
+				t.Fatal(err)
+			}
+			db := scopedTaskStore{snapshot: scopedTaskSnapshot{projects: scopedTaskProjects{t: t}}}
+			tasks, observations := taskservice.NewTasks(db), taskservice.NewObservations(db, nil)
+			registerRead := func() error { return RegisterScopedTaskReadTools(f.entry, tasks, observations) }
+			registerWrite := func() error {
+				if err := RegisterScopedTaskWriteTools(f.entry, tasks, observations); err != nil {
+					return err
+				}
+				return RegisterScopedGoalDependencyWriteTools(f.entry, tasks)
+			}
+			registrations := []func() error{registerRead, registerWrite}
+			if writeFirst {
+				registrations[0], registrations[1] = registrations[1], registrations[0]
+			}
+			for _, register := range registrations {
+				if err := register(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client := f.client(t, "2026-07-28", "task")
+			listing, err := client.ListTools(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]bool{}
+			for _, tool := range []string{"task_list", "task_ready", "task_graph", "task_work_list", "task_show", "task_properties", "goal_dependencies_show", "task_create", "task_update", "task_set_status", "task_delete", "task_set_property", "task_remove_property", "goal_dependencies_edit"} {
+				want[tool] = true
+			}
+			for _, tool := range listing.Tools {
+				if tool.Name == "test_only" {
+					continue
+				}
+				if !want[tool.Name] || !f.entry.scopedTools[tool.Name] {
+					t.Fatalf("unexpected or unclassified tool %s", tool.Name)
+				}
+				delete(want, tool.Name)
+			}
+			if len(want) != 0 {
+				t.Fatalf("missing tools: %v", want)
+			}
+			for _, call := range []struct {
+				name string
+				args map[string]any
+			}{
+				{"task_show", map[string]any{"projectId": testProjectID, "taskId": testTargetID}},
+				{"task_properties", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "mode": "values"}},
+				{"goal_dependencies_show", map[string]any{"projectId": testProjectID, "goalId": testTargetID, "limit": 1}},
+			} {
+				result, body := callTaskResource(t, client, call.name, call.args)
+				if result.IsError {
+					t.Fatalf("%s: %#v", call.name, body)
+				}
+			}
+			scopedToolCall(t, client, "task_delete", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "ifVersion": "9223372036854775808"}, "invalid_input", "")
+			scopedToolCall(t, client, "goal_dependencies_edit", map[string]any{"projectId": testProjectID, "goalId": testTargetID, "ifRevision": "9223372036854775808", "mode": "replace", "prerequisites": []string{}}, "invalid_input", "")
+		})
+	}
+}

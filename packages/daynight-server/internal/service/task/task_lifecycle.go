@@ -25,13 +25,15 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 	if err != nil {
 		return model.Task{}, err
 	}
+	ctx = withTaskWriteOperations(ctx, taskcore.StatusOperation(input))
 	ctx, cancel, goal, err := s.lifecycleContext(ctx, principal, projectID, id)
 	if err != nil {
 		return model.Task{}, err
 	}
 	defer cancel()
+	ctx = withTaskWriteTarget(ctx, id, goal)
 	result, err := s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
-		if goal {
+		if goal && !scopedGoalLocked(ctx) {
 			if err := tx.GoalDependencyDAO().LockTeam(ctx); err != nil {
 				return taskcore.Mutation{}, err
 			}

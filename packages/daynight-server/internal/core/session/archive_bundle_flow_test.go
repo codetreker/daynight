@@ -488,3 +488,42 @@ func TestSealChecksNewUnavailableDescriptorBeforeSaving(t *testing.T) {
 		t.Fatal("sealed replay changed descriptors", err)
 	}
 }
+
+func TestArchiveBundleAccessRejectsInvalidAuthorityBeforeWork(t *testing.T) {
+	for _, name := range []string{"owner changed", "producer revoked", "stale history writer", "missing bundle", "invalid identity", "changed controller"} {
+		t.Run(name, func(t *testing.T) {
+			op, dao, r := archiveFlowFixture(t)
+			refusal := errors.New("producer scope revoked")
+			switch name {
+			case "owner changed":
+				op.owner = uuid.NewString()
+			case "producer revoked":
+				op.execution.SetProducerAdmission(func(_ context.Context, _ store.SessionScope, p model.Principal) error {
+					if p != op.principal {
+						t.Fatalf("wrong original producer: %#v", p)
+					}
+					return refusal
+				})
+			case "stale history writer":
+				op.historyWriter = &ActiveHistoryWriter{}
+			case "missing bundle":
+				dao.bundle = nil
+			case "invalid identity":
+				dao.bundle.Identity = []byte(`{`)
+			case "changed controller":
+				dao.bundle.Identity = encode(sp.ArchivePrepareRequest{Fence: r.Snapshot.Fence, ControllerID: uuid.NewString(), ControllerInstanceID: r.Snapshot.Identity.ControllerInstanceID})
+			}
+			called := false
+			err := op.bundleAccess(t.Context(), func(*operationTx, *record, store.SessionArchiveDAO, store.ArchiveBundle) error {
+				called = true
+				return nil
+			})
+			if err == nil || called {
+				t.Fatalf("invalid authority reached work: err=%v called=%v", err, called)
+			}
+			if name == "producer revoked" && !errors.Is(err, refusal) {
+				t.Fatalf("producer error lost: %v", err)
+			}
+		})
+	}
+}

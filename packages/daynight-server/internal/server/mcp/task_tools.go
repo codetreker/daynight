@@ -66,10 +66,18 @@ type taskArguments struct {
 // Operations that read or write Tasks reserve for their full materialization.
 // The static property schema uses the independent control budget.
 func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
-	return registerTaskResourceTools(e, tasks, observations, false)
+	return registerTaskResourceTools(e, tasks, observations, taskToolsAll)
 }
 
-func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter, readOnly bool) error {
+type taskToolSelection uint8
+
+const (
+	taskToolsAll taskToolSelection = iota
+	taskToolsRead
+	taskToolsWrite
+)
+
+func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter, selection taskToolSelection) error {
 	if e == nil || tasks == nil || tasks == (*taskservice.Tasks)(nil) {
 		return fmt.Errorf("MCP task tools require an entry and Tasks service")
 	}
@@ -79,7 +87,8 @@ func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observati
 	}
 	for _, tool := range definitions {
 		name := tool.Name
-		if readOnly && name != "task_show" && name != "task_properties" {
+		read := name == "task_show" || name == "task_properties"
+		if selection == taskToolsRead && !read || selection == taskToolsWrite && read {
 			continue
 		}
 		budget := func(raw json.RawMessage) BudgetClass {
@@ -114,6 +123,25 @@ func registerTaskResourceTools(e *Entry, tasks taskResourceOperations, observati
 		if err := register(tool, budget, handler); err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
 		}
+	}
+	return nil
+}
+
+// RegisterScopedTaskWriteTools enables only the classified Task mutations.
+// Read tools remain separately classified by their owning registration.
+func RegisterScopedTaskWriteTools(e *Entry, tasks *taskservice.Tasks, observations taskObservationGetter) error {
+	if e == nil || e.scopedAuth == nil || tasks == nil {
+		return fmt.Errorf("scoped Task write dependencies are required")
+	}
+	return registerScopedTaskWriteTools(e, tasks, observations)
+}
+
+func registerScopedTaskWriteTools(e *Entry, tasks taskResourceOperations, observations taskObservationGetter) error {
+	if err := registerTaskResourceTools(e, tasks, observations, taskToolsWrite); err != nil {
+		return err
+	}
+	for _, name := range []string{"task_create", "task_update", "task_set_status", "task_delete", "task_set_property", "task_remove_property"} {
+		e.scopedTools[name] = true
 	}
 	return nil
 }
@@ -155,6 +183,9 @@ func compileTaskDependencies(ordinary, external *[]string) (*[]string, *[]string
 }
 
 func taskView(task model.Task, view string) any {
+	if view == "receipt" {
+		return taskprotocol.MCPTaskReceipt(task)
+	}
 	if view == "full" {
 		return MapTaskFull(task)
 	}
@@ -165,11 +196,16 @@ func taskResult(task model.Task, view string, previous int64) ToolResult {
 	if task.Version == previous {
 		outcome = "unchanged"
 	}
-	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", SuccessMetadata: view == "receipt", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
 }
 func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOperations, input taskArguments) (int64, error) {
 	if input.IfVersion != nil {
 		return ParseVersion(*input.IfVersion)
+	}
+	if actor.Authorization != nil {
+		if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TaskRead); err != nil {
+			return 0, err
+		}
 	}
 	task, err := tasks.Get(ctx, actor.Principal, input.ProjectID, input.TaskID)
 	if err != nil {
@@ -178,11 +214,30 @@ func taskVersion(ctx context.Context, actor RequestActor, tasks taskResourceOper
 	return task.Version, nil
 }
 func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceOperations, observations taskObservationGetter, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+	if actor.Authorization != nil && name != "task_show" && name != "task_properties" {
+		auth := *actor.Authorization
+		if auth.Principal != actor.Principal {
+			return ToolResult{}, fmt.Errorf("Task authorization identity mismatch")
+		}
+		readErr := scopeadmission.Require(auth, scopepolicy.TaskRead)
+		if in.ReturnView == "" && readErr != nil {
+			// Only a valid but restricted policy may select the narrower response.
+			if err := auth.Validate(); err != nil {
+				return ToolResult{}, err
+			}
+			in.ReturnView = "receipt"
+		}
+		ctx = taskservice.WithTaskWriteAuthorization(ctx, auth, name != "task_delete" && in.ReturnView != "receipt")
+	}
 	if name != "task_show" && name != "task_properties" && name != "task_delete" {
 		if actor.rpcResponseID == nil {
 			return ToolResult{}, &model.Fault{Code: "resource_limit_exceeded", Message: "Task response could not be bounded."}
 		}
-		ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch, in.ReturnView == "full")
+		if in.ReturnView == "receipt" {
+			ctx = taskservice.WithMCPTaskReceiptResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch)
+		} else {
+			ctx = taskservice.WithMCPTaskResponse(ctx, actor.RequestID, actor.rpcResponseID, actor.rpcModern, actor.rpcBatch, in.ReturnView == "full")
+		}
 	}
 	switch name {
 	case "task_create":
@@ -199,7 +254,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if !assignedPresent && in.Type != model.TaskTypeGoal {
 			assigned = &actor.Principal.UserID
 		}
-		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
+		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, DefaultAssignedTo: &actor.Principal.UserID, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
 		if _, exists := fields["status"]; exists {
 			input.Status = &in.Status
 		}

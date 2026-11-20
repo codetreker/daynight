@@ -18,8 +18,20 @@ import (
 // Recovery coordinates current account authority, Bot hosting and original
 // Session authorization. It deliberately does not authenticate an old PAT.
 type Recovery struct {
-	engine *sessioncore.Engine
-	write  sessioncore.TransactionRunner
+	engine   *sessioncore.Engine
+	write    sessioncore.TransactionRunner
+	producer ProducerAuthorization
+}
+
+// NewScopedRecovery checks the actual new producer before a recovery write.
+// Existing recovery receipts remain readable after producer scope is removed.
+func NewScopedRecovery(engine *sessioncore.Engine, write sessioncore.TransactionRunner, source ProducerAuthorization) (*Recovery, error) {
+	if source == nil {
+		return nil, errors.New("Bot producer authorization is required")
+	}
+	s := NewRecovery(engine, write)
+	s.producer = source
+	return s, nil
 }
 
 func NewRecovery(engine *sessioncore.Engine, write sessioncore.TransactionRunner) *Recovery {
@@ -142,6 +154,9 @@ func (s *Recovery) RegisterBotRecovery(ctx context.Context, p model.Principal, w
 			out = sessioncore.BotRecoveryResult{Receipt: *prior, Current: op.BotRecoveryCurrent(a, bot, *prior, p)}
 			return nil
 		}
+		if err = requireProducer(ctx, scope, p, s.producer); err != nil {
+			return err
+		}
 		if bot.Recovery != nil {
 			return recoveryFault("resource_conflict", "Bot recovery identity is already registered.")
 		}
@@ -194,6 +209,9 @@ func (s *Recovery) grant(ctx context.Context, p model.Principal, workerID, id st
 		if prior != nil {
 			out = sessioncore.BotRecoveryResult{Receipt: *prior, Current: op.BotRecoveryCurrent(a, bot, *prior, p)}
 			return nil
+		}
+		if err = requireProducer(ctx, scope, p, s.producer); err != nil {
+			return err
 		}
 		machine, err := dao.RecoveryWorker(ctx, p.UserID, workerID)
 		if err != nil {
@@ -265,7 +283,27 @@ func (s *Recovery) ReportBotRecovery(ctx context.Context, p model.Principal, wor
 					return err
 				}
 			}
-			return work(op, scope, bot, a, func(p model.Principal) error { return op.LockCredential(ctx, scope, p) })
+			return work(op, scope, bot, a, func(connection model.Principal) error {
+				if err := op.LockCredential(ctx, scope, connection); err != nil {
+					return err
+				}
+				if err := requireProducer(ctx, scope, connection, s.producer); err != nil {
+					return err
+				}
+				// Recovery can replace the grant parent independently of a still
+				// connected Controller. Ready requires both original authorities.
+				if s.producer != nil && input.Report.Result.State == "ready" {
+					authority := a.Authority()
+					if authority.ParentCredentialID != "" && authority.ParentCredentialID != connection.CredentialID {
+						parent := model.Principal{Kind: model.PATCredential, UserID: authority.OwnerID, CredentialID: authority.ParentCredentialID}
+						if err := op.LockCredential(ctx, scope, parent); err != nil {
+							return err
+						}
+						return requireProducer(ctx, scope, parent, s.producer)
+					}
+				}
+				return nil
+			})
 		})
 	})
 	return execution.ReportBot(ctx, p, workerID, id, input.Report)

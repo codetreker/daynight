@@ -107,6 +107,7 @@ func expectTaskGet(t *testing.T, f *taskResourceFixture, result model.Task, err 
 }
 func expectTaskCreate(t *testing.T, f *taskResourceFixture, input taskcore.CreateTask, result model.Task, err error) {
 	t.Helper()
+	input.DefaultAssignedTo = &f.principal.UserID
 	f.operations.wantCalls["Create"]++
 	f.operations.CreateFunc = func(_ context.Context, _ model.Principal, _ string, actual taskcore.CreateTask) (model.Task, error) {
 		if !reflect.DeepEqual(actual, input) {

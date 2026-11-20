@@ -305,13 +305,9 @@ func TestScopedSearchRouteRegistrationAndAuthenticationBoundaries(t *testing.T) 
 	}
 }
 
-func TestScopedTaskReadAndSearchRoutesComposeInEitherOrder(t *testing.T) {
-	for _, searchFirst := range []bool{false, true} {
-		name := "read first"
-		if searchFirst {
-			name = "search first"
-		}
-		t.Run(name, func(t *testing.T) {
+func TestScopedTaskReadSearchAndWriteRoutesComposeInAnyOrder(t *testing.T) {
+	for _, order := range []string{"RSW", "RWS", "SRW", "SWR", "WRS", "WSR"} {
+		t.Run(order, func(t *testing.T) {
 			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 1)
 			if err != nil {
 				t.Fatal(err)
@@ -333,12 +329,15 @@ func TestScopedTaskReadAndSearchRoutesComposeInEitherOrder(t *testing.T) {
 					return tasksearch.Page{ProjectID: project, Items: []tasksearch.Item{}}, nil
 				}, readRouteAuth{a}, logger)
 			}
-			registrations := []func() error{registerRead, registerSearch}
-			if searchFirst {
-				registrations[0], registrations[1] = registrations[1], registrations[0]
+			registrations := map[rune]func() error{
+				'R': registerRead,
+				'S': registerSearch,
+				'W': func() error {
+					return taskhttp.RegisterScopedWriteRoutes(mux, taskservice.NewTasks(db), scopedGoalOperations{}, readRouteAuth{a}, logger)
+				},
 			}
-			for _, register := range registrations {
-				if err := register(); err != nil {
+			for _, owner := range order {
+				if err := registrations[owner](); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -350,6 +349,8 @@ func TestScopedTaskReadAndSearchRoutesComposeInEitherOrder(t *testing.T) {
 				{http.MethodPost, "/tasks/search", `{"query":"combined"}`, http.StatusOK, ""},
 				{http.MethodGet, "/tasks/" + testTaskID, "", http.StatusOK, ""},
 				{http.MethodGet, "/tasks?limit=1", "", http.StatusOK, ""},
+				{http.MethodPatch, "/tasks/" + testTaskID, `{}`, http.StatusBadRequest, ""},
+				{http.MethodPatch, "/tasks/" + testTaskID + "/goal-dependencies", `{}`, http.StatusBadRequest, ""},
 				{http.MethodGet, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
 				{http.MethodHead, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
 				{http.MethodPatch, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},

@@ -15,7 +15,9 @@ objects even when Session facts cannot be returned.
 Explicit scoped task services and protocol registrations share the existing
 queries. Admission checks task-read permission after resource visibility and
 before task content, search fences or observation sources are read. Production
-assembly retains its existing constructors and registrations.
+assembly retains its existing constructors and registrations. Read, search and
+mutation registrations compose in the same protocol host; scoped MCP registrations
+own disjoint tool sets so enabling writes cannot duplicate the read tools.
 
 Full Graph and Sync require project-read permission. A negotiated REST task-only
 Graph and the MCP Graph fallback contain only the project ID, including dependency

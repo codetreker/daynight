@@ -104,10 +104,10 @@ func RegisterScopedTaskReadTools(e *Entry, tasks *taskservice.Tasks, observation
 	if err := RegisterTaskWorkTools(e, reader); err != nil {
 		return err
 	}
-	if err := registerTaskResourceTools(e, reader, reader, true); err != nil {
+	if err := registerTaskResourceTools(e, reader, reader, taskToolsRead); err != nil {
 		return err
 	}
-	if err := registerGoalDependencyTools(e, reader, true); err != nil {
+	if err := registerGoalDependencyTools(e, reader, taskToolsRead); err != nil {
 		return err
 	}
 	for _, name := range []string{"task_list", "task_ready", "task_graph", "task_work_list", "task_show", "task_properties", "goal_dependencies_show"} {
