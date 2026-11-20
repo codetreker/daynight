@@ -8,7 +8,7 @@
 
 `ProjectSettingsPanel` 与 `ProjectAccessBoundary` 按用户和项目维持稳定 owner。工作空间区分同项目 `inWorkspace`、实际展示的 `workspaceActive` 和所选组的 `sectionActive`：切组不结束 `onRoute`，隐藏组停止交互并使用 `hidden` 和 `inert`。共享 Project GET 在活动工作空间读取权威名称、仓库和设置；失败不阻止提示词或成员等独立资源读取。名称不可用时使用项目 ID，不借用其他项目的名称。
 
-成员组由同一工作空间内的 `MembersPanel` 拥有，接收共享项目名称、`onRoute`、活动状态及状态和保留回调。成员、邀请使用原 controller、权限与提交语义；成员变化和资源不可用时刷新项目目录。没有独立成员页面 host 或重复名称读取。设置、GitHub、仓库改址、转移和删除共用 `ProjectManagementGuard`；成员、邀请及个人提示词不加入该 guard。
+成员组由同一工作空间内的 `MembersPanel` 拥有，接收 `onRoute`、活动状态及状态和保留回调。工作空间以 H1 展示项目名称及页面身份，成员组以 H2 展示分区标题和有权限时的邀请按钮，名册以 H3 标识自身区域。分区标题和按钮根据可用宽度换行；名称只在工作空间中展示。成员、邀请使用原 controller、权限与提交语义；成员变化和资源不可用时刷新项目目录。没有独立成员页面 host 或重复名称读取。设置、GitHub、仓库改址、转移和删除共用 `ProjectManagementGuard`；成员、邀请及个人提示词不加入该 guard。
 
 ## 导航可见性
 

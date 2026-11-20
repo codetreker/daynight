@@ -89,7 +89,7 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
-  it("binds direct-entry and retained member subtitles to their project through settings navigation", async () => {
+  it("binds direct-entry and retained workspace headings to their project through settings navigation", async () => {
     const second = "00000000-0000-4000-8000-000000000004";
     const secondProject = { ...project("Project Beta"), id: second };
     window.history.replaceState(null, "", `/projects/${second}/members`);
@@ -101,16 +101,16 @@ describe("sidebar integration with the authenticated workspace", () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    await screen.findByText("Project Beta · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "Project Beta", level: 1 });
     act(() => navigate(`/projects/${projectId}`));
     fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
     fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
-    await screen.findByText("私有项目 · 管理协作成员与加入邀请");
+    await screen.findByRole("heading", { name: "私有项目", level: 1 });
     act(() => navigate(`/projects/${second}/settings`));
     await screen.findByRole("heading", { name: "Project Beta" });
     fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置分组" })).getByRole("link", { name: "成员与邀请" }));
-    await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
-    const previous = screen.queryByText("私有项目 · 管理协作成员与加入邀请");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Project Beta", level: 1 })).toBeVisible());
+    const previous = screen.queryByRole("heading", { name: "私有项目", level: 1 });
     if (previous !== null) expect(previous).not.toBeVisible();
   });
 
