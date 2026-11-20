@@ -166,6 +166,7 @@ for (const width of [1280, 320]) for (const hasTouch of [false, true]) test.desc
 
   test('Worker configuration keeps long path drafts, errors and focus in a narrow desktop container', async ({ page }, info) => {
     const state = await installTools(page, { locale: 'en' });
+    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { target: pathChoice(longPath), actual: toolActual('codex', 'web', { selection: pathChoice(longPath), source: 'explicit', entryPath: longPath, executablePath: longPath }) })]));
     state.detail.worker.platform = 'windows'; state.detail.worker.telemetry.platform = 'windows';
     await page.goto(`/workers/${targetWorker}`);
     await page.locator('[data-worker-tab="configuration"]:visible').click();
