@@ -14,12 +14,13 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
   const projectGate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
+    if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
     if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === `/api/v1/projects/${targetProject}`) { if (state.projectMode === 'pending') await projectGate.promise; return send(graph.project); }
@@ -84,6 +85,18 @@ test('reserves the narrow settings position while the project loads', async ({ p
     const after = await settings.boundingBox();
     expect(after?.width).toBe(before?.width); expect(after?.height).toBe(before?.height);
   } finally { state.releaseProject(); }
+});
+
+test('withdraws the narrow settings entrance when project access is lost', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}?tab=tasks`);
+  const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+  await expect(settings).toBeVisible();
+  state.revoked = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(settings).toBeHidden();
+  expect(state.writes).toEqual([]);
 });
 
 for (const locale of ['en', 'zh-CN'] as const) test(`project heading actions fit narrow containers and preserve interactions in ${locale}`, async ({ page }) => {
