@@ -53,7 +53,7 @@ func KnownFault(err error) (*model.Fault, bool) {
 			return fault, true
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
 			return fault, true
-		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
+		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed", "insufficient_scope":
 			return fault, true
 		case "github_repository_mismatch", "github_grant_changed", "github_admin_changed", "github_not_connected", "github_connection_unavailable", "impact_changed":
 			return fault, true

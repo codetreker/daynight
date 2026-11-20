@@ -7,6 +7,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -15,13 +16,24 @@ type botStore interface {
 	store.BotWriter
 }
 type Bots struct {
-	store      botStore
-	models     modelRequester
-	operations botOperations
-	observer   sessionObserver
+	store         botStore
+	models        modelRequester
+	operations    botOperations
+	observer      sessionObserver
+	authorization DefinitionAuthorizationSource
 }
 
 func New(database botStore) *Bots { return &Bots{store: database, operations: defaultBotOperations()} }
+
+// NewScoped installs current-policy admission without changing legacy assembly.
+func NewScoped(database botStore, authorization DefinitionAuthorizationSource) (*Bots, error) {
+	if authorization == nil {
+		return nil, errors.New("definition authorization source is required")
+	}
+	s := New(database)
+	s.authorization = authorization
+	return s, nil
+}
 
 func (s *Bots) Create(ctx context.Context, principal model.Principal, input botcore.CreateBot) (model.Bot, error) {
 	return s.create(ctx, principal, input, false)
@@ -37,11 +49,34 @@ func (s *Bots) create(ctx context.Context, principal model.Principal, input botc
 	if err != nil {
 		return model.Bot{}, err
 	}
+	if s.authorization != nil {
+		err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+			_, err := s.operations.get(ctx, scope, principal, input.ID)
+			if err != nil {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "not_found" {
+					return err
+				}
+			}
+			return s.readAdmission(ctx, scope, principal, definitionProjection(ctx, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)...)
+		})
+		if err != nil {
+			return model.Bot{}, definitionResultError("create", err)
+		}
+	}
 	if resolve {
 		input.Resolution, input.ResolutionError = s.prepareCreation(ctx, principal, input)
 	}
 	var result model.Bot
 	completion, err := s.store.WriteBot(ctx, func(scope store.BotScope) error {
+		if s.authorization != nil {
+			authorization, authErr := s.authorization.BotWrite(ctx, scope, principal)
+			var err error
+			result, err = s.operations.createScoped(ctx, scope.BotDAO(), principal, input, fingerprint, resolve, func() error {
+				return requireDefinition(principal, authorization, authErr, definitionProjection(ctx, scopepolicy.BotWrite, scopepolicy.BotRead, scopepolicy.SessionRead)...)
+			})
+			return err
+		}
 		var err error
 		result, err = s.operations.create(ctx, scope.BotDAO(), principal, input, fingerprint, resolve)
 		return err
@@ -66,10 +101,13 @@ func (s *Bots) Get(ctx context.Context, principal model.Principal, id string) (m
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		var err error
 		result, err = s.operations.get(ctx, scope, principal, id)
+		if err == nil {
+			err = s.readAdmission(ctx, scope, principal, definitionProjection(ctx, scopepolicy.BotRead, scopepolicy.SessionRead)...)
+		}
 		return err
 	})
 	if err != nil {
-		return model.Bot{}, botcore.ResultError("get", err)
+		return model.Bot{}, definitionResultError("get", err)
 	}
 	return result, nil
 }
@@ -93,12 +131,19 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 	}
 	var records store.BotPage
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		if s.authorization != nil {
+			var err error
+			records, err = s.operations.listScoped(ctx, scope, principal, workerID, page, func() error {
+				return s.readAdmission(ctx, scope, principal, definitionProjection(ctx, scopepolicy.BotRead, scopepolicy.SessionRead)...)
+			})
+			return err
+		}
 		var err error
 		records, err = s.operations.list(ctx, scope, principal, workerID, page)
 		return err
 	})
 	if err != nil {
-		return botcore.BotPage{}, botcore.ResultError("list", err)
+		return botcore.BotPage{}, definitionResultError("list", err)
 	}
 	return botcore.ListResult(principal, workerID, records)
 }
@@ -127,12 +172,20 @@ func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overr
 			}
 			return err
 		}
+		if s.authorization != nil && overrides.WorkerID != nil {
+			if err := botcore.RequireWorker(ctx, scope.BotDAO(), principal, *overrides.WorkerID); err != nil {
+				return err
+			}
+		}
+		if err := s.readAdmission(ctx, scope, principal, scopepolicy.BotRead, scopepolicy.WorkerRead); err != nil {
+			return err
+		}
 		var err error
 		defaults, err = scope.BotDAO().BotDefaults(ctx, principal.UserID)
 		return err
 	})
 	if err != nil {
-		return botcore.BotDefaults{}, botcore.ResultError("defaults", err)
+		return botcore.BotDefaults{}, definitionResultError("defaults", err)
 	}
 	result, err := s.operations.defaults(defaults, overrides)
 	if err != nil || result.Configuration == nil {
@@ -145,7 +198,7 @@ func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overr
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}
-		final, err := s.resolveNative(ctx, principal, base, overrides, preference, baseline)
+		final, err := s.resolveNative(ctx, principal, base, overrides, preference, baseline, scopepolicy.BotRead, scopepolicy.WorkerRead, scopepolicy.WorkerInspect)
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}
