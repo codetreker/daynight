@@ -55,6 +55,7 @@ export const browserConfigs = [
   'project-tags-playwright.config.ts',
   'graph-visibility-browser-playwright.config.ts',
   'team-invitation-browser-playwright.config.ts',
+  'management-heading-playwright.config.ts',
   'graph-direction-browser-playwright.config.ts',
   'session-header-playwright.config.ts',
   'session-images-playwright.config.ts',
