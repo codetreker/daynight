@@ -17,7 +17,11 @@ operation requirements. A validated policy is an immutable, versioned snapshot;
 combined actions require every applicable scope. Credential authorization retains
 the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
-without changing the existing product assembly.
+without changing the existing product assembly. PAT storage supports explicit
+policies with an independent version and rejects absent or malformed policies
+on scoped reads. The preparation migration leaves historical and legacy-writer
+rows unscoped until the coordinated backfill and cutover. Device records reserve
+the approved selection without changing the existing redemption flow.
 
 ## Alternatives
 
@@ -36,4 +40,7 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
+itself. Production admission, device issuance integration and historical backfill remain
+independent work. Scope updates compare the owner and observed version and only
+advance it for a changed selection; usage timestamps remain independent. PAT
+management rechecks expiry against database time after acquiring the target lock.

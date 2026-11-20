@@ -328,6 +328,9 @@ var assistantTaskAppendixValidationsSQL string
 //go:embed schema/migrations/105_credential_descriptions.sql
 var credentialDescriptionsSQL string
 
+//go:embed schema/migrations/106_pat_business_scopes.sql
+var patBusinessScopesSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -439,6 +442,7 @@ var schemaMigrations = []migration{
 	{version: 103, sql: assistantTaskMetricsSQL},
 	{version: 104, sql: assistantTaskAppendixValidationsSQL},
 	{version: 105, sql: credentialDescriptionsSQL},
+	{version: 106, sql: patBusinessScopesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

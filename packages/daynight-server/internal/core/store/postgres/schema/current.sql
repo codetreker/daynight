@@ -1,4 +1,4 @@
--- Schema snapshot version: 105
+-- Schema snapshot version: 106
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -332,6 +332,7 @@ CREATE TABLE "device_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "next_poll_at" timestamp with time zone NOT NULL,
     "poll_interval_seconds" integer NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "device_authorizations_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "device_authorizations_check1" CHECK ((("status" = 'pending'::"text") = ("user_id" IS NULL))),
     CONSTRAINT "device_authorizations_device_code_hash_check" CHECK (("octet_length"("device_code_hash") = 32)),
@@ -511,6 +512,8 @@ CREATE TABLE "personal_access_tokens" (
     "expires_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
