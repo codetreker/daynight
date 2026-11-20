@@ -2521,12 +2521,13 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await expect(copy).toBeFocused();
   await id.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  const box = await id.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const rect = range.getClientRects()[0]!; return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
-  await page.mouse.move(box.x + 2, box.y + box.height / 2); await page.mouse.down();
-  await page.mouse.move(box.x + Math.min(box.width - 2, 80), box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
+  await id.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  const box = await id.evaluate(element => { const range = document.createRange(); range.setStart(element.firstChild!, 1); range.setEnd(element.firstChild!, 10); const rect = range.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+  await page.mouse.move(box.x, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width, box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
   const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
   expect(selected.length).toBeGreaterThan(0); expect(goalId).toContain(selected);
-  await page.keyboard.press('Control+C');
+  await page.keyboard.press('ControlOrMeta+C');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
