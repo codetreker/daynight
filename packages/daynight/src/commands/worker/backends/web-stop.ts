@@ -1,8 +1,8 @@
 import path from "node:path";
 import type { Operation } from "../../../api/operation.js";
-import { controllerExecutionDirectory, readLaunchTicket } from "../../controller/launch-ticket.js";
-import { readControllerSnapshot, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { inspectProcessProof } from "../../controller/process-proof.js";
+import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { readControllerSnapshot, readProvenWindowsStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { confirmControllerProcessesStopped, inspectProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { preservesControllerEvidence, preservesControllerProcessProof, preservesNativeProcessPrefix } from "./orchestration.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
@@ -17,11 +17,29 @@ const matches = (task: LocalTask, saved: ControllerSnapshot): boolean => {
     && (task.resources.nativeSession === null || saved.nativeSessionId === task.resources.nativeSession.sessionId);
 };
 
-/** Read only the original recorded process instances; this does not prove that unrecorded descendants stopped. */
-export const createWebStopObserver = (options: { homeDirectory: string; store: WebExecutionStore; now: () => number }) =>
+type ConfirmStoppedBoundary = (launchId: string, controller: ProcessProof, native: readonly ProcessProof[], deadline: number, snapshot: ControllerSnapshot, ticket?: ControllerLaunchTicket) => Promise<boolean>;
+
+/** Observations release capacity only after the original complete native boundary is proven empty. */
+export const createWebStopObserver = (options: { homeDirectory: string; store: WebExecutionStore; now: () => number; confirmStopped?: ConfirmStoppedBoundary }) =>
   async (target: CleanupTarget, operation: Operation): Promise<StopObservation> => {
     try {
       operation.check();
+      const deadline = Date.now() + Math.ceil(operation.remainingMs());
+      const inspectOriginal = async (proof: ProcessProof): Promise<"running" | "stopped"> => {
+        operation.check();
+        const state = await inspectProcessProof(proof, Math.max(1, Math.min(5000, Math.ceil(operation.remainingMs()))));
+        operation.check();
+        if (state === "replaced") throw new Error("An original Web process identity was replaced; complete native stop is unconfirmed.");
+        return state;
+      };
+      const confirmStopped: ConfirmStoppedBoundary = options.confirmStopped ?? (async (launchId, controller, native, until, snapshot, ticketHint) => {
+        if (process.platform !== "win32") return confirmControllerProcessesStopped(controller, native, until);
+        const ticket = ticketHint ?? await readLaunchTicket(options.homeDirectory, launchId);
+        if (ticket.launchId !== launchId) throw new Error("The original Windows boundary ticket conflicts with its launch.");
+        const proven = readProvenWindowsStoppedControllerGeneration(path.join(controllerExecutionDirectory(options.homeDirectory, ticket.executionId), "journal.sqlite"), ticket, until);
+        if (JSON.stringify(proven) !== JSON.stringify(snapshot)) throw new Error("The Windows boundary stop proof conflicts with its original snapshot.");
+        return true;
+      });
       const task = options.store.getTask(target);
       if (task === null) throw new Error("The original Web execution owner is unavailable.");
       if (target.worktreeId !== undefined && task.worktreeId !== target.worktreeId) throw new ExecutionSourceConflictError("The original Web execution owner changed.");
@@ -55,13 +73,17 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
             || BigInt(saved.executionGeneration) + 1n !== BigInt(execution.executionGeneration) || saved.controllerInstanceId === execution.controllerInstanceId || saved.controllerProcess === null
             || saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession?.sessionId)
             throw new ExecutionSourceConflictError("Unsubmitted Web launch conflicts with its preceding generation.");
-          if (await inspectProcessProof(saved.controllerProcess) === "running") throw new Error("The preceding Web controller is still running.");
+          if (await inspectOriginal(saved.controllerProcess) === "running") throw new Error("The preceding Web controller is still running.");
           operation.check();
           const latest = readControllerSnapshot(journal);
           if (latest === null || latest.executionId !== saved.executionId || latest.claimId !== saved.claimId || latest.sessionId !== saved.sessionId
             || latest.executionGeneration !== saved.executionGeneration || latest.controllerInstanceId !== saved.controllerInstanceId
             || !preservesControllerEvidence(saved, latest, "")) throw new ExecutionSourceConflictError("The preceding Web generation changed during observation.");
-          for (const proof of latest.nativeProcesses) { operation.check(); if (await inspectProcessProof(proof) === "running") throw new Error("A preceding Web provider is still running."); }
+          for (const proof of latest.nativeProcesses) { operation.check(); if (await inspectOriginal(proof) === "running") throw new Error("A preceding Web provider is still running."); }
+          const previousLaunchId = /^Local\\Daynight-([0-9a-f-]{36})$/.exec(latest.controllerProcess?.jobObjectName ?? "")?.[1] ?? execution.launchId;
+          if (latest.controllerProcess === null
+            || !await confirmStopped(previousLaunchId, latest.controllerProcess, latest.nativeProcesses, deadline, latest))
+            throw new Error("The preceding Web native boundary has not been confirmed empty.");
         } else if (execution.executionGeneration !== "1") throw new Error("The preceding Web generation evidence is missing.");
         operation.check();
         ensureCurrent();
@@ -79,7 +101,7 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
         || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new ExecutionSourceConflictError("The original Web journal or process evidence conflicts.");
       const ref = { owner, backend: "web" as const, runKey: JSON.stringify([execution.executionId, execution.executionGeneration, execution.controllerInstanceId]) };
       operation.check();
-      if (await inspectProcessProof(saved.controllerProcess) === "running") { operation.check(); ensureCurrent(saved); return { kind: "running", execution: ref, observedAt: options.now() }; }
+      if (await inspectOriginal(saved.controllerProcess) === "running") { operation.check(); ensureCurrent(saved); return { kind: "running", execution: ref, observedAt: options.now() }; }
       operation.check();
       const latest = readControllerSnapshot(journal);
       if (latest === null) throw new Error("The original Web journal is missing after controller stop.");
@@ -87,7 +109,12 @@ export const createWebStopObserver = (options: { homeDirectory: string; store: W
         || !preservesNativeProcessPrefix(execution.nativeProcesses, latest.nativeProcesses)) throw new ExecutionSourceConflictError("The original Web journal changed or conflicted after controller stop.");
       for (const proof of latest.nativeProcesses) {
         operation.check();
-        if (await inspectProcessProof(proof) === "running") { operation.check(); ensureCurrent(latest); return { kind: "running", execution: ref, observedAt: options.now() }; }
+        if (await inspectOriginal(proof) === "running") { operation.check(); ensureCurrent(latest); return { kind: "running", execution: ref, observedAt: options.now() }; }
+      }
+      operation.check();
+      if (!await confirmStopped(execution.launchId, latest.controllerProcess!, latest.nativeProcesses, deadline, latest, ticket)) {
+        operation.check(); ensureCurrent(latest);
+        return { kind: "running", execution: ref, observedAt: options.now() };
       }
       operation.check();
       ensureCurrent(latest);

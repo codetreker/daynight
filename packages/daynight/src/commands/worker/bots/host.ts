@@ -28,6 +28,7 @@ import { createWatchdogTransport } from "./apps/watchdog-transport.js";
 import { openBotRecoveryStore } from "./recovery-store.js";
 import { createBotRecoveryApi } from "./recovery-api.js";
 import { createBotReconciliation } from "./reconciliation.js";
+import { botStopDeadline, joinBotWork, type BotStopOptions } from "./stop-budget.js";
 
 /** Storage locks remain held until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
@@ -109,14 +110,29 @@ export const createWorkerBotHost = (options: {
       ...(options.toolInspector === undefined ? {} : { toolInspector: options.toolInspector }),
       ...(options.toolLaunchForHost === undefined ? {} : { selectToolLaunch: async provider => provider === "claude" ? undefined : options.toolLaunchForHost!(provider) }),
       environment: { ...process.env, DN_CONFIG_DIR: options.paths.stateDirectory } });
-    let closed = false, shutdownConfirmed = false;
+    let closed = false, admissionClosed = false, shutdownConfirmed = false;
+    const probeCancellation = new AbortController(), collections = new Set<Promise<AssistantHostSample>>();
     let shutdownFailure: unknown, shutdownFailed = false, shuttingDown: Promise<void> | null = null;
-    const shutdown = (): Promise<void> => {
+    const closeAdmission = (reason?: unknown): void => { admissionClosed = true; probeCancellation.abort(reason); runtime.closeAdmission(reason); };
+    const shutdown = (settings?: BotStopOptions): Promise<void> => {
+      closeAdmission();
       if (shutdownConfirmed) return Promise.resolve();
       if (shuttingDown !== null) return shuttingDown;
       // Explicit shutdown can re-observe a previous failure; close never retries
       // process control implicitly while releasing resources.
-      const work = Promise.resolve().then(() => runtime.shutdown()).then(() => {
+      const deadline = botStopDeadline(settings);
+      const work = Promise.resolve().then(async () => {
+        const results = await Promise.allSettled([
+          runtime.shutdown({ deadline }),
+          (async () => {
+            await joinBotWork(Promise.allSettled([...collections]), deadline, "Bot capability probes");
+            await joinBotWork(collector.close(), deadline, "Bot capability probe cleanup");
+          })(),
+        ]);
+        const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, "Bot jobs and capability probes could not stop.");
+      }).then(() => {
         shutdownConfirmed = true; shutdownFailed = false; shutdownFailure = undefined;
       }, cause => { shutdownFailed = true; shutdownFailure = cause; throw cause; });
       shuttingDown = work.finally(() => { shuttingDown = null; });
@@ -124,16 +140,25 @@ export const createWorkerBotHost = (options: {
     };
     return {
       run: runtime.run,
+      closeAdmission,
+      snapshot: () => ({ ...runtime.snapshot(), probes: collections.size, resources: store.list(options.owner).map(record => ({
+        botId: record.botId, executionId: record.intent?.executionId ?? null,
+        sessionId: record.intent?.sessionId ?? null, executionGeneration: record.intent?.executionGeneration ?? null,
+      })) }),
       confirmMachineReport: (): void => { if (!closed) machineReportConfirmed = true; },
       shutdown,
       registerApplication: assistantTasks.registerApplication,
       requiresCopilot: (): boolean => store.list(options.owner).some(record => record.observed.deletion === null && record.definition?.resolvedConfiguration.provider === "copilot"),
       collect: async (operation: Operation, codexProbes?: CodexProbeOwner): Promise<AssistantHostSample | undefined> => {
         const current = options.configuration();
-        if (closed || current === null) return undefined;
-        const sample = await collector.collect(operation, codexProbes);
+        if (closed || admissionClosed || current === null) return undefined;
+        const collection = createOperation({ signal: AbortSignal.any([operation.signal, probeCancellation.signal]), limits: { ...operation.limits, totalMs: Math.max(1, Math.floor(operation.remainingMs())) } });
+        const work = collector.collect(collection, codexProbes);
+        collections.add(work);
+        let sample: AssistantHostSample;
+        try { sample = await work; } finally { collections.delete(work); collection.dispose(); }
         // A probe which crossed a configuration transition cannot advertise stale defaults.
-        return JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
+        return !admissionClosed && JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
       },
       activeToolSelections: (): ActiveToolSelection[] => store.list(options.owner).flatMap(record => {
         if (record.migration !== undefined) return [];
@@ -147,7 +172,6 @@ export const createWorkerBotHost = (options: {
       close: async (): Promise<void> => {
         if (closed) return;
         const failures: unknown[] = [];
-        try { await collector.close(); } catch (error) { failures.push(error); }
         try {
           if (shutdownFailed) throw shutdownFailure;
           await shutdown();

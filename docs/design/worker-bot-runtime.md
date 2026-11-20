@@ -122,7 +122,7 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下先固定全部已知原 Controller/native 出生实例的进程句柄，再请求 Job 终止；同一 Job 成员清单为空且这些原句柄已 signaled，才能完成停止。成员先消失、退出码变化或 ESRCH 均不足以证明完成。已在退出的原实例继续沿同一句柄等待，不重新要求退出中的命令行；不同出生实例不会收到信号，未知状态或运行中的完整身份冲突继续失败。所有操作和等待共享调用方的原绝对 deadline，不按句柄或轮询重算；已开始的 native 调用须结束，因此不承诺 kernel 抢占式的总 wall-clock 上界。到期、未确认的权限、查询、wait 或关闭错误均保留失败、执行资料与删除责任，逐一释放已取得的进程句柄并保留同时发生的主要和关闭错误。完整机制由[Session 设计](task-session-protocol.md#关闭与清理)及[原进程退出决策](../../.agents/notes/implemented/bug-fix/2026-11-13-windows-controller-exit-completion.md)拥有。
 
-`shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 接入 Bot 执行所有者和 `assistantHost` 广告，保持 stores 与实例锁直到管理循环和所有停止尝试结束。
+`ExecutionScope` 汇总 Task、Bot 及其他执行 owner，以有界并行停止保留逐项结果。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。Bot 的 `closeAdmission` 同时取消四个 assistant 循环、application 与在途能力采集；全部 writer/jobs 和探测 join 后才关闭私有存储及锁。未闭合责任使 scope 受阻并禁止重建；管理根和具体资源归属见[Worker 执行作用域](daynight-worker.md#管理根与执行作用域)。
 
 ## 精确删除与失败保留
 

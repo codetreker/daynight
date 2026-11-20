@@ -29,7 +29,7 @@ vi.mock("../../../src/commands/worker/bots/delete.js", () => ({ createBotDeletio
 vi.mock("../../../src/commands/worker/bots/remote.js", () => ({ createBotRemote: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/session-api.js", () => ({ createBotSessionApi: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/assistant-task-session.js", () => ({ createAssistantTaskSessionTransport: () => ({ send: () => { throw new Error("Notification delivery is outside this telemetry fixture."); }, readOperation: () => { throw new Error("Notification recovery is outside this telemetry fixture."); } }) }));
-vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: () => ({ run: async () => {}, shutdown: async () => {} }) }));
+vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: () => ({ closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, shutdown: async () => {} }) }));
 
 // Only environment capture uses synthetic Windows semantics; all command and OS effects remain mocked.
 vi.mock("../../../src/commands/worker/codex-probe-owner.js", async original => {

@@ -23,6 +23,30 @@ flowchart TB
 
 服务端提供当前 claim 归属，SQLite 保存本机认领、原生配置冻结、原生会话索引、独立认领工具预留与终态清理调度，Web 执行库及 Controller journal 保存原执行和停止证据，Git 提供实际工作树。旧 Herdr claim 和资源由用户处理，不进入协调器。顶层 assignedTo 是独立人的责任归属，所有 worker 服务端写入保留它；自动候选使用 assignedTo=me，自动 claim 事务要求当前负责人等于认证账号 userId；未分配或他人任务不具备自动领取资格。既有 claim、Session 或 archive 权限保持原执行归属。Agent 完成实现、验证、PR、审查、授权合并和任务验收，最后提交原 claim 的 done；worker 按自己的完整 claim 清单决定资源生命周期，不再次解释业务验收。
 
+## 管理根与执行作用域
+
+`runtime.ts` 的管理根持有 Worker 实例锁、身份和主 SQLite 连接。`ExecutionScope` 持有一轮执行的独立 signal、配置应用、coordinator、Bot/assistant、探测、Git 和 Controller 责任。正常启动通过 `createExecutionScopeManager().create()` 建立作用域，正常退出也调用同一个 `stop()`；重建不会复用已取消的 runtime、signal 或配置管理器。管理根在同一进程内保留原实例锁和主数据库，重新读取的服务、账号或 Worker 身份不匹配时拒绝重建。
+
+`onExecutionScope` 提供管理调用者的控制句柄：`stop()` 关闭全部准入并取消执行，`snapshot()` 返回逐 owner 原身份及停止事实，`reconcile()` 只重新核对未闭合 owner，`rebuild()` 仅在全部 owner 停止和保存已确认后请求建立下一代。成功 owner 不重复执行清理；失败的有界观察不能永久缓存为资源仍活动的事实。普通命令没有管理调用者时，在有界停止后返回实际错误。带管理调用者时，受阻作用域继续保留控制句柄、实例锁及管理 reporter；已闭门时 reporter 只消费缓存观测，不执行配置准备或原生探测。
+
+| Owner | 资源与闭合条件 |
+|---|---|
+| configuration | 配置应用、bootstrap、映射与移除作业、read-only 请求和模型目录 IO；关闭生产者后 join，不能把响应取消当成底层 IO 完成 |
+| task | coordinator 的 reconciliation、pending/active/jobs/preparation/projectStops/ending、原 claim 和 Web 执行；不使用 release/reset 代替停止 |
+| bot | Bot runtime、assistant 四循环及 application、能力采集与 Controller；全部 writer/jobs join 后才关闭私有存储及锁 |
+| probe | native selection、工具选择及 materializer；保留失败清理责任并核对原边界 |
+| repository | Git 准备、扫描、worktree 操作和短命命令的实际进程及输出流；取消后 join 原操作 |
+| controller | 原 Controller/provider 边界及 Job lease；Task 停证、配置 writer 和归档 writer 未闭合时不释放 lease 或关闭 Web 库 |
+| archive | 授权维护和已有归档责任；join 最终写入后保留上传失败，不把历史上传错误当成活动 writer |
+
+作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
+
+`owned-command-lifecycle.ts` 为 Worker 内的短命命令和 `repository/git-owned.ts` 提供共同的受控 launcher。命令先等待 `prepared` 持久事件，launcher 自建独立 POSIX PGID 或 Windows Job，再提交原进程出生证明；父进程独立核验并等待 `bound` 保存成功后才通过私有 IPC 放行用户命令。父连接丢失、取消、证明不匹配或保存失败均不能放行。Windows 父进程持有原 Job lease，停止使用整 Job 成员证明；POSIX 检查原进程出生身份及整组为空。记录 PID 的退出不足以释放 Web 执行容量。
+
+正常 Worker 路径通过 `withOwnedCommandLifecycle` 注入 `execution-resources/` 私有持久库存。每资源 JSON 绑定服务、账号、Worker、代际和单调事件序号，以文件同步、原子替换及目录屏障保存 `prepared/bound/stopped/unknown`。旧事件不能覆盖新事实，迟到 unknown 不能撤销已证明的停止；替换已成功但目录屏障失败时，核对原事实并补完屏障后才能确认保存。重启后缺少原出生证明或 Windows lease 的责任保持未知，不能只因 PID 不存在清空库存。原 claim、worktree、HEAD/index、Session、journal 和未知业务操作仍由各自原记录拥有；停止不执行 stash、commit、reset 或删除现场。
+
+执行作用域和资源事件接口提供本机机制。持久停用意图、云端准入、Controller 最终 dispatch 围栏及显式恢复授权由生命周期集成层负责；单独建立或重建作用域不声明完整 Worker 停用能力。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
+
 ## 状态来源与清理判定
 
 Worker 用期望状态与实际状态之差选择动作，不以重复的步骤完成标记替代资源自身的状态。下表的来源在每次相关决策时读取；本机索引、done 状态或历史成功回执不能代替当前资源观察。
@@ -395,9 +419,8 @@ Web 归档完整性由类型化 `ArchiveRepairRequiredError` 区分 `archive_inc
 
 已确认归属结束的清理责任可以在后续服务轮询失败时继续。已知目标的收尾先观察对应执行并推进停止，删除时只核对该目标 Git 注册和目录。其他 worktree 或其他仓库的注册问题分别报告；退出无需 Git 发现成功即可停止已知 Agent。
 
-Ctrl+C 的根取消信号同步停止报告触发、新认领和调度，并取消报告及全部运行中的 job，包括已选中的终止清理 job。取消动作在任何报告 join 等待前完成，终止清理不能在该等待期间继续删除 worktree 或完成本机行。Runtime 随后等待报告尝试收尾，再进入 coordinator shutdown 等待全部 job，避免清理操作与退出停止并发执行。随后直接中断并停止受管 Web agent、关闭 Controller，不等待退避、不发送清理 prompt，也不等待 agent 的清理轮。Web 仅进行停止证明，不重做归档或 worktree 删除；Agent 已停的结果不因文件删除失败改写为停止失败。后端关闭未确认仍使退出失败，但 shutdown-error 明确区分原 Agent 已停与后端资源尚未关闭。退出只停止运行资源，保留 claim、worktree、原生 session ID 和所有未完成 active/pending 行；归属已经结束的任务也遵守这一规则，不在退出路径删除 worktree 或写 done。原有终态清理调度继续保留，下次启动恢复同一责任、原期限和资源身份，并通过实际资源对账推进。直接中断可能留下工作区外临时资源，这是退出无需等待 agent 清理的明确代价。
+Ctrl+C 取消管理根，同时同步关闭执行作用域的全部准入、报告触发、新认领、调度及运行中的 job，包括已选中的终态清理 job。执行 owner 并行完成有界 join 与原生停止，不让一个报告或清理失败阻止其他 owner。执行停止不等待退避、不发送清理 prompt，也不等待 Agent 清理轮。Web 仅进行停止证明，不重做归档或 worktree 删除；Agent 已停的结果不因文件删除失败改写为停止失败。后端关闭未确认仍使退出失败，逐 owner 结果区分 Agent 已停与后端资源尚未关闭。退出保留 claim、worktree、原生 Session ID 和未完成 active/pending 行；归属已经结束的任务也不在退出路径删除 worktree 或写 done。原有终态清理调度保留同一责任、原期限和资源身份，下次启动继续实际对账。直接中断可能留下工作区外临时资源。
 
-`shutdownWorkerExecutions` 等待各执行所有者的停止尝试后汇总错误，单个所有者失败不会跳过其它所有者。Task 继续使用 coordinator 与 backend 的停止责任；可调用的 Bot 运行层先等待管理 job，再确认每个原 writer 停止并保留恢复资料，详见[Bot 执行层设计](worker-bot-runtime.md)。共享汇总接口不启用正式 `runWorker` 的 Bot 调度或能力广告。
 
 ## Agent 完成与人工操作
 

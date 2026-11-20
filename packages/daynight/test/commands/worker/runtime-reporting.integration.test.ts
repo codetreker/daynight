@@ -32,7 +32,7 @@ vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   }) };
 });
 vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: (options: { copilotRequired: () => boolean }) => ({
-  run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
+  closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, confirmMachineReport: () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
   ...mocks.captureBotOptions(options),
 }) }));
 
@@ -1097,7 +1097,7 @@ describe("worker runtime configuration reporting", () => {
     f.signal.abort(); await running;
   });
 
-  it("joins the aborted in-flight configuration report before coordinator and backend teardown", async () => {
+  it("joins the aborted in-flight configuration report before repository and backend storage teardown", async () => {
     const f = await fixture(), joined = deferred<void>(), cancelled = deferred<void>(), order: string[] = [];
     report.mockImplementation(async (_workerId, _body, _configuration, operation) => {
       operation.signal.addEventListener("abort", () => { order.push("report-aborted"); cancelled.resolve(); }, { once: true });
@@ -1109,9 +1109,12 @@ describe("worker runtime configuration reporting", () => {
     const running = start(f);
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce()); await eventually(() => expect(report).toHaveBeenCalledOnce());
     f.signal.abort(); await cancelled.promise;
-    expect(shutdown).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(mocks.webClose).not.toHaveBeenCalled();
+    await eventually(() => expect(shutdown).toHaveBeenCalledOnce()); expect(dispose).not.toHaveBeenCalled(); expect(mocks.webClose).not.toHaveBeenCalled();
     joined.resolve(); await running;
-    expect(order).toEqual(["report-aborted", "report-joined", "coordinator", "git", "web-store"]);
+    expect(order.indexOf("report-aborted")).toBeLessThan(order.indexOf("report-joined"));
+    expect(order.indexOf("report-joined")).toBeLessThan(order.indexOf("git"));
+    expect(order).toContain("coordinator"); expect(order).toContain("git");
+    expect(order.at(-1)).toBe("web-store");
   });
 
   it.each([true, false])("retains the real instance lock through a confirmed report's late checkpoint writer past drain (project native valid: %s)", async projectNativeValid => {
@@ -1190,7 +1193,7 @@ describe("worker runtime configuration reporting", () => {
       f.signal.abort();
       await vi.advanceTimersByTimeAsync(6_000);
       expect(finished).toBe(false);
-      expect(shutdown).not.toHaveBeenCalled();
+      expect(shutdown).toHaveBeenCalledOnce();
       const competing = await tryAcquireWorkerInstanceLock(f.paths);
       try { expect(competing).toBeNull(); } finally { await competing?.release(); }
       expect((JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision).toBe(baseline);

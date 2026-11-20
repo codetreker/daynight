@@ -2,7 +2,7 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -32,7 +32,7 @@ const fixture = async () => {
     serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", configuration: () => configuration, canAdmitNewExecution: () => true,
     pollIntervalMs: () => 60_000, recoveryLimit: () => 3, emit: () => {} };
   const sample = { assistantHost: { protocolVersion: 1, defaultProvider: "codex" }, issues: [] };
-  const collect = vi.fn(async () => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });
+  const collect = vi.fn(async (_operation: Operation) => sample); mocks.collector.mockReturnValue({ collect, close: vi.fn(async () => {}) });
   return { options, collect, sample, set: (value: ExecutionConfiguration | null) => { configuration = value; } };
 };
 const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 };
@@ -40,7 +40,7 @@ const native: ExecutionConfiguration = { agent: "codex", agentControlMode: "web"
 it("retains resources after failed shutdown and permits an explicit successful re-observation before close", async () => {
   const f = await fixture(), failure = new Error("Original writer stop is unconfirmed");
   const shutdown = vi.fn<() => Promise<void>>(async () => { throw failure; });
-  vi.spyOn(assistantRuntime, "createManagedAssistantRuntime").mockReturnValue({ run: async () => {}, shutdown } as never);
+  vi.spyOn(assistantRuntime, "createManagedAssistantRuntime").mockReturnValue({ run: async () => {}, closeAdmission: () => {}, snapshot: () => ({}), shutdown } as never);
   const host = createWorkerBotHost(f.options); cleanups.push(host.close);
   await expect(host.shutdown()).rejects.toBe(failure);
   await expect(host.close()).rejects.toThrow("storage locks are retained");
@@ -62,6 +62,36 @@ it("omits unsupported configuration and discards a capability probe spanning a c
   expect(await host.collect(operation)).toBeUndefined();
   expect(await host.collect(operation)).toBe(f.sample);
   await host.close(); expect(await host.collect(operation)).toBeUndefined();
+});
+
+it("keeps storage usable while admission is closed and avoids starting capability probes", async () => {
+  const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  const operation = createOperation(); cleanups.push(operation.dispose);
+  f.set(native);
+  host.closeAdmission("disable");
+  expect(await host.collect(operation)).toBeUndefined();
+  expect(f.collect).not.toHaveBeenCalled();
+  expect(host.snapshot()).toMatchObject({ closed: true });
+  expect(host.requiresCopilot()).toBe(false);
+  await host.shutdown(); await host.close();
+});
+
+it("cancels an active capability collection before releasing Bot stores", async () => {
+  const f = await fixture(), host = createWorkerBotHost(f.options); cleanups.push(host.close);
+  const operation = createOperation(); cleanups.push(operation.dispose); f.set(native);
+  let probeSignal!: AbortSignal;
+  f.collect.mockImplementationOnce(async collection => {
+    probeSignal = collection.signal;
+    await new Promise<void>(resolve => collection.signal.addEventListener("abort", () => resolve(), { once: true }));
+    return f.sample;
+  });
+  const collecting = host.collect(operation);
+  expect(host.snapshot().probes).toBe(1);
+  host.closeAdmission();
+  expect(probeSignal.aborted).toBe(true);
+  expect(await collecting).toBeUndefined(); await host.shutdown();
+  expect(host.snapshot().probes).toBe(0);
+  expect(operation.signal.aborted).toBe(false);
 });
 
 it("closes both actual SQLite handles when a later host constructor fails", async () => {

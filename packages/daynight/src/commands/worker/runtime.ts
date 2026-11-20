@@ -59,10 +59,9 @@ import { createWorkerConfigurationBootstrap } from "./configuration-bootstrap.js
 import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
-import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
-import { browseWorkerDirectory } from "./read-only/directory.js";
+import { createWorkerDirectoryBrowser } from "./read-only/directory.js";
 import { createWorkerModelDiscovery, createWorkerReadOnlyConfiguration, type WorkerModelInput } from "./read-only/models.js";
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
@@ -73,6 +72,9 @@ import { createWorkerToolSelectionRuntime } from "./tool-selection-runtime.js";
 import { readWebToolActivity } from "./tool-activity.js";
 import type { ActiveToolSelection } from "./tool-selection.js";
 import { createNativeSelectionVerifier } from "./native-selection.js";
+import { createExecutionScopeManager, withinExecutionDeadline, type ExecutionScope, type OwnerStopResult } from "./execution-scope.js";
+import { openExecutionResourceJournal, type ExecutionResourceIdentity } from "./execution-resource-journal.js";
+import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries } from "./owned-command-lifecycle.js";
 
 const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
   emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
@@ -264,16 +266,60 @@ const webToolSelections = (homeDirectory: string, web: Awaited<ReturnType<typeof
   return [{ tool, context: "web", launch: task.configuration!.toolLaunch ?? null, version: task.configuration!.toolObservation?.version ?? null, checkedAt: task.configuration!.toolObservation?.checkedAt ?? null, executionCount: unknown ? null : 1, instanceCount: 0, unconfirmedCount: unknown ? 1 : 0 }];
 }) ?? [];
 
-export const runWorker = async (options: {
+export type WorkerExecutionControl = {
+  readonly generation: string;
+  snapshot: ExecutionScope["snapshot"];
+  stop(): Promise<OwnerStopResult[]>;
+  reconcile(): Promise<OwnerStopResult[]>;
+  rebuild(): void;
+};
+type WorkerRunOptions = {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
-}): Promise<void> => {
+  onExecutionScope?: (control: WorkerExecutionControl) => void;
+};
+type WorkerManagementRoot = {
+  cancellation: ReturnType<typeof runtimeCancellation>;
+  lock?: Awaited<ReturnType<typeof acquireWorkerInstanceLock>>;
+  store?: ReturnType<typeof openWorkerStore>;
+  identity?: ExecutionResourceIdentity;
+  journal?: Awaited<ReturnType<typeof openExecutionResourceJournal>>;
+};
+
+export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
+  if (options.signal?.aborted) return;
+  const cancellation = runtimeCancellation(options.signal);
+  const root: WorkerManagementRoot = { cancellation };
+  const scopes = createExecutionScopeManager(cancellation.controller.signal);
+  try {
+    do {
+      await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
+      const scope = scopes.create();
+      await withOwnedCommandLifecycle(async event => {
+        if (event.stage === "prepared") scope.signal.throwIfAborted();
+        if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
+        try { await root.journal.sink(scope.generation)(event); }
+        catch (error) { scope.closeAdmission(error); throw error; }
+        if (event.stage === "unknown") scope.closeAdmission(new Error("Original command boundary is unconfirmed."));
+      }, () => runWorkerScope(options, root, scope));
+    }
+    while (!cancellation.controller.signal.aborted);
+  } finally {
+    try {
+      if (scopes.current()?.snapshot().stopped === true) {
+        try { root.store?.close(); } finally { await root.lock?.release(); }
+      }
+    } finally { cancellation.dispose(); }
+  }
+};
+
+const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementRoot, scope: ExecutionScope): Promise<void> => {
   const platform = currentWorkerPlatform();
   const paths = resolveWorkerPaths(options.homeDirectory);
-  const cancellation = runtimeCancellation(options.signal);
-  const signal = cancellation.controller.signal;
-  let lock: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
-  let store: ReturnType<typeof openWorkerStore> | undefined;
+  const cancellation = root.cancellation;
+  const managementSignal = cancellation.controller.signal;
+  const signal = scope.signal;
+  let store = root.store;
   let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
@@ -309,14 +355,115 @@ export const runWorker = async (options: {
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
   const failures: unknown[] = [];
+  const executionFailure = (error: unknown): void => {
+    try { diagnostics?.emit({ kind: "reconciliation-error", message: "Worker execution stopped after an owner failure; original resources remain for reconciliation.", error }); }
+    catch (failure) { failures.push(failure); }
+    finally { scope.closeAdmission(error); }
+  };
   const selectionVerifier = createNativeSelectionVerifier();
+  const directoryBrowser = createWorkerDirectoryBrowser();
+  let requestRebuild: (() => void) | undefined;
+  let rebuildRequested = false;
+  let ownerResults: OwnerStopResult[] = [];
+  let controlPublished = false;
+  const publishControl = (): void => {
+    if (controlPublished) return;
+    controlPublished = true;
+    options.onExecutionScope?.({ generation: scope.generation, snapshot: scope.snapshot,
+      stop: async () => ownerResults = await scope.stop(),
+      reconcile: async () => ownerResults = await scope.reconcile(),
+      rebuild: () => {
+        if (!scope.snapshot().stopped) throw new Error("Execution scope cannot rebuild before all original resources are confirmed stopped.");
+        rebuildRequested = true; requestRebuild!();
+      },
+    });
+  };
+  const rebuilding = new Promise<void>(resolve => { requestRebuild = resolve; });
+  const join = async (jobs: readonly (Promise<unknown> | undefined)[]): Promise<void> => {
+    const results = await Promise.allSettled(jobs);
+    throwFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+  };
+  let probeStop: Promise<void> | undefined;
+  const stopProbes = (): Promise<void> => {
+    if (probeStop !== undefined) return probeStop;
+    const work = join([selectionVerifier.close(), tools?.close()]);
+    probeStop = work;
+    void work.catch(() => { if (probeStop === work) probeStop = undefined; });
+    return work;
+  };
+  let repositoryStop: Promise<void> | undefined;
+  const stopRepository = (): Promise<void> => {
+    if (repositoryStop !== undefined) return repositoryStop;
+    const work = Promise.resolve().then(() => git?.dispose());
+    repositoryStop = work;
+    void work.catch(() => { if (repositoryStop === work) repositoryStop = undefined; });
+    return work;
+  };
+  let reportDrain: Promise<void> | undefined;
+  const drainReport = (): Promise<void> => {
+    if (!managementSignal.aborted) return Promise.resolve();
+    return reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { failures.push(error); });
+  };
+  let taskStop: Promise<void> | undefined;
+  const stopTasks = (deadline: number): Promise<void> => {
+    if (taskStop !== undefined) return taskStop;
+    const work = (async () => {
+      if (coordinator !== undefined && !await coordinator.shutdown({ deadline })) throw new Error("Some original task resources remain unconfirmed.");
+    })();
+    taskStop = work;
+    void work.catch(() => { if (taskStop === work) taskStop = undefined; });
+    return work;
+  };
+  let configurationStop: Promise<void> | undefined;
+  const stopConfiguration = (): Promise<void> => configurationStop ??= (async () => {
+    await drainReport();
+    await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
+    promptSource?.close();
+  })();
+  scope.register({ resourceId: "configuration", ownerKind: "configuration",
+    closeAdmission: () => { configuration?.beginDrain(); readOnly?.close(); modelDiscovery?.close(); directoryBrowser.close(); },
+    snapshot: () => ({ directory: directoryBrowser.snapshot(), mappings: localMappingJobs.size }), stop: stopConfiguration });
+  scope.register({ resourceId: "tasks", ownerKind: "task",
+    closeAdmission: reason => coordinator?.closeAdmission?.(reason), snapshot: () => coordinator?.executionSnapshot?.(),
+    stop: ({ deadline }) => stopTasks(deadline) });
+  scope.register({ resourceId: "bots", ownerKind: "bot",
+    closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
+    stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
+  scope.register({ resourceId: "probes", ownerKind: "probe",
+    stop: stopProbes });
+  scope.register({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
+  scope.register({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
+    // Producer owners cancel concurrently; drain their final resource events before observing closure.
+    await drainReport();
+    await join([stopRepository(), stopProbes()]);
+    await root.journal?.drain();
+    await root.journal?.assertClosed();
+    if (retainedOwnedCommandBoundaries().length) throw new Error("Original native command boundaries remain unconfirmed.");
+    if (Date.now() > deadline) throw new Error("Native inventory closure exceeded the execution stop deadline.");
+  } });
+  let archiveStop: Promise<void> | undefined;
+  const stopArchive = (): Promise<void> => archiveStop ??= (async () => {
+    await renewal;
+    // close joins all writers before reporting historical upload failures.
+    try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
+  })();
+  scope.register({ resourceId: "archive", ownerKind: "controller", stop: stopArchive });
+  scope.register({ resourceId: "controllers", ownerKind: "controller", stop: async ({ deadline }) => {
+    // Controller storage remains owned until original task writers have joined.
+    await stopTasks(deadline);
+    await stopConfiguration();
+    await stopArchive();
+    await web?.jobLeases.close();
+    web?.webBackend.closeInput();
+    web?.webStore.close();
+  } });
   try {
     signal.throwIfAborted();
     const local = await readWorkerLocalConfiguration(paths, signal);
     if (local.agentControlMode === "herdr") throw new Error("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
-    lock = await acquireWorkerInstanceLock(paths);
+    root.lock ??= await acquireWorkerInstanceLock(paths);
     monitoring = createMonitoringObserver();
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
@@ -337,6 +484,11 @@ export const runWorker = async (options: {
       }
     };
     const userId = await verifyWorkerPrincipal(() => remote.currentUserId(signal), signal, configurationDiagnostics.exchange);
+    const identity = { serverOrigin: serverUrl, userId, workerId };
+    if (root.identity !== undefined && !isDeepStrictEqual(root.identity, identity)) throw new Error("Worker management identity changed across execution scopes.");
+    root.identity ??= identity;
+    root.journal ??= await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity });
+    await withinExecutionDeadline(root.journal.assertClosed(), Date.now() + 10_000);
     const observer = monitoring;
     monitoringSender = createMonitoringSender({ capture: observer.capture,
       write: (observation, operation, requestId) => remote.writeMonitoring(workerId, observation, operation, requestId),
@@ -374,7 +526,7 @@ export const runWorker = async (options: {
     // Local mappings can retain Git-only owners even after cloud selection changes.
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
-    const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
+    const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (root.store = store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
       readCleanupPolicy: () => configuration?.readCleanupPolicy() ?? null,
       prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: getStore(), project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
@@ -586,7 +738,7 @@ export const runWorker = async (options: {
           emit({ kind: "worker-configuration", message: JSON.stringify({ desiredRevision: snapshot.desiredRevision, key: item.key, targetRevision: item.targetRevision, state: item.state, error: item.error }) });
         }
       },
-      onError: error => { failures.push(error); cancellation.controller.abort(error); },
+      onError: executionFailure,
       onInvalidDesired: (revision, reason) => emit({ kind: "warning", message: reason === "unsupported_configuration" ? `Worker configuration revision ${revision} is missing required settings or contains unsupported current values; correct the target before applying it.`
           : `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
@@ -622,7 +774,7 @@ export const runWorker = async (options: {
     });
     const executeReadOnly = async <K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], requestSignal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]> => {
       const result = operation === "directory.list"
-        ? await browseWorkerDirectory(input as WorkerDirectoryInput, { defaultCwd: options.workingDirectory, signal: requestSignal })
+        ? await directoryBrowser(input as WorkerDirectoryInput, { defaultCwd: options.workingDirectory, signal: requestSignal })
         : await modelDiscovery!.discover(input as WorkerModelInput, requestSignal);
       return result as WorkerReadOnlyOperations[K]["result"];
     };
@@ -740,7 +892,7 @@ export const runWorker = async (options: {
       pollIntervalMs: () => manager.current().effective.pollIntervalMs,
       recoveryLimit: () => manager.current().effective.recoveryLimit,
     });
-    botRun = bots.run(signal).catch(error => { failures.push(error); cancellation.controller.abort(error); });
+    botRun = bots.run(signal).catch(executionFailure);
     configurationBootstrap = createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject });
     const exchange = createWorkerConfigurationExchange({ manager, needsRead: resource === undefined, bootstrap: configurationBootstrap, prompts: currentPromptSource,
       onStage: configurationDiagnostics.exchange,
@@ -754,11 +906,20 @@ export const runWorker = async (options: {
       },
     });
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
-    reporter = createWorkerReporter({ signal, collect: async operation => {
-      const sample = await telemetry.collect(operation);
+    let cachedTelemetry: Awaited<ReturnType<typeof telemetry.collect>> | undefined;
+    reporter = createWorkerReporter({ signal: managementSignal, executionActive: () => !signal.aborted, collect: async operation => {
+      if (signal.aborted) {
+        if (cachedTelemetry === undefined) throw new Error("Execution telemetry is unavailable while the scope is stopped.");
+        return cachedTelemetry;
+      }
+      const executionOperation = createOperation({ signal: AbortSignal.any([operation.signal, signal]), limits: operation.limits });
+      let sample: Awaited<ReturnType<typeof telemetry.collect>>;
+      try { sample = await telemetry.collect(executionOperation); }
+      finally { executionOperation.dispose(); }
       const snapshot = manager.current();
       const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, local, "cloud");
-      return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
+      cachedTelemetry = { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
+      return cachedTelemetry;
     }, send: async (report, operation) => {
       const receipt = await remote.report(workerId, report, operation);
       if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
@@ -776,7 +937,7 @@ export const runWorker = async (options: {
         if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, workerId, userId, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime, () => manager.current().effective.archiveSessions);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
-        }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
+        }).catch(executionFailure);
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration,
@@ -874,6 +1035,7 @@ export const runWorker = async (options: {
       return yielding;
     };
     observeMonitoring(m => m.setLifecycle("running"));
+    publishControl();
     while (!signal.aborted) {
       const revision = reconcileWake.snapshot();
       void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
@@ -912,44 +1074,26 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     observeMonitoring(m => { m.setLifecycle("stopping"); m.setPhase("stopping"); });
-    if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
-    configuration?.beginDrain();
-    const reporterStopped = reporter?.stop().catch(error => { failures.push(error); });
-    const bootstrapStopped = configurationBootstrap?.stop().catch(error => { failures.push(error); });
-    readOnly?.close();
-    modelDiscovery?.close();
-    await Promise.allSettled([...localMappingJobs.values()]);
-    await renewal;
-    try { await reporterStopped; } catch (error) { failures.push(error); }
-    await bootstrapStopped;
-    promptSource?.close();
-    try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
-    try { await configuration?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
-    if (coordinator !== undefined || bots !== undefined) {
-      try {
-        diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
-        await shutdownWorkerExecutions({ ...(coordinator === undefined ? {} : { tasks: async () => {
-          if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed.");
-        } }), ...(bots === undefined ? {} : { bots: () => bots!.shutdown() }) });
-      } catch (error) { if (!failures.includes(error)) failures.push(error); }
+    monitoringSender?.trigger();
+    scope.closeAdmission(new Error("Worker execution scope is closing."));
+    try { diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." }); }
+    catch (error) { failures.push(error); }
+    ownerResults = await scope.stop();
+    publishControl();
+    if (!managementSignal.aborted && options.onExecutionScope !== undefined) {
+      // Management reporting consumes cached observations only while execution is closed.
+      let abortWait: (() => void) | undefined;
+      const aborted = new Promise<void>(resolve => { abortWait = resolve; managementSignal.addEventListener("abort", abortWait, { once: true }); });
+      try { if (!rebuildRequested && !managementSignal.aborted) await Promise.race([rebuilding, aborted]); }
+      finally { managementSignal.removeEventListener("abort", abortWait!); }
     }
-    await botRun;
-    try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
-    try { await bots?.close(); } catch (error) { failures.push(error); }
-    try { await web?.jobLeases.close(); } catch (error) { failures.push(error); }
-    try { await git?.dispose(); } catch (error) { failures.push(error); }
-    try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
-    try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
-    try { await tools?.close(); } catch (error) { failures.push(error); }
-    try { store?.close(); } catch (error) { failures.push(error); }
-    observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
+    try { await withinExecutionDeadline(reportDrain ?? reporter?.stop() ?? Promise.resolve(), Date.now() + 10_000); } catch (error) { failures.push(error); }
+    observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
     try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     failures.push(...configurationDiagnostics?.errors() ?? []);
-    try { await lock?.release(); } catch (error) { failures.push(error); }
-    cancellation.dispose();
   }
-  throwFailures(failures);
+  throwFailures([...failures, ...ownerResults.flatMap(result => result.error === undefined ? [] : [result.error])]);
 };
 
 export const runWorkerControl = async (options: {
