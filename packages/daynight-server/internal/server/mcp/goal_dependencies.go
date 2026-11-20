@@ -52,6 +52,19 @@ func RegisterGoalDependencyTools(entry *Entry, service goalDependencyOperations)
 	return nil
 }
 
+// RegisterScopedGoalDependencyWriteTools classifies edits while retaining the
+// separate read tool's existing registration until its read admission is wired.
+func RegisterScopedGoalDependencyWriteTools(entry *Entry, service *taskservice.Tasks) error {
+	if entry == nil || entry.scopedAuth == nil || service == nil {
+		return fmt.Errorf("scoped Goal dependency write dependencies are required")
+	}
+	if err := RegisterGoalDependencyTools(entry, service); err != nil {
+		return err
+	}
+	entry.scopedTools["goal_dependencies_edit"] = true
+	return nil
+}
+
 func goalDependencyTool(ctx context.Context, actor RequestActor, name string, raw json.RawMessage, service goalDependencyOperations) (ToolResult, error) {
 	if !jsonunicode.Valid(raw) {
 		return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments contain invalid Unicode."}
@@ -90,6 +103,12 @@ func goalDependencyTool(ctx context.Context, actor RequestActor, name string, ra
 	edit, err := protocol.DecodeEdit(body)
 	if err != nil {
 		return ToolResult{Refs: refs}, err
+	}
+	if actor.Authorization != nil {
+		if actor.Authorization.Principal != actor.Principal {
+			return ToolResult{}, fmt.Errorf("Goal authorization identity mismatch")
+		}
+		ctx = taskservice.WithTaskWriteAuthorization(ctx, *actor.Authorization, false)
 	}
 	receipt, err := service.EditGoalDependencies(ctx, actor.Principal, identity.ProjectID, identity.GoalID, edit)
 	if err != nil {

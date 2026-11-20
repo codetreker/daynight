@@ -236,8 +236,21 @@ type MCPEnvelope struct {
 	Meta *MCPMeta `json:"meta,omitempty"`
 }
 type MCPMeta struct {
-	RequestID string `json:"requestId"`
-	Outcome   string `json:"outcome,omitempty"`
+	WriteOutcome string         `json:"writeOutcome,omitempty"`
+	RequestID    string         `json:"requestId"`
+	Outcome      string         `json:"outcome,omitempty"`
+	Refs         map[string]any `json:"refs,omitempty"`
+}
+
+// MCPReceipt contains only the identity and version established by a write.
+type MCPReceipt struct {
+	ProjectID string `json:"projectId"`
+	TaskID    string `json:"taskId"`
+	Version   string `json:"version"`
+}
+
+func MCPTaskReceipt(t model.Task) MCPReceipt {
+	return MCPReceipt{ProjectID: t.ProjectID, TaskID: t.ID, Version: strconv.FormatInt(t.Version, 10)}
 }
 
 func EncodeMCP(w io.Writer, t model.Task, requestID, outcome string, max int64) (int64, error) {
@@ -263,6 +276,17 @@ func EncodeMCPResponse(w io.Writer, t model.Task, requestID, outcome string, rpc
 // EncodeMCPDataResponse measures the SDK's complete success response for a
 // protocol data value, including the JSON-RPC ID and version-specific fields.
 func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
+	return encodeMCPDataResponse(w, data, &MCPMeta{RequestID: requestID, Outcome: outcome}, rpcID, modern, max)
+}
+
+// EncodeMCPReceiptResponse measures the full write receipt, including metadata.
+func EncodeMCPReceiptResponse(w io.Writer, t model.Task, requestID, outcome string, rpcID any, modern bool, max int64) (int64, error) {
+	receipt := MCPTaskReceipt(t)
+	refs := map[string]any{"projectId": receipt.ProjectID, "taskId": receipt.TaskID, "version": receipt.Version}
+	return encodeMCPDataResponse(w, receipt, &MCPMeta{RequestID: requestID, Outcome: outcome, WriteOutcome: "confirmed", Refs: refs}, rpcID, modern, max)
+}
+
+func encodeMCPDataResponse(w io.Writer, data any, meta *MCPMeta, rpcID any, modern bool, max int64) (int64, error) {
 	type content struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -278,7 +302,7 @@ func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpc
 		ID      any    `json:"id,omitempty"`
 		Result  result `json:"result"`
 	}
-	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: &MCPMeta{RequestID: requestID, Outcome: outcome}}}
+	r := result{Content: []content{{Type: "text", Text: "Completed."}}, StructuredContent: MCPEnvelope{Data: data, Meta: meta}}
 	if modern {
 		r.Meta = map[string]any{"io.modelcontextprotocol/serverInfo": map[string]any{"name": "daynight", "version": "1"}}
 		r.ResultType = "complete"

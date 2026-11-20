@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
@@ -18,6 +19,7 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 	if err != nil {
 		return model.Task{}, err
 	}
+	ctx = withTaskWriteOperations(ctx, scopepolicy.TaskWrite)
 	var result model.Task
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
@@ -33,6 +35,9 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 			return taskcore.NotFound(err)
 		}
 		if err != nil {
+			return err
+		}
+		if err := checkTaskWriteScope(ctx, principal); err != nil {
 			return err
 		}
 		ids, changed, err := prepareTagReplacement(ctx, tx, current, version, requested)
@@ -64,7 +69,7 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 		return admitTaskResponse(ctx, result, changed)
 	})
 	if err != nil {
-		return model.Task{}, fmt.Errorf("replace task tags: %w", projectcore.ProjectWriteError(err))
+		return model.Task{}, fmt.Errorf("replace task tags: %w", redactTaskWriteError(ctx, projectcore.ProjectWriteError(err)))
 	}
 	if completion.Outcome != store.TransactionCommitted {
 		return model.Task{}, errors.New("replace task tags: transaction did not confirm commit")
