@@ -43,6 +43,8 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. The current production assembly retains the existing credential paths;
-scoped assembly requires an authenticated policy snapshot and transaction-bound
-policy readers. Issuance and enabling scoped credentials remain independent work.
+itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) also
+consumes the policy through opt-in service and transport entry points. The current
+production assembly retains the existing credential paths; scoped assembly
+requires authenticated policy snapshots and transaction-bound policy readers.
+Persistence, production activation and issuance remain independent work.

@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
 	project "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	protocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/tag"
@@ -22,9 +23,14 @@ type database interface {
 	store.ProjectWriter
 	store.SnapshotReader
 }
-type Tags struct{ store database }
+type Tags struct {
+	store database
+	admit func(scopepolicy.Operation) error
+}
 
-func New(db database) *Tags { return &Tags{store: db} }
+func New(db database) *Tags {
+	return &Tags{store: db, admit: func(scopepolicy.Operation) error { return nil }}
+}
 
 type Item struct {
 	Tag   model.Tag
@@ -100,6 +106,9 @@ func (s *Tags) Get(ctx context.Context, p model.Principal, projectID, id string)
 		if _, err := project.RequireProjectRead(ctx, scope.ProjectDAO(), p, projectID); err != nil {
 			return err
 		}
+		if err := s.admit(scopepolicy.TagRead); err != nil {
+			return err
+		}
 		result, err = readItem(ctx, scope.TagDAO(), projectID, id)
 		return err
 	})
@@ -123,6 +132,9 @@ func (s *Tags) List(ctx context.Context, p model.Principal, projectID string, in
 	var result Page
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
 		if _, err := project.RequireProjectRead(ctx, scope.ProjectDAO(), p, projectID); err != nil {
+			return err
+		}
+		if err := s.admit(scopepolicy.TagRead); err != nil {
 			return err
 		}
 		dao := scope.TagDAO()
@@ -188,6 +200,9 @@ func (s *Tags) Resolve(ctx context.Context, p model.Principal, projectID string,
 		if _, err := project.RequireProjectRead(ctx, scope.ProjectDAO(), p, projectID); err != nil {
 			return err
 		}
+		if err := s.admit(scopepolicy.TagRead); err != nil {
+			return err
+		}
 		items, err := scope.TagDAO().ResolveTags(ctx, projectID, canonical)
 		if err != nil {
 			return err
@@ -244,6 +259,9 @@ func (s *Tags) ResolveColors(ctx context.Context, p model.Principal, projectID s
 		if _, err := project.RequireProjectRead(ctx, scope.ProjectDAO(), p, projectID); err != nil {
 			return err
 		}
+		if err := s.admit(scopepolicy.TagRead); err != nil {
+			return err
+		}
 		dao := scope.TagDAO()
 		epoch, err := dao.TagCatalogEpoch(ctx, projectID)
 		if err != nil {
@@ -294,7 +312,7 @@ func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name st
 	if err != nil {
 		return result, fmt.Errorf("generate tag ID: %w", err)
 	}
-	return s.write(ctx, p, projectID, "", func(scope store.ProjectWriteScope, result *WriteResult) error {
+	return s.write(ctx, p, projectID, "", scopepolicy.TagWrite, func(scope store.ProjectWriteScope, result *WriteResult) error {
 		observed, err := scope.TaskDAO().ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -341,7 +359,7 @@ func (s *Tags) Update(ctx context.Context, p model.Principal, projectID, id stri
 			return result, err
 		}
 	}
-	return s.write(ctx, p, projectID, id, func(scope store.ProjectWriteScope, result *WriteResult) error {
+	return s.write(ctx, p, projectID, id, scopepolicy.TagWrite, func(scope store.ProjectWriteScope, result *WriteResult) error {
 		dao := scope.TagDAO()
 		item, err := dao.Tag(ctx, id)
 		if err != nil {
@@ -405,7 +423,7 @@ func (s *Tags) Delete(ctx context.Context, p model.Principal, projectID, id stri
 	if !confirm {
 		return result, core.Fault("confirmation_required", "Tag deletion requires confirmation.", nil)
 	}
-	return s.write(ctx, p, projectID, id, func(scope store.ProjectWriteScope, result *WriteResult) error {
+	return s.write(ctx, p, projectID, id, scopepolicy.TagDelete, func(scope store.ProjectWriteScope, result *WriteResult) error {
 		dao := scope.TagDAO()
 		item, err := dao.Tag(ctx, id)
 		if err != nil {
@@ -435,12 +453,15 @@ func (s *Tags) Delete(ctx context.Context, p model.Principal, projectID, id stri
 		return nil
 	})
 }
-func (s *Tags) write(ctx context.Context, p model.Principal, projectID, id string, op func(store.ProjectWriteScope, *WriteResult) error) (WriteResult, error) {
+func (s *Tags) write(ctx context.Context, p model.Principal, projectID, id string, operation scopepolicy.Operation, op func(store.ProjectWriteScope, *WriteResult) error) (WriteResult, error) {
 	result := WriteResult{ProjectID: projectID, TagID: id, Phase: "query", Outcome: store.TransactionNotCommitted}
 	locked := false
 	completion, err := s.store.WriteProject(ctx, projectID, func(scope store.ProjectWriteScope) error {
 		locked = true
 		if _, err := project.RequireProjectWrite(ctx, scope.ProjectDAO(), p); err != nil {
+			return err
+		}
+		if err := s.admit(operation); err != nil {
 			return err
 		}
 		return op(scope, &result)

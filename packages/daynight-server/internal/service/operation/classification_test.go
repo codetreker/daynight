@@ -56,10 +56,10 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	}
 }
 
-func TestProjectRepositoryFaultsRequireReliableCompletion(t *testing.T) {
-	for _, code := range []string{"project_repository_conflict", "project_repository_identity_unavailable"} {
+func TestAdmissionFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"project_repository_conflict", "project_repository_identity_unavailable", "insufficient_scope"} {
 		t.Run(code, func(t *testing.T) {
-			fault := &model.Fault{Code: code, Message: "Repository registration refused."}
+			fault := &model.Fault{Code: code, Message: "Operation refused."}
 			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {
 				if got, ok := operation.KnownFault(safe); !ok || got != fault {
 					t.Fatalf("confirmed refusal was suppressed: %#v %v", got, ok)
@@ -71,7 +71,7 @@ func TestProjectRepositoryFaultsRequireReliableCompletion(t *testing.T) {
 				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("private SQL")}),
 			} {
 				if got, ok := operation.KnownFault(unsafe); ok {
-					t.Fatalf("unreliable completion exposed a repository refusal: %#v", got)
+					t.Fatalf("unreliable completion exposed an admission refusal: %#v", got)
 				}
 			}
 		})

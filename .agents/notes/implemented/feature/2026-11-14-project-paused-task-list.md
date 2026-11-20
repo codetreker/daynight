@@ -1,4 +1,4 @@
-# Agent Note: Open paused tasks from the project list heading
+# Agent Note: Open paused tasks from project headings
 
 Status: implemented
 
@@ -11,13 +11,17 @@ cancelled tasks that are not in the visible list.
 
 ## Decision
 
-The heading badge opens an anchored native popover containing the same ordered,
-assignee-scoped ordinary tasks as its count. The project snapshot supplies each
+Overview and Task list share an anchored native popover containing the same
+ordered, deduplicated ordinary tasks as their respective counts. Overview uses
+the complete project scope; Task list applies its assignee filter. A single
+eligible task still opens the menu. The project snapshot supplies each
 row's preview, truncation indication, short ID and status without additional reads.
 Selecting a row closes the popover and opens that exact task through the existing
 summary detail and history path. The stable badge is the detail focus return
-point; a visible task tab or project heading is the fallback when the badge
-vanishes.
+point together with its originating section. If the badge vanishes, Overview
+returns to its visible section tab and then the project heading; Task list keeps
+its existing category and section fallbacks. Empty open menus use the same source
+fallback. Leaving the originating section closes its menu.
 
 The [pause eligibility decision](../bug-fix/2026-11-10-paused-summary-eligibility.md)
 retains the distinction between raw pause markers and summary eligibility; the
@@ -28,7 +32,10 @@ interaction and data flow.
 
 ## Alternatives
 
-No other alternative was recorded for this entry point.
+**Open the first eligible task from Overview.** This was the original Overview
+behavior, but it gave no direct choice among the remaining blocked tasks. Sharing
+the existing menu makes every counted task selectable and keeps the same
+keyboard, layout and focus behavior across both entry points.
 
 ## Consequences
 
@@ -37,5 +44,6 @@ list category, filters, page or expansion. The menu must track real snapshot
 changes while preserving focus and scroll across unchanged refreshes; a removed
 focused row needs a nearby target, and an empty collection needs a visible
 fallback. The preview can be truncated, so the complete title remains owned by
-the task detail. The project overview, chain summaries, raw pause markers and
-pause writes keep their existing semantics.
+the task detail. Overview retains its complete-project scope and does not change
+list filters or navigate categories when a task is selected. Chain summaries, raw
+pause markers and pause writes keep their existing semantics.
