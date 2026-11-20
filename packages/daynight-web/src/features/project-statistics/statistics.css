@@ -6,7 +6,7 @@
 .statistics-total strong { color:var(--ink); font-size:var(--text-page-heading); font-weight:650; line-height:1.15; font-variant-numeric:tabular-nums; }
 .statistics-chart { padding:14px 20px 16px; border-top:1px solid var(--line); min-width:0; }
 .statistics-chart-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
-.statistics-chart-heading h3 { color:#344258; font-size:var(--text-section-heading); font-weight:650; margin:0; }
+.statistics-chart-heading h3 { color:#344258; font-size:var(--text-interface); font-weight:650; margin:0; }
 .statistics-state { border-top:1px solid var(--line); padding:21px 20px; color:#556176; font-size:var(--text-interface); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
 .statistics-state.error { background:#fff0ef; color:#a3322b; }
 @media (max-width:740px) { .statistics-stack { gap:16px; } .statistics-chart,.statistics-header,.statistics-state { padding-left:12px; padding-right:12px; } .statistics-header { min-height:58px; } }
