@@ -21,7 +21,12 @@ without changing the existing product assembly. PAT storage supports explicit
 policies with an independent version and rejects absent or malformed policies
 on scoped reads. The preparation migration leaves historical and legacy-writer
 rows unscoped until the coordinated backfill and cutover. Device records reserve
-the approved selection without changing the existing redemption flow.
+the approved selection without changing the existing redemption flow. OAuth
+stores an MCP policy and its independent version on the grant; access and
+refresh credentials retain their original family identity. Scoped reads reject
+missing or malformed MCP policy while fixed API grants have no policy. OAuth
+authorization records can retain an explicit approved selection without changing
+the existing approval or code-exchange entry points.
 
 Team operations apply that contract at their business admission points, after
 visibility checks and before protected output or mutation. Existing role checks
@@ -71,7 +76,9 @@ itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consume
 the policy through opt-in service and transport entry points. Production
 activation, device issuance integration and historical backfill remain independent
 work. Scope updates compare the owner and observed version and only advance it for
-a changed selection; usage timestamps remain independent. PAT management
+a changed selection; usage timestamps remain independent. OAuth grant edits and
+refresh serialize on the same grant, and transaction-bound credential reads lock
+the grant before access. PAT management
 rechecks expiry against database time after acquiring the target lock. Bot
 definition permission does not confer Session or runtime control. A scoped
 authorization source must read current authority at each supplied boundary and
