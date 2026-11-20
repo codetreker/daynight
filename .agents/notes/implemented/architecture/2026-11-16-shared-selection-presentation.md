@@ -20,7 +20,9 @@ element-specific refs, events and ARIA. Static layout classes allow external
 placement without granting presentation ownership. The [component design](../../../../docs/design/native-select.md)
 owns the complete API and geometry.
 
-Task filter consumers explicitly select filter/responsive/task presentation.
+Task filter consumers explicitly select filter/responsive-target/task presentation.
+The later [narrow filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md)
+separates fine-pointer text size from responsive target size.
 AssigneePicker exposes it only to the filter caller; row, detail and form editing
 keep their existing appearance. Status selection and preference persistence,
 assignee lookup, and tag data, panels, chips and positioning stay feature-owned.

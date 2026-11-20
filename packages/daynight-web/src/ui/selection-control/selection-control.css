@@ -11,12 +11,15 @@
 .selection-control[data-focus-tone="task"] { --selection-control-focus: #344054; }
 
 @media (max-width: 800px), (pointer: coarse) {
-  .selection-control[data-touch-mode="responsive"] {
+  .selection-control:is([data-touch-mode="responsive"], [data-touch-mode="responsive-target"]) {
     --selection-control-height: 44px;
     --selection-control-font-size: var(--text-touch-field);
     --selection-control-min-hit-width: 44px;
     --selection-control-count-height: 20px;
   }
+}
+@media (max-width: 800px) and (pointer: fine) {
+  .selection-control[data-touch-mode="responsive-target"] { --selection-control-font-size: var(--text-interface); }
 }
 @container native-select-region (max-width: 600px) {
   .selection-control[data-touch-mode="container"] { --selection-control-height: 44px; --selection-control-min-hit-width: 44px; }

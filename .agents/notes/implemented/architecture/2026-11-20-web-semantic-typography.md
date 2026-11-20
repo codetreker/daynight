@@ -19,7 +19,9 @@ graphs, project overview, statistics, Worker pages and configuration, Worker
 Prompt editors, usage panels, project settings, teams, GitHub integration, pull
 requests, Webhooks, and Session controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
-a 16 CSS px minimum; count badges use the metadata role. Markdown code and tables
+a 16 CSS px minimum except for the narrow fine-pointer task filters described in
+the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
+count badges use the metadata role. Markdown code and tables
 use the interface role; Bot first-paragraph emphasis retains its weight without a
 separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
 owns role uses and sizes. Touch fields, including Step title and Markdown editors
