@@ -21,6 +21,43 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const width of [1280, 320]) test(`PR typography and responsive search retain input state at ${width}px`, async ({ page }) => {
+  const state = await installPrList(page);
+  await page.setViewportSize({ width, height: 900 });
+  await open(page);
+  const row = page.locator('.pr-row').first(), search = page.locator('#pr-search');
+  await expect(row.locator('.pr-row-title')).toHaveCSS('font-size', '14px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '12px');
+  await expect(page.locator('.pr-results-count')).toHaveCSS('font-size', '12px');
+  await expect(search).toHaveAttribute('data-touch-text', 'responsive');
+  await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '14px');
+  if (width === 320) expect(await search.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '12px'; });
+  await expect(search).toHaveCSS('font-size', width === 320 ? '16px' : '10.5px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '9px');
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  await search.fill('Pull request'); await search.focus();
+  await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 5));
+  await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+  await expect(search).toBeFocused(); await expect(search).toHaveValue('Pull request');
+  expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 5]);
+  await expect(search).toHaveCSS('font-size', width === 320 ? '32px' : '28px');
+  await expect(row.locator('.pr-row-title')).toHaveCSS('font-size', '28px');
+  await expect(row.locator('.pr-row-number')).toHaveCSS('font-size', '24px');
+  await page.locator('.pr-author-trigger').click();
+  const author = page.locator('.pr-author-menu input');
+  await expect(author).toHaveAttribute('data-touch-text', 'responsive');
+  await expect(author).toHaveCSS('font-size', width === 320 ? '32px' : '28px');
+  if (width === 320) expect(await author.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(42);
+  await author.fill('author'); await expect(author).toBeFocused();
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+  await expect(author).toHaveCSS('font-size', width === 320 ? '16px' : '14px');
+  await expect(author).toBeFocused(); await expect(author).toHaveValue('author');
+  await page.locator('.pr-author-menu').getByRole('option', { name: /^author$/ }).click();
+  await expect(page.locator('.pr-author-trigger')).toBeFocused();
+  expect(state.unexpected).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
   test(`status icons center within short and multiline cards at ${width}px in ${locale}`, async ({ page }) => {
     const state = await installPrList(page, locale);
