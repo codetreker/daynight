@@ -33,8 +33,10 @@ dialogs, account notices, attachment controls, Goal details and Bot management
 use the same roles. Superseded fixed declarations are removed or mapped to their
 semantic role, so later overrides cannot conceal a competing size definition.
 Narrow layouts wrap and rearrange controls, while dense panels retain local
-scrolling where needed. Webhook detail tabs wrap within the available panel width
-so increased browser fonts do not hide navigation. Graph layout coordinates grow
+scrolling where needed. Webhook detail tabs use a locally scrollable single row
+with selected-item visibility, as defined by the later
+[detail-tab decision](../bug-fix/2026-11-20-webhook-detail-tabs.md), so increased
+browser fonts do not hide navigation. Graph layout coordinates grow
 with the root font size so fixed node boxes accommodate text independently of
 graph zoom. Overview progress rows rearrange at narrow widths; chart axes preserve
 horizontal scrolling and provide room for enlarged labels.
