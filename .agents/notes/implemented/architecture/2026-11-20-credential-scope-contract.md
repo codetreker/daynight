@@ -108,7 +108,10 @@ and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
 itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) also
-consumes the policy through opt-in service and transport entry points. Scope
+consumes the policy through opt-in service and transport entry points. The
+[Worker admission mechanism](2026-11-20-worker-scope-admission.md) separates
+reporting, configuration changes, protected receipts and read-only producers
+from their requesters. Scope
 updates compare the owner and observed version and only advance it for a changed
 selection; usage timestamps remain independent. OAuth grant edits and refresh
 serialize on the same grant, and transaction-bound credential reads lock the grant

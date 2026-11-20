@@ -10,6 +10,8 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
@@ -331,6 +333,18 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 // ExchangeConfiguration bootstraps desired state once and compares observation
 // revisions independently from desired writes.
 func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+	return exchangeConfiguration(ctx, dao, principal, workerID, input, nil)
+}
+
+// ExchangeConfigurationAuthorized admits the desired projection and checks
+// configuration authority only when the locked candidate changes desired state.
+func ExchangeConfigurationAuthorized(ctx context.Context, dao store.WorkerWriteDAO, authorization model.CredentialAuthorization, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+	return exchangeConfiguration(ctx, dao, authorization.Principal, workerID, input, func(operation scopepolicy.Operation) error {
+		return scopeadmission.Require(authorization, operation)
+	})
+}
+
+func exchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange, admit func(scopepolicy.Operation) error) (*model.WorkerConfigurationReceipt, error) {
 	if input.Bootstrap != nil && input.Bootstrap.TaskTagFilter != nil {
 		return nil, invalidInput("Bootstrap cannot set a task tag filter.")
 	}
@@ -338,12 +352,22 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 	if err != nil {
 		return nil, err
 	}
+	if admit != nil {
+		if err := admit(scopepolicy.WorkerRead); err != nil {
+			return nil, err
+		}
+	}
 	if current.Desired != nil && current.Desired.Raw != nil {
 		raw, changed, err := adoptRawConfiguration(current.Desired, input)
 		if err != nil {
 			return nil, err
 		}
 		if changed {
+			if admit != nil {
+				if err := admit(scopepolicy.WorkerConfigure); err != nil {
+					return nil, err
+				}
+			}
 			revision, _ := strconv.ParseInt(current.Desired.Revision, 10, 64)
 			if revision == math.MaxInt64 {
 				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
@@ -383,6 +407,11 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			value.ToolPaths = adoptToolPaths(value.ToolPaths, *input.ToolPathsBootstrap)
 		}
 		if current.Desired == nil || !reflect.DeepEqual(original, value) {
+			if admit != nil {
+				if err := admit(scopepolicy.WorkerConfigure); err != nil {
+					return nil, err
+				}
+			}
 			if revision == math.MaxInt64 {
 				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
 			}
