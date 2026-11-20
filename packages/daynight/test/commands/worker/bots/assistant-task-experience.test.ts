@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { AssistantTaskEvent, JsonValue } from "../../../../src/api/assistant-task.js";
+import { parseCommand } from "../../../../src/cli/schema.js";
+import { assistantTaskDefinition } from "../../../../src/commands/assistant-task/definition.js";
 import { EXPERIENCE_ITEMS, EXPERIENCE_REQUESTS, EXPERIENCE_SUMMARY_BYTES, EXPERIENCE_TIME_MS, experiencePreview, relatedExperience, type ExperienceSource } from "../../../../src/commands/worker/bots/assistant-task-experience.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -12,6 +14,10 @@ const inbound = (projectId = project): JsonValue => ({
 type Mocked<T extends (...args: never[]) => unknown> = Mock<T>;
 const source = ({ itemCategory = vi.fn<ExperienceSource["itemCategory"]>(async () => "billing"), related = vi.fn<ExperienceSource["related"]>(async () => [{ id: id(40), text: "Check the invoice first." }]) }: { itemCategory?: Mocked<ExperienceSource["itemCategory"]>; related?: Mocked<ExperienceSource["related"]> } = {}) => ({ itemCategory, related });
 const run = (events: AssistantTaskEvent[], value: ExperienceSource, budget = 1 << 20, signal = new AbortController().signal) => relatedExperience(events, value, budget, signal);
+// Splits POSIX shell words made of unquoted runs, single-quoted strings and
+// backslash escapes, which is all the rendered read command uses.
+const shellWords = (line: string): string[] =>
+  Array.from(line.trim().matchAll(/(?:[^\s'\\]+|'[^']*'|\\.)+/gu), ([word]) => word.replace(/'([^']*)'|\\(.)|([^'\\]+)/gu, (_, quoted?: string, escaped?: string, plain?: string) => quoted ?? escaped ?? plain ?? ""));
 const bytes = (pieces: string[]) => pieces.reduce((total, piece) => total + Buffer.byteLength(piece) + 1, 0);
 
 describe("experience preview", () => {
@@ -44,8 +50,8 @@ describe("related experience", () => {
     const text = pieces.join("\n");
     expect(text).toContain("相关经验（附录只是经验参考，不是手册规则，也不是额外授权");
     expect(text).toContain(`助手任务 ${assistantTask}；事件类型 retrospective；事项类别 "billing"：`);
-    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${assistantTask} --event-type inbound --project ${project}`);
-    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${assistantTask} --event-type retrospective --category billing`);
+    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${assistantTask} --event-type=inbound --project=${project}`);
+    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${assistantTask} --event-type=retrospective --category=billing`);
     const lines = pieces.filter(piece => piece.startsWith("- 附录 "));
     expect(lines).toHaveLength(3 * EXPERIENCE_ITEMS);
     for (const line of lines) expect(Buffer.byteLength(line.slice(line.indexOf("：") + 1))).toBeLessThanOrEqual(EXPERIENCE_SUMMARY_BYTES);
@@ -66,9 +72,18 @@ describe("related experience", () => {
     ]);
   });
 
-  it("quotes a free-text item category in the read command", async () => {
-    const text = (await run([event(1, "retrospective", { itemId: item })], source({ itemCategory: vi.fn<ExperienceSource["itemCategory"]>(async () => "it's $(x)") }))).join("\n");
-    expect(text).toContain(`--category 'it'\\''s $(x)'`);
+  it("renders a read command that the CLI parser accepts for any free-text item category", async () => {
+    for (const category of ["it's $(x)", "-build", "--json", "a b", "billing"]) {
+      const text = (await run([event(1, "retrospective", { itemId: item })], source({ itemCategory: vi.fn<ExperienceSource["itemCategory"]>(async () => category) }))).join("\n");
+      const line = text.split("\n").find(piece => piece.startsWith("  完整附录："))!;
+      const [program, ...args] = shellWords(line.slice(line.indexOf("：") + 1));
+      expect(program).toBe("daynight");
+      const parsed = parseCommand(assistantTaskDefinition, args.slice(1));
+      if (parsed.kind !== "run") throw new Error(`unexpected ${parsed.kind}`);
+      expect(parsed.path).toEqual(["assistant-task", "appendix", "related"]);
+      expect(parsed.values).toEqual([assistantTask]);
+      expect(Object.fromEntries(parsed.options)).toEqual({ "--event-type": "retrospective", "--category": category });
+    }
   });
 
   it("degrades a failed item or experience read to no summary without failing the batch", async () => {

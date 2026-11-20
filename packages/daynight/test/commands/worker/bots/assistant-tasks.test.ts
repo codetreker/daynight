@@ -529,7 +529,7 @@ describe("assistant-task managed loops", () => {
     const text = original.payload.content.filter(part => part.type === "text").map(part => part.text).join("\n");
     const line = text.split("\n").find(value => value.startsWith(`- 附录 ${id(70)}：`))!;
     expect(Buffer.byteLength(line.slice(line.indexOf("：") + 1))).toBeLessThanOrEqual(1024);
-    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${f.task.id} --event-type retrospective --category billing`);
+    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${f.task.id} --event-type=retrospective --category=billing`);
     expect(text.indexOf("相关经验")).toBeLessThan(text.indexOf("处理以上事件前"));
     await f.create().tick("delivery", signal());
     expect(f.relatedAppendix).toHaveBeenCalledTimes(2); expect(f.readOperation).toHaveBeenCalledWith(f.bot, original, expect.any(AbortSignal));

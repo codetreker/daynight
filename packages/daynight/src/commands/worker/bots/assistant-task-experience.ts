@@ -65,10 +65,13 @@ const itemOf = (event: AssistantTaskEvent): string | undefined => {
 };
 const describe = (taskId: string, query: ExperienceQuery) =>
   `助手任务 ${taskId}；事件类型 ${query.eventType}${query.projectId === undefined ? "" : `；项目 ${query.projectId}`}${query.itemCategory === undefined ? "" : `；事项类别 ${JSON.stringify(query.itemCategory)}`}：`;
-// Event types and project IDs are server-validated tokens; a category is free text and is always quoted.
+// Event types and project IDs are server-validated tokens; a category is free
+// text and is quoted unless it is a plain token.
 const shellWord = (value: string) => /^[A-Za-z0-9_.:-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+// Values are attached with "=" because the CLI rejects a separate value that
+// starts with "-", which a free-text category such as "-build" may do.
 const readCommand = (taskId: string, query: ExperienceQuery) =>
-  `  完整附录：daynight assistant-task appendix related ${taskId} --event-type ${shellWord(query.eventType)}${query.projectId === undefined ? "" : ` --project ${query.projectId}`}${query.itemCategory === undefined ? "" : ` --category ${shellWord(query.itemCategory)}`}`;
+  `  完整附录：daynight assistant-task appendix related ${taskId} --event-type=${shellWord(query.eventType)}${query.projectId === undefined ? "" : ` --project=${query.projectId}`}${query.itemCategory === undefined ? "" : ` --category=${shellWord(query.itemCategory)}`}`;
 
 type Context = { taskId: string; eventType: string; projectId?: string; itemId?: string };
 
