@@ -30,6 +30,7 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
 	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
+	normalized.PreserveWindowsProcessCleanup = value.PreserveWindowsProcessCleanup
 	normalized.PreserveTaskTagFilter = value.PreserveTaskTagFilter
 	return normalized, err
 }
@@ -286,7 +287,7 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err := prepareTaskTagFilter(current, fields, &value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup || value.PreserveTaskTagFilter) {
+	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup || value.PreserveWindowsProcessCleanup || value.PreserveTaskTagFilter) {
 		return putWithPreservedRaw(ctx, dao, principal, workerID, current, fields, actual, value)
 	}
 	if err := storedPaths(fields, &value); err != nil {
@@ -305,6 +306,16 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 			value.EnableSudoCleanup = false
 		}
 		value.PreserveSudoCleanup = false
+	}
+	if value.PreserveWindowsProcessCleanup {
+		if raw := fields["enableWindowsProcessCleanup"]; len(raw) != 0 {
+			if err := configurationDecode(raw, &value.EnableWindowsProcessCleanup); err != nil {
+				return model.WorkerConfigurationResource{}, err
+			}
+		} else {
+			value.EnableWindowsProcessCleanup = false
+		}
+		value.PreserveWindowsProcessCleanup = false
 	}
 	value, err = NormalizeConfiguration(value)
 	if err != nil {
@@ -454,6 +465,7 @@ func exchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 
 func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, current model.WorkerConfigurationResource, fields map[string]json.RawMessage, actual int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
 	preservePaths, preserveSudo, preserveFilter := value.PreserveToolPaths, value.PreserveSudoCleanup, value.PreserveTaskTagFilter
+	preserveWindows := value.PreserveWindowsProcessCleanup
 	if preserveFilter {
 		value.TaskTagFilter = nil
 		value.PreserveTaskTagFilter = false
@@ -465,6 +477,10 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	if preserveSudo {
 		value.EnableSudoCleanup = false
 		value.PreserveSudoCleanup = false
+	}
+	if preserveWindows {
+		value.EnableWindowsProcessCleanup = false
+		value.PreserveWindowsProcessCleanup = false
 	}
 	if value.PreserveArchiveSessions {
 		value.ArchiveSessions = storedArchive(current.Desired)
@@ -499,7 +515,7 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	for key, raw := range fields {
 		comparison[key] = raw
 	}
-	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo, "taskTagFilter": preserveFilter} {
+	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo, "enableWindowsProcessCleanup": preserveWindows, "taskTagFilter": preserveFilter} {
 		if !preserve {
 			continue
 		}

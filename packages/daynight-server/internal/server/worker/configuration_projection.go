@@ -40,6 +40,9 @@ func (v rawConfigurationProjection) MarshalJSON() ([]byte, error) {
 	if _, exists := fields["enableSudoCleanup"]; !exists {
 		fields["enableSudoCleanup"] = json.RawMessage(`false`)
 	}
+	if _, exists := fields["enableWindowsProcessCleanup"]; !exists {
+		fields["enableWindowsProcessCleanup"] = json.RawMessage(`false`)
+	}
 	if !v.capabilities.ToolPaths {
 		delete(fields, "toolPaths")
 	}
