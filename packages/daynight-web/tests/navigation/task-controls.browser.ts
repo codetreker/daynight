@@ -1455,6 +1455,15 @@ for (const [width, touch] of [[768, false], [1360, false], [1360, true]] as cons
     try {
       await install(page); await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
       expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(touch);
+      await page.locator('.task-detail-page .assignee-trigger').click();
+      const search = page.locator('.assignee-menu .assignee-search');
+      await expect(search).toBeFocused();
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await expect(search).toHaveCSS('font-size', `${touch ? Math.max(root, 16) : root * 0.875}px`);
+      }
+      await search.press('Escape');
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
       await page.getByRole('button', { name: 'Add step', exact: true }).click();
       const form = page.locator('.step-add-form');
       await expect(form.locator('input, textarea')).toHaveCount(2);

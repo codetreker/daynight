@@ -458,7 +458,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
   const check = async (presentation: string) => {
     const surface = page.locator('.goal-detail-surface');
-    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论'] : ['Description', 'Attachments', 'Discussion']);
+    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论', '用量'] : ['Description', 'Attachments', 'Discussion', 'Usage']);
     await expect(surface.getByRole('tab').first()).toHaveAttribute('aria-selected', 'true');
     await expect(surface.locator('[data-goal-task-id], .goal-detail-overview')).toHaveCount(0);
     const aside = surface.getByRole('complementary', { name: zh ? 'Goal 信息' : 'Goal information' });
