@@ -465,7 +465,7 @@ describe('project task views', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(child).toHaveFocus());
     expect(goal).toHaveAttribute('aria-expanded', 'true');
-    const goalDetails = document.querySelector<HTMLButtonElement>('.goal-detail-link')!;
+    const goalDetails = document.querySelector<HTMLButtonElement>('.goal-detail-link:not(.chain-usage-button)')!;
     goalDetails.focus();
     fireEvent.click(goalDetails);
     dialog = screen.getByRole('dialog');
