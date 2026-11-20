@@ -18,6 +18,7 @@ import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/wor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import { retainedOwnedCommandBoundaries } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import * as atomicFiles from "../../../src/platform/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -128,8 +129,8 @@ const fixture = async () => {
   await writeFile(paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", repositories: [{ remote: remoteUrl, path: path.join(homeDirectory, "repo"), projectId: uuid(1) }], maxConcurrent: 9 } }));
   return { homeDirectory, paths, packageDirectory: path.resolve("package"), version: "9.8.7", workingDirectory: path.join(homeDirectory, "startup"), signal: new AbortController() };
 };
-const start = (f: Awaited<ReturnType<typeof fixture>>) => {
-  const running = runWorker({ ...f, signal: f.signal.signal });
+const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Pick<Parameters<typeof runWorker>[0], "onExecutionScope"> = {}) => {
+  const running = runWorker({ ...f, signal: f.signal.signal, ...extra });
   runs.add({ signal: f.signal, running }); void running.catch(() => {}); return running;
 };
 let target: WorkerCloudDesired;
@@ -1219,17 +1220,26 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it("re-observes joined reporter failures after the original native stop receipt closes", async () => {
+    // Windows observes the real guardian's exit through an interval; freezing
+    // report scheduling would also prevent its streams and handles from joining.
+    vi.useRealTimers();
     const f = await fixture(), marker = path.join(f.homeDirectory, "report-command-runs");
     const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
     const reconciling = deferred<void>(), release = deferred<void>(), reportStopped = deferred<void>();
     let store: ReturnType<typeof openWorkerStore> | undefined;
     const open = workerStores.openWorkerStore;
     const opened = vi.spyOn(workerStores, "openWorkerStore").mockImplementation((...args) => store = open(...args));
+    const acquire = instanceLocks.acquireWorkerInstanceLock;
+    let originalLock: Awaited<ReturnType<typeof acquire>> | undefined;
+    const acquired = vi.spyOn(instanceLocks, "acquireWorkerInstanceLock").mockImplementation(async paths => originalLock = await acquire(paths));
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const events: string[] = [];
     let rejectedStop = false, failure: Error | undefined;
     let firstReceipt: { generation: string; event: { resourceId: string; proof: unknown } } | undefined;
     const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
       if (path.dirname(file) === directory) {
         const receipt = JSON.parse(String(text));
+        events.push(receipt.event.stage);
         if (receipt.event.stage === "stopped") {
           if (!rejectedStop) {
             rejectedStop = true; firstReceipt = receipt; f.signal.abort();
@@ -1258,15 +1268,23 @@ describe("worker runtime configuration reporting", () => {
         return { telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error: failure }] };
       }
     });
-    const running = start(f);
+    const phase = async <T>(name: string, work: Promise<T>, milliseconds: number): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([work, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Telemetry cleanup phase ${name} did not finish: ${JSON.stringify({ events, reportStops: stop?.mock.calls.length, failure: String(failure?.cause), scope: control?.snapshot(), retained: retainedOwnedCommandBoundaries() })}`)), milliseconds);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const running = start(f, { onExecutionScope: value => { control = value; } });
     try {
-      await Promise.all([reconciling.promise, reportStopped.promise]);
+      await phase("original stop failure and receipt reconciliation", Promise.all([reconciling.promise, reportStopped.promise]), 10_000);
       expect(stop).toHaveBeenCalledOnce();
       expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
       expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
       expect(store!.listTasks()).toEqual([]);
       release.resolve();
-      await expect(running).rejects.toBe(failure);
+      await phase("runtime shutdown", expect(running).rejects.toBe(failure), 5_000);
       expect(stop).toHaveBeenCalledTimes(2);
       expect(collect).toHaveBeenCalledOnce();
       expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
@@ -1278,7 +1296,18 @@ describe("worker runtime configuration reporting", () => {
       expect(await readFile(marker, "utf8")).toBe("once\n");
       const lock = await tryAcquireWorkerInstanceLock(f.paths);
       expect(lock).not.toBeNull(); await lock!.release();
-    } finally { release.resolve(); f.signal.abort(); await Promise.allSettled([running]); saving.mockRestore(); opened.mockRestore(); }
+    } finally {
+      release.resolve(); f.signal.abort();
+      try {
+        await phase("fixture runtime join", Promise.allSettled([running]), 5_000);
+        if (control?.snapshot().stopped === false) await control.reconcile({ deadline: Date.now() + 5_000 });
+        expect(retainedOwnedCommandBoundaries()).toEqual([]);
+        expect(control?.snapshot().stopped).toBe(true);
+        // A failed assertion may leave the management root retained. Its test
+        // owner closes these handles only after the original scope is joined.
+        store?.close(); await originalLock?.release();
+      } finally { saving.mockRestore(); opened.mockRestore(); acquired.mockRestore(); }
+    }
   }, 20_000);
 
   it("retains management storage and its lock when reporter cleanup has no original close proof", async () => {
