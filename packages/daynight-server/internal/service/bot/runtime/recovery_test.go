@@ -39,6 +39,8 @@ type recoveryFixture struct {
 	completion                                             store.TransactionOutcome
 	transactionError                                       error
 	tokenUsed                                              bool
+	executionError                                         error
+	executionChecks                                        int
 }
 
 func (f *recoveryFixture) BotDAO() store.BotWriteDAO    { return f }
@@ -218,6 +220,12 @@ func TestRecoveryRegistrationUsesCurrentPATAndFreezesMachine(t *testing.T) {
 }
 func TestRecoveryReplayReturnsOriginalReceiptWithoutAnotherWrite(t *testing.T) {
 	f := newRecoveryFixture(t)
+	f.executionError = &model.Fault{Code: "worker_disabled"}
+	t.Cleanup(func() {
+		if f.executionChecks != 0 {
+			t.Fatal("replay consulted execution admission")
+		}
+	})
 	input := f.input()
 	receipt := sc.BotRecoveryReceipt{BotRecoveryVersion: 1, OperationID: input.OperationID, Kind: "takeover", WorkerID: f.bot.WorkerID, HostingGeneration: 1, BotRecoveryBinding: f.binding()}
 	raw, _ := json.Marshal(receipt)
@@ -318,6 +326,12 @@ func (f *recoveryFixture) SetBotStartup(ctx context.Context, id string, version 
 
 func TestRecoveryCurrentHostingReportUsesOriginalFence(t *testing.T) {
 	f := newRecoveryFixture(t)
+	f.executionError = &model.Fault{Code: "worker_disabled"}
+	t.Cleanup(func() {
+		if f.executionChecks != 0 {
+			t.Fatal("management report consulted execution admission")
+		}
+	})
 	v := f.record.Snapshot
 	code := "provider_unavailable"
 	input := sc.BotRecoveryReport{BotRecoveryIdentity: f.identity, HostingGeneration: 1, Report: sc.BotReport{BotVersion: f.bot.Version, Fence: &v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, NativeSessionID: v.Identity.NativeSessionID, Result: model.BotStartupResult{State: "failed", Code: &code}}}
@@ -488,4 +502,17 @@ func TestRecoveryReportFailurePreservesStartupAndStopsFollowupWork(t *testing.T)
 			}
 		})
 	}
+}
+
+func (f *recoveryFixture) WorkerExecutionAdmission() store.WorkerExecutionAdmission { return f }
+func (f *recoveryFixture) CheckWorkerExecution(ctx context.Context, owner, worker string) error {
+	if ctx != f.t.Context() || owner != f.p.UserID || worker == "" {
+		f.t.Fatal("changed execution admission identity")
+	}
+	f.executionChecks++
+	return f.executionError
+}
+
+func (m *recoveryFixture) WorkerExecutionVersion(ctx context.Context, user, worker string) (*int64, error) {
+	return nil, m.CheckWorkerExecution(ctx, user, worker)
 }

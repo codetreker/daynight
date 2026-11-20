@@ -9,6 +9,11 @@ import (
 )
 
 func KnownFault(err error) (*model.Fault, bool) {
+	// This explicit availability envelope does not claim rollback or authorize
+	// resubmission. Preserve it even when its cause carries an unknown commit.
+	if fault, ok := err.(*model.Fault); ok && fault.Code == "lifecycle_unavailable" {
+		return fault, true
+	}
 	if failed, _ := store.DatabaseErrorFacts(err); failed {
 		return nil, false
 	}
@@ -47,6 +52,8 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
+		case "lifecycle_unsupported", "worker_disabled", "disable_incomplete", "safety_blocked", "stale_instance", "stale_intent", "stale_report", "operation_resolved_not_committed":
+			return fault, true
 		case "insufficient_scope":
 			// A second independent failure makes the refusal's outcome uncertain.
 			if !containsJoinedError(err) {

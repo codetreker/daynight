@@ -1,4 +1,4 @@
--- Schema snapshot version: 109
+-- Schema snapshot version: 110
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -931,7 +931,11 @@ CREATE TABLE "session_operations" (
     "receipt" "jsonb" NOT NULL,
     "dispatch_epoch" bigint,
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
-    "deadline" timestamp with time zone DEFAULT ("statement_timestamp"() + '00:00:30'::interval) NOT NULL
+    "deadline" timestamp with time zone DEFAULT ("statement_timestamp"() + '00:00:30'::interval) NOT NULL,
+    "worker_id" "uuid",
+    "worker_intent_version" bigint,
+    CONSTRAINT "session_operations_worker_intent_owner_check" CHECK ((("worker_intent_version" IS NULL) OR ("worker_id" IS NOT NULL))),
+    CONSTRAINT "session_operations_worker_intent_version_check" CHECK (("worker_intent_version" > 0))
 );
 
 CREATE TABLE "session_recording_evidence" (
@@ -1654,6 +1658,64 @@ CREATE TABLE "webhook_subscriptions" (
     CONSTRAINT "webhook_subscriptions_updated_at_check" CHECK ("isfinite"("updated_at"))
 );
 
+CREATE TABLE "worker_lifecycle" (
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "protocol_version" smallint NOT NULL,
+    "intent_version" bigint NOT NULL,
+    "desired" "text" NOT NULL,
+    "admission" "text" NOT NULL,
+    "current_operation_id" "uuid",
+    "instance_id" "uuid",
+    "instance_epoch" bigint NOT NULL,
+    "capability_version" smallint,
+    "bootstrap_consumed" boolean DEFAULT false NOT NULL,
+    "reconnect_allowed" boolean DEFAULT false NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "worker_lifecycle_admission_check" CHECK (("admission" = ANY (ARRAY['open'::"text", 'closed'::"text"]))),
+    CONSTRAINT "worker_lifecycle_check" CHECK ((("desired" <> 'disabled'::"text") OR ("admission" = 'closed'::"text"))),
+    CONSTRAINT "worker_lifecycle_desired_check" CHECK (("desired" = ANY (ARRAY['enabled'::"text", 'disabled'::"text"]))),
+    CONSTRAINT "worker_lifecycle_instance_epoch_check" CHECK (("instance_epoch" >= 0)),
+    CONSTRAINT "worker_lifecycle_intent_version_check" CHECK (("intent_version" > 0)),
+    CONSTRAINT "worker_lifecycle_protocol_version_check" CHECK (("protocol_version" = 1))
+);
+
+CREATE TABLE "worker_lifecycle_observations" (
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "instance_epoch" bigint NOT NULL,
+    "intent_version" bigint NOT NULL,
+    "local_epoch" bigint NOT NULL,
+    "scope_generation" bigint NOT NULL,
+    "report_sequence" bigint NOT NULL,
+    "observation" "jsonb" NOT NULL,
+    "received_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "worker_lifecycle_operations" (
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "action" "text" NOT NULL,
+    "source" "text" NOT NULL,
+    "request_kind" "text" NOT NULL,
+    "request_hash" "bytea" NOT NULL,
+    "request" "jsonb" NOT NULL,
+    "intent_version" bigint NOT NULL,
+    "state" "text" NOT NULL,
+    "receipt" "jsonb" NOT NULL,
+    "activation" "jsonb",
+    "activation_request" "jsonb",
+    "activation_hash" "bytea",
+    "activation_outcome" "text" DEFAULT 'not_started'::"text" NOT NULL,
+    "error_code" "text",
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "worker_lifecycle_operations_activation_hash_check" CHECK ((("activation_hash" IS NULL) OR ("octet_length"("activation_hash") = 32))),
+    CONSTRAINT "worker_lifecycle_operations_activation_outcome_check" CHECK (("activation_outcome" = ANY (ARRAY['not_started'::"text", 'committed'::"text", 'not_committed'::"text"]))),
+    CONSTRAINT "worker_lifecycle_operations_request_hash_check" CHECK (("octet_length"("request_hash") = 32))
+);
+
 CREATE TABLE "worker_prompts" (
     "user_id" "uuid" NOT NULL,
     "scope" "text" NOT NULL,
@@ -2087,6 +2149,15 @@ ALTER TABLE ONLY "webhook_signing_keys"
 ALTER TABLE ONLY "webhook_subscriptions"
     ADD CONSTRAINT "webhook_subscriptions_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "worker_lifecycle_observations"
+    ADD CONSTRAINT "worker_lifecycle_observations_pkey" PRIMARY KEY ("user_id", "worker_id");
+
+ALTER TABLE ONLY "worker_lifecycle_operations"
+    ADD CONSTRAINT "worker_lifecycle_operations_pkey" PRIMARY KEY ("user_id", "worker_id", "operation_id");
+
+ALTER TABLE ONLY "worker_lifecycle"
+    ADD CONSTRAINT "worker_lifecycle_pkey" PRIMARY KEY ("user_id", "worker_id");
+
 ALTER TABLE ONLY "worker_prompts"
     ADD CONSTRAINT "worker_prompts_pkey" PRIMARY KEY ("user_id", "scope", "scope_id");
 
@@ -2355,9 +2426,9 @@ CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "b
 
 CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
 
-CREATE INDEX "workers_review_participants" ON "workers" USING "btree" ("user_id", "worker_id") WHERE "review_enabled";
-
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
+
+CREATE INDEX "workers_review_participants" ON "workers" USING "btree" ("user_id", "worker_id") WHERE "review_enabled";
 
 CREATE TRIGGER "webhook_policy_no_update" BEFORE UPDATE ON "webhook_policies" FOR EACH ROW EXECUTE FUNCTION "webhook_policy_no_update"();
 
@@ -2387,6 +2458,15 @@ ALTER TABLE ONLY "private_upload_chunks"
 
 ALTER TABLE ONLY "task_sessions"
     ADD CONSTRAINT "session_bot_owner" FOREIGN KEY ("bot_id", "owner_user_id") REFERENCES "bots"("id", "owner_user_id");
+
+ALTER TABLE ONLY "worker_lifecycle_observations"
+    ADD CONSTRAINT "worker_lifecycle_observations_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "worker_lifecycle_operations"
+    ADD CONSTRAINT "worker_lifecycle_operations_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id") ON DELETE CASCADE;
+
+ALTER TABLE ONLY "worker_lifecycle"
+    ADD CONSTRAINT "worker_lifecycle_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id") ON DELETE CASCADE;
 
 INSERT INTO "oauth_authorization_cleanup_cursor" ("singleton", "next_kind") VALUES (true, 0);
 

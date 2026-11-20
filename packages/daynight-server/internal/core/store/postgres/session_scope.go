@@ -9,6 +9,7 @@ import (
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -34,3 +35,9 @@ func (s *Store) WriteSession(ctx context.Context, operation func(store.SessionSc
 	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(&sessionScope{tx: tx}) })
 	return teamCompletion("write session", err)
 }
+
+func (s *sessionScope) WorkerExecutionAdmission() store.WorkerExecutionAdmission {
+	return worker.NewExecutionAdmission(s.tx)
+}
+
+var _ store.WorkerExecutionAdmissionScope = (*sessionScope)(nil)

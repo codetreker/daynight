@@ -151,6 +151,9 @@ func (s *Recovery) RegisterBotRecovery(ctx context.Context, p model.Principal, w
 		if err = op.CheckBotRecoveryBinding(a, input.BotRecoveryBinding); err != nil {
 			return err
 		}
+		if err := sessioncore.RequireWorkerExecution(ctx, scope, p.UserID, workerID); err != nil {
+			return err
+		}
 		machine, err := dao.RecoveryWorker(ctx, p.UserID, workerID)
 		if err != nil {
 			return err
@@ -194,6 +197,9 @@ func (s *Recovery) grant(ctx context.Context, p model.Principal, workerID, id st
 		if prior != nil {
 			out = sessioncore.BotRecoveryResult{Receipt: *prior, Current: op.BotRecoveryCurrent(a, bot, *prior, p)}
 			return nil
+		}
+		if err := sessioncore.RequireWorkerExecution(ctx, scope, p.UserID, workerID); err != nil {
+			return err
 		}
 		machine, err := dao.RecoveryWorker(ctx, p.UserID, workerID)
 		if err != nil {
