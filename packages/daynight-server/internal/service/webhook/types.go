@@ -10,6 +10,7 @@ import (
 
 type Destination struct{ Kind, AdapterVersion, URL string }
 type Mutation struct {
+	ReturnReceipt                                           bool
 	Kind, EndpointID, OperationID, IssuedAt, ExpectedUserID string
 	IfVersion                                               int64
 	RequestSHA256                                           string
