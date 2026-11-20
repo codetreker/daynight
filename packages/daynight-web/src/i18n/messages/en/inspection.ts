@@ -167,7 +167,7 @@ export const inspection: InspectionMessages = {
     writeError: "The attachment operation failed. Check and try again.", loading: "Loading attachments…",
     listError: "The attachment list could not be loaded.", incompleteList: "The attachment list is incomplete. Only files already read are shown below.",
     retry: "Retry attachments", empty: "No attachments. Upload a file to browse it here.", files: "Attachment files",
-    choosePreview: "Select a file to preview or download it.", preview: "Attachment preview",
+    choosePreview: "Select a file to preview or download it.", preview: "Attachment preview", detailScroll: "Attachment details",
     fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`,
     created: "Created", lastModified: "Last modified",
     download: "Download", reloadPreview: "Reload", deleting: "Deleting…", delete: "Delete",
