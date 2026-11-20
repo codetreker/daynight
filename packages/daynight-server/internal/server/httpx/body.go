@@ -131,15 +131,19 @@ func (b *trackedRequestBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+var discardLogger = slog.New(slog.DiscardHandler)
+
 // LimitRequestTarget rejects raw transport input before routing or query decoding.
 func LimitRequestTarget(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(r.RequestURI) > transport.MaxRequestTargetBytes || len(r.URL.RawQuery) > transport.MaxRawQueryBytes {
+			// The shared handler's logger stays immutable; each request selects
+			// its own, because the inbox request record is that route's only log output.
+			requestLogger := logger
 			if InboxRecordFrom(r.Context()) != nil {
-				// The inbox request record is the route's only log output.
-				logger = slog.New(slog.DiscardHandler)
+				requestLogger = discardLogger
 			}
-			WriteError(w, r, logger, "server", "request_target", &URITooLongError{})
+			WriteError(w, r, requestLogger, "server", "request_target", &URITooLongError{})
 			return
 		}
 		next.ServeHTTP(w, r)
