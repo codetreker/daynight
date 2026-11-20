@@ -4,14 +4,14 @@ Status: implemented
 
 ## Problem
 
-Platform, execution permission and status labels compete with Task titles in
+Platform, execution permission, status labels and stuck warnings compete with Task titles in
 ordinary rows, making auxiliary facts harder to scan across personal and project
 lists. The same badges also appear in graph, detail and summary contexts with
 independent presentation needs.
 
 ## Decision
 
-The shared ordinary row assigns these labels to the metadata role while keeping
+The shared ordinary row assigns these labels and stuck warnings to the metadata role while keeping
 ready and dependency-blocked indicators at their existing size. Row-scoped
 selectors override project list rules without changing shared badge defaults or
 Session button geometry. The [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)

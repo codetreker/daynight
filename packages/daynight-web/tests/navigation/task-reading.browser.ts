@@ -150,7 +150,7 @@ test('selected attachment keeps its new-tab target while copy uses overview', as
   expect(state.writes).toEqual([]); await reader.close();
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
   test(`execution time advances during a held sync without moving the graph at ${width}px in ${locale}`, async ({ page }) => {
     const state = await install(page, true);
     await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
@@ -177,6 +177,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       await page.clock.fastForward(16_000);
       await expect.poll(() => state.syncReads).toBeGreaterThan(reads);
       await expect(node.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(node.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
       const afterDuration = await duration.getAttribute('datetime');
       expect(afterDuration).toMatch(/^PT[0-9.]+S$/);
       expect(Number(afterDuration!.slice(2, -1))).toBeGreaterThan(Number(beforeDuration!.slice(2, -1)));
@@ -192,10 +193,16 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
       const row = taskRow(page.locator(`#standalone-task-${standaloneId}`));
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-stuck-label svg')).toBeVisible();
       expect(await row.evaluate(element => {
         const bounds = element.getBoundingClientRect();
         return bounds.left >= 0 && bounds.right <= innerWidth && element.scrollWidth <= element.clientWidth && [...element.querySelectorAll('.task-duration, .task-stuck-label')].every(item => { const box = item.getBoundingClientRect(); return box.left >= bounds.left && box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '15px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '15px');
       expect(state.writes).toEqual([]);
     } finally { state.holdSync = null; gate.resolve(); }
   });
