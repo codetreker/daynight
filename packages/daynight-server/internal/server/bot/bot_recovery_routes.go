@@ -25,8 +25,25 @@ type recoveryService interface {
 // RegisterRecoveryRoutes keeps recovery secrets in request bodies on an
 // independent versioned API; the ordinary Bot DTO and grant API remain stable.
 func RegisterRecoveryRoutes(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger) {
+	registerRecoveryRoutes(mux, service, auth, responses, logger, nil)
+}
+
+// RegisterRecoveryRoutesWithScopeObserver reports classifications at registration.
+func RegisterRecoveryRoutesWithScopeObserver(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
+	registerRecoveryRoutes(mux, service, auth, responses, logger, observe)
+}
+
+func registerRecoveryRoutes(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
 	const base = "/api/v1/me/workers/{workerId}/bots/{botId}/recovery/v1/"
-	for _, action := range []string{"register", "takeover", "grant", "report", "operations/{operationId}"} {
+	routes := runtimeRouteRegistry{mux: mux, observe: observe}
+	for _, route := range []struct {
+		action string
+		class  runtimeRouteClass
+	}{
+		{"register", recoveryWrite}, {"takeover", recoveryWrite}, {"grant", recoveryWrite},
+		{"report", recoveryReport}, {"operations/{operationId}", recoveryReceipt},
+	} {
+		action := route.action
 		handler := func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 			raw, err := sessionhttp.ReadBody(w, r)
 			if err != nil {
@@ -85,8 +102,8 @@ func RegisterRecoveryRoutes(mux *http.ServeMux, service recoveryService, auth *a
 				httpx.WriteMutationJSON(w, r, logger, "bot_recovery", http.StatusOK, recoveryResponse(result))
 			}
 		}
-		mux.HandleFunc("POST "+base+action, auth.Require(responses.Parameters(handler)))
-		mux.HandleFunc(base+action, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
+		routes.handle("POST "+base+action, auth.Require(responses.Parameters(handler)), route.class)
+		routes.handle(base+action, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")), runtimeFallback)
 	}
 }
 

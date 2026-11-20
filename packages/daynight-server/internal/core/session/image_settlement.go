@@ -229,6 +229,9 @@ func (op *ArchiveOperation) SettleExpiredUploads(ctx context.Context) (result er
 			if e := archiveStopped(r, t); e != nil {
 				return e
 			}
+			if e := op.execution.authorizeProducer(ctx, tx, op.principal, r); e != nil {
+				return e
+			}
 			return work(tx, r)
 		})
 	}

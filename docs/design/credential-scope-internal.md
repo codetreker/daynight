@@ -276,6 +276,24 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
 scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+启用时，同一 Session 服务必须同时装配命令和生产者准入；各自的 scoped
+构造入口只安装其对应的规则。
+
+## Session 生产者准入
+
+Session 与用量生产的 scoped 装配在实际操作所属事务或快照中读取原 PAT 的
+当前策略，要求 `session:produce`。Task 注册检查实际调用凭据；后续 Controller
+操作使用连接绑定的父凭据，保留原 claim、执行代次和连接 fence。Test 与 Bot
+Session 的当前 grant 父凭据和活动连接父凭据可能不同：同代重连更换 grant 后，
+旧连接仍须分别复核两者的有效性和生产权限。同一凭据只需一次策略检查。
+Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再参与新 grant 的
+消费；正常同代重连保留旧 lease 时仍分别复核两者。
+用量上传凭据保留原父凭据和资源绑定，不能凭新连接的权限替代原父凭据。
+
+注册、签发及新生产操作在相应阶段拒绝权限不足；已有持久结果不因撤权改写。
+恢复和重试仍遵循各自的原身份、回执和完成语义。固定 profile 继续受原协议和
+资源约束，受限入口不将缺失的 PAT 策略解释为无限权限。具体权衡见
+[Session 生产者准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-producer-scope.md)。
 
 ## 装配边界
 

@@ -14,10 +14,11 @@ import (
 type Service struct {
 	*sessioncore.Execution
 	*botruntime.Recovery
-	engine       *sessioncore.Engine
-	writer       store.SessionWriter
-	historyOps   historyScopeOperations
-	beginBrowser func() (browserOperation, error)
+	engine                *sessioncore.Engine
+	writer                store.SessionWriter
+	historyOps            historyScopeOperations
+	beginBrowser          func() (browserOperation, error)
+	producerAuthorization ProducerAuthorization
 }
 
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
@@ -44,6 +45,29 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	})
 	s.Execution.SetTaskReadRunners(s.taskContentRead, s.taskReadQuery, s.taskArchiveRead)
 	return s
+}
+
+// NewScoped enables producer admission without changing the existing assembly.
+func NewScoped(writer store.SessionWriter, engine *sessioncore.Engine, source ProducerAuthorization) (*Service, error) {
+	if source == nil {
+		return nil, errors.New("session producer authorization is required")
+	}
+	s := New(writer, engine)
+	s.producerAuthorization = source
+	s.Execution.SetProducerAdmission(s.requireProducer)
+	write := func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
+		return s.write(ctx, op.Finish, fn)
+	}
+	runtime, err := botruntime.NewScopedRuntime(engine, write, botruntime.ProducerAuthorization(source))
+	if err != nil {
+		return nil, err
+	}
+	s.Recovery, err = botruntime.NewScopedRecovery(engine, write, botruntime.ProducerAuthorization(source))
+	if err != nil {
+		return nil, err
+	}
+	s.Execution.SetBotRunner(runtime.Run)
+	return s, nil
 }
 
 func (s *Service) SetOrigin(origin string) { s.engine.Origin = origin }

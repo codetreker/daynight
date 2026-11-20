@@ -18,6 +18,38 @@ type CurrentUsageAuthorization interface {
 	CurrentUsageAuthorization(context.Context, model.Principal, time.Time) (model.CredentialAuthorization, error)
 }
 
+// ProducerAuthorization reads the current authorization of the exact principal
+// through the supplied usage transaction or snapshot. A write must lock the
+// credential through commit and validate its expiry after acquiring the lock.
+type ProducerAuthorization func(context.Context, store.UsageScope, model.Principal, time.Time, bool) (model.CredentialAuthorization, error)
+
+// NewScoped protects producer operations while retaining the legacy assembly.
+func NewScoped(database store.UsageStore, options Options, current ProducerAuthorization) (*Service, error) {
+	if current == nil {
+		return nil, fmt.Errorf("usage producer authorization is required")
+	}
+	s, err := New(database, options)
+	if err != nil {
+		return nil, err
+	}
+	s.producerAuthorization = current
+	return s, nil
+}
+
+func (s *Service) requireProducer(ctx context.Context, scope store.UsageScope, p model.Principal, now time.Time, write bool) error {
+	if s.producerAuthorization == nil {
+		return nil
+	}
+	auth, err := s.producerAuthorization(ctx, scope, p, now, write)
+	if err != nil {
+		return err
+	}
+	if auth.Principal != p || (p.Kind == model.PATCredential && auth.Profile != model.ScopedPATProfile) {
+		return fmt.Errorf("usage producer authorization changed identity or profile")
+	}
+	return scopeadmission.Require(auth, scopepolicy.SessionProduce)
+}
+
 type usageAuthorizationKey struct{}
 
 func usageContext(ctx context.Context, auth model.CredentialAuthorization) (context.Context, error) {

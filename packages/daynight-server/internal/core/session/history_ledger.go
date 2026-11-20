@@ -214,6 +214,9 @@ func (op *ArchiveOperation) prepareHistoryLedger(ctx context.Context, writer Act
 		if err := op.validateHistoryWriter(r, t); err != nil {
 			return err
 		}
+		if err := op.execution.authorizeProducer(ctx, tx, op.principal, r); err != nil {
+			return err
+		}
 		dao, err := archiveDAO(tx)
 		if err != nil {
 			return err
