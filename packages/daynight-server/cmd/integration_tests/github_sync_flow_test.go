@@ -37,7 +37,7 @@ import (
 
 // The process uses its production fixed-origin client through a controlled TLS
 // proxy. This keeps the complete server, worker and database path in the flow.
-func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) {
+func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string), func(string)) {
 	t.Helper()
 	dir := filepath.Join(integrationRunRoot(t), "github-fixture")
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -71,7 +71,9 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 	}
 	var mu sync.Mutex
 	title := "Initial PR"
+	secondBase := "release"
 	setTitle := func(v string) { mu.Lock(); title = v; mu.Unlock() }
+	setSecondBase := func(v string) { mu.Lock(); secondBase = v; mu.Unlock() }
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -87,18 +89,24 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"token":"test","expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 		case "/repos/example/integration":
-			fmt.Fprint(w, `{"id":42,"full_name":"example/integration","private":false}`)
+			fmt.Fprint(w, `{"id":42,"full_name":"example/integration","private":false,"default_branch":"trunk"}`)
 		case "/installation/repositories":
-			fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"example/integration","private":false}]}`)
-		case "/repos/example/integration/pulls", "/repos/example/integration/pulls/1":
+			fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"example/integration","private":false,"default_branch":"trunk"}]}`)
+		case "/repos/example/integration/pulls", "/repos/example/integration/pulls/1", "/repos/example/integration/pulls/2":
 			mu.Lock()
-			current := title
+			current, second := title, secondBase
 			mu.Unlock()
-			pr := map[string]any{"number": 1, "id": 101, "html_url": "https://github.com/example/integration/pull/1", "title": current, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": "abc", "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
-			if r.URL.Path == "/repos/example/integration/pulls/1" {
-				_ = json.NewEncoder(w).Encode(pr)
-			} else {
-				_ = json.NewEncoder(w).Encode([]any{pr})
+			pull := func(number, id int, name, base string) map[string]any {
+				return map[string]any{"number": number, "id": id, "html_url": fmt.Sprintf("https://github.com/example/integration/pull/%d", number), "title": name, "state": "open", "draft": false, "user": nil, "base": map[string]any{"ref": base, "repo": map[string]any{"id": 42}}, "head": map[string]any{"ref": "branch", "sha": "abc", "repo": nil}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "closed_at": nil, "merged_at": nil, "body": "saved"}
+			}
+			first, other := pull(1, 101, current, "trunk"), pull(2, 102, "Second PR", second)
+			switch r.URL.Path {
+			case "/repos/example/integration/pulls/1":
+				_ = json.NewEncoder(w).Encode(first)
+			case "/repos/example/integration/pulls/2":
+				_ = json.NewEncoder(w).Encode(other)
+			default:
+				_ = json.NewEncoder(w).Encode([]any{first, other})
 			}
 		default:
 			http.Error(w, "unexpected GitHub request", http.StatusNotFound)
@@ -131,11 +139,11 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 		<-done
 	}))
 	t.Cleanup(proxy.Close)
-	return &githubFixtureConfig{privateKey: keyFile, caFile: caFile, proxyURL: proxy.URL}, setTitle
+	return &githubFixtureConfig{privateKey: keyFile, caFile: caFile, proxyURL: proxy.URL}, setTitle, setSecondBase
 }
 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
-	config, change := githubIntegrationRemote(t)
+	config, change, changeSecondBase := githubIntegrationRemote(t)
 	f := newFixtureConfigured(t, false, config)
 	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
@@ -198,7 +206,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		for {
 			page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
 			current := requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
-			if len(page.Items) == 1 && page.Items[0].Title == want && !current.Initializing && current.Poll.LastSuccessAt != nil {
+			if len(page.Items) == 2 && page.Items[1].Title == want && !current.Initializing && current.Poll.LastSuccessAt != nil {
 				return
 			}
 			select {
@@ -209,29 +217,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 	}
 	waitTitle("Initial PR")
-	serverAPIReviewAssignmentFlow(t, f, project.ID)
+	serverAPIReviewAssignmentFlow(t, f, project.ID, func() {
+		changeSecondBase("trunk")
+		sendPullWebhook(t, f, appBase, 2)
+	})
 	change("Updated by webhook")
-	body := []byte(`{"installation":{"id":99},"repository":{"id":42},"number":1}`)
-	mac := hmac.New(sha256.New, []byte("integration-only-secret"))
-	_, _ = mac.Write(body)
-	request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+appBase+"/webhook", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	request.Header.Set("X-GitHub-Event", "pull_request")
-	request.Header.Set("X-GitHub-Delivery", uuid.NewString())
-	response, err := f.client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, readErr := io.ReadAll(response.Body)
-	if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
-		t.Fatalf("webhook response read: %v %v", readErr, closeErr)
-	}
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("webhook response: %d %s", response.StatusCode, data)
-	}
+	sendPullWebhook(t, f, appBase, 1)
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -239,7 +230,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	for {
 		current := requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
 		page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-		if current.Webhook.LastSuccessAt != nil && len(page.Items) == 1 && page.Items[0].Title == "Updated by webhook" {
+		if current.Webhook.LastSuccessAt != nil && len(page.Items) == 2 && page.Items[1].Title == "Updated by webhook" {
 			break
 		}
 		select {
@@ -255,7 +246,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	}
 	change("Updated while off")
 	page := requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated by webhook" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated by webhook" {
 		t.Fatalf("retained: %+v", page)
 	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodPatch, base+"/github/sync", map[string]any{"version": status.Version, "syncEnabled": true}, http.StatusOK)
@@ -315,7 +306,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			ALTER TABLE project_pull_requests DROP COLUMN repository_id;
 			ALTER TABLE project_pull_requests ADD PRIMARY KEY (project_id,number);
 			CREATE INDEX project_pull_requests_state_number ON project_pull_requests (project_id,state,number DESC);
-			ALTER TABLE project_github DROP COLUMN legacy_repository_id;
+			ALTER TABLE project_github DROP COLUMN legacy_repository_id, DROP COLUMN repository_default_branch;
 			DROP TABLE project_github_repositories`); err != nil {
 			t.Fatal(err)
 		}
@@ -358,7 +349,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_appendix_validations; ALTER TABLE assistant_task_appendix DROP COLUMN scope_project_ids, DROP COLUMN scope_event_types, DROP COLUMN scope_item_categories, DROP COLUMN success_count, DROP COLUMN failure_count, DROP COLUMN last_validated_at`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105)`); err != nil || result.RowsAffected() != 27 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106)`); err != nil || result.RowsAffected() != 28 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -391,7 +382,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("upgraded state: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated while off" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated while off" {
 		t.Fatalf("upgrade lost PR: %+v", page)
 	}
 	change("Updated after upgrade")
@@ -413,7 +404,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("after revocation: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated after upgrade" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
 		t.Fatalf("revocation lost PR: %+v", page)
 	}
 	currentGrant = grant(project.Ownership.TeamID)
@@ -437,11 +428,36 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("after transfer: %+v", status)
 	}
 	page = requestJSON[api.PullRequestPage](t, f, http.MethodGet, base+"/pull-requests", nil, http.StatusOK)
-	if len(page.Items) != 1 || page.Items[0].Title != "Updated after upgrade" {
+	if len(page.Items) != 2 || page.Items[1].Title != "Updated after upgrade" {
 		t.Fatalf("transfer lost PR: %+v", page)
 	}
 	status = connect(receipt.Ownership.Version, status, targetGrant)
 	if status.SyncEnabled || status.Connection != "connected" || status.GrantID == nil || *status.GrantID != targetGrant.ID {
 		t.Fatalf("target reconnection: %+v", status)
+	}
+}
+
+func sendPullWebhook(t *testing.T, f *fixture, appBase string, number int) {
+	t.Helper()
+	body := []byte(fmt.Sprintf(`{"installation":{"id":99},"repository":{"id":42},"number":%d}`, number))
+	mac := hmac.New(sha256.New, []byte("integration-only-secret"))
+	_, _ = mac.Write(body)
+	request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+appBase+"/webhook", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	request.Header.Set("X-GitHub-Event", "pull_request")
+	request.Header.Set("X-GitHub-Delivery", uuid.NewString())
+	response, err := f.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(response.Body)
+	if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
+		t.Fatalf("webhook response read: %v %v", readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("webhook response: %d %s", response.StatusCode, data)
 	}
 }

@@ -4,6 +4,13 @@ import "time"
 
 type PromptScope string
 
+type PromptPurpose string
+
+const (
+	PromptPurposeWorker   PromptPurpose = "worker"
+	PromptPurposeReviewer PromptPurpose = "reviewer"
+)
+
 const (
 	PromptScopeUser    PromptScope = "user"
 	PromptScopeProject PromptScope = "project"

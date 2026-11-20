@@ -5,6 +5,35 @@ import { completeContextGraph } from '../helpers/graphData';
 const rootId = '00000000-0000-4000-8000-000000000030';
 const expected = expectedDependencyTopology(completeContextGraph.tasks, rootId);
 
+for (const rootSize of [12, 16, 24]) test(`graph text and geometry remain independent of view zoom at ${rootSize}px root`, async ({ page }, info) => {
+  await page.goto('/tests/navigation/graph-browser.html');
+  await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+  await page.getByRole('button', { name: 'Open graph' }).click();
+  const card = page.locator(`.react-flow__node[data-id="${rootId}"] .task-node`);
+  const body = card.locator('.task-node-body');
+  await expect(card).toBeVisible();
+  await expect(card.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  await expect(card.locator('.task-node-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  await expect(page.locator('.task-chain-meta')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+  await expect(page.locator('.task-chain-meta > .graph-status')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  await expect.poll(() => card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(300 * Math.max(rootSize / 16, 1));
+  await body.focus();
+  await body.press('Enter');
+  await expect(body).toHaveAttribute('aria-pressed', 'true');
+  await expect(body).toBeFocused();
+  for (const [direction, name] of [['horizontal', '水平'], ['vertical', '垂直']] as const) {
+    await page.getByRole('radio', { name, exact: true }).click();
+    await expect.poll(() => checkDependencyGeometry(page, expected, info, undefined, direction)).toEqual({ total: 0, examples: [] });
+    await expect(body).toHaveAttribute('aria-pressed', 'true');
+  }
+  const before = await card.evaluate(element => ({ width: (element as HTMLElement).offsetWidth, painted: element.getBoundingClientRect().width }));
+  await page.getByRole('button', { name: '放大', exact: true }).click();
+  await expect.poll(() => card.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(before.painted);
+  expect(await card.evaluate(element => (element as HTMLElement).offsetWidth)).toBe(before.width);
+  await expect(card.locator('.task-node-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
+  expect(await checkDependencyGeometry(page, expected, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+});
+
 for (const width of [1600, 320]) test(`successor inspection preserves the real chain viewport at ${width}px`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 1100 });
   await page.goto('/tests/navigation/graph-browser.html');

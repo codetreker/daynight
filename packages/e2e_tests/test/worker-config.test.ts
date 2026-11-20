@@ -19,10 +19,10 @@ for (const [format, source] of cases) test(`builds isolated Worker configuration
   assert.deepEqual(original.errors, []);
   const server = original.toJS() as { serverUrl: string; serverToken: string };
   const generated = workerFixtureConfiguration({ serverUrl: server.serverUrl, serverToken: server.serverToken, workerId: "new-worker",
-    repositoryRoot: "/tmp/repositories", peer: "/tmp/codex.mjs", projectId: "project", remote: "https://example.test/repo.git", repository: "/tmp/repository" });
+    repositoryRoot: "/tmp/repositories", peer: "/tmp/codex.mjs", projectId: "project", remote: "https://example.test/repo.git", repository: "/tmp/repository", cli: "/tmp/daynight" });
   const result = parseDocument(generated, { strict: true, uniqueKeys: true, stringKeys: true });
   assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.toJS(), { serverUrl: "https://daynight.example", serverToken: token, workerId: "new-worker", worker: {
+  assert.deepEqual(result.toJS(), { serverUrl: "https://daynight.example", serverToken: token, workerId: "new-worker", agentCliAliases: { daynight: "/tmp/daynight" }, worker: {
     agentControlMode: "web", agent: "codex", pollIntervalMs: 1000, maxConcurrent: 1, repositoryRoot: "/tmp/repositories",
     toolPaths: { codex: "/tmp/codex.mjs" }, repositories: [{ projectId: "project", remote: "https://example.test/repo.git", path: "/tmp/repository" }],
   } });
@@ -42,7 +42,7 @@ test("isolates Worker state and preserves it for restart without touching the CL
     const original = await readFile(cliConfig, "utf8");
     const input = { serverUrl: "https://daynight.example", serverToken: token, workerId: "new-worker",
       repositoryRoot: "/tmp/repositories", peer: "/tmp/codex.mjs", projectId: "project",
-      remote: "https://example.test/repo.git", repository: "/tmp/repository" };
+      remote: "https://example.test/repo.git", repository: "/tmp/repository", cli: "/tmp/daynight" };
     const directory = await prepareWorkerFixtureConfiguration(fixtureRoot, input);
     assert.equal(directory, path.join(fixtureRoot, "worker-config"));
     assert.notEqual(directory, cliDirectory);

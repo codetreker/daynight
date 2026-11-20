@@ -2737,7 +2737,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("POST", worker+"/report")
 	add("POST", worker+"/readonly/requests")
 	add("GET", worker+"/readonly/channel")
-	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt"} {
+	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/{projectId}/reviewer-prompt", worker + "/reviewer-prompt"} {
 		add("GET PUT", path)
 	}
 	add("GET POST", p+"/tasks")
@@ -2843,7 +2843,7 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 		"/api/v1/team-invitations/inspect", "/api/v1/team-invitations/accept",
 		"/api/v1/me/workers", "/api/v1/me/workers/monitoring/query", worker, worker + "/monitoring", worker + "/configuration", worker + "/report",
 		worker + "/readonly/requests", worker + "/readonly/channel",
-		"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt",
+		"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", worker + "/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/{projectId}/reviewer-prompt", worker + "/reviewer-prompt",
 		p + "/tasks", task, task + "/status", p + "/task-work", p + "/task-assignees", p + "/task-graph", p + "/task-sync",
 		"/api/v1/task-properties/schema", task + "/properties", task + "/properties/{name}",
 		task + "/worker-claim", task + "/worker-claim/release", task + "/worker-claim/withdraw",

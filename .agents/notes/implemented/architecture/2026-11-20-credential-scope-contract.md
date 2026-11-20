@@ -23,6 +23,7 @@ Team operations apply that contract at their business admission points, after
 visibility checks and before protected output or mutation. Existing role checks
 remain mandatory without exposing role-dependent results to a credential that
 lacks the required scope.
+
 The scoped service constructors require explicit credential authorization
 providers; operations with an existing transaction-bound credential recheck use
 the current authorization from that same transaction or snapshot. The existing
@@ -48,4 +49,6 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production assembly and issuance remain independent work.
+itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
+the policy through opt-in service and transport entry points. Persistence,
+production activation and issuance remain independent work.
