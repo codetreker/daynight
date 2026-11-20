@@ -47,7 +47,7 @@ export const ProjectRepository = (props: RepositoryEditorProps) => {
     </>}>
       <OperationPublicationError operation={op} zh={locale === 'zh-CN'} />
       {editing && <form id={form} onSubmit={event => { event.preventDefault(); void state.inspect(); }} noValidate>
-        <div className="field"><label htmlFor={field}>{m.target}</label><input ref={input} id={field} type="text" autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby={`${hint} ${problem}`} aria-invalid={state.invalid !== null} value={state.draft} disabled={!state.editable || state.busy} onChange={event => state.change(event.target.value)} /><p className="hint" id={hint}>{m.hint}</p><div id={problem}>{state.invalid !== null && <p className="hint error" role="alert">{m[state.invalid]}</p>}</div></div>
+        <div className="field"><label htmlFor={field}>{m.target}</label><input data-touch-text="responsive" ref={input} id={field} type="text" autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby={`${hint} ${problem}`} aria-invalid={state.invalid !== null} value={state.draft} disabled={!state.editable || state.busy} onChange={event => state.change(event.target.value)} /><p className="hint" id={hint}>{m.hint}</p><div id={problem}>{state.invalid !== null && <p className="hint error" role="alert">{m[state.invalid]}</p>}</div></div>
       </form>}
       {state.reading && !state.unknown && <p role="status">{m.checking}</p>}
       {preview !== null && state.privateAvailable && !state.unknown && <>

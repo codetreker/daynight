@@ -20,6 +20,12 @@ const fit = async (locator: Locator) => {
     return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth + 1;
   })).toBe(true);
 };
+const rootFont = async (page: Page, size: number) => page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+const minimumHeight = async (locator: Locator, height: number) => expect.poll(() => locator.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(height);
+const retainsSelection = async (input: Locator, value: string) => {
+  await expect(input).toBeFocused(); await expect(input).toHaveValue(value);
+  expect(await input.evaluate((element: HTMLInputElement | HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 28]);
+};
 
 const installProject = async (page: Page, locale: 'en' | 'zh-CN', goal = false) => {
   const task = detailFixture(projectId, taskId, { title: 'Dense usage fixture', ...(goal ? { type: 'goal', ready: false } : {}) });
@@ -49,6 +55,7 @@ const installProject = async (page: Page, locale: 'en' | 'zh-CN', goal = false) 
       return send(project);
     }
     if (path === `/api/v1/me/projects/${projectId}/worker-prompt`) return send({ scope: 'project', scopeId: projectId, revision: '1', text: 'Original prompt', updatedAt: WORKER_TIME });
+    if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: TEST_VIEWER_ID, revision: '1', text: 'Original prompt', updatedAt: WORKER_TIME });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 1n }));
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return send(task, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/sessions`) return send({ items: [], nextCursor: null });
@@ -151,6 +158,105 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     });
   });
 }
+
+for (const width of [1280, 320]) for (const hasTouch of [false, true]) test.describe(`font preferences ${width}px touch=${hasTouch}`, () => {
+  test.use({ viewport: { width, height: 900 }, hasTouch });
+  const responsive = width <= 800 || hasTouch;
+  const fieldFont = (root: number) => responsive ? Math.max(root, 16) : root * 0.875;
+
+  test('Worker configuration keeps long path drafts, errors and focus in a narrow desktop container', async ({ page }, info) => {
+    const state = await installTools(page, { locale: 'en' });
+    state.detail.worker.platform = 'windows'; state.detail.worker.telemetry.platform = 'windows';
+    await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="configuration"]:visible').click();
+    const configuration = page.locator('.worker-configuration');
+    await expect(page.locator('#config-recoveryLimit')).toHaveValue('3');
+    if (width === 1280) await configuration.evaluate(element => { element.style.width = '640px'; element.style.maxWidth = '100%'; });
+    await configuration.locator('.configuration-tool-paths > summary').click();
+    const path = page.locator('#config-toolPaths-codex'), recovery = page.locator('#config-recoveryLimit');
+    await path.fill(longPath); await recovery.fill('11');
+    const save = page.locator('.config-save-bar').getByRole('button', { name: 'Save configuration', exact: true });
+    await expect(save).toBeDisabled();
+    await path.focus(); await path.evaluate((element: HTMLInputElement) => element.setSelectionRange(5, 28));
+    for (const root of [12, 24]) {
+      await rootFont(page, root);
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+      await font(path, fieldFont(root)); await font(recovery, fieldFont(root));
+      await font(page.locator('#config-recoveryLimit-error'), root * 0.875);
+      await font(configuration.locator('.configuration-tool-paths > summary'), root * 1.125);
+      await retainsSelection(path, longPath);
+      await fit(path); await noOverflow(page);
+      if (responsive) { await minimumHeight(path, 44); await minimumHeight(recovery, 44); }
+      expect(await configuration.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    await recovery.fill('7'); await expect(save).toBeEnabled(); await fit(save);
+    expect(state.writes).toEqual([]);
+    await info.attach('worker-preference-and-container', { body: await page.screenshot(), contentType: 'image/png' });
+  });
+
+  test('project fields and personal Prompt retain readable input sizes, selection and touch geometry', async ({ page }, info) => {
+    const writes = await installProject(page, 'en');
+    await page.goto(`/projects/${projectId}/settings`);
+    const input = page.locator('#execution-warning-minutes'), panel = page.locator('.project-settings-panel');
+    await expect(input).toHaveValue('60'); await input.fill('0');
+    await panel.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(input).toHaveAttribute('aria-invalid', 'true');
+    for (const root of [12, 24]) {
+      await rootFont(page, root); await font(input, fieldFont(root));
+      await font(panel.locator('[role="alert"]'), root * 0.875);
+      if (responsive) await minimumHeight(input, 44);
+      await fit(input); await noOverflow(page);
+    }
+    await page.goto('/account?tab=prompt');
+    const prompt = page.locator('.worker-prompt-text'); await expect(prompt).toHaveValue('Original prompt');
+    const text = 'Keep this personal instruction readable 保留个人草稿。'.repeat(40);
+    await prompt.fill(text); await prompt.focus();
+    await prompt.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 28));
+    if (width === 1280) await page.locator('.worker-prompt').evaluate(element => { element.style.width = '620px'; element.style.maxWidth = '100%'; });
+    for (const root of [12, 24]) {
+      await rootFont(page, root); await font(prompt, fieldFont(root));
+      await font(page.locator('.worker-prompt .panel-heading h2'), root * 1.125);
+      await retainsSelection(prompt, text); await minimumHeight(prompt, 196);
+      await fit(prompt); await noOverflow(page);
+    }
+    expect(writes).toEqual([]);
+    await info.attach('personal-prompt-font-preferences', { body: await page.screenshot(), contentType: 'image/png' });
+  });
+
+  test('repository editor and confirmation preserve long addresses through font changes', async ({ page }, info) => {
+    const writes = await installProject(page, 'en');
+    const address = `https://git.example.com/platform/${'long-repository-name-'.repeat(14)}project.git`;
+    const previews: unknown[] = [];
+    await page.route(`**/api/v1/projects/${projectId}/repository/preview`, route => {
+      previews.push(route.request().postDataJSON());
+      return route.fulfill({ json: { projectId, projectName, currentRepoUrl: 'https://github.com/example/project', repoUrl: address, repositoryVersion: '1', ownershipVersion: '1', classification: 'unverified', targetGitHubRepositoryId: null, unverifiedReason: 'unsupported_host', bindingsInvalidated: true }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.goto(`/projects/${projectId}/settings?tab=management`);
+    await page.getByRole('region', { name: 'Repository address', exact: true }).getByRole('button', { name: 'Edit', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: 'Edit repository address', exact: true });
+    const input = editor.getByLabel('New repository address', { exact: true });
+    await input.fill(address); await input.evaluate((element: HTMLInputElement) => element.setSelectionRange(5, 28));
+    for (const root of [12, 24]) {
+      await rootFont(page, root); await font(input, fieldFont(root));
+      await font(editor.locator('h2'), root * 1.125);
+      await retainsSelection(input, address); await fit(input); await noOverflow(page);
+      if (responsive) await minimumHeight(input, 44);
+    }
+    await input.press('Enter');
+    const confirmation = page.getByRole('dialog', { name: 'Confirm repository address change', exact: true });
+    const back = confirmation.getByRole('button', { name: 'Back', exact: true });
+    await expect(back).toBeFocused();
+    for (const root of [12, 24]) {
+      await rootFont(page, root); await font(confirmation.locator('h2'), root * 1.125);
+      await font(confirmation.locator('.dialog-body'), root * 0.875);
+      await expect(back).toBeFocused(); await fit(back); await noOverflow(page);
+      expect(await confirmation.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    await back.click(); await expect(input).toHaveValue(address); await expect(input).toBeFocused();
+    expect(previews).toHaveLength(1); expect(writes).toEqual([]);
+    await info.attach('repository-font-preferences', { body: await page.screenshot(), contentType: 'image/png' });
+  });
+});
 
 for (const locale of ['en', 'zh-CN'] as const) test(`dense usage ${locale} retains readable numbers, filters and local scrolling`, async ({ page }, info) => {
   await page.setViewportSize({ width: 320, height: 900 });
