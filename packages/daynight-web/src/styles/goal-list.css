@@ -1,5 +1,5 @@
 .goal-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-.goal-list-card { container-type: inline-size; min-width: 0; overflow: hidden; border: 1px solid var(--row-border); border-radius: 8px; background: #fff; }
+.goal-list-card { container: goal-list-card / inline-size; min-width: 0; overflow: hidden; border: 1px solid var(--row-border); border-radius: 8px; background: #fff; }
 .goal-list-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 62px; padding-right: 18px; }
 .goal-list-summary { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 60px; padding: 8px 7px 8px 15px; cursor: pointer; }
 .goal-list-toggle { display: grid; place-items: center; flex: none; width: 22px; min-height: 34px; margin-inline: -4px; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; }
@@ -19,7 +19,7 @@
 .goal-list-progress { flex: none; width: 145px; font-size: var(--text-metadata); color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
 .goal-list-track i { background: var(--task-done-ink); }
-.goal-list-session { flex: none; cursor: pointer; }
+.goal-list-session { flex: none; min-width: 0; max-width: 40%; cursor: pointer; }
 .goal-list-session .session-status-slot { width: auto; max-width: 100%; flex-basis: auto; padding-right: 16px; }
 .goal-list-session .session-status-label { position: relative; }
 .goal-list-session .session-status-action:active .session-status-label { color: var(--task-status); }
@@ -27,19 +27,17 @@
 .goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); background: #fcfcfe; }
 .goal-list-contents .goal-task-list { container-type: inline-size; padding-block-end: 0; }
 .goal-list-empty { margin: 0; padding: 16px 18px; font-size: var(--text-interface); color: var(--task-helper); }
-@media (max-width: 740px) {
+@container goal-list-card (max-width: 740px) {
   .goal-list-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 32px 32px; padding: 0 12px 8px 0; gap: 0 6px; }
   .goal-list-summary { grid-column: 1 / -1; width: 100%; }
-  .goal-list-session { grid-column: 2; }
+  .goal-list-session { grid-column: 2; max-width: 100%; }
   .goal-list-summary { flex-wrap: wrap; padding: 11px 4px 11px 15px; }
   .goal-list-main { flex-basis: calc(100% - 50px); }
   .goal-list-progress { margin-left: 50px; width: auto; flex: 1; text-align: left; }
 }
 
-@container (max-width: 600px) {
-  .goal-list-summary { flex-wrap: wrap; padding-left: 11px; }
-  .goal-list-main { flex-basis: calc(100% - 50px); }
-  .goal-list-progress { margin-left: 50px; width: auto; flex: 1; text-align: left; }
+@container goal-list-card (max-width: 600px) {
+  .goal-list-summary { padding-left: 11px; }
 }
 
 @container (max-width: 250px) {
@@ -57,8 +55,6 @@
 .goal-list-card .task-paused-badge, .goal-list-card .task-pause-count { font-size: var(--text-interface); }
 .goal-list-card .goal-in-progress, .goal-list-card .completion-time-label { font-size: var(--text-metadata); }
 .goal-list-card .chain-worker-active { line-height: 1.5; }
-.goal-list-session { min-width: 0; max-width: 40%; }
 .goal-list-session .session-status-label { white-space: normal; overflow-wrap: anywhere; }
-@media (max-width: 740px) { .goal-list-session { max-width: 100%; } }
 .goal-list-session .session-status-label { display: inline-flex; flex-direction: column; align-items: flex-end; }
 .goal-list-session .session-status-annotation { position: static; height: auto; font-size: var(--text-interface); line-height: 1.5; white-space: normal; }

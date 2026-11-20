@@ -204,6 +204,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, compactDesktopGoal: () => {
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = [{ ...goal, title: 'Goal reading', assignedTo: TEST_VIEWER_ID },
+      { ...first, status: 'in_progress', startedAt: time, properties: { worker, paused: true } },
+      { ...second, status: 'cancelled', cancelledAt: time },
+      ...Array.from({ length: 79 }, (_, i) => detailFixture(projectId,
+        `00000000-0000-4000-8000-${String(1000 + i).padStart(12, '0')}`,
+        { parentId: goalId, title: `Completed task ${i}`, status: 'done', completedAt: time }))];
+    sessionStates = { [firstId]: 'working' };
+    currentGraph = graphFixture(details);
   }, mixedLayoutGoal: () => {
     const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
@@ -2056,6 +2066,7 @@ for (const { viewport, contentWidth } of [
   { viewport: 320 }, { viewport: 390 }, { viewport: 1440 },
   { viewport: 739 }, { viewport: 740 }, { viewport: 741 },
   { viewport: 1440, contentWidth: 599 }, { viewport: 1440, contentWidth: 600 }, { viewport: 1440, contentWidth: 601 },
+  { viewport: 1440, contentWidth: 739 }, { viewport: 1440, contentWidth: 740 }, { viewport: 1440, contentWidth: 741 },
 ]) test(`Goal prefix aligns with the task chain at viewport ${viewport}, card ${contentWidth ?? 'natural'}`, async ({ page }) => {
   await page.setViewportSize({ width: viewport, height: 800 });
   const fixture = await install(page, 'en', 'Owner');
@@ -2125,15 +2136,72 @@ for (const { viewport, contentWidth } of [
   expect(geometry.inside).toBe(true);
   expect(geometry.hits).toEqual([true, true]);
   expect(geometry.outline).toBe(true);
-  if (viewport <= 740 || chainCollapsed.width <= 600) {
+  if (chainCollapsed.width <= 740) {
     expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
     expect(Math.abs(geometry.progressLeft - geometry.titleLeft)).toBeLessThanOrEqual(1);
+  } else {
+    expect(geometry.progressTop).toBeLessThan(geometry.mainBottom - 1);
   }
   const icon = card.locator('svg.goal-list-icon');
   await expect(icon).toHaveAttribute('aria-hidden', 'true');
   await expect(icon.locator('circle')).toHaveCount(3);
   await expect(icon.locator('circle').nth(0)).toHaveAttribute('r', '6');
   await expect(icon.locator('circle').nth(1)).toHaveAttribute('r', '3');
+});
+
+for (const constrained of [false, true]) test(`Goal header reflows at narrow desktop width (${constrained ? 'constrained' : 'natural'})`, async ({ page }) => {
+  await page.setViewportSize({ width: 864, height: 900 });
+  const fixture = await install(page, 'en', 'Owner');
+  fixture.compactDesktopGoal();
+  await page.goto(`/projects/${projectId}`);
+  if (constrained) await page.addStyleTag({ content: `[data-goal-id="${goalId}"] { width: 620px !important; }` });
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await expect(card.locator('.goal-list-title')).toHaveText('Goal reading');
+  await expect(card.locator('.task-row-id')).toHaveText(goalId);
+  await expect(card.locator('.assignee-name')).toHaveText('Owner');
+  await expect(card.locator('.goal-in-progress')).toHaveText('1 in progress');
+  await expect(card.locator('.task-pause-count')).toHaveText('1 blocked');
+  await expect(card.locator('.chain-worker-active')).toBeVisible();
+  await expect(card.locator('.session-status-annotation')).toHaveText('working');
+  await expect(card.locator('.goal-list-progress')).toHaveText('79/80 completed');
+  await expect(card.locator('.goal-list-meta')).toContainText('81');
+  const geometry = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const main = box('.goal-list-main'), progress = box('.goal-list-progress');
+    const session = box('.goal-list-session'), detail = box('.goal-list-detail'), graph = box('.goal-list-graph');
+    const id = element.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const range = document.createRange(); range.selectNodeContents(id);
+    const idRects = [...range.getClientRects()];
+    const copy = box('.task-copy-button');
+    return { width: element.clientWidth, outerWidth: element.getBoundingClientRect().width,
+      mainBottom: main.bottom, mainLeft: main.left, progressTop: progress.top, progressLeft: progress.left, progressBottom: progress.bottom,
+      sessionTop: session.top, sessionBottom: session.bottom, sessionRight: session.right,
+      detailTop: detail.top, detailBottom: detail.bottom, detailLeft: detail.left, detailWidth: detail.width, detailHeight: detail.height,
+      graphTop: graph.top, graphBottom: graph.bottom, graphLeft: graph.left, graphWidth: graph.width, graphHeight: graph.height,
+      idLines: idRects.length, idTop: idRects[0]!.top, idBottom: idRects[0]!.bottom, copyTop: copy.top, copyBottom: copy.bottom };
+  });
+  if (constrained) {
+    expect(geometry.outerWidth).toBe(620);
+    expect(geometry.width).toBeGreaterThan(600);
+  }
+  expect(geometry.width).toBeLessThanOrEqual(740);
+  expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
+  expect(Math.abs(geometry.progressLeft - geometry.mainLeft)).toBeLessThanOrEqual(1);
+  expect(geometry.sessionTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.detailTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.graphTop).toBeGreaterThanOrEqual(geometry.progressBottom - 1);
+  expect(geometry.sessionBottom).toBeGreaterThan(geometry.detailTop);
+  expect(geometry.sessionTop).toBeLessThan(geometry.detailBottom);
+  expect(geometry.graphBottom).toBeGreaterThan(geometry.detailTop);
+  expect(geometry.graphTop).toBeLessThan(geometry.detailBottom);
+  expect(geometry.sessionRight).toBeLessThanOrEqual(geometry.detailLeft + 1);
+  expect(geometry.detailLeft).toBeLessThan(geometry.graphLeft);
+  expect([geometry.detailWidth, geometry.detailHeight, geometry.graphWidth, geometry.graphHeight]).toEqual([32, 32, 32, 32]);
+  expect(geometry.idLines).toBe(1);
+  expect(geometry.copyBottom).toBeGreaterThan(geometry.idTop);
+  expect(geometry.copyTop).toBeLessThan(geometry.idBottom);
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
