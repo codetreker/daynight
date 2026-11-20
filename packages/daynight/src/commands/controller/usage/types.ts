@@ -27,7 +27,8 @@ export type UsageStore = {
   clearRegistrationAttempted(stateId: string): void;
   markGrantAttempted(stateId: string): void;
   clearGrantAttempted(stateId: string): void;
-  pending(stateId: string, limit?: number, kind?: "execution_state" | "measurement"): UsageQueuedEvent[];
+  /** Apply a pure eligibility predicate before the batch limit, without changing retained events. */
+  pending(stateId: string, limit?: number, kind?: "execution_state" | "measurement", eligible?: (event: UsageQueuedEvent) => boolean): UsageQueuedEvent[];
   enqueueMeasurement(stateId: string, body: UsagePayload): "inserted" | "duplicate" | "conflict" | "rejected";
   enqueueState(stateId: string, body: UsagePayload): UsageQueuedEvent;
   acknowledge(flight: readonly UsageQueuedEvent[], results: readonly UsageAck[]): boolean;

@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { createNativeInputPublication, nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
 import { readControllerOutboxByteLength } from "../../../src/commands/controller/outbox-store.js";
 import * as imageHistory from "../../../src/commands/controller/media/history-sync.js";
+import * as usageRuntime from "../../../src/commands/controller/usage/runtime.js";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 const historyRuntime = vi.hoisted(() => ({ flush: vi.fn(async () => {}), supported: false, connected: true }));
 const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
@@ -61,6 +62,31 @@ const setup = () => {
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
 };
+
+test.each(["codex", "claude", "copilot"] as const)("%s meters only Tasks and explicitly identified standalone Tests", async provider => {
+  for (const resumed of [false, true]) for (const scope of ["task", "standalone_test", "legacy_test", "bot", "legacy_bot"] as const) {
+    fixture.closed = false; setup(); fixture.provider = provider;
+    const admitted = scope === "task" || scope === "standalone_test";
+    fixture.ticketOverrides = {
+      ...(scope === "task" ? {} : { claimId: undefined, testExecutionId: "test-execution", ownerUserId: "owner", initialInput: "none" }),
+      ...(scope === "standalone_test" ? { usageScope: "standalone_test" } : {}),
+      ...(scope === "bot" ? { [`${provider}BotRecovery`]: { botId: "bot", directory: "/private/recovery" } } : {}),
+      resumeNativeSessionId: resumed ? "native" : null,
+    };
+    const metering = { ready: vi.fn(), gap: vi.fn(), observe: vi.fn(), close: vi.fn(async () => {}) };
+    const create = vi.spyOn(usageRuntime, "createUsageRuntime").mockReturnValue(metering);
+    fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+    const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
+    try {
+      await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+      expect(create).toHaveBeenCalledTimes(admitted ? 1 : 0);
+      expect((fixture.options as ProviderOptions).usageRuntime).toBe(admitted ? metering : undefined);
+    } finally { process.emit("SIGTERM", "SIGTERM"); await running; create.mockRestore(); }
+    if (admitted) expect(metering.close).toHaveBeenCalled();
+    else expect(metering.close).not.toHaveBeenCalled();
+    fixture.open.mockClear(); fixture.ticketOverrides = {};
+  }
+});
 
 test("capture preparation flushes the source tail and serializes its required checkpoint behind an active upload", async () => {
   setup(); historyRuntime.supported = true;

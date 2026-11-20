@@ -25,7 +25,7 @@ test('retains real dependency geometry and viewport through direction, zoom, pan
   }));
   for (const card of cards) {
     const external = !expected.memberIds.includes(card.id!);
-    expect(card).toEqual({ id: card.id, width: 320, height: external ? 204 : 144, hasControls: external, separate: true });
+    expect(card).toEqual({ id: card.id, width: 300, height: external ? 184 : 124, hasControls: external, separate: true });
   }
   const geometry = async (direction: 'horizontal' | 'vertical') => {
     expect(await checkDependencyGeometry(page, expected, info, undefined, direction)).toEqual({ total: 0, examples: [] });
@@ -90,7 +90,7 @@ for (const rootSize of [16, 32]) test(`320px graph keeps its first card and cont
     return { width: card.offsetWidth, height: card.offsetHeight,
       inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1) };
   });
-  expect(sizes).toEqual({ width: 320 * rootSize / 16, height: 144 * rootSize / 16, inside: true });
+  expect(sizes).toEqual({ width: 300 * rootSize / 16, height: 124 * rootSize / 16, inside: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await body.press('Enter');
   await expect(body).toHaveAttribute('aria-pressed', 'true');

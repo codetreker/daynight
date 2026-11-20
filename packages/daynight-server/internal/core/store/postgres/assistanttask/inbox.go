@@ -68,7 +68,7 @@ func (d *DAO) InsertInboxReceipt(ctx context.Context, v model.AssistantTaskInbox
 	// changes nothing.
 	return d.changed(ctx, "insert assistant inbox receipt", `INSERT INTO assistant_task_inbox_receipts AS r(inbox_id,idempotency_key,owner_user_id,task_id,body_sha256,event_id,suppressed,target_bot_id,subject_task_id,received_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
  ON CONFLICT (inbox_id,idempotency_key) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id,task_id=EXCLUDED.task_id,body_sha256=EXCLUDED.body_sha256,event_id=EXCLUDED.event_id,suppressed=EXCLUDED.suppressed,target_bot_id=EXCLUDED.target_bot_id,subject_task_id=EXCLUDED.subject_task_id,received_at=EXCLUDED.received_at,expires_at=EXCLUDED.expires_at
- WHERE r.owner_user_id=EXCLUDED.owner_user_id AND r.expires_at<=clock_timestamp()`, v.InboxID, v.IdempotencyKey, v.OwnerUserID, v.TaskID, v.BodySHA256, v.EventID, v.Suppressed, v.TargetBotID, v.SubjectTaskID, v.ReceivedAt, v.ExpiresAt)
+ WHERE r.owner_user_id=EXCLUDED.owner_user_id AND r.expires_at<=statement_timestamp()`, v.InboxID, v.IdempotencyKey, v.OwnerUserID, v.TaskID, v.BodySHA256, v.EventID, v.Suppressed, v.TargetBotID, v.SubjectTaskID, v.ReceivedAt, v.ExpiresAt)
 }
 
 func (d *DAO) PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error) {
@@ -83,8 +83,17 @@ func (d *DAO) ReceivedInbound(ctx context.Context, owner, bot, subject string, s
 	return found, pg.AuthQueryError("read assistant inbound wake", err)
 }
 
+// Receipt expiry cutoffs use statement_timestamp() rather than the volatile
+// clock_timestamp(): only a stable bound can become an index condition on
+// assistant_task_inbox_receipts_expiry(task_id,expires_at), letting a probe skip
+// a task's live receipts instead of filtering every one of them.
+const (
+	reclaimInboxReceiptsSQL = `DELETE FROM assistant_task_inbox_receipts WHERE (inbox_id,idempotency_key) IN (SELECT inbox_id,idempotency_key FROM assistant_task_inbox_receipts WHERE task_id=$2 AND expires_at<=statement_timestamp() AND owner_user_id=$1 ORDER BY expires_at LIMIT $3)`
+	inboundReclaimTasksSQL  = `SELECT t.id::text FROM assistant_tasks t WHERE t.owner_user_id=$1 AND t.state<>'deleted' AND (EXISTS(SELECT 1 FROM assistant_task_inbox_receipts r WHERE r.task_id=t.id AND r.expires_at<=statement_timestamp()) OR EXISTS(SELECT 1 FROM assistant_task_events e WHERE e.task_id=t.id AND e.type='inbound' AND e.state IN ('delivered','expired') AND e.settled_at<$2)) ORDER BY t.id LIMIT $3`
+)
+
 func (d *DAO) ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error) {
-	return d.deleted(ctx, "reclaim assistant inbox receipts", `DELETE FROM assistant_task_inbox_receipts WHERE (inbox_id,idempotency_key) IN (SELECT inbox_id,idempotency_key FROM assistant_task_inbox_receipts WHERE task_id=$2 AND expires_at<=clock_timestamp() AND owner_user_id=$1 ORDER BY expires_at LIMIT $3)`, owner, task, limit)
+	return d.deleted(ctx, "reclaim assistant inbox receipts", reclaimInboxReceiptsSQL, owner, task, limit)
 }
 
 // ReclaimInboundEvents spells the event type and states as literals so every
@@ -98,7 +107,7 @@ func (d *DAO) ReclaimInboundEvents(ctx context.Context, owner, task string, befo
 // task-leading expiry and settled-inbound indexes, so a pull never scans other
 // owners' receipts or events.
 func (d *DAO) InboundReclaimTasks(ctx context.Context, owner string, before time.Time, limit int) ([]string, error) {
-	return many(ctx, d.tx, "list assistant inbound reclamation tasks", `SELECT t.id::text FROM assistant_tasks t WHERE t.owner_user_id=$1 AND t.state<>'deleted' AND (EXISTS(SELECT 1 FROM assistant_task_inbox_receipts r WHERE r.task_id=t.id AND r.expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM assistant_task_events e WHERE e.task_id=t.id AND e.type='inbound' AND e.state IN ('delivered','expired') AND e.settled_at<$2)) ORDER BY t.id LIMIT $3`, scanID, owner, before, limit)
+	return many(ctx, d.tx, "list assistant inbound reclamation tasks", inboundReclaimTasksSQL, scanID, owner, before, limit)
 }
 
 func (d *DAO) deleted(ctx context.Context, phase, query string, args ...any) (int64, error) {

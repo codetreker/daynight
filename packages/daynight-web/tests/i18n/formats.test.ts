@@ -56,3 +56,20 @@ describe("execution duration formats", () => {
     expect(getFormats("zh-CN").duration(milliseconds as number)).toBe(zh);
   });
 });
+
+
+describe("graph execution duration", () => {
+  it.each([
+    [59_999, "< 1 min", "不足 1 分钟"],
+    [60_000, "1min", "1 分钟"],
+    [3_599_999, "59min", "59 分钟"],
+    [3_600_000, "1h", "1 小时"],
+    [4_200_000, "1h 10min", "1 小时 10 分钟"],
+    [86_400_000, "1d", "1 天"],
+    [86_700_000, "1d", "1 天"],
+    [183_840_000, "2d 3h", "2 天 3 小时"],
+  ])("formats %i milliseconds using adjacent units only", (milliseconds, en, zh) => {
+    expect(getFormats("en").graphDuration(milliseconds as number)).toBe(en);
+    expect(getFormats("zh-CN").graphDuration(milliseconds as number)).toBe(zh);
+  });
+});

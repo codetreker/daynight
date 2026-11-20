@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -530,4 +532,42 @@ func TestInboundRetentionStartsWhenEventLeavesPending(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// TestInboxReceiptExpiryBoundsTheIndexScan proves that both receipt-expiry
+// probes bound assistant_task_inbox_receipts_expiry by expires_at, so a task
+// with many live receipts and none expired is not scanned receipt by receipt.
+func TestInboxReceiptExpiryBoundsTheIndexScan(t *testing.T) {
+	expiryIndexCond := regexp.MustCompile(`"Index Cond": "[^"]*expires_at <= statement_timestamp\(\)`)
+	f := setup(t)
+	ctx := t.Context()
+	conn, err := f.db.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `RESET ALL; DEALLOCATE ALL`); err != nil {
+			t.Error(err)
+		}
+		conn.Release()
+	}()
+	if _, err := conn.Exec(ctx, `SET enable_seqscan=off; SET enable_bitmapscan=off; SET plan_cache_mode=force_generic_plan`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, prepare, execute string }{
+		{"receipts", `PREPARE receipt_plan(uuid,uuid,int) AS ` + assistanttask.ReclaimInboxReceiptsSQL, `EXECUTE receipt_plan(gen_random_uuid(),gen_random_uuid(),10)`},
+		{"tasks", `PREPARE task_plan(uuid,timestamptz,int) AS ` + assistanttask.InboundReclaimTasksSQL, `EXECUTE task_plan(gen_random_uuid(),statement_timestamp(),10)`},
+	} {
+		if _, err := conn.Exec(ctx, c.prepare); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var plan []byte
+		if err := conn.QueryRow(ctx, `EXPLAIN (FORMAT JSON) `+c.execute).Scan(&plan); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		text := string(plan)
+		if !strings.Contains(text, `"Index Name": "assistant_task_inbox_receipts_expiry"`) || !expiryIndexCond.MatchString(text) {
+			t.Fatalf("%s plan does not bound the receipt expiry index by expires_at: %s", c.name, plan)
+		}
+	}
 }

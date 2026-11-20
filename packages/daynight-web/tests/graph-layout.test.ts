@@ -69,9 +69,9 @@ const verifyGeometry = (actual: CanvasLayout, expected: ChainProjection) => {
 
 describe('horizontal task graph layout', () => {
   it('exports compact and expandable task card dimensions', () => {
-    expect(TASK_NODE_WIDTH).toBe(320);
-    expect(TASK_NODE_COMPACT_HEIGHT).toBe(144);
-    expect(TASK_NODE_EXPANDABLE_HEIGHT).toBe(204);
+    expect(TASK_NODE_WIDTH).toBe(300);
+    expect(TASK_NODE_COMPACT_HEIGHT).toBe(124);
+    expect(TASK_NODE_EXPANDABLE_HEIGHT).toBe(184);
   });
 
   it('returns an explicit empty layout without non-finite Dagre bounds', () => {

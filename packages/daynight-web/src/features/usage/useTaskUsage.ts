@@ -1,7 +1,7 @@
 import { createContext, createElement, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { getTaskUsageSummaries, getUsageCapabilities, type UsageSummary } from '../../api/usage';
-import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { useOptionalTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 
 export type TaskUsageCapability = 'pending' | 'available' | 'unsupported' | 'error';
 export type TaskUsageState = { readonly summary: UsageSummary | null; readonly error: unknown; readonly pending: boolean; readonly capability: TaskUsageCapability };
@@ -116,15 +116,17 @@ class UsageStore {
   }
 }
 const stores = new WeakMap<TaskCacheScope, UsageStore>();
-export const useTaskUsage = (projectId: string, taskId: string, active = true) => {
+export const useTaskUsage = (projectId: string | null, taskId: string, active = true) => {
   const workspaceActive = useContext(ActivityContext);
   active = active && workspaceActive;
-  const scope = useTaskCacheScope();
-  let store = stores.get(scope);
-  if (store === undefined) { store = new UsageStore(scope); stores.set(scope, store); }
+  const scope = useOptionalTaskCacheScope();
+  if (projectId !== null && scope === null) throw new Error("An authenticated task cache scope is required.");
+  let store = scope === null || projectId === null ? undefined : stores.get(scope);
+  if (store === undefined && scope !== null && projectId !== null) { store = new UsageStore(scope); stores.set(scope, store); }
   const current = store;
-  const subscribe = useCallback((listener: () => void) => active ? current.subscribe(projectId, taskId, listener) : () => {}, [current, projectId, taskId, active]);
-  const snapshot = useCallback(() => current.snapshot(projectId, taskId), [current, projectId, taskId]);
+  const subscribe = useCallback((listener: () => void) => active && current !== undefined && projectId !== null ? current.subscribe(projectId, taskId, listener) : () => {}, [current, projectId, taskId, active]);
+  const snapshot = useCallback(() => current !== undefined && projectId !== null ? current.snapshot(projectId, taskId) : empty, [current, projectId, taskId]);
   const state = useSyncExternalStore(subscribe, snapshot);
-  return { ...state, retry: current.refresh };
+  const retry = useCallback(() => { current?.refresh(); }, [current]);
+  return { ...state, retry };
 };

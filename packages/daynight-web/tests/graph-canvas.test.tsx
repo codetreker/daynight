@@ -132,7 +132,7 @@ describe('task dependency canvas', () => {
     expect(nestedOwner?.current).toBeNull();
   });
 
-  it('labels each ordinary and external card with its actual Goal scope', async () => {
+  it('does not project Goal ownership into card content', async () => {
     const data: TaskGraphData = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, parentId: task.id === 'C' ? 'g1' : task.id === 'B' ? 'g2' : null })) };
     const goal = (id: string, title: string): TaskSummary => {
       const { blockedBy: _blockedBy, ready: _ready, ...rest } = data.tasks[0]!;
@@ -141,10 +141,10 @@ describe('task dependency canvas', () => {
     const summaries = new Map([['g1', goal('g1', '目标一')], ['g2', goal('g2', '目标二')]]);
     const view = render(<TaskGraph index={buildGraphIndex(data)} summaries={summaries} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
-    expect(nodeButton('基础 API')).toHaveAccessibleName(/未归属 Goal/);
-    expect(nodeButton('合流实现…')).toHaveAccessibleName(/Goal：目标一/);
-    expect(nodeButton('设计方案')).toHaveAccessibleName(/Goal：目标二/);
-    expect(within(nodeButton('设计方案')).getByText('Goal：目标二')).toBeVisible();
+    expect(nodeButton('基础 API')).not.toHaveAccessibleName(/未归属 Goal/);
+    expect(nodeButton('合流实现…')).not.toHaveAccessibleName(/Goal：目标一/);
+    expect(nodeButton('设计方案')).not.toHaveAccessibleName(/Goal：目标二/);
+    expect(within(nodeButton('设计方案')).queryByText('Goal：目标二')).toBeNull();
   });
   it('sizes visible ordinary cards to their bodies and external cards to their navigation footers', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
@@ -152,8 +152,8 @@ describe('task dependency canvas', () => {
     expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(2);
     expect(view.container.querySelector('.task-node-expand[data-direction]')).toBeNull();
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      expect(node.style.width).toBe('320px');
-      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '144px' : '204px');
+      expect(node.style.width).toBe('300px');
+      expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '124px' : '184px');
     }
   });
 
@@ -906,7 +906,7 @@ describe('progressive task visibility', () => {
     const initialRoutes = [...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'));
     const initialViewport = viewport(view.container).style.transform;
     const upstream = expansion('合流任务 · 40 个外部前置', 'prerequisites');
-    expect(upstream.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('204px');
+    expect(upstream.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('184px');
     expect(joinCard.querySelector('.task-node-expansions')?.children).toHaveLength(2);
     expect(joinCard.querySelectorAll('.task-node-expand')).toHaveLength(1);
     expect(upstream).toHaveAttribute('data-added-tasks', '20');
@@ -928,20 +928,20 @@ describe('progressive task visibility', () => {
     await rendered(view.container, 81, 80);
     await waitFor(() => { expect(rootBody).toHaveFocus(); });
     expect(rootCard.querySelector('.task-node-expansions')).toBeNull();
-    expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('144px');
+    expect(rootBody.closest<HTMLElement>('.react-flow__node')!.style.height).toBe('124px');
     fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
     await rendered(view.container, 101, 100);
     expect(view.container.querySelectorAll('.task-node-expand[data-direction]')).toHaveLength(0);
     expect(view.container.querySelectorAll('.task-node-navigate')).toHaveLength(40);
     expect(view.container.querySelectorAll('.task-node-expansions')).toHaveLength(40);
     await waitFor(() => { expect(joinBody).toHaveFocus(); });
-    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '144px' : '204px');
+    for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) expect(node.style.height).toBe(node.querySelector('.task-node-external') === null ? '124px' : '184px');
     expect(progressiveIndex.components.get(rootId)!.progress).toEqual({ total: 61, done: 0, cancelled: 0, ended: 0, status: 'todo' });
     signal.throwIfAborted();
     await user.click(reset);
     await rendered(view.container, 50, 49);
     expect(reset).toHaveFocus();
-    expect(expansion('合流任务 · 40 个外部前置', 'prerequisites').closest<HTMLElement>('.react-flow__node')!.style.height).toBe('204px');
+    expect(expansion('合流任务 · 40 个外部前置', 'prerequisites').closest<HTMLElement>('.react-flow__node')!.style.height).toBe('184px');
     expect(visibleIds(view.container)).toEqual(initialIds);
     expect([...view.container.querySelectorAll('.react-flow__edge-path')].map((path) => path.getAttribute('d'))).toEqual(initialRoutes);
     expect(viewport(view.container).style.transform).toBe(initialViewport);

@@ -28,7 +28,8 @@ const inboxDeliveryScan = 100
 // ReceiveInput is one inbox request after the protocol adapter extracted its
 // parts. Token is nil when the request carried none. WebhookID and
 // IdempotencyKey are the request headers; an external request may use either,
-// and both must match when both are present.
+// and both must match when both are present. A verified Daynight event is keyed
+// by its event ID, so its Idempotency-Key header is not compared.
 type ReceiveInput struct {
 	InboxID                   string
 	Token                     *string
@@ -97,9 +98,6 @@ func (s *Inbox) Receive(ctx context.Context, input ReceiveInput) (ReceiveResult,
 
 func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundScope, input ReceiveInput) (ReceiveResult, error) {
 	var result ReceiveResult
-	if input.WebhookID != "" && input.IdempotencyKey != "" && input.WebhookID != input.IdempotencyKey {
-		return result, inboxFault("invalid_input", "Webhook-Id and Idempotency-Key must match.")
-	}
 	var digest string
 	if input.Token != nil {
 		var err error
@@ -137,6 +135,9 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 		in.Classification, in.IdempotencyKey, in.Actor = core.InboundDaynight, verified.eventID, verified.actor
 		ttl, subject = core.InboxDaynightReceiptTTL, &verified.taskID
 	} else {
+		if input.WebhookID != "" && input.IdempotencyKey != "" && input.WebhookID != input.IdempotencyKey {
+			return result, inboxFault("invalid_input", "Webhook-Id and Idempotency-Key must match.")
+		}
 		if digest == "" {
 			return result, errInboxUnauthorized
 		}
@@ -156,6 +157,14 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 		if err == nil {
 			if subtle.ConstantTimeCompare([]byte(receipt.BodySHA256), []byte(bodySHA)) != 1 {
 				return ReceiveResult{}, errInboxConflict
+			}
+			// A replay reports the classification of the original reception,
+			// which this attempt's verification may no longer reproduce (for
+			// example after the owner lost project access). Only Daynight
+			// receipts record a subject task.
+			result.Classification = core.InboundExternal
+			if receipt.SubjectTaskID != nil {
+				result.Classification = core.InboundDaynight
 			}
 			result.EventID, result.Duplicate, result.Suppressed = receipt.EventID, true, receipt.Suppressed
 			return result, nil
