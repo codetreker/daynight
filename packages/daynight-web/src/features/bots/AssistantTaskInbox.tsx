@@ -54,27 +54,31 @@ const useInboxMessages = () => { const { locale } = useI18n(); return { ...(loca
  * started. The inbox shown is therefore never older than the submitted version, so a concurrent inbox change becomes a conflict
  * instead of a write against an inbox other than the one displayed. A confirmation keeps the version it was opened against.
  * The token is published as soon as its write response is validated, without waiting for the task detail refresh, and is
- * retired once a snapshot read after that write shows the issuing credential disabled, replaced or rotated.
+ * retired once an inbox read that started after the write response shows the issuing credential disabled, replaced or rotated.
+ * Every reload after a write or a result check waits for such an inbox read, so the inbox shown afterwards follows the write.
  */
 export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), admission = assistantTaskAdmission(scope), taskId = task.id, heading = useId(), modeName = useId();
   const observed = useRef(task.version); observed.current = task.version;
+  // Numbers inbox reads in start order. The task version cannot order a read against an issued token, because the task detail
+  // read that supplies it may lag behind the write that issued the token.
+  const started = useRef(0);
   const load = useCallback(async (scope: TaskCacheScope, signal: AbortSignal) => {
-    const version = observed.current;
-    return { version, inbox: await getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(scope)) };
+    const version = observed.current, sequence = ++started.current;
+    return { version, sequence, inbox: await getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(scope)) };
   }, [taskId]);
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load);
   // A snapshot paired with an older task version may predate a concurrent inbox change, so it cannot authorize writes;
   // re-read the inbox to pair it with the version the task now reports.
   const current = read.value !== null && read.value.version === task.version, refreshRead = read.refresh;
   useEffect(() => { if (read.value !== null && read.value.version !== task.version) refreshRead(); }, [read.value, task.version, refreshRead]);
-  const reload = async () => { read.refresh(); await onChanged(); };
+  const reread = read.reread, reload = async () => { await Promise.all([reread(), onChanged()]); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation, receipt => (receipt as AssistantTaskInboxResult).operation.kind === 'inbox_disable' ? null : m.receiptToken);
   // The issued token stays bound to the identity scope that received it and is never shown to another identity. It also keeps
-  // the issuing inbox and rotation so a snapshot read after its write (version at least the write's resulting version) that
-  // no longer shows that credential, such as a disable, re-enable or rotation from another tab, retires it.
-  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string; readonly inboxId: string | null; readonly rotatedAt: string | null; readonly version: string } | null>(null);
-  const superseded = issuedToken !== null && read.value !== null && BigInt(read.value.version) >= BigInt(issuedToken.version)
+  // the issuing inbox and rotation so an inbox read started after its write response that no longer shows that credential,
+  // such as a disable, re-enable or rotation from another tab, retires it.
+  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string; readonly inboxId: string | null; readonly rotatedAt: string | null; readonly after: number } | null>(null);
+  const superseded = issuedToken !== null && read.value !== null && read.value.sequence > issuedToken.after
     && (!read.value.inbox.enabled || read.value.inbox.inboxId !== issuedToken.inboxId || read.value.inbox.rotatedAt !== issuedToken.rotatedAt);
   useEffect(() => { if (superseded) setIssuedToken(null); }, [superseded]);
   const token = issuedToken !== null && !superseded && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
@@ -93,7 +97,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
       const result = await operation(signal, admission);
       if (result.token === null || origin.scope.isInvalidated || owner.current.scope !== origin.scope || owner.current.taskId !== origin.taskId) return;
       retained = true;
-      setIssuedToken({ scope: origin.scope, value: result.token, inboxId: result.inbox.inboxId, rotatedAt: result.inbox.rotatedAt, version: result.operation.resultingVersion });
+      setIssuedToken({ scope: origin.scope, value: result.token, inboxId: result.inbox.inboxId, rotatedAt: result.inbox.rotatedAt, after: started.current });
       onIssued?.();
     });
     // A retained result skipped the mutation's own reload; refresh the task so later writes use its new version.
