@@ -34,6 +34,7 @@
 
 @media (max-width: 800px), (pointer: coarse) {
   [data-touch-text="responsive"],
+  .field [data-touch-text="responsive"],
   .management-typography .field :is(input, textarea) { font-size: max(var(--text-base), 16px); }
 }
 @media (pointer: coarse) {
