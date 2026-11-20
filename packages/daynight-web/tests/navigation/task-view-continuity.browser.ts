@@ -52,6 +52,110 @@ const select = async (page: Page, name: string) => {
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
 
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`project task category labels preserve word boundaries at narrow widths in ${locale}`, async ({ page }) => {
+    const root = row(10, 'Chain root'), child = row(11, 'Chain child', [root.id]);
+    const goal = detailFixture(projectId, id(12), { type: 'goal', title: 'Goal' });
+    const state = await install(page, [root, child, row(13, 'Standalone'), goal]);
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const tabs = page.locator('.project-task-tabs');
+    for (const view of ['standalone', 'chains', 'goals']) await expect(page.locator(`#project-task-tab-${view} .graph-count-pill`)).toHaveText('1');
+    const names = locale === 'en' ? ['Standalone tasks', 'Task chains', 'Goals'] : ['独立任务', '任务链', 'Goal'];
+    for (const width of [320, 375, 390, 768, 1360]) {
+      await page.setViewportSize({ width, height: 800 });
+      const geometry = await tabs.evaluate((element, labels) => {
+        const bounds = element.getBoundingClientRect();
+        const buttons = [...element.querySelectorAll<HTMLElement>('[role="tab"]')];
+        return buttons.map((button, index) => {
+          const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+          let node: Node | null;
+          while ((node = walker.nextNode()) && !node.textContent?.includes(labels[index]!)) { /* find the label, not its count */ }
+          if (!node) throw new Error(`Missing label ${labels[index]}`);
+          const start = node.textContent!.indexOf(labels[index]!);
+          const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + labels[index]!.length);
+          const labelLines = range.getClientRects().length;
+          range.setEnd(node, start + labels[index]!.split(' ')[0]!.length);
+          const firstWordLines = range.getClientRects().length;
+          const rect = button.getBoundingClientRect(), pill = button.querySelector<HTMLElement>('.graph-count-pill')!;
+          const pillRect = pill.getBoundingClientRect();
+          return { labelLines, firstWordLines, top: rect.top, bottom: rect.bottom, width: rect.width,
+            inStrip: rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1,
+            pillFits: pill.scrollWidth <= pill.clientWidth + 1 && pillRect.left >= rect.left - 1 && pillRect.right <= rect.right + 1 };
+        });
+      }, names);
+      expect(geometry).toHaveLength(3);
+      for (const item of geometry) {
+        expect(item.firstWordLines).toBe(1);
+        if (width !== 320 || locale === 'zh-CN') expect(item.labelLines).toBe(1);
+        expect(item.inStrip && item.pillFits && item.width > 0).toBe(true);
+        expect(Math.abs(item.top - geometry[0]!.top)).toBeLessThan(1);
+        expect(Math.abs(item.bottom - geometry[0]!.bottom)).toBeLessThan(1);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    // Keep the viewport wide while changing only the task content width.
+    const gaps: number[] = [];
+    for (const width of [420, 421]) {
+      await tabs.evaluate((element, value) => { element.parentElement!.style.width = `${value}px`; }, width);
+      gaps.push(await tabs.evaluate(element => Number.parseFloat(getComputedStyle(element).columnGap)));
+      expect(await tabs.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    expect(gaps[0]).toBeLessThan(gaps[1]!);
+    expect(state.writes).toEqual([]);
+  });
+}
+
+test.describe('touch task tabs', () => {
+  test.use({ hasTouch: true });
+  test('tap selects each category on a narrow project page', async ({ page }) => {
+    const state = await install(page, [row(1, 'Standalone')]);
+    await page.setViewportSize({ width: 320, height: 800 }); await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').tap();
+    for (const view of ['standalone', 'goals', 'chains']) {
+      const tab = page.locator(`#project-task-tab-${view}`);
+      await tab.tap(); await expect(tab).toHaveAttribute('aria-selected', 'true');
+    }
+    expect(state.writes).toEqual([]);
+  });
+});
+
+test('project task tabs keep counts and focused selection visible in an overflowing strip', async ({ page }) => {
+  const root = row(100, 'Chain root'), child = row(101, 'Chain child', [root.id]);
+  const goals = Array.from({ length: 12 }, (_, i) => detailFixture(projectId, id(200 + i), { type: 'goal', title: `Goal ${i}` }));
+  const state = await install(page, [root, child, ...goals]);
+  await page.setViewportSize({ width: 320, height: 800 }); await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const tabs = page.locator('.project-task-tabs'), first = page.locator('#project-task-tab-standalone'), last = page.locator('#project-task-tab-goals');
+  await expect(first.locator('.graph-count-pill')).toHaveText('0');
+  await expect(last.locator('.graph-count-pill')).toHaveText('12');
+  // A larger browser font and narrow content exercise overflow without changing the viewport.
+  await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+  await tabs.evaluate(element => { element.parentElement!.style.width = '200px'; });
+  expect(await tabs.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  await tabs.hover(); await page.mouse.wheel(500, 0);
+  await expect.poll(() => tabs.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  await first.focus(); const pageScroll = await position(page);
+  await page.keyboard.press('End'); await expect(last).toBeFocused(); await expect(last).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => tabs.evaluate(element => {
+    const strip = element.getBoundingClientRect(), item = element.querySelector<HTMLElement>('#project-task-tab-goals')!.getBoundingClientRect();
+    return item.left >= strip.left - 1 && item.right <= strip.right + 1;
+  })).toBe(true);
+  expect(await position(page)).toBe(pageScroll);
+  await page.keyboard.press('Home'); await expect(first).toBeFocused(); await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => tabs.evaluate(element => {
+    const strip = element.getBoundingClientRect(), item = element.querySelector<HTMLElement>('#project-task-tab-standalone')!.getBoundingClientRect();
+    return item.left >= strip.left - 1 && item.right <= strip.right + 1;
+  })).toBe(true);
+  expect(await position(page)).toBe(pageScroll);
+  await page.keyboard.press('ArrowLeft'); await expect(last).toBeFocused();
+  await page.keyboard.press('ArrowRight'); await expect(first).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.writes).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
   test(`unfinished Goal tab count and keyboard navigation at ${width}px in ${locale}`, async ({ page }) => {
     const goal = (n: number, changes: Partial<TaskDetail>) => detailFixture(projectId, id(n), { type: 'goal', title: `Goal ${n}`, ...changes });
