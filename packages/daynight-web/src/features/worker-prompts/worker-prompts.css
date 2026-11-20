@@ -10,3 +10,9 @@
 .worker-prompt-preview { margin-top: 14px; }
 .worker-prompt-preview pre, .worker-prompt-latest { font-size: var(--text-sm); line-height: 1.5; max-height: 392px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 @container worker-prompt (max-width: 620px) { .worker-prompt-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.worker-prompt-purpose { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-block: 14px; font-size: var(--text-sm); }
+.worker-prompt-purpose > div { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; }
+.worker-prompt-purpose button { border: 1px solid transparent; border-radius: 6px; padding: 6px 14px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.worker-prompt-purpose button[aria-pressed="true"] { background: var(--surface, #fff); border-color: #7a75ac; color: #373174; }
+.worker-prompt-purpose button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
