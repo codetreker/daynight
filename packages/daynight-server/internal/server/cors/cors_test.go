@@ -107,6 +107,7 @@ func TestDisabledCORSAndIndependentRoutes(t *testing.T) {
 		{"/mcp", "https://client.example", ""}, {"/healthz", "https://client.example", ""},
 		{"/assets/app.js", "https://client.example", ""}, {"/api/v1/oauth/s2s/token", "https://client.example", ""},
 		{"/api/v1/native-callback", "https://client.example", ""}, {"/api/v1/controller-channel", "https://client.example", ""},
+		{"/api/v1/assistant-task-inbox/22222222-2222-4222-8222-222222222222", "https://client.example", ""},
 	} {
 		r := httptest.NewRequest(http.MethodOptions, tc.path, nil)
 		r.Header.Set("Origin", "https://client.example")

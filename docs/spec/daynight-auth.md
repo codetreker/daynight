@@ -668,6 +668,8 @@ HEAD 的资源仍拒绝 HEAD。请求头匹配大小写不敏感，业务 parser
 归档生产写入、上传准备和生产者上传回执读取不属于用户 CORS；它们的 OPTIONS 无凭据
 返回 403，不发送 CORS 头，不认证或预留上传。用户归档状态、content 和文件读取，以及
 用户图片上传保持用户 CORS。准备和生产者状态即使用 GET 仍需原 PAT owner upload admission。
+公开助手任务收件箱接收路由 `/api/v1/assistant-task-inbox/{inboxId}` 不属于用户 CORS，其 OPTIONS
+落入该路由的 405；接收契约见[助手任务收件箱规格](assistant-task-inbox.md)。
 CORS 不授予身份或资源权限；主站 Cookie 写 Origin、账号根及生产者凭据要求保持。
 S2S issuer 不提供浏览器 CORS，Public OAuth/MCP 保留原独立 CORS，静态资源和健康检查不受影响。
 公开签发和 API token 的 REST 准入分别由其认证入口负责。

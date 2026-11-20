@@ -94,6 +94,13 @@ func (d *DAO) ReclaimInboundEvents(ctx context.Context, owner, task string, befo
 	return d.deleted(ctx, "reclaim assistant inbound events", `DELETE FROM assistant_task_events WHERE id IN (SELECT id FROM assistant_task_events WHERE task_id=$2 AND type='inbound' AND state IN ('delivered','expired') AND settled_at<$3 AND owner_user_id=$1 ORDER BY settled_at LIMIT $4)`, owner, task, before, limit)
 }
 
+// InboundReclaimTasks walks the owner's tasks and probes each through the
+// task-leading expiry and settled-inbound indexes, so a pull never scans other
+// owners' receipts or events.
+func (d *DAO) InboundReclaimTasks(ctx context.Context, owner string, before time.Time, limit int) ([]string, error) {
+	return many(ctx, d.tx, "list assistant inbound reclamation tasks", `SELECT t.id::text FROM assistant_tasks t WHERE t.owner_user_id=$1 AND t.state<>'deleted' AND (EXISTS(SELECT 1 FROM assistant_task_inbox_receipts r WHERE r.task_id=t.id AND r.expires_at<=clock_timestamp()) OR EXISTS(SELECT 1 FROM assistant_task_events e WHERE e.task_id=t.id AND e.type='inbound' AND e.state IN ('delivered','expired') AND e.settled_at<$2)) ORDER BY t.id LIMIT $3`, scanID, owner, before, limit)
+}
+
 func (d *DAO) deleted(ctx context.Context, phase, query string, args ...any) (int64, error) {
 	tag, err := d.tx.Exec(ctx, query, args...)
 	if err != nil {
