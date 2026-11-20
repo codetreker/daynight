@@ -53,7 +53,7 @@ const install = async (page: Page, retained = false, locale = 'zh-CN', partial =
       runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
       admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
-      currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: null, detailCoverage: state.partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
+      currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: { operationId: workerId(910), component: 'execution', scope, association: { ...association, title: 'Recovery-only task' }, observedAt: WORKER_TIME, explanation: 'The operation recovered.', explanationTruncated: false }, detailCoverage: state.partial ? 'partial' : 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: { observedAt: WORKER_TIME, phase: 'write', error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, requestId: workerId(911) } },
       ...(retained ? retainedObservation() : {}),
       ...(state.activities === null ? {} : { activities: state.activities }),
     } }); }
@@ -95,7 +95,7 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await expect(panel).not.toContainText('Execution waiting only'); await expect(panel).not.toContainText('Project cleanup only');
   await expect(page.locator('.worker-task-table').getByRole('link', { name: longTitle })).toBeVisible();
   await expect(page.getByRole('heading', { name: locale === 'zh-CN' ? '调度阶段' : 'Scheduler phase' })).toBeVisible();
-  await expect(page.locator('.monitoring-issue')).toHaveCount(1);
+  await expect(page.locator('.monitoring-issue')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (width <= 390) expect(await rows.nth(0).getByRole('link').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('tasks-in-cleanup.png'), fullPage: true });
@@ -245,7 +245,6 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   expect(await monitoringTime.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.worker-task-heading-label')!.closest('section')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   const timeBox = await monitoringTime.boundingBox(), taskBox = await taskPanel.boundingBox();
   expect(timeBox!.y + timeBox!.height).toBeLessThanOrEqual(taskBox!.y);
-  if (width === 320) expect(await monitoringTime.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('monitoring-time.png'), fullPage: true });
   await expect(page.getByRole('heading', { name: '容量责任' })).toHaveCount(0);
@@ -253,32 +252,28 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   await expect(page.locator('[data-worker-tab="system"]:visible')).toHaveAttribute('aria-selected', 'true');
   await expect(monitoringTime).toBeHidden();
   await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true'); await expect(monitoringTime).toBeVisible();
-  const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
-  await expect(issue).toHaveAttribute('open', ''); await expect(issue).toContainText('所需命令失败。');
-  const path = issue.locator('code.monitoring-worktree'); await expect(path).toHaveText(longPath);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await issue.scrollIntoViewIfNeeded();
-  await issue.locator('summary').focus();
-  await path.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
+  const activity = page.locator('.monitoring-activities > li').first();
+  const activityLink = activity.getByRole('link', { name: longTitle });
+  await expect(activityLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await activity.scrollIntoViewIfNeeded();
+  await activityLink.focus();
+  await activityLink.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); });
   // Finish the user scroll event before triggering an unrelated background response.
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
-  const before = await issue.boundingBox();
+  const before = await activity.boundingBox();
   const unchangedRead = page.waitForResponse(response => response.url().endsWith(`/workers/${target}/monitoring`) && response.status() === 200);
   await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
   await unchangedRead;
-  const after = await issue.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
-  state.activity = false;
-  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
-  await expect(page.getByText('没有清理中的任务。')).toBeVisible(); await expect(issue).toHaveAttribute('open', '');
-  await expect(issue.locator('summary')).toBeFocused(); expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(longPath);
+  const after = await activity.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
+  await expect(activityLink).toBeFocused(); expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(longTitle);
   state.fail = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
   const alert = page.getByRole('alert').filter({ hasText: '运行监控更新失败' }); await expect(alert).toBeVisible();
   await expect(monitoringTime).toHaveCount(1); await expect(monitoringTime).toContainText('采集时间');
   expect(await taskPanel.evaluate(panel => !!(panel.compareDocumentPosition(document.querySelector('.monitoring-notice')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
-  await expect(issue).toHaveAttribute('open', ''); state.fail = false;
+  await expect(activityLink).toBeVisible(); state.fail = false;
   await alert.getByRole('button', { name: '重试' }).click(); await expect(alert).toHaveCount(0);
   await expect(monitoringTime).toHaveCount(1);
-  await issue.getByRole('link', { name: longTitle }).click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await activityLink.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
   await page.goBack(); await expect(page.getByText('清理占用容量')).toBeVisible();
   const taskLink = page.locator('.worker-task-table').getByRole('link', { name: longTitle });
   await taskLink.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
@@ -294,7 +289,7 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   const resourceAfter = await resources.boundingBox(); expect(Math.abs(resourceAfter!.y - resourceBefore!.y)).toBeLessThan(4);
 });
 
-for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`retained resources show recovery evidence at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`retained resources preserve capacity without diagnostic panels at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 });
   await install(page, true, locale); await page.goto(`/workers/${target}`);
   await expect(page.getByText('6 / 6')).toBeVisible();
@@ -322,18 +317,18 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   const cleanup = page.getByRole('heading', { name: locale === 'zh-CN' ? '清理中的任务' : 'Tasks in cleanup' }).locator('..');
   await expect(cleanup).toContainText(locale === 'zh-CN' ? '没有清理中的任务。' : 'No tasks in cleanup.');
   await expect(cleanup.locator('li')).toHaveCount(0);
-  const issues = page.locator('.monitoring-issue'); await expect(issues).toHaveCount(5);
-  for (const [index, owner] of retainedOwners.entries()) {
-    const issue = issues.nth(index); await issue.locator('summary').click();
-    await expect(issue.getByText(owner.scope.claimId, { exact: true })).toBeVisible();
-    await expect(issue.locator('.monitoring-recovery-command')).toHaveText(`daynight worker resources recover ${owner.scope.taskId} --project ${projectId} --claim-id ${owner.scope.claimId}`);
-    await expect(issue.locator('.monitoring-worktree')).toHaveText(owner.path);
-    await expect(issue.getByRole('link', { name: owner.association.title })).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${owner.scope.taskId}`));
+  for (const name of ['Current failures', 'Most recent recovery', 'Monitoring delivery', '当前异常', '最近恢复', '监控上报']) {
+    await expect(page.getByRole('heading', { name, exact: true })).toHaveCount(0);
   }
-  const issue = issues.first();
+  await expect(page.locator('.monitoring-content > section')).toHaveCount(1);
+  await expect(page.locator('.monitoring-issue, .monitoring-delivery')).toHaveCount(0);
+  await expect(page.getByText('Recovery-only task')).toHaveCount(0);
+  await expect(page.getByText(workerId(911))).toHaveCount(0);
+  for (const owner of retainedOwners) {
+    await expect(page.getByText(owner.scope.claimId)).toHaveCount(0);
+    await expect(page.getByText(owner.path)).toHaveCount(0);
+  }
   await page.screenshot({ path: testInfo.outputPath('retained-resources.png'), fullPage: true });
-  await issue.screenshot({ path: testInfo.outputPath('retained-failure.png') });
-  if (width <= 390) expect(await issue.locator('dl').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 

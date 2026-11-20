@@ -127,6 +127,9 @@ func (h *botTools) create(ctx context.Context, actor RequestActor, in botCreateI
 	}
 	bot, err := h.bots.CreateResolved(ctx, actor.Principal, botcore.CreateBot{ID: id, Name: in.Name, Overrides: overrides})
 	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+			return ToolResult{Refs: refs, WriteOutcome: "not_committed"}, err
+		}
 		return ToolResult{Refs: refs}, err
 	}
 	return ToolResult{Data: bothttp.Response(bot), WriteOutcome: "confirmed", Refs: refs}, nil
@@ -189,6 +192,9 @@ func (h *botTools) delete(ctx context.Context, actor RequestActor, in botDeleteI
 	refs := map[string]any{"botId": botID, "deletionId": id}
 	bot, err := h.relay.DeleteBot(ctx, actor.Principal, botID, store.DeleteBot{Version: version, DeletionID: id})
 	if err != nil {
+		if fault, ok := httpx.KnownFault(err); ok && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+			return ToolResult{Refs: refs, WriteOutcome: "not_committed"}, err
+		}
 		var cleanup *botservice.DeletionCleanupError
 		if errors.As(err, &cleanup) {
 			return ToolResult{Refs: refs, WriteOutcome: "confirmed", Phase: "cleanup"}, err

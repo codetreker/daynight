@@ -32,6 +32,20 @@ enabled. Team invitation acceptance has its own permission and does not require
 project reading. Its minimal service receipt needs only acceptance permission;
 the existing full response also requires permission to read the invitation.
 
+Bot definition services accept an explicitly supplied authorization source for
+snapshot reads and transaction-bound writes. Definition reads, writes and
+deletion use their respective operations, alongside the existing credential and
+owner checks. Full definition responses also require Session read permission
+because their existing representation includes execution facts. Deletion retains
+its coordinated Session revocation and cleanup. The existing production
+constructors remain unchanged until scoped authorization is assembled. Defaults
+that expose Worker status also require Worker read permission; their explicit
+native model discovery checks Worker inspect permission before each broker request.
+The necessary discovery within Bot creation retains Bot admission and the
+existing Worker resource checks, including for MCP grants.
+The optional Bot attention projection requires Assistant Task read permission;
+its creation response is admitted before the definition is written.
+
 ## Alternatives
 
 **Group grants.** Treating a selected group as an enduring grant would authorize
@@ -51,4 +65,8 @@ Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
 itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
 the policy through opt-in service and transport entry points. Persistence,
-production activation and issuance remain independent work.
+production activation and issuance remain independent work. Bot definition
+permission does not confer Session or runtime control. A scoped
+authorization source must read current authority at each supplied boundary and
+preserve the principal; it cannot substitute a stale request snapshot for an
+existing transactional recheck.

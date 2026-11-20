@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -160,6 +161,20 @@ func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) 
 
 // Create applies the creation rules within the caller's write transaction.
 func Create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, input CreateBot, fingerprint string, resolve bool) (model.Bot, error) {
+	return create(ctx, tx, principal, input, fingerprint, resolve, nil)
+}
+
+// CreateScoped checks admission after credential and existing-owner checks, but
+// before resolving or inserting a new definition. The callback uses the same
+// transaction's authoritative credential policy when a recheck is required.
+func CreateScoped(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, input CreateBot, fingerprint string, resolve bool, admit func() error) (model.Bot, error) {
+	if admit == nil {
+		return model.Bot{}, fmt.Errorf("Bot creation admission is required")
+	}
+	return create(ctx, tx, principal, input, fingerprint, resolve, admit)
+}
+
+func create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, input CreateBot, fingerprint string, resolve bool, admit func() error) (model.Bot, error) {
 	if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
 		return model.Bot{}, err
 	}
@@ -167,6 +182,24 @@ func Create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 		return model.Bot{}, err
 	}
 	current, err := tx.Bot(ctx, input.ID)
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
+		return model.Bot{}, err
+	}
+	if err == nil {
+		if err := botOwner(current, principal); err != nil {
+			return model.Bot{}, err
+		}
+	}
+	if admit != nil && errors.Is(err, model.ErrNotFound) && input.Overrides.WorkerID != nil {
+		if workerErr := botWorkerError(tx.Worker(ctx, principal.UserID, *input.Overrides.WorkerID)); workerErr != nil {
+			return model.Bot{}, workerErr
+		}
+	}
+	if admit != nil {
+		if admissionErr := admit(); admissionErr != nil {
+			return model.Bot{}, admissionErr
+		}
+	}
 	if errors.Is(err, model.ErrNotFound) {
 		if input.ResolutionError != nil {
 			return model.Bot{}, input.ResolutionError
@@ -191,8 +224,6 @@ func Create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 		if err != nil {
 			return model.Bot{}, err
 		}
-	} else if err != nil {
-		return model.Bot{}, err
 	}
 	if err := botOwner(current, principal); err != nil {
 		return model.Bot{}, err
@@ -218,11 +249,29 @@ func Get(ctx context.Context, snapshot store.SnapshotScope, principal model.Prin
 }
 
 func List(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string, page store.Page) (store.BotPage, error) {
+	return list(ctx, snapshot, principal, workerID, page, nil)
+}
+
+// ListScoped checks admission after the Worker visibility check and before
+// querying the Bot page.
+func ListScoped(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string, page store.Page, admit func() error) (store.BotPage, error) {
+	if admit == nil {
+		return store.BotPage{}, fmt.Errorf("Bot list admission is required")
+	}
+	return list(ctx, snapshot, principal, workerID, page, admit)
+}
+
+func list(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, workerID *string, page store.Page, admit func() error) (store.BotPage, error) {
 	if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 		return store.BotPage{}, botCredentialError(err)
 	}
 	if workerID != nil {
-		if err := botWorkerError(snapshot.BotDAO().BotWorker(ctx, principal.UserID, *workerID)); err != nil {
+		if err := RequireWorker(ctx, snapshot.BotDAO(), principal, *workerID); err != nil {
+			return store.BotPage{}, err
+		}
+	}
+	if admit != nil {
+		if err := admit(); err != nil {
 			return store.BotPage{}, err
 		}
 	}

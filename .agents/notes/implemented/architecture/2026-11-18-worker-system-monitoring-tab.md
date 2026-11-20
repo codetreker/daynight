@@ -12,8 +12,9 @@ of their existing independent reads and the editing drafts on the same page.
 ## Decision
 
 Worker detail presents Runtime monitoring, System monitoring, Configuration and
-Prompts as peer tabs. Runtime monitoring retains task, scheduler, capacity,
-activity, failure and recovery observations. System monitoring presents host
+Prompts as peer tabs. Runtime monitoring retains task, scheduler, capacity and
+tasks in cleanup. The [diagnostic panel decision](../simplification/2026-11-20-worker-monitoring-diagnostic-panels.md)
+removes the failure, recovery and delivery panels. System monitoring presents host
 resources, environment and software, including actual tool paths and the shortcut
 to their configuration. Both monitor tabs share the existing Worker snapshot and
 clock; the system refresh reads only that snapshot. Monitoring errors remain on
