@@ -139,7 +139,7 @@ func (s *Service) Aggregate(ctx context.Context, p model.Principal, project, kin
 		after := ""
 		expiry := now.Add(15 * time.Minute).Format(time.RFC3339Nano)
 		if token != "" {
-			c, e := s.decodeCursor(token, now)
+			c, e := s.decodeCursor(token, now, false)
 			if e != nil {
 				return e
 			}

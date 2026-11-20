@@ -95,12 +95,10 @@ are separate from this backend.
 `profiles[].qualifiedVersions` advertises exact provider versions and their
 capabilities; the baseline capability and unlisted versions remain unverified.
 
-`DAYNIGHT_USAGE_CURSOR_KEY` supplies a stable 32-byte signing key as canonical
-unpadded base64url. If absent, the service derives a purpose-separated key from
-the configured S2S shared key. All replicas must share the same effective key;
-replacement invalidates existing cursors. Without either key, usage routes
-remain unmounted, and explicitly enabling writes fails startup. Invalid
-explicit usage configuration also fails startup without exposing secrets.
+Usage routes do not require a pagination key or S2S shared key. Each page is
+authorized again, and unsigned cursors expire after 15 minutes or require a
+reset when the result changes. Invalid write or qualification configuration
+still fails startup.
 
 Performance qualification is separate from ordinary CI and requires an isolated
 PostgreSQL database, as do the normal backend checks:
@@ -971,7 +969,6 @@ diagnostics and cause categories.
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
 | `DAYNIGHT_USAGE_WRITE_ENABLED` | Permit usage registrations, grant changes and batches; exactly `true` or `false` | `false` |
 | `DAYNIGHT_USAGE_QUALIFIED_PROFILES` | Comma-separated unique supported `profileId@providerVersion` qualification pairs | Empty (unverified) |
-| `DAYNIGHT_USAGE_CURSOR_KEY` | Stable 32-byte usage cursor key, canonical unpadded base64url; absent derives from the configured S2S shared key | Unset |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |

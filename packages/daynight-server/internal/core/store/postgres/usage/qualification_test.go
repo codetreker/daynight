@@ -1,10 +1,8 @@
 package usage_test
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -47,8 +45,7 @@ func TestUsageConfigurationAdvertisesOnlyExactQualifiedVersions(t *testing.T) {
 	ctx := t.Context()
 	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "true")
 	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", f.registration.ProfileID+"@"+f.registration.ProviderVersion)
-	t.Setenv("DAYNIGHT_USAGE_CURSOR_KEY", base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("k", 32))))
-	service, err := app.FromEnvironment(f.db, "")
+	service, err := app.FromEnvironment(f.db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +91,7 @@ func TestUsageConfigurationAdvertisesOnlyExactQualifiedVersions(t *testing.T) {
 	}
 	_, err = service.Batch(ctx, unverified.State.ID, unverified.Grant.Token, batch(measurement(unverified.State.ID, "7")))
 	requireCode(t, err, "profile_unverified")
-	if _, err = app.New(f.db, app.Options{CursorKey: []byte(strings.Repeat("k", 32)), QualifiedProfiles: []string{f.registration.ProfileID}}); err == nil {
+	if _, err = app.New(f.db, app.Options{QualifiedProfiles: []string{f.registration.ProfileID}}); err == nil {
 		t.Fatal("bare profile ID globally qualified all versions")
 	}
 }

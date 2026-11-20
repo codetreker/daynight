@@ -112,7 +112,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
-	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
+	app.Usage, app.UsageError = usageapp.FromEnvironment(database)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
 	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")
