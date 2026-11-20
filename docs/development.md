@@ -11,6 +11,7 @@ working directory is specified.
 - [Local server deployment](#local-server-deployment)
 - [Server development](#server-development)
 - [Web development](#web-development)
+- [Mobile development](#mobile-development)
 - [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
 - [Component delivery and activation](#component-delivery-and-activation)
@@ -1034,6 +1035,13 @@ containers, volume, network and image tag after completion, failure or cancellat
 The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
 include Project withdrawal against controlled API responses and real browser
 storage; they do not establish live-service behavior.
+
+## Mobile development
+
+The private [mobile workspace](../packages/mobile/README.md) shares React Native
+source across iOS and Android. Its Expo development server and verification
+commands are independent of the Web and server builds. The package guide owns
+the platform prerequisites and the distinction between bundle and device checks.
 
 ## Public Markdown image integration
 

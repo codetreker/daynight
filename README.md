@@ -310,6 +310,7 @@ main application and other Tasks. Files within the same Task share an origin.
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
 | [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
+| [`packages/mobile/`](packages/mobile/) | Shared React Native and Expo workspace for iOS and Android | [Mobile guide](packages/mobile/README.md) |
 | [`packages/e2e_tests/`](packages/e2e_tests/) | Isolated normal workflows across compiled CLI, production Web, Server and auth | [Product E2E guide](packages/e2e_tests/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
@@ -358,6 +359,12 @@ authentication and an isolated database. See the
 and module validation commands. `pnpm e2e:test` separately builds and runs the complete
 product with isolated PostgreSQL and full UniAuth; the [Product E2E guide](packages/e2e_tests/README.md)
 owns its Linux prerequisites, authentication topology and cleanup.
+
+## Mobile development
+
+The mobile package runs independently of the Web app and server. See the
+[Mobile guide](packages/mobile/README.md) for running on iOS and Android,
+type-checking and exporting both platform bundles.
 
 ## Package versions
 

@@ -9,6 +9,11 @@ allowBuilds:
   koffi@3.3.4: false
   node-pty@1.1.0: true
 packageExtensions:
+  babel-plugin-react-compiler@1.0.0:
+    # Its declarations import both Babel packages by name.
+    dependencies:
+      '@types/babel__core': 7.20.5
+      '@types/babel__traverse': 7.28.0
   mermaid@12.2.0:
     dependencies:
       type-fest: 4.41.0
