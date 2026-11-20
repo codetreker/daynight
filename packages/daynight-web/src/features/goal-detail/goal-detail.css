@@ -10,9 +10,9 @@
 .goal-detail-description { padding: 17.5px; overflow: auto; overscroll-behavior: contain; }
 .goal-detail-description-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; align-items: start; gap: 24.5px; min-width: 0; }
 .goal-detail-description-body { min-width: 0; overflow-wrap: anywhere; }
-.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 17.5px; color: var(--task-helper); font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
+.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 17.5px; color: var(--task-helper); font-size: var(--text-xs); line-height: 1.6; overflow-wrap: anywhere; }
 .goal-information-section + .goal-information-section { margin-top: 21px; padding-top: 17.5px; border-top: 1px solid var(--line); }
-.goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: var(--text-lg); font-weight: 600; }
+.goal-information-section > h3 { margin: 0 0 1rem; color: var(--ink); font-size: var(--text-sm); font-weight: 600; }
 .goal-information dl { margin: 0; }
 .goal-information dl > div + div { margin-top: .65rem; }
 .goal-information dt { color: var(--task-helper); }
@@ -27,7 +27,7 @@
 .goal-information .goal-information-statuses { margin-top: 11.9px; }
 .goal-information-loading, .goal-information-error p { margin: 0 0 .65rem; }
 .goal-information-error { margin-top: 14px; color: var(--task-error-ink); }
-.goal-information-error .button { font-size: inherit; }
+.goal-information :is(.button, .task-tag, .task-tag-color-feedback) { font-size: inherit; }
 @media (max-width: 740px) {
   .goal-detail-meta { gap: 7px; }
   .goal-detail-description-layout { grid-template-columns: minmax(0, 1fr); gap: 17.5px; }

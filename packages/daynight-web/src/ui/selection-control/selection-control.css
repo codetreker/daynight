@@ -5,6 +5,7 @@
   --selection-control-count-height: 18px;
   font-size: var(--text-sm);
 }
+.task-detail-pr-page-controls .selection-control[data-density] { font-size: inherit; }
 .selection-control[data-density="compact"] { --selection-control-height: 24px; }
 .selection-control[data-density="filter"] { --selection-control-height: 32px; }
 .selection-control[data-focus-tone="task"] { --selection-control-focus: #344054; }
@@ -35,7 +36,8 @@
 
 @media (max-width: 800px), (pointer: coarse) {
   [data-touch-text][data-touch-text="responsive"],
-  .management-typography .field :is(input, textarea) { font-size: max(var(--text-base), 16px); }
+  .management-typography .field :is(input, textarea),
+  :is(.goal-information, .task-detail-aside) .tag-picker :is(input[type="search"], input:not([type]), input[type="text"]) { font-size: max(var(--text-base), 16px); }
 }
 @media (pointer: coarse) {
   [data-touch-text][data-touch-text="coarse"] { font-size: max(var(--text-base), 16px); }
