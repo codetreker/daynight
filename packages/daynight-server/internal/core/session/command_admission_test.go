@@ -16,6 +16,12 @@ import (
 
 type missingOperationProbe struct{ store.SessionDAO }
 
+func TestCommandScopeRejectsUnsupportedKind(t *testing.T) {
+	if _, err := commandScope("unknown"); err == nil {
+		t.Fatal("unsupported command accepted")
+	}
+}
+
 func TestScopedReplayFailsWithoutExistenceProbe(t *testing.T) {
 	s := &Execution{commandAdmission: func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
 		t.Fatal("admission ran without a reliable existence probe")
