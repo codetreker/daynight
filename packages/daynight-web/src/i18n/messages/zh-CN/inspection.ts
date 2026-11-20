@@ -157,7 +157,7 @@ export const inspection: InspectionMessages = {
   attachments: {
     openInNewTab: "在新标签页打开", missing: "找不到此附件，文件可能已被删除。", returnToTask: "返回任务所在项目",
     title: "附件", heading: ({ count }) => `附件 · ${count}`, refresh: "刷新附件", chooseFile: "选择一个文件", targetPath: "目标相对路径",
-    pathPlaceholder: "例如 docs/design.md", uploading: "正在上传…", upload: "上传文件", uploadHint: "每次上传一个文件；相同路径会直接覆盖。",
+    pathPlaceholder: "例如 docs/design.md", uploading: "正在上传…", upload: "上传文件", backToFiles: "返回文件", uploadHint: "每次上传一个文件；相同路径会直接覆盖。",
     invalidPath: "请输入有效的相对文件路径，使用 / 分隔目录，不含空段、. 或 ..。", invalidReference: "此附件引用无效或超出了任务附件根目录。", writeError: "附件操作失败，请检查后重试。",
     loading: "正在加载附件…", listError: "附件列表加载失败。", incompleteList: "附件列表尚未完整加载，以下仅显示已读取的文件。",
     retry: "重试附件", empty: "暂无附件，上传文件后即可在这里浏览。", files: "附件文件", choosePreview: "选择文件查看预览或下载。",

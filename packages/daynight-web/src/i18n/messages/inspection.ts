@@ -224,6 +224,7 @@ export type InspectionMessages = {
     readonly pathPlaceholder: string;
     readonly uploading: string;
     readonly upload: string;
+    readonly backToFiles: string;
     readonly uploadHint: string;
     readonly invalidPath: string;
     readonly invalidReference: string;

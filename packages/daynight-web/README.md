@@ -2516,8 +2516,15 @@ attachment guard runs before ServeMux normalization; file endpoints keep their
 existing scope and authorization checks.
 
 The full-page detail allocates remaining height after its actual heading and
-tabs. Shared attachment panes stay adjacent at narrow widths and own their scroll
-independently. Markdown/text/images use the preview body; fitted HTML/PDF frames
+tabs. Shared attachment browsing panes stay adjacent at narrow widths and own their
+scroll independently. Opening upload below 560 CSS px of attachment content width
+temporarily fills the panel with one retained form; Back or Escape restores file
+browsing, and draft/native input identity survives layout and tab changes. Entering
+the narrow upload view dismisses file action menus and transfers their focus to
+upload controls; delete confirmations retain their top-layer focus ownership and
+restore focus into upload when their original trigger is unavailable. Wider
+containers keep the sidebar disclosure. The [attachment design](../../docs/design/daynight-task-attachments.md#web-文件树与预览)
+owns focus, successful-file reveal and scroll behavior. Markdown/text/images use the preview body; fitted HTML/PDF frames
 use their documents' scrolling, without another vertical wrapper. No fixed
 heading-height subtraction, extra renderer, metadata API or preview credential
 is introduced. The [full-reader decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)
