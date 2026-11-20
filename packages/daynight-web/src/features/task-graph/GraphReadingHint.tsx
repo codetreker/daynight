@@ -23,13 +23,20 @@ const ownerOf = (element: Element | null) => element?.closest('dialog, [role="di
 export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) => {
   const [active, setActive] = useState<Active | null>(null);
   const current = useRef<Active | null>(null);
-  const focused = useRef<{ id: string; button: HTMLElement } | null>(null);
+  const focused = useRef<{ id: string; button: HTMLElement; reading: Reading } | null>(null);
   const tip = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
   const schedulePosition = useRef<(() => void) | null>(null);
   const reposition = useCallback(() => schedulePosition.current?.(), []);
   const cancelLeave = useCallback(() => { if (timer.current !== null) window.clearTimeout(timer.current); timer.current = null; }, []);
   const set = useCallback((value: Active | null) => { current.current = value; setActive(value); }, []);
+  const restoreFocus = useCallback(() => {
+    const source = focused.current;
+    if (source !== null && source.button.isConnected && document.activeElement === source.button &&
+      source.button.closest('[hidden], [inert]') === null && hasReading(source.reading)) {
+      set({ id: source.id, button: source.button, anchor: source.button, mode: 'focus', reading: source.reading });
+    } else set(null);
+  }, [set]);
   const dismiss = useCallback((id?: string) => {
     if (id === undefined || focused.current?.id === id) focused.current = null;
     if (id !== undefined && current.current?.id !== id) return;
@@ -37,31 +44,31 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
   }, [cancelLeave, set]);
   const show = useCallback((id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => {
     cancelLeave();
-    if (mode === 'focus') focused.current = { id, button };
+    if (mode === 'focus') focused.current = { id, button, reading };
     if (hasReading(reading)) set({ id, button, anchor, mode, reading });
     else if (current.current?.id === id) set(null);
   }, [cancelLeave, set]);
   const update = useCallback((id: string, reading: Reading) => {
     const value = current.current;
     const source = focused.current;
+    if (source?.id === id) source.reading = reading;
     if (value === null && source?.id === id && source.button.isConnected && document.activeElement === source.button && hasReading(reading)) {
       set({ id, button: source.button, anchor: source.button, mode: 'focus', reading });
       return;
     }
     if (value?.id !== id) return;
-    if (!hasReading(reading)) { set(null); return; }
+    if (!hasReading(reading)) { restoreFocus(); return; }
     if (value.reading.usage !== reading.usage || value.reading.execution !== reading.execution) set({ ...value, reading });
-  }, [set]);
+  }, [restoreFocus, set]);
   const leave = useCallback((id: string) => {
     cancelLeave();
     timer.current = window.setTimeout(() => {
       timer.current = null;
       const value = current.current;
       if (value?.id !== id || value.mode !== 'hover') return;
-      if (value.button.matches(':focus-visible')) set({ ...value, mode: 'focus', anchor: value.button });
-      else dismiss(id);
+      restoreFocus();
     }, 120);
-  }, [cancelLeave, dismiss, set]);
+  }, [cancelLeave, restoreFocus]);
   const control = useMemo(() => ({ show, update, leave, dismiss, cancelLeave, reposition }), [show, update, leave, dismiss, cancelLeave, reposition]);
   useEffect(() => () => cancelLeave(), [cancelLeave]);
   useLayoutEffect(() => {

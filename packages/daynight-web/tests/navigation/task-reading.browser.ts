@@ -1436,3 +1436,34 @@ test('a focused graph body receives a reading that appears or returns after with
   await update('large'); await expect(hint).toContainText('9,007,199,254,740,993'); await expect(body).toBeFocused();
   await page.keyboard.press('Escape'); await expect(hint).toHaveCount(0); await update('large'); await expect(hint).toHaveCount(0);
 });
+
+test('hovering a second card restores the focused card’s latest reading unless dismissed', async ({ page }) => {
+  const details = [
+    detailFixture(projectId, taskId, { title: 'Focused reading', version: 5n }),
+    detailFixture(projectId, successorId, { title: 'Hovered reading', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false }),
+  ];
+  await install(page, false, false, 'Focused reading', details);
+  let firstReading: 'partial' | 'large' = 'partial', calls = 0;
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+    calls++;
+    const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary(id === taskId ? firstReading : 'zero') })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click(); await page.getByRole('tab', { name: 'Task chains' }).click();
+  await page.locator(`#task-chain-graph-${taskId}`).click();
+  const graph = page.locator('.task-chain-dialog'), first = graph.locator(`.react-flow__node[data-id="${taskId}"]`), second = graph.locator(`.react-flow__node[data-id="${successorId}"]`);
+  const body = first.locator('.task-node-body'), hint = graph.locator('.graph-reading-hint:popover-open');
+  await expect(first.locator('.task-node-usage')).toHaveText('Token 42'); await expect(second.locator('.task-node-usage')).toHaveText('Token 0');
+  await page.keyboard.press('Tab'); await body.focus(); await expect(hint).toContainText('42');
+  await second.locator('.task-node-usage').hover(); await expect(hint).toContainText('Total: 0'); await expect(body).toBeFocused();
+  const before = calls; firstReading = 'large'; await page.clock.fastForward(16_000); await expect.poll(() => calls).toBeGreaterThan(before);
+  await expect(first.locator('.task-node-usage')).toHaveText('Token ≥1,000T'); await expect(hint).toContainText('Total: 0');
+  await page.mouse.move(0, 0); await page.clock.fastForward(200);
+  await expect(hint).toContainText('9,007,199,254,740,993'); await expect(body).toBeFocused();
+  await second.locator('.task-node-usage').hover(); await expect(hint).toContainText('Total: 0');
+  await page.keyboard.press('Escape'); await expect(hint).toHaveCount(0); await page.mouse.move(0, 0); await page.clock.fastForward(200);
+  await expect(hint).toHaveCount(0); await expect(body).toBeFocused(); await expect(graph).toBeVisible();
+});

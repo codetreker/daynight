@@ -1,13 +1,14 @@
 import { useLayoutEffect } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GraphReadingHintProvider, useGraphReadingHint } from '../src/features/task-graph/GraphReadingHint';
 
-const Source = ({ usage }: { usage: string | null }) => {
+const Source = ({ usage, id = 'task' }: { usage: string | null; id?: string }) => {
   const hint = useGraphReadingHint();
   const reading = { usage, execution: null };
-  useLayoutEffect(() => { hint.update('task', reading); }, [hint, usage]);
-  return <button onFocus={(event) => hint.show('task', event.currentTarget, event.currentTarget, 'focus', reading)} onBlur={() => hint.dismiss('task')}>Task</button>;
+  useLayoutEffect(() => { hint.update(id, reading); }, [hint, id, usage]);
+  return <button onFocus={(event) => hint.show(id, event.currentTarget, event.currentTarget, 'focus', reading)} onBlur={() => hint.dismiss(id)}
+    onPointerEnter={(event) => hint.show(id, event.currentTarget, event.currentTarget, 'hover', reading)} onPointerLeave={() => hint.leave(id)}>{id === 'task' ? 'Task' : id}</button>;
 };
 
 describe('graph reading hint', () => {
@@ -41,6 +42,44 @@ describe('graph reading hint', () => {
     fireEvent.keyDown(button, { key: 'PageDown' });
     expect(tip.scrollTop).toBe(140);
     expect(button).toHaveFocus();
+  });
+
+  it('restores the focused card’s latest reading after another card is hovered, unless dismissed', () => {
+    vi.useFakeTimers();
+    try {
+      const content = (a: string | null, b: string | null) => <GraphReadingHintProvider><Source id="A" usage={a} /><Source id="B" usage={b} /></GraphReadingHintProvider>;
+      const view = render(content('A: 10', 'B: 20'));
+      const a = screen.getByRole('button', { name: 'A' });
+      const b = screen.getByRole('button', { name: 'B' });
+      const tip = view.container.querySelector('.graph-reading-hint')!;
+      act(() => a.focus());
+      expect(tip).toHaveTextContent('A: 10');
+      fireEvent.pointerEnter(b);
+      expect(tip).toHaveTextContent('B: 20');
+      view.rerender(content('A: 11', 'B: 21'));
+      expect(tip).toHaveTextContent('B: 21');
+      fireEvent.pointerLeave(b);
+      act(() => vi.advanceTimersByTime(120));
+      expect(tip).toHaveTextContent('A: 11');
+      expect(a).toHaveFocus();
+
+      fireEvent.pointerEnter(b);
+      view.rerender(content(null, 'B: 21'));
+      fireEvent.pointerLeave(b);
+      act(() => vi.advanceTimersByTime(120));
+      expect(tip).toBeEmptyDOMElement();
+      view.rerender(content('A: 12', 'B: 21'));
+      expect(tip).toHaveTextContent('A: 12');
+
+      fireEvent.pointerEnter(b);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      fireEvent.pointerLeave(b);
+      act(() => vi.advanceTimersByTime(120));
+      expect(tip).toBeEmptyDOMElement();
+      view.rerender(content('A: 13', 'B: 21'));
+      expect(tip).toBeEmptyDOMElement();
+      expect(a).toHaveFocus();
+    } finally { vi.useRealTimers(); }
   });
 
 });
