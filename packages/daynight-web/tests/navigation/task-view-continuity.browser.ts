@@ -82,7 +82,7 @@ for (const input of ['modified', 'middle'] as const) test(`project settings keep
   await page.getByRole('button', { name: 'Project actions', exact: true }).click();
   const settings = page.getByRole('menuitem', { name: 'Project settings', exact: true });
   const opened = context.waitForEvent('page');
-  if (input === 'modified') await settings.click({ modifiers: ['Meta'] });
+  if (input === 'modified') await settings.click({ modifiers: ['ControlOrMeta'] });
   else await settings.click({ button: 'middle' });
   const destination = await opened;
   try { await expect(destination).toHaveURL(new RegExp(`/projects/${projectId}/settings$`)); }
@@ -222,6 +222,41 @@ for (const locale of ['en', 'zh-CN'] as const) test(`project heading menu fits n
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(state.writes).toEqual([]);
   } finally { state.releaseGraph(); }
+});
+
+test('keyboard navigation keeps focused menu items visible in a short viewport without scrolling the page', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 160 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('.snapshot-time time')).toBeVisible();
+  const trigger = page.getByRole('button', { name: 'Project actions', exact: true });
+  await trigger.scrollIntoViewIfNeeded(); await trigger.focus();
+  const before = await position(page);
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'Project actions' });
+  const settings = menu.getByRole('menuitem', { name: 'Project settings', exact: true });
+  const goal = menu.getByRole('menuitem', { name: 'New Goal', exact: true });
+  await expect(settings).toBeFocused();
+  expect(await position(page)).toBe(before);
+  expect(await menu.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  const fits = async () => menu.evaluate(element => {
+    const item = document.activeElement!.getBoundingClientRect(), panel = element.getBoundingClientRect();
+    return item.top >= panel.top - 1 && item.bottom <= panel.bottom + 1 && item.top >= 0 && item.bottom <= innerHeight;
+  });
+  await page.keyboard.press('End'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await menu.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await position(page)).toBe(before);
+  await page.keyboard.press('Home'); await expect(settings).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('ArrowUp'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('ArrowDown'); await expect(settings).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  await page.keyboard.press('ArrowUp'); await expect(goal).toBeFocused();
+  expect(await fits()).toBe(true); expect(await position(page)).toBe(before);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  expect(state.writes).toEqual([]);
 });
 
 for (const kind of ['Task', 'Goal'] as const) test(`keeps the ${kind} draft across the heading breakpoint`, async ({ page }) => {

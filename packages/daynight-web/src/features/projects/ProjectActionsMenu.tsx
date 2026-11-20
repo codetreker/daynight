@@ -32,6 +32,17 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
   const compact = useRef<boolean | null>(null);
   const menuId = useId();
   const items = () => Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []);
+  const focusItem = (item: HTMLElement) => {
+    item.focus({ preventScroll: true });
+    const element = menu.current;
+    if (element === null) return;
+    const bounds = element.getBoundingClientRect();
+    const top = bounds.top + element.clientTop;
+    const bottom = top + element.clientHeight;
+    const itemBounds = item.getBoundingClientRect();
+    if (itemBounds.top < top || itemBounds.height > element.clientHeight) element.scrollTop += itemBounds.top - top;
+    else if (itemBounds.bottom > bottom) element.scrollTop += itemBounds.bottom - bottom;
+  };
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus({ preventScroll: true }); };
   const show = (edge: 'first' | 'last') => { initial.current = edge; setOpen(true); };
 
@@ -118,7 +129,9 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
     element.showPopover();
     position();
     const options = items();
-    (options[initial.current === 'first' ? 0 : options.length - 1] ?? element).focus({ preventScroll: true });
+    const first = options[initial.current === 'first' ? 0 : options.length - 1];
+    if (first === undefined) element.focus({ preventScroll: true });
+    else focusItem(first);
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
     observer?.observe(element);
     if (trigger.current !== null) observer?.observe(trigger.current);
@@ -162,7 +175,8 @@ export function ProjectActionsMenu({ projectId, label, settings, refreshLabel, r
         if (options.length === 0) return;
         const current = options.indexOf(document.activeElement as HTMLElement);
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
-        options[next]?.focus({ preventScroll: true });
+        const target = options[next];
+        if (target !== undefined) focusItem(target);
       }
     }}>
       {settings != null && <div role="none" data-project-menu-action="settings" onClick={() => close(false)} onAuxClick={() => close(false)}>{settings}</div>}
