@@ -21,6 +21,19 @@ export const runOwnedCommand = async (command: string, args: readonly string[], 
 export const cli = async (args: string[]) => await runOwnedCommand(process.execPath, [topology.cliEntry, ...args], {
   cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 30_000,
 });
+/**
+ * Runs a CLI command whose stdout carries a credential. Stdout is neither
+ * forwarded to the test output nor included in failure diagnostics.
+ */
+export const confidentialCli = async (args: string[]): Promise<string> => {
+  let stderr = "";
+  const result = await (await startOwnedCommand(process.execPath, [topology.cliEntry, ...args], {
+    cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 30_000,
+    onOutput: (channel, chunk) => { if (channel === "stderr") { stderr += chunk; process.stderr.write(chunk); } },
+  })).finished;
+  if (result.exitCode !== 0) throw new Error(`Confidential CLI command failed: ${args.slice(0, 3).join(" ")} (exit=${result.exitCode})\n${stderr}`);
+  return result.stdout;
+};
 export const test = base.extend({
   browser: [async ({ playwright, browserName, headless, channel, launchOptions }, use) => {
     if (browserName !== "chromium") throw new Error("The product E2E browser ownership fixture requires Chromium.");
