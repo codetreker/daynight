@@ -234,18 +234,23 @@ Access-Control-Request-Headers`。GET、HEAD、POST、PUT、PATCH、DELETE 保�
 Authorization, Content-Type, Accept, If-None-Match, X-Request-ID,
 Daynight-Worker-Protocol, Daynight-Worker-Configuration,
 Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention,
 Daynight-Worker-Prompts, Daynight-Session-Protocol,
 X-Daynight-Startup-Version, Daynight-Browser-Client,
-Daynight-Session-Content-Revision, Daynight-Chunk-SHA256
+Daynight-Session-Content-Revision, Daynight-Chunk-SHA256,
+Daynight-Worker-Alias, Daynight-Worker-Identity,
+Daynight-Confirm-Goal-Dependency-Removal
 ```
 
 完整暴露响应头为：
 
 ```text
-Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag,
-Content-Disposition, Retry-After, Allow, WWW-Authenticate,
-Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
-Daynight-Worker-Configuration
+Daynight-User-ID, Daynight-Scope-Status, Daynight-Task-Epoch,
+X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow,
+WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths,
+Daynight-Worker-Archive-Sessions, Daynight-Bot-Attention,
+Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version,
+Daynight-Worker-Alias, Daynight-Worker-Identity
 ```
 
 Content-Type、Content-Length、Cache-Control 本为 CORS safelisted response headers；
