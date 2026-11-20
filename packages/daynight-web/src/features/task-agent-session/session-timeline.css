@@ -63,7 +63,7 @@
 .session-pending-request > span:last-child { flex: none; }
 .session-interaction:focus { outline: 2px solid #6262ba; outline-offset: 2px; }
 @container session-timeline-shell (max-height: 120px) {
-  .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 60%; pointer-events: none; }
+  .session-timeline-navigation { position: absolute; bottom: 0; right: 0; max-width: 45%; pointer-events: none; }
   .session-pending-request { flex: 1 1 0; }
   .session-latest { flex: none; }
   .session-timeline-navigation .button { pointer-events: auto; }

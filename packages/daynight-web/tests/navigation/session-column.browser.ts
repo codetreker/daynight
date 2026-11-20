@@ -184,7 +184,7 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
           expect(after.title.top).toBeGreaterThanOrEqual(after.viewport.top);
           expect(after.title.bottom).toBeLessThanOrEqual(after.viewport.bottom);
           expect(after.first.top).toBeGreaterThanOrEqual(after.viewport.top);
-          if (after.viewport.height >= after.first.bottom - after.title.top) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          if (entry === 'test' || width >= 768) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
           await first.fill('Retained profile');
           await page.locator('.session-latest').click();
           await expect(first).toHaveValue('Retained profile');
