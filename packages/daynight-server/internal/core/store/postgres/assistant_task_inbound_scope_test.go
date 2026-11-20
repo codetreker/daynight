@@ -212,8 +212,13 @@ func TestAssistantTaskInboundScopeExposesSourceReaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	completion, err := database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
-		if _, err := scope.WebhookInboundSources().CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+		sources := scope.WebhookInboundSources()
+		if _, err := sources.CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
 			return errors.Join(errors.New("missing captured event"), err)
+		}
+		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", "", 1)
+		if err != nil || len(destinations) != 0 {
+			return errors.Join(errors.New("unknown event had delivery destinations"), err)
 		}
 		if _, err := scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: uuid.NewString()}, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
 			return errors.Join(errors.New("missing project"), err)

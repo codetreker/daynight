@@ -163,9 +163,23 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 			return ReceiveResult{}, err
 		}
 	}
-	// Self-loop suppression (design step 6) is evaluated here, after the
-	// idempotency check and before the backlog limit. It is delivered with
-	// its own change; until then every verified event is admitted.
+	if verified != nil {
+		suppressed, err := core.SuppressInbound(ctx, dao, task.OwnerUserID, target, verified.taskID, in.Actor, now)
+		if err != nil {
+			return ReceiveResult{}, err
+		}
+		if suppressed {
+			receipt := model.AssistantTaskInboxReceipt{InboxID: inbox.InboxID, IdempotencyKey: in.IdempotencyKey, OwnerUserID: task.OwnerUserID, TaskID: task.ID, BodySHA256: bodySHA, Suppressed: true, TargetBotID: target, SubjectTaskID: subject, ReceivedAt: now, ExpiresAt: now.Add(ttl)}
+			if err = suppressInbound(ctx, dao, receipt); err != nil {
+				return ReceiveResult{}, err
+			}
+			if err = admissionHolds(ctx, dao, task); err != nil {
+				return ReceiveResult{}, err
+			}
+			result.Suppressed = true
+			return result, nil
+		}
+	}
 	pending, err := dao.PendingInboundEvents(ctx, task.OwnerUserID, task.ID, target, core.InboundBacklogLimit)
 	if err != nil {
 		return ReceiveResult{}, err
@@ -179,14 +193,8 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 	}
 	if in.IdempotencyKey != "" {
 		receipt := model.AssistantTaskInboxReceipt{InboxID: inbox.InboxID, IdempotencyKey: in.IdempotencyKey, OwnerUserID: task.OwnerUserID, TaskID: task.ID, BodySHA256: bodySHA, EventID: &event.ID, TargetBotID: target, SubjectTaskID: subject, ReceivedAt: now, ExpiresAt: now.Add(ttl)}
-		inserted, err := dao.InsertInboxReceipt(ctx, receipt)
-		if err != nil {
+		if err := insertReceipt(ctx, dao, receipt); err != nil {
 			return ReceiveResult{}, err
-		}
-		// The task lock serializes receipts of one inbox, so an unexpired
-		// receipt cannot appear after the read above.
-		if !inserted {
-			return ReceiveResult{}, fmt.Errorf("assistant inbox receipt appeared under the task lock")
 		}
 	}
 	if err = core.ReclaimInbound(ctx, dao, task.OwnerUserID, task.ID, now); err != nil {
@@ -210,6 +218,37 @@ func admissionHolds(ctx context.Context, dao store.AssistantTaskDAO, task model.
 	}
 	if task.LeaseUntil == nil || !now.Before(*task.LeaseUntil) {
 		return errInboxUnavailable
+	}
+	return nil
+}
+
+// suppressInbound records a suppressed request: its receipt makes a retry
+// return the same result, and the inbox counts it. No event is written, so
+// the backlog limit does not apply.
+func suppressInbound(ctx context.Context, dao store.AssistantTaskDAO, receipt model.AssistantTaskInboxReceipt) error {
+	counted, err := dao.AddInboxSuppressed(ctx, receipt.OwnerUserID, receipt.TaskID, receipt.InboxID)
+	if err != nil {
+		return err
+	}
+	// The inbox row is locked and was enabled, so the count always applies.
+	if !counted {
+		return fmt.Errorf("assistant inbox left the enabled state under its lock")
+	}
+	if err = insertReceipt(ctx, dao, receipt); err != nil {
+		return err
+	}
+	return core.ReclaimInbound(ctx, dao, receipt.OwnerUserID, receipt.TaskID, receipt.ReceivedAt)
+}
+
+func insertReceipt(ctx context.Context, dao store.AssistantTaskDAO, receipt model.AssistantTaskInboxReceipt) error {
+	inserted, err := dao.InsertInboxReceipt(ctx, receipt)
+	if err != nil {
+		return err
+	}
+	// The task lock serializes receipts of one inbox, so an unexpired
+	// receipt cannot appear after the idempotency read.
+	if !inserted {
+		return fmt.Errorf("assistant inbox receipt appeared under the task lock")
 	}
 	return nil
 }
