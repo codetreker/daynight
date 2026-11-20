@@ -3134,11 +3134,10 @@ test('completed and incomplete full and scoped chains have compact desktop heade
       header: element.querySelector('.goal-header')!.getBoundingClientRect().height,
       meta: element.querySelector('.chain-summary-meta')!.getBoundingClientRect().height,
     }));
-    expect(sizes.header).toBeGreaterThanOrEqual(60);
-    expect(sizes.header).toBeLessThanOrEqual(65);
-    expect(sizes.card).toBeLessThanOrEqual(67);
-    expect(sizes.meta).toBeGreaterThanOrEqual(15);
-    expect(sizes.meta).toBeLessThanOrEqual(19);
+    const scoped = id === outsideId || id === layoutWorkerId;
+    expect(sizes.header).toBeCloseTo(scoped ? 63 : 63.6, 0);
+    expect(sizes.card).toBeCloseTo(scoped ? 65 : 65.6, 0);
+    expect(sizes.meta).toBeCloseTo(scoped ? 18 : 18.6, 0);
     heights.push(sizes.header);
   }
   expect(Math.abs(heights[0]! - heights[1]!)).toBeLessThanOrEqual(1);
@@ -3172,6 +3171,7 @@ for (const width of [1440, 1280, 740, 600, 390, 320]) for (const locale of ['en'
       await expect(header.locator('.root-title')).toHaveCSS('font-size', `${rootSize * 0.875}px`);
       await expect(header.locator('.root-progress-label')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
       await expectChainTimeLayout(header);
+      expect(await header.locator('.session-status-label').evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await expectChainTimeLayout(header);
