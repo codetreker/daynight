@@ -7,7 +7,7 @@ import type {} from './bots-viewport-session';
 
 const viewports = [{ width: 320, height: 640 }, { width: 375, height: 667 }, { width: 390, height: 844 }, { width: 768, height: 900 }, { width: 1360, height: 900 }];
 const definition = (index: number) => ({
-  ...botDefinition(index), name: index === 1 ? 'Ready assistant' : index === 2 ? 'Abnormal assistant' : `Assistant ${index} ${'LongName中文'.repeat(12)}`,
+  ...botDefinition(index), name: index === 1 ? 'Ready assistant' : index === 2 ? 'Abnormal assistant' : `Assistant ${index} ${'LongName中文'.repeat(3)}`.slice(0, 40),
   roleConfiguration: { instructions: 'Fixture only.', revision: '1', digest: 'a'.repeat(64) },
   sessionId: botId(index + 200), testExecutionId: botId(index + 400), startupResult: { state: 'ready' as const, code: null },
 });
@@ -114,6 +114,7 @@ test.describe('assistant list height budget', () => {
         const row = page.locator('.bot-list a').nth(index);
         await row.scrollIntoViewIfNeeded(); await row.click();
         await expect(page.locator('.bot-conversation-title h2:visible')).toHaveText(index === 0 ? 'Ready assistant' : 'Abnormal assistant');
+        expect(await page.locator('.bot-conversation').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
         if (viewport.width === 1360) { await expect(page.locator('.bot-list-panel')).toBeVisible(); await expect(page.locator('.bot-conversation')).toBeVisible(); }
         await botConversationBack(page).click();
         await expect(page.locator('.bot-list-panel')).toBeVisible();
@@ -181,6 +182,11 @@ test.describe('assistant list height budget', () => {
       const task = page.locator('.assistant-task-list a').first(); await task.scrollIntoViewIfNeeded(); await expect(task).toBeInViewport();
       expect(fixture.writes).toEqual([]); expect(fixture.errors).toEqual([]);
       await page.screenshot({ path: info.outputPath('touch-sidebar.png') }); await save(info, { before, after: await geometry(page) });
+      await page.locator('.bot-list-panel').evaluate(node => { node.scrollTop = 0; });
+      await list.evaluate(node => { node.scrollTop = 0; });
+      await list.locator('a').first().tap();
+      await expect(page.locator('.bot-conversation-title h2:visible')).toHaveText('Ready assistant');
+      await botConversationBack(page).tap(); await expect(list).toBeVisible();
     });
   });
 });
