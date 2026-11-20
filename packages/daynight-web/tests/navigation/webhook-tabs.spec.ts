@@ -11,13 +11,13 @@ const tab = (page: Page, key: typeof keys[number]) => page.locator(`#webhook-tab
 
 async function setup(page: Page, locale: 'en' | 'zh-CN', options: { count?: number; readOnly?: boolean; deleted?: boolean; missing?: boolean; failOnce?: boolean; disabled?: boolean } = {}) {
   const state = await install(page, locale), writes: string[] = [];
-  let detailReads = 0;
+  let detailReads = 0, failDetail = options.failOnce === true;
   page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/v1/') && request.method() !== 'GET') writes.push(`${request.method()} ${request.url()}`); });
   await page.route(/\/api\/v1\/teams\/[^/]+\/webhooks(?:\?.*)?$/, route => route.fulfill({ contentType: 'application/json', headers: { 'Daynight-User-ID': userId }, body: JSON.stringify({ items: [{ id: endpointId, owner: { kind: 'team', id: teamId }, name: 'Long receiver endpoint 0 for search and layout', enabled: !options.disabled, configVersion: '1', destination: { kind: 'http', adapterVersion: '1', url: options.readOnly ? null : 'https://receiver.example/path', displayUrl: 'https://receiver.example/path' }, projectCount: 1, eventTypeCount: 1, lastAttemptAt: null, lastResult: null }], nextCursor: null }) }));
   await page.route(/\/api\/v1\/(?:me|teams\/[^/]+)\/webhooks\/[^/?]+(?:\?.*)?$/, async route => {
     detailReads++;
     const path = new URL(route.request().url()).pathname, owner = path.includes('/teams/') ? { kind: 'team', id: teamId } : { kind: 'personal', id: userId };
-    const status = options.missing ? 404 : options.failOnce && detailReads === 1 ? 503 : 200;
+    const status = options.missing ? 404 : failDetail ? 503 : 200;
     const body = status !== 200 ? { error: { code: status === 404 ? 'not_found' : 'database_unavailable', message: 'Fixture endpoint read failed', requestId: 'tabs-fixture' } } : options.deleted ? { id: endpointId, owner, lifecycle: 'deleted', configVersion: '2', deletedAt: now } : {
       id: endpointId, owner, lifecycle: 'active', configVersion: '1', deletedAt: null,
       name: 'Long receiver endpoint 0 for search and layout', enabled: !options.disabled,
@@ -28,7 +28,7 @@ async function setup(page: Page, locale: 'en' | 'zh-CN', options: { count?: numb
     };
     await route.fulfill({ status, contentType: 'application/json', headers: { 'Daynight-User-ID': userId }, body: JSON.stringify(body) });
   });
-  return { ...state, writes, reads: () => detailReads };
+  return { ...state, writes, reads: () => detailReads, recover: () => { failDetail = false; } };
 }
 
 const geometry = (list: Locator) => list.evaluate(element => {
@@ -80,7 +80,8 @@ for (const owner of ['personal', 'team'] as const) for (const locale of ['en', '
     const state = await setup(page, locale, { count: 120 });
     await page.setViewportSize({ width: 320, height: 900 }); await page.goto(address(owner, 'deliveries'));
     await expect(track(page)).toBeVisible();
-    await page.addStyleTag({ content: 'html { font-size: 32px; }' });
+    // Isolate tab-induced scrolling from browser anchoring during translated header reflow.
+    await page.addStyleTag({ content: 'html { font-size: 32px; overflow-anchor: none; }' });
     await selectedVisible(page, 'deliveries');
     await track(page).scrollIntoViewIfNeeded();
     expect((await geometry(track(page))).scrollWidth).toBeGreaterThan((await geometry(track(page))).clientWidth);
@@ -119,6 +120,8 @@ for (const owner of ['personal', 'team'] as const) {
 test('retry, paused configuration and readonly controls preserve endpoint tab navigation', async ({ page }) => {
   const state = await setup(page, 'en', { failOnce: true, readOnly: true, disabled: true });
   await page.setViewportSize({ width: 320, height: 900 }); await page.goto(address('team'));
+  await expect(page.locator('.detail-panel').getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  state.recover();
   await page.locator('.detail-panel').getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(track(page).getByRole('tab')).toHaveCount(3);
   await expect(page.locator('.detail-status')).toContainText('Paused');
