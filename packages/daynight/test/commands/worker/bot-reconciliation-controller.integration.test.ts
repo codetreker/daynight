@@ -185,12 +185,14 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   let observerLease: ControllerJobLease | undefined, host: ReturnType<typeof createWorkerBotHost> | undefined;
   let running: Promise<void> | undefined;
   let ticket: ControllerLaunchTicket | undefined;
+  let originalSnapshot: ReturnType<typeof readControllerSnapshot> | undefined;
   const cancellation = new AbortController();
   let stopped = false, hostClosed = false, testFailed = false;
   try {
     ticket = await hostReady;
     await vi.waitFor(() => expect(readControllerSnapshot(intent!.journalPath)).toMatchObject({ lifecycle: "ready", nativeSessionId: nativeId }), { timeout: 30_000, interval: 100 });
     const first = readControllerSnapshot(intent!.journalPath)!;
+    originalSnapshot = first;
     if (process.platform === "win32") observerLease = await acquireControllerJobLease(intent!.launchId, first.controllerProcess!, Date.now() + 10_000);
     // Crash the real owner instead of using graceful close to abandon live resources.
     originalHost.kill("SIGKILL"); await hostExited;
@@ -261,18 +263,31 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
         stopped = true;
       });
     }
-    if (host && stopped) await cleanup(() => host!.shutdown());
+    let boundaryConfirmed = unknownStops.length === 0;
+    if (unknownStops.length) await cleanup(async () => {
+      const saved = readControllerSnapshot(retainedIntent().journalPath);
+      if (saved?.controllerProcess == null) throw new Error("Original Controller boundary is unavailable for stop reconciliation.");
+      const deadline = Date.now() + 20_000;
+      await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(saved.controllerProcess!, saved.nativeProcesses, deadline, observerLease)).toBe(true), { timeout: 20_000, interval: 100 });
+      boundaryConfirmed = true;
+    });
+    if (host && stopped && boundaryConfirmed) await cleanup(() => host!.shutdown());
     if (unknownStops.length) await cleanup(async () => {
       // Reconcile the original generation once; a lost receipt never authorizes
       // replaying the stop request or replacing its Controller and native Session.
       const original = retainedIntent(), saved = readControllerSnapshot(original.journalPath);
       expect(saved).toMatchObject({ executionId: original.executionId, executionGeneration: original.executionGeneration,
-        controllerInstanceId: original.controllerInstanceId, sessionId: original.sessionId, nativeSessionId: nativeId, nativeStopped: true });
+        controllerInstanceId: original.controllerInstanceId, sessionId: ticket!.sessionId, nativeSessionId: nativeId, nativeStopped: true });
+      expect(saved?.controllerProcess).toEqual(originalSnapshot?.controllerProcess);
+      expect(saved?.nativeProcesses).toEqual(originalSnapshot?.nativeProcesses);
       expect(saved?.controllerProcess).not.toBeNull();
       expect(await confirmControllerProcessesStopped(saved!.controllerProcess!, saved!.nativeProcesses, Date.now() + 20_000, observerLease)).toBe(true);
       expect(stopped).toBe(true);
     });
-    if (loseStopReceipt && !testFailed) await cleanup(() => { expect(stopReceiptLost).toBe(true); expect(unknownStops.length).toBeGreaterThan(0); });
+    if (loseStopReceipt && !testFailed) await cleanup(() => {
+      expect(stopReceiptLost).toBe(true); expect(unknownStops.length).toBeGreaterThan(0);
+      expect(stopRequests.filter(state => state === "started")).toHaveLength(1);
+    });
     if (host) await cleanup(async () => { await host!.close(); hostClosed = true; });
     if (observerLease) await cleanup(() => releaseControllerJobLease(observerLease!));
     for (const socket of sockets) await cleanup(() => socket.terminate());
