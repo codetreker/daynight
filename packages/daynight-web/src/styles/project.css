@@ -62,18 +62,16 @@
 .project-task-tab { font-size: var(--text-sm); }
 .project-task-tabs .graph-count-pill, .task-view-summary { font-size: var(--text-xs); }
 
-.project-tasks .root-list .root-title, .project-tasks .root-list .root-status,
-.project-tasks .root-list .task-assignee-identity, .project-tasks .root-list .assignee-former,
-.project-tasks .root-list .chain-worker-active, .project-tasks .root-list .task-pause-count,
-.project-tasks .root-list .task-paused-badge, .project-tasks .root-list .goal-detail-link { font-size: var(--text-sm); }
-.project-tasks .root-list .root-meta, .project-tasks .root-list .root-progress-label,
-.project-tasks .root-list .goal-in-progress, .project-tasks .root-list .completion-time-label { font-size: var(--text-xs); line-height: 1.5; }
-.project-tasks .root-list .chain-worker-active { line-height: 1.5; }
-.project-tasks .root-list .session-status-slot { width: auto; max-width: 40%; flex-basis: auto; }
-.project-tasks .root-list .session-status-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
-@container (max-width: 600px) { .project-tasks .root-list .session-status-slot { max-width: 100%; } }
+.project-tasks .root-list .goal-header :is(.root-title, .task-pause-count, .task-paused-badge),
+.project-tasks .root-list .goal-detail-link { font-size: var(--text-sm); }
+.project-tasks .root-list .goal-header :is(.root-meta, .root-progress-label, .goal-in-progress, .completion-time-label,
+  .task-assignee-identity, .assignee-former, .chain-worker-active, .session-status-label, .session-status-annotation) { font-size: var(--text-xs); }
+.project-tasks .root-list .goal-header :is(.root-meta, .root-progress-label, .goal-in-progress, .completion-time-label,
+  .chain-worker-active, .session-status-label, .session-status-annotation) { line-height: 1.5; }
+.project-tasks .root-list .goal-header .session-status-slot { width: auto; max-width: 40%; flex-basis: auto; }
+.project-tasks .root-list .goal-header .session-status-label { white-space: normal; overflow-wrap: anywhere; display: inline-flex; flex-direction: column; align-items: flex-end; }
+.project-tasks .root-list .goal-header .session-status-annotation { position: static; height: auto; white-space: normal; }
+@container (max-width: 600px) { .project-tasks .root-list .goal-header .session-status-slot { max-width: 100%; } }
 
 .project-tasks .project-section-heading h2 { font-size: var(--text-lg); }
 .project-tasks .list-pagination { font-size: var(--text-sm); }
-.project-tasks .root-list .session-status-label { display: inline-flex; flex-direction: column; align-items: flex-end; }
-.project-tasks .root-list .session-status-annotation { position: static; height: auto; font-size: var(--text-sm); line-height: 1.5; white-space: normal; }
