@@ -165,6 +165,9 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
           await jump.click(); await expect(card).toBeFocused();
           await timeline.evaluate(node => { node.scrollTop += 45; node.dispatchEvent(new Event('scroll')); });
           await expect(jump).toBeVisible(); await expect(page.locator('.session-latest')).toBeVisible();
+          expect(await jump.locator('.session-pending-label').evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(40);
+          await expect(page.locator('.session-latest-label')).toBeVisible();
+          await expect(jump).toHaveAccessibleName('Pending request · Choose session options'.replace('Pending request', locale === 'en' ? 'Pending request' : '待处理请求'));
           await first.click({ position: { x: 10, y: 10 }, timeout: 5000 });
           await first.fill('Embedded draft');
           await page.locator('.session-fullscreen-toggle').click();
@@ -184,7 +187,7 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
           expect(after.title.top).toBeGreaterThanOrEqual(after.viewport.top);
           expect(after.title.bottom).toBeLessThanOrEqual(after.viewport.bottom);
           expect(after.first.top).toBeGreaterThanOrEqual(after.viewport.top);
-          if (entry === 'test' || width >= 768) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          if (entry === 'test' || width !== 390) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
           await first.fill('Retained profile');
           await page.locator('.session-latest').click();
           await expect(first).toHaveValue('Retained profile');
