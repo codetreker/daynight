@@ -48,12 +48,12 @@ func TestDAORejectsStoredNonpositiveRevision(t *testing.T) {
 		}
 		rollbackPromptTest(t, tx)
 		dao := prompt.NewDAO(tx)
-		_, err = dao.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+		_, err = dao.PromptMetadata(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		var failure *store.Error
 		if !errors.As(err, &failure) || !failure.DatabaseFailure {
 			t.Fatalf("metadata revision %d: %v", revision, err)
 		}
-		_, err = dao.PromptResource(ctx, user, model.PromptScopeProject, id)
+		_, err = dao.PromptResource(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if !errors.As(err, &failure) || !failure.DatabaseFailure {
 			t.Fatalf("resource revision %d: %v", revision, err)
 		}
@@ -78,47 +78,47 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 	}
 	rollbackPromptTest(t, tx)
 	dao := prompt.NewDAO(tx)
-	empty, err := dao.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+	empty, err := dao.PromptMetadata(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 	if err != nil || empty.Revision != 0 {
 		t.Fatalf("missing: %+v %v", empty, err)
 	}
-	created, err := dao.CreatePrompt(ctx, user, model.PromptScopeProject, id, "first")
+	created, err := dao.CreatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, "first")
 	if err != nil || created.Revision != "1" {
 		t.Fatalf("create: %+v %v", created, err)
 	}
-	metadata, err := dao.PromptMetadata(ctx, user, model.PromptScopeProject, id)
+	metadata, err := dao.PromptMetadata(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 	if err != nil || metadata.Revision != 1 || metadata.UpdatedAt == nil || metadata.UpdatedAt.Location() != time.UTC || !metadata.UpdatedAt.Equal(*created.UpdatedAt) {
 		t.Fatalf("metadata time: %+v %v", metadata, err)
 	}
-	text, err := dao.PromptText(ctx, user, model.PromptScopeProject, id)
+	text, err := dao.PromptText(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 	if err != nil || text != "first" {
 		t.Fatalf("text: %q %v", text, err)
 	}
-	if _, err = dao.PromptText(ctx, other, model.PromptScopeProject, id); !errors.Is(err, model.ErrNotFound) {
+	if _, err = dao.PromptText(ctx, model.PromptPurposeWorker, other, model.PromptScopeProject, id); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing text: %v", err)
 	}
-	virtual, err := dao.PromptResource(ctx, other, model.PromptScopeProject, id)
+	virtual, err := dao.PromptResource(ctx, model.PromptPurposeWorker, other, model.PromptScopeProject, id)
 	if err != nil || virtual.Revision != "0" || virtual.Text != "" || virtual.UpdatedAt != nil {
 		t.Fatalf("virtual: %+v %v", virtual, err)
 	}
-	_, err = dao.CreatePrompt(ctx, user, model.PromptScopeProject, id, "duplicate")
+	_, err = dao.CreatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, "duplicate")
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "version_conflict" {
 		t.Fatalf("duplicate: %v", err)
 	}
-	_, err = dao.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 7, "stale")
+	_, err = dao.UpdatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 2, 7, "stale")
 	if !errors.As(err, &fault) || fault.Code != "version_conflict" {
 		t.Fatalf("stale: %v", err)
 	}
-	updated, err := dao.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "")
+	updated, err := dao.UpdatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 2, 1, "")
 	if err != nil || updated.Revision != "2" || updated.Text != "" {
 		t.Fatalf("clear: %+v %v", updated, err)
 	}
-	isolated, err := dao.PromptMetadata(ctx, other, model.PromptScopeProject, id)
+	isolated, err := dao.PromptMetadata(ctx, model.PromptPurposeWorker, other, model.PromptScopeProject, id)
 	if err != nil || isolated.Revision != 0 {
 		t.Fatalf("owner isolation: %+v %v", isolated, err)
 	}
-	resource, err := dao.PromptResource(ctx, user, model.PromptScopeProject, id)
+	resource, err := dao.PromptResource(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 	if err != nil || !reflect.DeepEqual(resource, updated) {
 		t.Fatalf("read: %+v %v", resource, err)
 	}
@@ -126,12 +126,24 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, operation := range map[string]func() error{
-		"metadata": func() error { _, err := dao.PromptMetadata(ctx, user, model.PromptScopeProject, id); return err },
-		"text":     func() error { _, err := dao.PromptText(ctx, user, model.PromptScopeProject, id); return err },
-		"resource": func() error { _, err := dao.PromptResource(ctx, user, model.PromptScopeProject, id); return err },
-		"create":   func() error { _, err := dao.CreatePrompt(ctx, user, model.PromptScopeProject, id, "x"); return err },
+		"metadata": func() error {
+			_, err := dao.PromptMetadata(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
+			return err
+		},
+		"text": func() error {
+			_, err := dao.PromptText(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
+			return err
+		},
+		"resource": func() error {
+			_, err := dao.PromptResource(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
+			return err
+		},
+		"create": func() error {
+			_, err := dao.CreatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, "x")
+			return err
+		},
 		"update": func() error {
-			_, err := dao.UpdatePrompt(ctx, user, model.PromptScopeProject, id, 2, 1, "x")
+			_, err := dao.UpdatePrompt(ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 2, 1, "x")
 			return err
 		},
 	} {
@@ -170,15 +182,15 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 		}
 		transaction := begin()
 		reader := prompt.NewDAO(transaction)
-		got, err := reader.PromptResource(group.ctx, user, model.PromptScopeProject, id)
+		got, err := reader.PromptResource(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("fresh resource: got=%+v want=%+v err=%v", got, want, err)
 		}
-		metadata, err := reader.PromptMetadata(group.ctx, user, model.PromptScopeProject, id)
+		metadata, err := reader.PromptMetadata(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if err != nil || metadata.Revision != revision || metadata.UpdatedAt == nil || !metadata.UpdatedAt.Equal(*want.UpdatedAt) || metadata.UpdatedAt.Location() != time.UTC {
 			t.Fatalf("fresh metadata: %+v err=%v", metadata, err)
 		}
-		text, err := reader.PromptText(group.ctx, user, model.PromptScopeProject, id)
+		text, err := reader.PromptText(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id)
 		if err != nil || text != want.Text {
 			t.Fatalf("fresh text: got=%q want=%q err=%v", text, want.Text, err)
 		}
@@ -247,12 +259,12 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 		read(winner, revision)
 	}
 	compete("one", "two", 1, func(dao *prompt.DAO, text string) (model.PromptResource, error) {
-		return dao.CreatePrompt(group.ctx, user, model.PromptScopeProject, id, text)
+		return dao.CreatePrompt(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, text)
 	})
 	write := func(next, expected int64, text string) model.PromptResource {
 		t.Helper()
 		transaction := begin()
-		got, err := prompt.NewDAO(transaction).UpdatePrompt(group.ctx, user, model.PromptScopeProject, id, next, expected, text)
+		got, err := prompt.NewDAO(transaction).UpdatePrompt(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, next, expected, text)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +279,7 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 	}
 	committed := write(2, 1, "new")
 	stale := begin()
-	_, err = prompt.NewDAO(stale).UpdatePrompt(group.ctx, user, model.PromptScopeProject, id, 2, 1, "stale")
+	_, err = prompt.NewDAO(stale).UpdatePrompt(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 2, 1, "stale")
 	var conflict *model.Fault
 	if !errors.As(err, &conflict) || conflict.Code != "version_conflict" {
 		t.Fatalf("committed stale update: %v", err)
@@ -279,7 +291,7 @@ func TestDAOPromptKeysAndConditionalWrites(t *testing.T) {
 	write(3, 2, "")
 	write(4, 3, "again")
 	compete("winner-a", "winner-b", 5, func(dao *prompt.DAO, text string) (model.PromptResource, error) {
-		return dao.UpdatePrompt(group.ctx, user, model.PromptScopeProject, id, 5, 4, text)
+		return dao.UpdatePrompt(group.ctx, model.PromptPurposeWorker, user, model.PromptScopeProject, id, 5, 4, text)
 	})
 }
 
@@ -315,5 +327,85 @@ func TestDAOWorkerExistenceUsesOwnerAndNotRecency(t *testing.T) {
 	}
 	if err = dao.PromptWorkerExists(ctx, owner, id); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("closed transaction mistaken for absent worker: %v", err)
+	}
+}
+
+func TestReviewerKeysIsolateVersionsAndConditionalWrites(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	user, id := uuid.NewString(), uuid.NewString()
+	for _, scope := range []model.PromptScope{model.PromptScopeUser, model.PromptScopeProject, model.PromptScopeWorker} {
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dao := prompt.NewDAO(tx)
+		for _, purpose := range []model.PromptPurpose{model.PromptPurposeWorker, model.PromptPurposeReviewer} {
+			resource, err := dao.CreatePrompt(ctx, purpose, user, scope, id, string(purpose))
+			if err != nil || resource.Scope != scope || resource.Revision != "1" || resource.Text != string(purpose) {
+				t.Fatalf("%s %s: %+v %v", purpose, scope, resource, err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		holder, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		winner, err := prompt.NewDAO(holder).UpdatePrompt(ctx, model.PromptPurposeReviewer, user, scope, id, 2, 1, "winner")
+		if err != nil {
+			t.Fatal(err)
+		}
+		contender, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := prompt.NewDAO(contender).UpdatePrompt(ctx, model.PromptPurposeReviewer, user, scope, id, 2, 1, "loser")
+			done <- err
+		}()
+		testutil.WaitThreadBackendLock(t, db.Pool, contender.Conn().PgConn().PID())
+		if err := holder.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		err = <-done
+		var conflict *model.Fault
+		if !errors.As(err, &conflict) || conflict.Code != "version_conflict" {
+			t.Fatalf("%s concurrent update: %v", scope, err)
+		}
+		if err := contender.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		tx, err = db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dao = prompt.NewDAO(tx)
+		dev, err := dao.PromptResource(ctx, model.PromptPurposeWorker, user, scope, id)
+		if err != nil || dev.Revision != "1" || dev.Text != "worker" {
+			t.Fatalf("worker %s: %+v %v", scope, dev, err)
+		}
+		reviewer, err := dao.PromptResource(ctx, model.PromptPurposeReviewer, user, scope, id)
+		if err != nil || !reflect.DeepEqual(reviewer, winner) {
+			t.Fatalf("reviewer %s: %+v %v", scope, reviewer, err)
+		}
+		cleared, err := dao.UpdatePrompt(ctx, model.PromptPurposeReviewer, user, scope, id, 3, 2, "")
+		if err != nil || cleared.Revision != "3" || cleared.Text != "" {
+			t.Fatalf("clear %s: %+v %v", scope, cleared, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var storedScope string
+		if err := db.Pool.QueryRow(ctx, `SELECT scope FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, user, "reviewer_"+string(scope), id).Scan(&storedScope); err != nil || storedScope != "reviewer_"+string(scope) {
+			t.Fatalf("storage scope %s: %q %v", scope, storedScope, err)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-// Package prompt adapts personal Worker prompt resources to HTTP.
+// Package prompt adapts personal prompt resources to HTTP.
 package prompt
 
 import (
@@ -17,6 +17,8 @@ import (
 type prompts interface {
 	Get(context.Context, model.Principal, model.PromptScope, string) (model.PromptResource, error)
 	Put(context.Context, model.Principal, model.PromptScope, string, string, string, string) (model.PromptResource, error)
+	GetReviewer(context.Context, model.Principal, model.PromptScope, string) (model.PromptResource, error)
+	PutReviewer(context.Context, model.Principal, model.PromptScope, string, string, string, string) (model.PromptResource, error)
 }
 
 type handler struct {
@@ -40,16 +42,20 @@ func RegisterRoutes(mux *http.ServeMux, prompts prompts, auth authenticator, log
 
 func (h *handler) registerRoutes(mux *http.ServeMux, auth authenticator) {
 	for _, route := range []struct {
-		path  string
-		scope model.PromptScope
+		path     string
+		scope    model.PromptScope
+		reviewer bool
 	}{
-		{"/api/v1/me/worker-prompt", model.PromptScopeUser},
-		{"/api/v1/me/projects/{projectId}/worker-prompt", model.PromptScopeProject},
-		{"/api/v1/me/workers/{workerId}/prompt", model.PromptScopeWorker},
+		{"/api/v1/me/worker-prompt", model.PromptScopeUser, false},
+		{"/api/v1/me/projects/{projectId}/worker-prompt", model.PromptScopeProject, false},
+		{"/api/v1/me/workers/{workerId}/prompt", model.PromptScopeWorker, false},
+		{"/api/v1/me/reviewer-prompt", model.PromptScopeUser, true},
+		{"/api/v1/me/projects/{projectId}/reviewer-prompt", model.PromptScopeProject, true},
+		{"/api/v1/me/workers/{workerId}/reviewer-prompt", model.PromptScopeWorker, true},
 	} {
 		scope := route.scope
 		resource := func(w http.ResponseWriter, r *http.Request, principal model.Principal) {
-			h.resource(w, r, principal, scope)
+			h.resource(w, r, principal, scope, route.reviewer)
 		}
 		mux.HandleFunc("GET "+route.path, auth.Require(resource))
 		mux.HandleFunc("PUT "+route.path, auth.Require(resource))
@@ -57,7 +63,7 @@ func (h *handler) registerRoutes(mux *http.ServeMux, auth authenticator) {
 	}
 }
 
-func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal model.Principal, scope model.PromptScope) {
+func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal model.Principal, scope model.PromptScope, reviewer bool) {
 	logger := h.logger.With("user_id", principal.UserID)
 	if r.URL.RawQuery != "" || r.URL.ForceQuery {
 		httpx.WriteError(w, r, logger, "worker_prompt", "validate", httpx.InvalidInput("worker prompt does not accept query parameters"))
@@ -97,11 +103,19 @@ func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal mod
 				text, err = httpx.RequiredString(fields, "text")
 			}
 			if err == nil {
-				result, err = h.prompts.Put(r.Context(), principal, scope, id, expected, revision, text)
+				if reviewer {
+					result, err = h.prompts.PutReviewer(r.Context(), principal, scope, id, expected, revision, text)
+				} else {
+					result, err = h.prompts.Put(r.Context(), principal, scope, id, expected, revision, text)
+				}
 			}
 		}
 	} else {
-		result, err = h.prompts.Get(r.Context(), principal, scope, id)
+		if reviewer {
+			result, err = h.prompts.GetReviewer(r.Context(), principal, scope, id)
+		} else {
+			result, err = h.prompts.Get(r.Context(), principal, scope, id)
+		}
 	}
 	if err != nil {
 		httpx.WriteError(w, r, logger, "worker_prompt", "exchange", err)

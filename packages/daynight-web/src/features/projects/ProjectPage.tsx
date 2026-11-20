@@ -169,7 +169,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     (target ?? (fallback?.matches(':disabled') ? heading.current : fallback))?.focus({ preventScroll: true });
   };
   const originalTrigger = useRef<HTMLElement | null>(null);
-  const pausedOrigin = useRef<HTMLElement | null>(null);
+  const pausedOrigin = useRef<{ readonly section: ProjectSection; readonly trigger: HTMLElement } | null>(null);
   const listOrigin = useRef<ProjectListOrigin | null>(null);
   const lastGraphResource = useRef<string | null>(null);
   const restoreRequested = useRef(false);
@@ -269,12 +269,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const unfinishedGoalCount = assignedGoals.filter((goal) => !isTerminalStatus(goal.status)).length;
   const goals = assignedGoals.filter((goal) =>
     matchesTaskStatus(statusFilter, goal.status) && !tagFilter.invalid && matchesTagFilter(goal.tags, tagFilter.value));
-  const pausedTasks = useMemo(() => {
+  const overviewPausedTasks = useMemo(() => {
     if (snapshot === null) return [];
     const ids = pausedSummaryTaskIds(snapshot.graph.tasks, snapshot.pausedTaskIds);
-    return snapshot.graph.tasks.filter((task) => ids.has(task.id) && matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId));
-  },
-  [snapshot, assigneeFilter, viewer.userId]);
+    return snapshot.graph.tasks.filter((task) => task.type === "task" && ids.delete(task.id));
+  }, [snapshot]);
+  const pausedTasks = useMemo(() => overviewPausedTasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)),
+    [overviewPausedTasks, assigneeFilter, viewer.userId]);
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
       matchesTaskStatus(statusFilter, task.status) && !tagFilter.invalid &&
@@ -384,13 +385,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onOpenPausedTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = trigger; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
+      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = { section, trigger }; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
     });
-  }, [history.select, selection]);
-  const onPausedFocusFallback = useCallback(() => {
-    if (!focusVisible(document.getElementById(`project-task-tab-${currentView.current}`)) &&
-      !focusVisible(document.getElementById("project-section-tab-tasks"))) focusVisible(heading.current);
+  }, [history.select, selection, section]);
+  const focusPausedFallback = useCallback((source: ProjectSection) => {
+    if (source === "tasks" && focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
+    return focusVisible(document.getElementById(`project-section-tab-${source}`)) || focusVisible(heading.current);
   }, []);
+  const onPausedFocusFallback = useCallback(() => { focusPausedFallback("tasks"); }, [focusPausedFallback]);
+  const onOverviewPausedFocusFallback = useCallback(() => { focusPausedFallback("overview"); }, [focusPausedFallback]);
   const onOpenSession = useCallback((id: string, trigger: HTMLElement) => {
     const insideProjectGraph = trigger.closest(".task-chain-dialog") !== null;
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph,
@@ -423,10 +426,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       }
       if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
       if (pausedOrigin.current !== null) {
-        if (focusVisible(pausedOrigin.current)) return true;
-        if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
-        if (focusVisible(document.getElementById("project-section-tab-tasks"))) return true;
-        return focusVisible(heading.current);
+        return focusVisible(pausedOrigin.current.trigger) || focusPausedFallback(pausedOrigin.current.section);
       }
       if (origin === null && focusVisible(trigger)) return true;
       const detailWitness = !fromSearch && closedDetail.current?.source === "summary" && !closedDetail.current.insideProjectGraph ? closedDetail.current.id : null;
@@ -445,7 +445,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     // Overlay cleanups can release inertness after the detail or graph unmounts.
     finish();
     if (restoreRequested.current) queueMicrotask(finish);
-  }, []);
+  }, [focusPausedFallback]);
   const restoreGraphFocus = useCallback(() => {
     if (currentSelection.current.detail !== null || openGraph.current !== null) return;
     restoreRequested.current = true;
@@ -828,7 +828,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
             {section === "overview" && graphState}
-            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} onOpenTask={onOpenTask} />}
+            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} pausedTasks={overviewPausedTasks} active={section === "overview"} onNavigate={onOverviewNavigate} onOpenTask={onOpenPausedTask} onPausedFocusFallback={onOverviewPausedFocusFallback} />}
           </section>
           <section className="project-section-panel" id="project-section-panel-statistics" role="tabpanel"
             aria-labelledby="project-section-tab-statistics" hidden={section !== "statistics"} inert={section !== "statistics"} tabIndex={0}>

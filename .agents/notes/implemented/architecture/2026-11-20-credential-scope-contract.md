@@ -46,7 +46,8 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
-The scoped assistant task path requires a transaction-bound policy reader; the
-existing production assembly remains on its original credential path until the
-scoped assembly and authoritative storage are connected.
+itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
+the policy through opt-in service and transport entry points. The scoped assistant
+task path requires a transaction-bound policy reader. Existing production
+assembly remains on its original credential paths; persistence, production
+activation and issuance remain independent work.
