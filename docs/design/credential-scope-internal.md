@@ -49,6 +49,25 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Team 准入
+
+`service/team` 的 scoped 构造入口接收明确的凭据授权提供器；Team 不可见时
+保留原有拒绝，确认可见后检查实际操作的 scope，再判断原角色、版本和其他
+业务条件。已有事务内凭据复核的成员操作使用同一事务或快照中的当前授权，
+并在原复核点重新检查。缺失或不匹配的授权不能放行。
+
+Team 和成员读取需要 `team:read`；创建和改名需要 `team:write`，改名的
+完整响应还需要 `team:read`。成员管理使用 `team:members`，返回既有成员
+投影的操作还需要 `team:read`；本人退出使用 `team:leave`，删除使用
+`team:delete`。已发邀请使用 `team:invitations`，本人邀请查看与接受分别
+使用 `team:invitation-read` 和 `team:invitation-accept`。原有完整接受响应
+还需要邀请读取权限；最小服务回执只需接受权限，两者都不要求 `project:read`。
+MCP 的 Team 项目列表同时要求 Team 读取和项目读取，预读与变更分别执行准入。
+
+Team REST 使用受保护服务时保留原有解析和响应；MCP 提供显式 scoped 注册，
+保持原工具 schema。权限拒绝沿用上文的 HTTP 和 MCP 错误合同。原角色和资源
+规则仍独立生效，不因 scope 获得成员或管理员身份。
+
 ## Bot 定义准入
 
 `service/bot` 的 scoped 构造入口接收授权事实来源；读取使用当前快照，创建和
@@ -78,7 +97,7 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 ## 装配边界
 
 生产仍使用原有 `tag.New`、REST 和 MCP 注册，尚未启用受限凭据签发或
-scoped Tag 装配。scoped 入口只接受显式授权事实，不以缺失 policy 放行。
+scoped Tag 或 Team 装配。scoped 入口只接受显式授权事实，不以缺失 policy 放行。
 凭据持久化、认证时读取最新策略、完整入口分类、迁移和公开启用由相应
 实现接入；Tag 的直接操作使用调用方已认证的策略快照。生产 Bot 组装也保持
 原有入口；scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
