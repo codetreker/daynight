@@ -253,6 +253,9 @@ func (a *invitationAdapter) inspect(ctx context.Context, actor RequestActor, in 
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil {
+			return ToolResult{}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.InspectInvitation(ctx, actor.Principal, secret)
 		if err != nil {
 			return ToolResult{}, err
@@ -283,6 +286,9 @@ func (a *invitationAdapter) accept(ctx context.Context, actor RequestActor, in i
 		return ToolResult{}, err
 	}
 	if scope == "team" {
+		if actor.Authorization != nil {
+			return ToolResult{WriteOutcome: "not_committed"}, &model.Fault{Code: "forbidden", Message: "This invitation operation is unavailable for the credential."}
+		}
 		i, err := a.teams.AcceptInvitation(ctx, actor.Principal, secret, actor.Principal.UserID)
 		if err != nil {
 			return ToolResult{}, err

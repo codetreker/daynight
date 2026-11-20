@@ -19,6 +19,14 @@ the principal separately and distinguishes scoped PAT and MCP policies from
 fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly.
 
+Project management exposes scoped service and transport adapters separately from
+the existing assembly. They use the shared operation requirements, retain the
+original resource and role checks, and authorize sensitive previews before
+returning them. Full write responses that contain existing Project data also
+require its read capability. Member search and direct-member changes obtain
+current authorization through transaction-bound callbacks at their existing
+credential revalidation points.
+
 ## Alternatives
 
 **Group grants.** Treating a selected group as an enduring grant would authorize
@@ -36,4 +44,6 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
+itself. The scoped Project adapters require an authentication source and current
+credential readers when integrated; the existing production assembly remains
+unchanged. Persistence, production admission and issuance remain independent work.

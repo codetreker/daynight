@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -243,6 +244,14 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: map[string]any{"teamId": id, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": id}}, nil
 	case "team_projects":
+		if actor.Authorization != nil {
+			if _, err := teams.Get(ctx, p, id); err != nil {
+				return ToolResult{}, err
+			}
+			if err := actor.Authorization.Require(scopepolicy.TeamRead); err != nil {
+				return ToolResult{}, err
+			}
+		}
 		project := func(items []model.Project, cursor *string) teamListData[Project] {
 			page := teamListData[Project]{Items: make([]Project, 0, len(items)), NextCursor: cursor}
 			for _, item := range items {

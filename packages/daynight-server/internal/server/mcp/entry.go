@@ -34,6 +34,12 @@ type OAuthAuthenticator interface {
 	AuthenticateAccess(context.Context, string, string) (store.OAuthAccessIdentity, error)
 }
 
+// ScopedAuthenticator authenticates the bearer and returns the current policy
+// snapshot and its persistent authority in the same admission operation.
+type ScopedAuthenticator interface {
+	AuthenticateScoped(context.Context, model.CredentialKind, string, string) (model.CredentialAuthorization, AuthorityRef, error)
+}
+
 type ObserveUsage func(context.Context, usage.Source, model.CredentialUsageEvent) error
 
 type AuthorityRef struct {
@@ -42,6 +48,7 @@ type AuthorityRef struct {
 }
 type RequestActor struct {
 	Principal     model.Principal
+	Authorization *model.CredentialAuthorization
 	AuthorityRef  AuthorityRef
 	RequestID     string
 	Context       context.Context
@@ -98,6 +105,9 @@ type Entry struct {
 	http            http.Handler
 	auth            Authenticator
 	oauth           OAuthAuthenticator
+	scopedAuth      ScopedAuthenticator
+	scopedTools     map[string]bool
+	toolNames       map[string]bool
 	observeUsage    ObserveUsage
 	resource        string
 	manual          string
@@ -113,6 +123,17 @@ type Entry struct {
 	stopped         bool
 	drained         chan struct{}
 	active          sync.WaitGroup
+}
+
+// EnableScopedAuthentication must be called before tools are registered or
+// requests are served. Only tools registered with scoped adapters may execute.
+func (e *Entry) EnableScopedAuthentication(auth ScopedAuthenticator) error {
+	if e == nil || auth == nil || e.scopedAuth != nil {
+		return errors.New("scoped MCP authentication is required")
+	}
+	e.scopedAuth = auth
+	e.scopedTools = make(map[string]bool)
+	return nil
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
@@ -262,8 +283,24 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	defer stop()
 	var p model.Principal
 	var authority AuthorityRef
+	var authorization *model.CredentialAuthorization
 	var err error
-	if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+	if e.scopedAuth != nil {
+		kind := model.PATCredential
+		if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+			kind = model.OAuthCredential
+		}
+		var current model.CredentialAuthorization
+		current, authority, err = e.scopedAuth.AuthenticateScoped(ctx, kind, parts[1], e.resource)
+		if err == nil {
+			p = current.Principal
+			if current.Validate() != nil || p.Kind != kind || (kind == model.PATCredential && (current.Profile != model.ScopedPATProfile || authority.Kind != "pat" || authority.ID != p.CredentialID)) || (kind == model.OAuthCredential && (current.Profile != model.ScopedMCPProfile || authority.Kind != "oauth" || authority.ID == "")) {
+				err = model.Unauthenticated(nil)
+			} else {
+				authorization = &current
+			}
+		}
+	} else if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
 		if e.oauth == nil {
 			err = model.Unauthenticated(nil)
 		} else {
@@ -290,7 +327,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		_ = e.observeUsage(ctx, source, event)
 		_ = httpx.PublishCredentialUsageFaults(e.logger, ctx)
 	}
-	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
+	s := &requestScope{actor: RequestActor{Principal: p, Authorization: authorization, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
 	historyRead := false
 	if r.Method == http.MethodPost {
