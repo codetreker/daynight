@@ -109,7 +109,7 @@ it('requires confirmation before disabling and offers enabling again', async () 
   expect(screen.queryByText(/assistant-task-inbox/)).toBeNull();
 });
 
-it('prompts to clean up endpoints of an inbox that was disabled before this panel mounted', async () => {
+it('lists endpoints of an inbox that was disabled before this panel mounted for cleanup on their configuration page', async () => {
   const origin = 'https://daynight.example', target = `${origin}/api/v1/assistant-task-inbox/${inboxId}`, endpointId = botId(93);
   const endpoint = { id: endpointId, owner: { kind: 'personal', id: BOT_USER }, lifecycle: 'active', configVersion: '4', deletedAt: null, name: 'Assistant inbox', enabled: true, destinationRevision: '2',
     destination: { kind: 'http', adapterVersion: '1', url: target, displayUrl: target }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(94), overlapUntil: null },
@@ -124,8 +124,9 @@ it('prompts to clean up endpoints of an inbox that was disabled before this pane
   const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled disabled={false} onChanged={vi.fn(async () => undefined)} serviceOrigin={origin} /></TaskCacheProvider>, { locale: 'en' });
   expect(await screen.findByRole('alert')).toHaveTextContent('The inbox is disabled.');
-  expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
+  // The id of an inbox disabled elsewhere is unknown, so the endpoint is opened on its configuration page instead of acted on.
+  expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', `/webhooks?owner=personal&endpointId=${endpointId}`);
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
 });
 
 it('keeps the inbox state on refused writes and reports read failures', async () => {
