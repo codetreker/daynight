@@ -318,8 +318,15 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 			t.Fatal("grant v3 owner or secrecy differs")
 		}
 		item := usageFind(t, list.Grants, grantID)
-		if len(item) != 11 {
+		if len(item) != 12 {
 			t.Fatal("grant v3 field count differs")
+		}
+		policy := usageDecode[struct {
+			Scopes       []string `json:"scopes"`
+			ScopeVersion string   `json:"scopeVersion"`
+		}](t, item["scopePolicy"])
+		if len(policy.Scopes) != 1 || policy.Scopes[0] != "team:read" || policy.ScopeVersion != "1" {
+			t.Fatalf("grant v3 scope policy differs: %+v", policy)
 		}
 		return item
 	}

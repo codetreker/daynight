@@ -10,7 +10,7 @@ import (
 )
 
 type workerLifecycleScope struct {
-	*worker.Writer
+	authorizedWorkerScope
 	lifecycle *worker.Lifecycle
 }
 
@@ -29,7 +29,7 @@ func (s *Store) WriteWorkerLifecycle(ctx context.Context, operation func(store.W
 		return store.Completion{Outcome: store.TransactionNotCommitted}, pg.QueryError("begin worker lifecycle", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
-		return operation(workerLifecycleScope{worker.NewWriter(tx), worker.NewLifecycle(tx)})
+		return operation(workerLifecycleScope{authorizedWorkerScope{worker.NewWriter(tx), credentialAuthorization{tx}}, worker.NewLifecycle(tx)})
 	})
 	return teamCompletion("write worker lifecycle", err)
 }

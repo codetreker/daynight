@@ -5,6 +5,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"testing"
 	"time"
 )
 
@@ -112,4 +113,70 @@ func (d usageAssemblyFamilyDAO) ScopedAccess(ctx context.Context, hash []byte, b
 	a, err := assemblyAuthorization(got.Principal)
 	got.ScopePolicy = a.Policy
 	return got, err
+}
+
+func (d *identityHTTPScope) FreshPATTime(_ context.Context, now time.Time) (time.Time, error) {
+	identityHTTPNow(d.t, now)
+	return now, nil
+}
+func (d *identityHTTPScope) ListAllPATs(context.Context, string) ([]model.PersonalAccessToken, error) {
+	unexpectedHTTPCall(d.t, "ListAllPATs")
+	return nil, nil
+}
+func (d *identityHTTPScope) ComparePATDescription(context.Context, string, string, *string, *string) (bool, error) {
+	unexpectedHTTPCall(d.t, "ComparePATDescription")
+	return false, nil
+}
+func (d *identityHTTPScope) PATExists(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "PATExists")
+	return false, nil
+}
+
+func (s projectHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, p model.Principal, _ string, _ bool) (model.CredentialAuthorization, error) {
+	return assemblyAuthorization(p)
+}
+
+type assemblySessionPAT struct {
+	store.PATScopeDAO
+	store.PATManagementDAO
+	t         *testing.T
+	principal model.Principal
+}
+
+func (d assemblySessionPAT) ReadLockedPATScope(ctx context.Context, user, id string) (model.PersonalAccessToken, error) {
+	p := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: id}
+	projectHTTPCheck(d.t, p, d.principal)
+	return assemblyPAT(p, nil)
+}
+func (d assemblySessionPAT) FreshPATTime(_ context.Context, now time.Time) (time.Time, error) {
+	return now, nil
+}
+func (s startupCurrentScope) SessionPATScopeDAO() store.PATScopeDAO {
+	return assemblySessionPAT{t: s.dao.t, principal: s.dao.f.handler.principal}
+}
+func (s startupCurrentScope) SessionPATManagementDAO() store.PATManagementDAO {
+	return assemblySessionPAT{t: s.dao.t, principal: s.dao.f.handler.principal}
+}
+func (s startupCurrentScope) SessionOAuthScopeDAO() store.OAuthScopeDAO {
+	unexpectedHTTPCall(s.dao.t, "SessionOAuthScopeDAO")
+	return nil
+}
+func (s sessionHTTPScope) SessionPATScopeDAO() store.PATScopeDAO {
+	return assemblySessionPAT{t: s.t, principal: s.dao.f.handler.principal}
+}
+func (s sessionHTTPScope) SessionPATManagementDAO() store.PATManagementDAO {
+	return assemblySessionPAT{t: s.t, principal: s.dao.f.handler.principal}
+}
+func (s sessionHTTPScope) SessionOAuthScopeDAO() store.OAuthScopeDAO {
+	panic("unexpected OAuth Session fixture")
+}
+
+func (s accessHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, p model.Principal, _ string, _ bool) (model.CredentialAuthorization, error) {
+	return assemblyAuthorization(p)
+}
+func (s settingsHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, p model.Principal, _ string, _ bool) (model.CredentialAuthorization, error) {
+	return assemblyAuthorization(p)
+}
+func (s teamHTTPSnapshot) CurrentCredentialAuthorization(_ context.Context, p model.Principal, _ string, _ bool) (model.CredentialAuthorization, error) {
+	return assemblyAuthorization(p)
 }

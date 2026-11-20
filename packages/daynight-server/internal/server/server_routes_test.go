@@ -324,10 +324,13 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 	if kind == "sync" {
 		readCount = 2
 	}
-	snapshotCalls := projectHTTPCount(t, readCount)
 	reader := accessHTTPProjectReader{}
 	if kind != "list" {
-		calls := projectHTTPCount(t, readCount)
+		accessCount := readCount
+		if kind == "project" || kind == "members" || kind == "access" {
+			accessCount++
+		}
+		calls := projectHTTPCount(t, accessCount)
 		reader.ProjectAccessCall = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 			calls()
 			projectHTTPCheck(t, actor, p)
@@ -428,15 +431,13 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		}
 	}
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshotCalls()
 		return op(snapshot)
 	}
 }
 func accessHTTPRefusal(t *testing.T, tx *httpTestStore, p model.Principal, id string, err error) {
 	t.Helper()
-	snapshot, called := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	called := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(accessHTTPSnapshot{project: projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
 			called()
 			projectHTTPCheck(t, actor, p)
@@ -641,9 +642,7 @@ func settingsHTTPGraph(t *testing.T, tx *httpTestStore, actor model.Principal, v
 			return value, nil
 		},
 	}
-	read := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, operation func(store.SnapshotScope) error) error {
-		read()
 		return operation(settingsHTTPSnapshot{project: project, task: reader, observed: func(context.Context) (time.Time, error) {
 			next("observed")
 			return value.UpdatedAt.Add(time.Minute), nil
@@ -769,9 +768,7 @@ func projectHTTPCount(t *testing.T, want int) func() {
 }
 func projectHTTPRead(t *testing.T, tx *httpTestStore, reader store.ProjectReader) {
 	t.Helper()
-	called := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		called()
 		return op(projectHTTPSnapshot{ProjectReader: reader})
 	}
 }
@@ -786,7 +783,7 @@ func projectHTTPAccess(p model.Principal, v model.Project) model.ProjectAccess {
 }
 func projectHTTPGet(t *testing.T, tx *httpTestStore, p model.Principal, v model.Project) {
 	t.Helper()
-	access, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	access, read := projectHTTPCount(t, 2), projectHTTPCount(t, 1)
 	projectHTTPRead(t, tx, projectHTTPReader{ProjectAccessCall: func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		access()
 		projectHTTPCheck(t, actor, p)
@@ -993,9 +990,8 @@ func teamHTTPCreate(t *testing.T, tx *httpTestStore, p model.Principal, name str
 }
 func teamHTTPRead(t *testing.T, tx *httpTestStore, p model.Principal, id string, result model.Team, readErr error) {
 	t.Helper()
-	snapshot, read := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	read := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, Read: func(ctx context.Context, user, gotID string) (model.Team, error) {
 			read()
 			projectHTTPCheck(t, user, p.UserID)
@@ -1006,9 +1002,8 @@ func teamHTTPRead(t *testing.T, tx *httpTestStore, p model.Principal, id string,
 }
 func teamHTTPList(t *testing.T, tx *httpTestStore, p model.Principal, items []model.Team) {
 	t.Helper()
-	snapshot, list := projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+	list := projectHTTPCount(t, 1)
 	tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
-		snapshot()
 		return op(teamHTTPSnapshot{reader: teamHTTPReader{t: t, List: func(ctx context.Context, user string, page store.Page) (store.TeamPage, error) {
 			list()
 			projectHTTPCheck(t, user, p.UserID)
@@ -1153,7 +1148,7 @@ func (s *mcpBotCallScript) call(name string, args ...any) []any {
 	s.next++
 	if name != c.name || c.check == nil && !reflect.DeepEqual(args, c.args) {
 		s.t.Errorf("MCP Bot call %d got %s %#v, want %s %#v", s.next, name, args, c.name, c.args)
-		panic("MCP Bot DAO call mismatch")
+		panic(fmt.Sprintf("MCP Bot call %d got %s %#v, want %s %#v", s.next, name, args, c.name, c.args))
 	}
 	if c.check != nil {
 		c.check(args)
@@ -1445,14 +1440,12 @@ func mcpBotResult(err error) (store.Completion, error) {
 	return store.Completion{Outcome: store.TransactionCommitted}, nil
 }
 func mcpBotSnapshot(t *testing.T, tx *httpTestStore, calls ...mcpBotExpectedCall) {
-	s := mcpBotScript(t, append([]mcpBotExpectedCall{mcpBotCall("ReadSnapshot", nil)}, calls...)...)
+	s := mcpBotScript(t, calls...)
 	tx.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {
-		s.call("ReadSnapshot")
 		scope := newHTTPTestSnapshot(t)
 		scope.Credentials = mcpBotCredentialReader{s: s}
 		scope.Bots = &mcpBotReader{s: s}
 		err := fn(scope)
-		s.verify()
 		return err
 	}
 }
@@ -1497,10 +1490,19 @@ func mcpBotCreation(t *testing.T, tx *httpTestStore, p model.Principal, defaults
 		}
 		return []mcpBotExpectedCall{mcpBotCall("BotPreferredWorker", []any{p.UserID}, (*string)(nil), nil), mcpBotCall("BotCreationCandidates", []any{p.UserID}, defaults, nil), mcpBotCall("BotCreationWorker", []any{p.UserID, want.WorkerID}, defaults, nil)}
 	}
-	reads := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
+	preflight := []mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}
+	if want.RequestedOverrides.WorkerID != nil {
+		preflight = append(preflight, mcpBotCall("BotWorker", []any{p.UserID, want.WorkerID}, nil))
+	}
+	reads := append(preflight, mcpBotCredentialCall(p), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound))
+	reads = append(reads, selection()...)
 	mcpBotSnapshot(t, tx, reads...)
 	insert := model.Bot{ID: want.ID, OwnerUserID: p.UserID, WorkerID: want.WorkerID, Name: want.Name, RequestFingerprint: want.RequestFingerprint, RequestedOverrides: want.RequestedOverrides, ResolvedConfiguration: want.ResolvedConfiguration}
-	writes := append([]mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("LockCreation", []any{want.ID}, nil), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}, selection()...)
+	writes := []mcpBotExpectedCall{mcpBotCredentialCall(p), mcpBotCall("LockCreation", []any{want.ID}, nil), mcpBotCall("Bot", []any{want.ID}, model.Bot{}, model.ErrNotFound)}
+	if want.RequestedOverrides.WorkerID != nil {
+		writes = append(writes, mcpBotCall("Worker", []any{p.UserID, want.WorkerID}, nil))
+	}
+	writes = append(writes, selection()...)
 	writes = append(writes, mcpBotCall("Worker", []any{p.UserID, want.WorkerID}, nil), mcpBotCall("InsertBot", []any{insert}, nil), mcpBotCall("Bot", []any{want.ID}, want, nil), mcpBotCredentialCall(p))
 	mcpBotWrite(t, tx, writes...)
 }

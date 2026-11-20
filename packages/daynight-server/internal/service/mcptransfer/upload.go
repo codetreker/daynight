@@ -52,8 +52,7 @@ type Uploads struct {
 	renewalInterval     time.Duration
 }
 
-// NewScopedUploads retains the legacy upload service until scoped assembly is
-// explicitly selected. Its lifecycle must enforce current transfer authority.
+// NewScopedUploads requires a lifecycle that enforces current transfer authority.
 func NewScopedUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachments *attachmentservice.Attachments) (*Uploads, error) {
 	if lifecycle == nil || !lifecycle.scoped || files == nil || attachments == nil {
 		return nil, errors.New("scoped upload dependencies are required")

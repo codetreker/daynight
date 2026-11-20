@@ -13,7 +13,6 @@ import (
 )
 
 // AuthenticatePATPolicy returns the policy attached to the authenticated PAT.
-// This separate path leaves legacy authentication unchanged until scope activation.
 func (s *Identity) AuthenticatePATPolicy(ctx context.Context, dao store.PATScopeDAO, value string, now time.Time) (model.CredentialAuthorization, error) {
 	if err := ValidateCredential(model.PATCredential, value); err != nil {
 		return model.CredentialAuthorization{}, err

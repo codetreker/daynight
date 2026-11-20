@@ -20,6 +20,12 @@ const fixture = (items: readonly ScopedToken[] = [token]) => ({
   scopes: vi.fn<ScopedTokenManagementApi['scopes']>().mockImplementation(async (_id, input, _signal, _mismatch, dispatch) => { dispatch?.(); return { ...token, scopePolicy: { scopes: input.scopes, scopeVersion: '2' } }; }),
 });
 const page = (transport: ScopedTokenManagementApi, person = user) => <ScopedTokensPanel user={person} onIdentityMismatch={vi.fn()} transport={transport} />;
+const openCreate = async () => {
+  const trigger = screen.getByRole('button', { name: 'Create token' });
+  await waitFor(() => expect(trigger).toBeEnabled());
+  fireEvent.click(trigger);
+  await screen.findByText('Selected 1');
+};
 const openScope = async () => { const trigger = await screen.findByRole('button', { name: 'Edit permissions: CLI' }); trigger.focus(); fireEvent.click(trigger); await screen.findByText(/Selected [12]/); };
 const openGroup = () => fireEvent.click(screen.getByText('Tasks', { selector: 'summary span' }));
 const selectWrite = () => { openGroup(); fireEvent.click(screen.getByRole('checkbox', { name: /Create tasks and edit basic details/ })); };
@@ -29,8 +35,7 @@ afterEach(() => { invalidateAuthRequests(); sessionStorage.clear(); });
 describe('scoped PAT management', () => {
   it('starts manual creation with CLI defaults and forbids an empty selection', async () => {
     const transport = fixture(); render(page(transport));
-    fireEvent.click(await screen.findByRole('button', { name: 'Create token' }));
-    await screen.findByText('Selected 1'); openGroup();
+    await openCreate(); openGroup();
     const read = screen.getByRole('checkbox', { name: /View tasks and dependencies/ });
     expect(read).toBeChecked(); fireEvent.click(read);
     const dialog = screen.getByRole('dialog');
@@ -191,12 +196,15 @@ describe('scoped PAT management', () => {
     expect(screen.queryByText(/task:read, task:write/)).not.toBeInTheDocument();
   });
   it('retains a dispatched creation across unmount, isolating the next account until the original account reads back', async () => {
+    const initialList = Promise.withResolvers<readonly ScopedToken[]>();
     const gate = Promise.withResolvers<ScopedToken & { readonly token: string }>();
     const transport = fixture();
+    transport.list.mockReturnValueOnce(initialList.promise);
     transport.create.mockImplementationOnce((_input, _signal, _mismatch, dispatch) => { dispatch?.(); return gate.promise; });
     const view = render(page(transport));
-    fireEvent.click(await screen.findByRole('button', { name: 'Create token' }));
-    await screen.findByText('Selected 1');
+    expect(screen.getByRole('button', { name: 'Create token' })).toBeDisabled();
+    await act(async () => initialList.resolve([token]));
+    await openCreate();
     fireEvent.change(screen.getByLabelText(/Token name/), { target: { value: 'Build' } });
     fireEvent.submit(document.getElementById('create-token-form')!);
     expect(transport.create).toHaveBeenCalledOnce();

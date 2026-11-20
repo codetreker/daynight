@@ -22,6 +22,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -375,6 +376,7 @@ func oauthHTTPDecision(t *testing.T, f *oauthHTTPFixture, row store.OAuthAuthori
 	oauthHTTPPlan(t, f, row, true, want, func(a store.OAuthAuthorization) error {
 		expected := row
 		expected.Status = status
+		expected.ApprovedScopes = a.ApprovedScopes
 		expected.State = ""
 		expected.StatePresent = false
 		expected.UserID = f.Principal.UserID
@@ -465,6 +467,13 @@ func oauthHTTPExpectRedeem(t *testing.T, f *oauthHTTPFixture, row store.OAuthAut
 	grant := store.OAuthGrant{ID: row.GrantID, UserID: row.UserID, ClientID: row.ClientID, Resource: row.Resource, Scope: row.Scope, ClientSnapshot: row.Client, CreatedAt: f.Now, ExpiresAt: f.Now.Add(core.GrantLifetime)}
 	family := &oauthHTTPFamilyDAO{t: t, plan: plan, issue: func(in store.OAuthFamilyIssue) error {
 		expectedGrant := store.OAuthGrant{ID: in.Grant.ID, UserID: row.UserID, ClientID: row.ClientID, Resource: row.Resource, Scope: core.Scope, ClientSnapshot: row.Client, CreatedAt: f.Now, ExpiresAt: f.Now.Add(core.GrantLifetime)}
+		if row.ApprovedScopes != nil {
+			policy, err := scopepolicy.NewPolicy(scopepolicy.MCP, row.ApprovedScopes, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedGrant.ScopePolicy = &policy
+		}
 		if _, e := uuid.Parse(in.Grant.ID); e != nil {
 			t.Error(e)
 		}
@@ -933,19 +942,19 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 		t.Fatalf("consent: %d %s", w.Code, w.Body.String())
 	}
 	oauthHTTPRead(t, h, pending)
-	w = send("GET", "/api/v1/oauth/requests/"+id, "", "", session, binding)
-	var view struct{ UserID, Status, ClientProvenance string }
+	w = send("GET", "/api/v2/oauth/requests/"+id, "", "", session, binding)
+	var view struct{ UserID, Status, ClientProvenance, CatalogRevision string }
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 || view.UserID == "" || view.Status != "pending" || view.ClientProvenance != "dcr" {
 		t.Fatalf("inspect: %d %s %v", w.Code, w.Body.String(), err)
 	}
 	wrongAccount, _ := json.Marshal(map[string]string{"expectedUserId": "00000000-0000-4000-8000-000000000001", "decision": "approve"})
-	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(wrongAccount), "application/json", session, binding)
+	w = send("POST", "/api/v2/oauth/requests/"+id+"/decision", string(wrongAccount), "application/json", session, binding)
 	if w.Code == http.StatusOK {
 		t.Fatal("decision accepted a changed account")
 	}
-	body, _ := json.Marshal(map[string]string{"expectedUserId": view.UserID, "decision": "approve"})
+	body, _ := json.Marshal(map[string]any{"expectedUserId": view.UserID, "decision": "approve", "catalogRevision": view.CatalogRevision, "scopes": []string{"task:read"}})
 	decisionCapture := oauthHTTPDecision(t, h, pending, "approved")
-	w = send("POST", "/api/v1/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
+	w = send("POST", "/api/v2/oauth/requests/"+id+"/decision", string(body), "application/json", session, binding)
 	var decision struct {
 		RedirectURI string `json:"redirectUri"`
 	}
@@ -961,6 +970,10 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {redirect.Query().Get("code")}, "client_id": {registration.ClientID}, "redirect_uri": {callback}, "resource": {h.Origin + "/mcp"}, "code_verifier": {verifier}}
 	approved := oauthHTTPApproved(h, pending, redirect.Query().Get("code"))
+	approved.ApprovedScopes = decisionCapture.Load().ApprovedScopes
+	if !reflect.DeepEqual(approved.ApprovedScopes, []scopepolicy.ScopeID{"task:read"}) {
+		t.Fatalf("unexpected approved scopes: %v", approved.ApprovedScopes)
+	}
 	var issue store.OAuthFamilyIssue
 	oauthHTTPExpectRedeem(t, h, approved, true, false, false, &issue)
 	w = send("POST", "/oauth/token", form.Encode(), "application/x-www-form-urlencoded")
@@ -1174,7 +1187,11 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 		team   string
 		denied bool
 	}{{"personal", false}, {privateTeam, true}} {
-		plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "team": 1})
+		snapshots := 3
+		if tc.denied {
+			snapshots = 2
+		}
+		plan := newHTTPCallPlan(t, map[string]int{"snapshot": snapshots, "team": 1})
 		snapshot := newHTTPTestSnapshot(t)
 		snapshot.Teams = &oauthMCPTeamReader{t: t, plan: plan, actor: p.UserID, selector: tc.team, id: personalTeam, denied: tc.denied}
 		f.Store.ReadSnapshotCall = func(ctx context.Context, fn func(store.SnapshotScope) error) error {

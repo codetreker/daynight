@@ -21,13 +21,34 @@ var _ store.AssistantTaskScope = (*DAO)(nil)
 var _ store.AssistantTaskDAO = (*DAO)(nil)
 
 func (d *DAO) Credential(ctx context.Context, p model.Principal) error {
+	_, err := d.credential(ctx, p)
+	return err
+}
+
+func (d *DAO) CredentialAuthorization(ctx context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+	c, err := d.credential(ctx, p)
+	if err != nil {
+		return model.CredentialAuthorization{}, err
+	}
+	authorization := model.CredentialAuthorization{Principal: p, Policy: c.ScopePolicy}
+	switch p.Kind {
+	case model.SessionCredential:
+		authorization.Profile = model.SessionProfile
+	case model.PATCredential:
+		authorization.Profile = model.ScopedPATProfile
+	default:
+		return model.CredentialAuthorization{}, model.Unauthenticated(nil)
+	}
+	return authorization, authorization.Validate()
+}
+
+func (d *DAO) credential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
 	if _, err := pg.ThreadCredential(ctx, d.tx, p, " FOR SHARE"); err != nil {
-		return err
+		return store.ThreadCredential{}, err
 	}
 	// Natural expiry can pass while the shared lock waits without changing the
 	// row. Read again in a fresh statement under the acquired deletion barrier.
-	_, err := pg.ThreadCredential(ctx, d.tx, p, "")
-	return err
+	return pg.ThreadCredential(ctx, d.tx, p, "")
 }
 
 func (d *DAO) Bot(ctx context.Context, id string) (model.Bot, error) {

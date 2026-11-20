@@ -244,13 +244,17 @@ func TestScopedStatusRefusalDoesNotRevealDependencies(t *testing.T) {
 
 func TestScopedStatusAndClaimCompletionUseDifferentPermissions(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		claim bool
-		id    scopepolicy.ScopeID
-		allow bool
+		name    string
+		claim   bool
+		id      scopepolicy.ScopeID
+		allow   bool
+		full    bool
+		session bool
 	}{
-		{"ordinary", false, "task:status", true}, {"ordinary rejects worker", false, "worker:complete", false},
-		{"claim", true, "worker:complete", true}, {"claim rejects status", true, "task:status", false},
+		{"ordinary", false, "task:status", true, false, false}, {"ordinary rejects worker", false, "worker:complete", false, false, false},
+		{"claim", true, "worker:complete", true, false, false}, {"claim rejects status", true, "task:status", false, false, false},
+		{"claim full requires session", true, "worker:complete", false, true, false},
+		{"claim full with session", true, "worker:complete", true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project, current, principal := taskMockModels()
@@ -296,11 +300,18 @@ func TestScopedStatusAndClaimCompletionUseDifferentPermissions(t *testing.T) {
 				return store.Completion{Outcome: store.TransactionCommitted}, nil
 			}}
 			capture := taskDeletionCapture(func(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error { return nil })
-			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{tc.id}, 1)
+			ids := []scopepolicy.ScopeID{tc.id}
+			if tc.full {
+				ids = append([]scopepolicy.ScopeID{"task:read"}, ids...)
+			}
+			if tc.session {
+				ids = append([]scopepolicy.ScopeID{"session:read"}, ids...)
+			}
+			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, ids, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := taskservice.WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, false)
+			ctx := taskservice.WithTaskWriteAuthorization(t.Context(), model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}, tc.full)
 			result, err := taskservice.NewTasks(database, capture).SetStatus(ctx, principal, project.ID, current.ID, taskcore.SetTaskStatus{Version: current.Version, Status: model.TaskDone, ClaimID: claimID})
 			if tc.allow {
 				if err != nil || writes != 1 || result.Status != model.TaskDone {

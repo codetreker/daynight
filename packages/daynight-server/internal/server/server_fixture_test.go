@@ -2609,7 +2609,7 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	var requestContext context.Context
 	check := func(ctx context.Context, name string, valid bool) {
 		counts[name]++
-		if ctx != requestContext || counts[name] != 1 || !valid {
+		if ctx.Done() != requestContext.Done() || counts[name] != 1 || !valid {
 			t.Errorf("startup %s changed context, arguments or count", name)
 			panic("invalid startup DAO call")
 		}
@@ -2617,6 +2617,10 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
+	}
+	tasks.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
+		check(ctx, "header", id == current.ID && counts["access"] == 1)
+		return model.TaskHeader{ProjectID: current.ProjectID, ID: current.ID, Type: current.Type, Version: current.Version}, nil
 	}
 	tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
 		check(ctx, "task", id == current.ID && counts["access"] == 1)
@@ -2735,12 +2739,16 @@ func startupExpectTaskRead(t *testing.T, f *sessionHTTPFixture, value model.Task
 	}
 	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return project }, TaskDAOFn: func() store.TaskReader { return task }}
 	f.store.ReadSnapshotCall = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		snapshots++
-		if snapshots != 1 || work == nil {
+		if work == nil {
 			unexpectedHTTPCall(t, "startup snapshot")
 		}
 		requestContext = ctx
-		return work(scope)
+		before := access
+		err := work(scope)
+		if access != before {
+			snapshots++
+		}
+		return err
 	}
 	t.Cleanup(func() {
 		if snapshots != 1 || access != 1 || reads != 1 || epochs != 1 {

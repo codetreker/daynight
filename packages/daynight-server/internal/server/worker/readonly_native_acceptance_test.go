@@ -99,10 +99,7 @@ func TestReadOnlyNativeWorkerDirectoryAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherPAT, err := f.harness.Identity.CreatePAT(context.Background(), other, identitycore.CreatePAT{Name: "Native read-only acceptance"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	otherPAT := f.harness.MintPAT(t, other, identitycore.CreatePAT{Name: "Native read-only acceptance"})
 	otherWorker := uuid.NewString()
 	f.report(t, otherWorker, otherPAT.Secret)
 	type target struct {

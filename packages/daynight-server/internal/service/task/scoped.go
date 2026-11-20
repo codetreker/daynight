@@ -11,8 +11,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
-// Scoped copies retain request-local authorization; production constructors keep
-// their existing composition until scoped credential admission is enabled.
+// Scoped copies retain request-local authorization without mutating shared services.
 func NewScopedTasks(app *Tasks, a model.CredentialAuthorization) *Tasks {
 	copy := *app
 	copy.authorization = &a

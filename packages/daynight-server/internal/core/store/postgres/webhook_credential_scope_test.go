@@ -117,6 +117,7 @@ func TestWebhookSnapshotRejectsMissingAndMalformedCredentialPolicies(t *testing.
 	if _, err = read(missing, model.ScopedPATProfile); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing PAT: %v", err)
 	}
+	mustQueryExec(t, db, `ALTER TABLE personal_access_tokens ALTER COLUMN scope_version DROP NOT NULL`)
 	mustQueryExec(t, db, `UPDATE personal_access_tokens SET scope_version=NULL WHERE id=$1`, token)
 	if _, err = read(pat, model.ScopedPATProfile); err == nil {
 		t.Fatal("missing scope version accepted")

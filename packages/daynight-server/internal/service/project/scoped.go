@@ -11,8 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// ScopedProjects is an explicit business authorization entry point. Production
-// composition continues to use Projects until scoped credentials are enabled.
+// ScopedProjects preserves resource visibility before business scope admission.
 type ScopedProjects struct{ app *AppProjects }
 
 func NewScopedProjects(app *AppProjects) *ScopedProjects { return &ScopedProjects{app: app} }

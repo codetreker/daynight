@@ -16,6 +16,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type scopedTestChecker func(context.Context, model.CredentialAuthorization, string, string, string) error
@@ -130,7 +131,7 @@ func TestScopedStandaloneReadRoutesRequireDependencies(t *testing.T) {
 	bind := func(r *http.Request, _ model.Principal) (context.Context, error) { return r.Context(), nil }
 	for _, missing := range []string{"mux", "reader", "auth", "binder"} {
 		t.Run(missing, func(t *testing.T) {
-			mux := http.NewServeMux()
+			var mux httpx.RouteRegistrar = http.NewServeMux()
 			var h HistoryReader = historyRouteMock{}
 			var i inspectionReader = inspectionRouteOperation(func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error) {
 				return sp.TaskSessionInspection{}, nil
