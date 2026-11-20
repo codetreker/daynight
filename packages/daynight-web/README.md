@@ -2626,6 +2626,14 @@ desktop and 320px layouts, larger browser fonts, draft selection, dialog focus a
 readable metadata. Its generated reports and captures belong to
 `.tmp/typography-j/`; they are not product resources.
 
+The `worker-settings-typography-playwright.config.ts` configuration checks Worker
+configuration, project settings and repository dialogs, and the shared project and
+personal Prompt editor. It measures the selected sizes at 12px and 24px roots,
+responsive and coarse-pointer input minimums, retained editing focus and selection,
+and long paths in narrow desktop containers. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/worker-settings-typography-playwright.config.ts`.
+Its reports and captures belong to `.tmp/typography-h/`.
+
 Team, GitHub management and Webhook browser fixtures exercise the shared size
 scale at their actual routes. They cover responsive member and configuration
 inputs, Team invitation secrets, request IDs, narrow layouts and Webhook tab

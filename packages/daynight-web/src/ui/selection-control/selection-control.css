@@ -33,12 +33,11 @@
 }
 
 @media (max-width: 800px), (pointer: coarse) {
-  [data-touch-text="responsive"],
-  .field [data-touch-text="responsive"],
+  [data-touch-text][data-touch-text="responsive"],
   .management-typography .field :is(input, textarea) { font-size: max(var(--text-base), 16px); }
 }
 @media (pointer: coarse) {
-  [data-touch-text="coarse"] { font-size: max(var(--text-base), 16px); }
+  [data-touch-text][data-touch-text="coarse"] { font-size: max(var(--text-base), 16px); }
 }
 
 /* Layout defaults remain overridable by the caller's width and flex/grid placement. */
