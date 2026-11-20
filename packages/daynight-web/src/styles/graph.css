@@ -119,3 +119,4 @@
 .graph-successor-legend i{border-color:var(--graph-successor-color)}
 
 .goal-children-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px 12px;min-width:0}
+.goal-children-actions .completion-time-label{display:inline-block;white-space:nowrap}
