@@ -175,7 +175,34 @@ func TestScopedSessionOperationUsesReceiptAuthorizationAndCurrentPolicy(t *testi
 
 func TestScopedSessionOperationRequiresReadSources(t *testing.T) {
 	f := newEntryFixture(t)
-	if err := RegisterSessionTools(f.entry, ScopedSessionSendModule(sessionSendMock{t: t}, nil, nil)); err == nil {
-		t.Fatal("missing sources accepted")
+	current := func(context.Context, store.SessionScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected credential read")
+		return model.CredentialAuthorization{}, nil
+	}
+	snapshot := func(context.Context, store.SnapshotScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected snapshot read")
+		return model.CredentialAuthorization{}, nil
+	}
+	for _, module := range []SessionToolModule{
+		ScopedSessionSendModule(nil, current, snapshot),
+		ScopedSessionSendModule(sessionSendMock{t: t}, nil, nil),
+		ScopedSessionSendModule(sessionSendMock{t: t}, current, nil),
+		ScopedSessionSendModule(sessionSendMock{t: t}, nil, snapshot),
+	} {
+		if err := RegisterSessionTools(f.entry, module); err == nil {
+			t.Fatal("missing dependency accepted")
+		}
+	}
+	if err := RegisterSessionTools(f.entry, ScopedSessionSendModule(sessionSendMock{t: t}, current, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	args := sendArguments()
+	for _, key := range []string{"claimId", "executionGeneration", "expectedTurnId", "text"} {
+		delete(args, key)
+	}
+	result := (&structClient{t: t, client: client}).call("task_session_operation", args, true)
+	if result["data"] != nil || object(t, result["error"])["code"] != "internal_error" {
+		t.Fatalf("missing scoped authentication returned receipt: %#v", result)
 	}
 }

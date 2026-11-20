@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,8 +11,153 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+type scopedTestChecker func(context.Context, model.CredentialAuthorization, string, string, string) error
+
+func (c scopedTestChecker) CheckSessionRead(ctx context.Context, a model.CredentialAuthorization, project, task, id string) error {
+	return c(ctx, a, project, task, id)
+}
+
+func TestScopedReadBindersPreserveIdentityAndRejectInvalidAuthorization(t *testing.T) {
+	p := model.Principal{Kind: model.PATCredential, UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222"}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"session:read"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := model.CredentialAuthorization{Principal: p, Profile: model.ScopedPATProfile, Policy: &policy}
+	current := func(context.Context, store.SessionScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected current read")
+		return model.CredentialAuthorization{}, nil
+	}
+	snapshot := func(context.Context, store.SnapshotScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected snapshot read")
+		return model.CredentialAuthorization{}, nil
+	}
+	refusal := errors.New("current credential unavailable")
+	mode := "allowed"
+	resolve := func(_ *http.Request, actual model.Principal) (model.CredentialAuthorization, error) {
+		if actual != p {
+			t.Error("principal changed")
+		}
+		switch mode {
+		case "failure":
+			return model.CredentialAuthorization{}, refusal
+		case "different":
+			changed := auth
+			changed.Principal.CredentialID = "33333333-3333-4333-8333-333333333333"
+			return changed, nil
+		case "invalid":
+			changed := auth
+			changed.Policy = nil
+			return changed, nil
+		default:
+			return auth, nil
+		}
+	}
+	checkerCalls := 0
+	checker := scopedTestChecker(func(ctx context.Context, actual model.CredentialAuthorization, project, task, id string) error {
+		checkerCalls++
+		if ctx.Err() != nil || actual.Principal != p || actual.Profile != auth.Profile || actual.Policy != auth.Policy || project != "project" || task != "task" || id != "session" {
+			t.Error("channel recheck lost authenticated identity or resource")
+		}
+		return refusal
+	})
+	if _, err := NewScopedReadContextBinder(nil, current, snapshot); err == nil {
+		t.Fatal("missing resolver accepted")
+	}
+	if _, err := NewScopedReadContextBinder(resolve, nil, snapshot); err == nil {
+		t.Fatal("missing transaction source accepted")
+	}
+	if _, err := NewScopedReadContextBinder(resolve, current, nil); err == nil {
+		t.Fatal("missing snapshot source accepted")
+	}
+	if _, err := NewScopedUserChannelAdmission(nil, checker); err == nil {
+		t.Fatal("missing channel resolver accepted")
+	}
+	if _, err := NewScopedUserChannelAdmission(resolve, nil); err == nil {
+		t.Fatal("missing checker accepted")
+	}
+	bind, err := NewScopedReadContextBinder(resolve, current, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := NewScopedUserChannelAdmission(resolve, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type contextKey struct{}
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "original"))
+	defer cancel()
+	req := httptest.NewRequest("GET", "/", nil).WithContext(parent)
+	for _, mode = range []string{"failure", "different", "invalid"} {
+		if ctx, err := bind(req, p); err == nil || ctx != nil {
+			t.Fatalf("%s read context accepted: %v", mode, err)
+		}
+		if check, err := channel(req, p); err == nil || check != nil {
+			t.Fatalf("%s channel accepted: %v", mode, err)
+		}
+	}
+	if checkerCalls != 0 {
+		t.Fatal("checker called before authorization")
+	}
+	mode = "allowed"
+	ctx, err := bind(req, p)
+	if err != nil || ctx.Value(contextKey{}) != "original" {
+		t.Fatalf("context lost: %v", err)
+	}
+	check, err := channel(req, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check(ctx, "project", "task", "session"); !errors.Is(err, refusal) || checkerCalls != 1 {
+		t.Fatalf("delivery refusal=%v calls=%d", err, checkerCalls)
+	}
+	cancel()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("read context lost cancellation")
+	}
+}
+
+func TestScopedStandaloneReadRoutesRequireDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	auth := inspectionRouteAuth{}
+	bind := func(r *http.Request, _ model.Principal) (context.Context, error) { return r.Context(), nil }
+	for _, missing := range []string{"mux", "reader", "auth", "binder"} {
+		t.Run(missing, func(t *testing.T) {
+			mux := http.NewServeMux()
+			var h HistoryReader = historyRouteMock{}
+			var i inspectionReader = inspectionRouteOperation(func(context.Context, model.Principal, string, string, string) (sp.TaskSessionInspection, error) {
+				return sp.TaskSessionInspection{}, nil
+			})
+			var g groupDirectoryReader = groupRouteRead(func(context.Context, model.Principal, string, core.HistoryDirectoryRequest) (core.HistoryDirectoryPage, error) {
+				return core.HistoryDirectoryPage{}, nil
+			})
+			var a inspectionAuthentication = auth
+			b := ReadContextBinder(bind)
+			switch missing {
+			case "mux":
+				mux = nil
+			case "reader":
+				h = nil
+				i = nil
+				g = nil
+			case "auth":
+				a = nil
+			case "binder":
+				b = nil
+			}
+			if RegisterScopedHistoryRoutes(mux, h, a, b, logger) == nil || RegisterScopedInspectionRoutes(mux, i, a, b, logger) == nil || RegisterScopedGroupDirectoryRoutes(mux, g, a, b, logger) == nil {
+				t.Fatalf("%s was accepted", missing)
+			}
+		})
+	}
+}
 
 func TestScopedReadBinderReachesChannelPoll(t *testing.T) {
 	f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
