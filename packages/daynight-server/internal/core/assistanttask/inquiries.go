@@ -160,13 +160,15 @@ func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor A
 }
 
 func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string) error {
-	return m.maintain(ctx, dao, actor, taskID, targetBotID, false)
+	return m.maintain(ctx, dao, actor, taskID, targetBotID, false, false)
 }
 
 // maintain processes a bounded, prefiltered batch of inquiry timeouts and, for
-// event pulls, periodic retrospectives. Taking every task barrier once in ID
-// order prevents two reads from reversing multi-task lock order.
-func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, retrospectives bool) error {
+// event pulls, periodic retrospectives. When reclaim is set it also reclaims
+// settled inbound material of a bounded set of the owner's tasks. Taking every
+// task barrier once in ID order prevents two reads from reversing multi-task
+// lock order.
+func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, retrospectives, reclaim bool) error {
 	if err := authorize(ctx, dao, actor); err != nil {
 		return err
 	}
@@ -197,6 +199,16 @@ func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor
 	}
 	for _, id := range reviews {
 		ids[id] = true
+	}
+	var reclaimable []string
+	if reclaim {
+		reclaimable, err = dao.InboundReclaimTasks(ctx, actor.Principal.UserID, now.Add(-InboundRetention), InboundReclaimTaskLimit)
+		if err != nil {
+			return err
+		}
+		for _, id := range reclaimable {
+			ids[id] = true
+		}
 	}
 	ordered := make([]string, 0, len(ids))
 	for id := range ids {
@@ -249,6 +261,14 @@ func (m *Module) maintain(ctx context.Context, dao store.AssistantTaskDAO, actor
 			if err = m.periodicRetrospective(ctx, dao, task); err != nil {
 				return err
 			}
+		}
+	}
+	for _, id := range reclaimable {
+		if _, ok := tasks[id]; !ok {
+			continue
+		}
+		if err = ReclaimInbound(ctx, dao, actor.Principal.UserID, id, now); err != nil {
+			return err
 		}
 	}
 	_, err = finish(ctx, dao, actor, nil)
