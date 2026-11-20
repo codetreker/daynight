@@ -40,10 +40,10 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
   return response;
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
-const monitoringDetail = (viewer = principal) => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
+const monitoringDetail = (viewer = principal, activityTitle = 'Private activity task') => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {
   runId: secondWorker, sequence: '1', capturedAt: observedAt, lifecycle: 'running', scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: null, lastSuccessfulAt: null, lastOutcome: null, nextPollAt: null },
   capacity: { observedAt, quality: 'current', limit: 2, occupied: 1, available: 1, detailCoverage: 'complete' },
-  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [],
+  admission: { observedAt, coverage: 'complete', reasons: [] }, reservations: [], activities: [{ operationId: secondWorker, kind: 'execution', phase: 'executing', status: 'running', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, association: { kind: 'task', projectName: 'Private project', title: activityTitle }, startedAt: observedAt, lastProgressAt: null, elapsedMs: 100, deadlineAt: null, waitReason: null, nextAttemptAt: null }],
   currentFailures: [{ operationId: firstWorker, component: 'execution', phase: 'executing', scope: { kind: 'claim', projectId: '00000000-0000-4000-8000-000000000030', taskId: '00000000-0000-4000-8000-000000000031', claimId: '00000000-0000-4000-8000-000000000032' }, error: { type: 'operation', code: 'timeout', cause: 'The operation timed out.', causeTruncated: false }, firstObservedAt: observedAt, lastObservedAt: observedAt, occurrencesInRun: 1, retryState: 'none', nextAttemptAt: null, association: { kind: 'task', projectName: 'Private project', title: 'Private failure task' } }],
   lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: null, lastFailure: null },
 } }, 200, viewer);
@@ -449,21 +449,20 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(screen.queryByRole('heading', { name: 'Late Alice private worker' })).toBeNull();
   });
 
-  it('retains expanded monitoring errors and rejects a late response on account change', async () => {
+  it('retains the monitoring snapshot and rejects a late response on account change', async () => {
     window.history.replaceState(null, '', `/workers/${firstWorker}`);
     const pending = Promise.withResolvers<Response>(); let reads = 0;
     install(url => url === `/api/v1/me/workers/${firstWorker}` ? detail() : defaults(url), () => ++reads === 1 ? monitoringDetail(owner) : pending.promise);
     render(<AuthenticatedApp />);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' });
-    fireEvent.click(summary.closest('summary')!);
-    const old = await screen.findByText('Private failure task');
+    const old = await screen.findByRole('link', { name: 'Private activity task' });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await waitFor(() => expect(reads).toBe(2));
     act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(other)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
-    await screen.findByText('Account changed'); await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.getByText('Private failure task')).toBe(old);
+    await screen.findByText('Account changed'); await act(async () => pending.resolve(monitoringDetail(owner, 'Late private activity')));
+    expect(screen.getByRole('link', { name: 'Private activity task' })).toBe(old);
+    expect(screen.queryByText('Late private activity')).toBeNull();
   });
 
-  it('withdraws an expanded scoped monitoring failure immediately and rejects its late response', async () => {
+  it('withdraws a scoped monitoring activity immediately and rejects its late response', async () => {
     const project = '00000000-0000-4000-8000-000000000030';
     const scope = createTaskCacheScope({ userId: owner, onIdentityMismatch: vi.fn() });
     vi.spyOn(scope, 'prepareProjection').mockResolvedValue(new Map([[project, 'a']]));
@@ -474,14 +473,13 @@ describe('Worker pages in the authenticated workspace', () => {
     vi.stubGlobal('fetch', vi.fn(() => ++reads === 1 ? Promise.resolve(monitoringDetail(owner)) : reads === 2 ? pending.promise : newer.promise));
     const Monitor = () => { const state = useWorkerMonitoring(firstWorker, { readEnabled: true }); return <><button onClick={state.refresh}>Read again</button><WorkerMonitoring state={state} readEnabled /></>; };
     const view = render(<TaskCacheProvider scope={scope}><Monitor /></TaskCacheProvider>);
-    const summary = await screen.findByText('The operation timed out.', { selector: 'summary span' }); fireEvent.click(summary.closest('summary')!);
-    expect(await screen.findByText('Private failure task')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Private activity task' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Read again' })); await waitFor(() => expect(reads).toBe(2));
     act(() => publish({ projectId: project, accessRevoked: true, revokedGeneration: 'a' }));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     expect(screen.getByText('Some task details are not visible.')).toBeInTheDocument();
     await act(async () => pending.resolve(monitoringDetail(owner)));
-    expect(screen.queryByText('Private failure task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
+    expect(screen.queryByText('Private activity task')).toBeNull(); expect(screen.queryByText('The operation timed out.')).toBeNull();
     view.unmount(); scope.dispose(); newer.resolve(monitoringDetail(owner));
   });
 

@@ -610,11 +610,12 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Runtime monitoring shows scheduling and admission, actual capacity, parallel
-activities, current failures and the latest recovery. System monitoring separately
-shows host resources, environment and software. Task
-associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
+Runtime monitoring shows scheduling and admission, actual capacity and its reported
+active/retained breakdown, and parallel activities. System monitoring separately
+shows host resources, environment and software. Activity and admission task
+associations open the existing task detail; known retry times are displayed without
+inventing external waits or deadlines. Current failures, recent recovery and
+monitoring delivery have no panels or replacement entries in the Web view.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and
