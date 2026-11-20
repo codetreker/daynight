@@ -41,7 +41,7 @@
 
 ## 阅读样式与空对话
 
-[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文遵循[公共字号标准](../ui-design.md#web-typography)，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，阅读区左右留白 18px，正文保持相同字号。代码、表格沿用共享局部滚动，既有完整工具条目保持原文，版本化窗口条目按其省略事实显示预览；长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
+[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文遵循[公共字号标准](../spec/web-typography.md)，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，阅读区左右留白 18px，正文保持相同字号。代码、表格沿用共享局部滚动，既有完整工具条目保持原文，版本化窗口条目按其省略事实显示预览；长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
 
 输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 观察阅读区域和 Composer 的尺寸并在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
 
@@ -53,7 +53,7 @@
 
 ## 输入、回执与附件扩展
 
-Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩空间。输入、控件与错误采用界面字号，时间和附属计数采用元数据字号；粗指针输入保留 16 CSS px 下限。textarea 随文本增长至局部上限后内部滚动；≤600px 容器的关键输入按钮至少 44px，≤500px 窗口高度缩减输入留白与 textarea 高度。聚焦表面采用紫色边框，reduced-motion 关闭颜色过渡。
+Bot 在会话底部使用共享 Composer，输入与阅读各自占用可收缩空间。输入、控件与错误采用共享 14px 档，时间和附属计数采用共享 12px 档；粗指针输入保留 16 CSS px 下限。textarea 随文本增长至局部上限后内部滚动；≤600px 容器的关键输入按钮至少 44px，≤500px 窗口高度缩减输入留白与 textarea 高度。聚焦表面采用紫色边框，reduced-motion 关闭颜色过渡。
 
 `SessionControlsPanel` 的动态 Provider 设置采用[公共原生选择组件](native-select.md)的 `form/fill`；`SessionComposerPresentation.nativeSelectTouchMode` 经 Composer 和 ControlsPanel 传到 `NativeSelect.touchMode`。普通 Task/Test 未指定时为 `none`，Bot 为 `container`。精细指针下，Bot 阅读容器宽 700px 时控件高 38px，宽 560px 时至少 44px；粗指针下高度至少 44px、字号为 16px；内层 `session-composer` 与 `session-composer-surface` 容器不截获 `native-select-region` 查询。页面只拥有布局，选择控件的皮肤、箭头、焦点和待定边框由公共组件拥有。`pending={Boolean(pending)}` 只呈现原 operation 状态；控件的 value 继续使用已确认设置值，原有 mutable、busy、操作准入及错误归属不变。
 

@@ -14,8 +14,9 @@ Web brand entries share a decorative D letter mark with a separated stem and arc
 Callers select the palette for their surface and layouts retain their own sizing.
 The browser favicon uses the same geometry and adapts its stem to the browser
 color scheme. Vite emits it as a hashed SVG under `/assets/`, so the existing
-asset publication and embedded Web service deliver it. The [brand rules](../../../../docs/ui-design.md#brand-mark)
-own the visual contract.
+asset publication and embedded Web service deliver it. The
+[shared brand design](../../../../docs/design/web-visual-tokens.md#品牌标志)
+owns the visual contract.
 
 ## Alternatives
 
