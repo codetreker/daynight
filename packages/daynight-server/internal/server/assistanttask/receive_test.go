@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
 )
 
@@ -114,6 +115,8 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 		{"bare scheme", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer"}, 400, "invalid_input"},
 		{"empty bearer", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer "}, 400, "invalid_input"},
 		{"empty query", receivePath + "?token=", "application/json", `{}`, nil, 400, "invalid_input"},
+		{"empty idempotency key", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Idempotency-Key": ""}, 400, "invalid_input"},
+		{"empty webhook id", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Webhook-Id": ""}, 400, "invalid_input"},
 		{"missing media type", receivePath, "", `{}`, nil, 415, "unsupported_media_type"},
 		{"html", receivePath, "text/html", `x`, nil, 415, "unsupported_media_type"},
 		{"latin1 text", receivePath, "text/plain; charset=latin1", `x`, nil, 415, "unsupported_media_type"},
@@ -141,6 +144,16 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("repeated header status=%d", w.Code)
+	}
+	for _, name := range []string{"Idempotency-Key", "Webhook-Id"} {
+		r = httptest.NewRequest(http.MethodPost, receivePath, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header[name] = []string{"key-1", "key-1"}
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("repeated %s status=%d", name, w.Code)
+		}
 	}
 	r = httptest.NewRequest(http.MethodPost, receivePath, strings.NewReader(`{}`))
 	r.Header["Content-Type"] = []string{"application/json", "text/plain"}
@@ -314,6 +327,37 @@ func TestInboxReceiveLogsNeverContainTheToken(t *testing.T) {
 	receiveRequest(h, receivePath+"?token="+receiveToken+"&token=x", "application/json", `{}`, nil)
 	if strings.Contains(logs.String(), receiveToken) || !strings.Contains(logs.String(), `"status":400`) {
 		t.Fatalf("refusal log: %s", logs.String())
+	}
+}
+
+// The production request logging middleware must not adopt a sender's
+// request ID on the public inbox route or add its own completion record.
+func TestInboxReceiveLogsNeverContainTheSenderRequestID(t *testing.T) {
+	const senderID = "sender-chosen-request-id"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	mux := http.NewServeMux()
+	RegisterInboxRoute(mux, receiverFunc(accepted), logger)
+	h := httpx.RequestLoggingWithMetrics(logger, mux, nil)
+	for _, target := range []string{receivePath, "/api/v1/assistant-task-inbox/unknown/path"} {
+		logs.Reset()
+		w := receiveRequest(h, target, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "X-Request-ID": senderID})
+		served := w.Header().Get("X-Request-ID")
+		if strings.Contains(logs.String(), senderID) || served == senderID || !httpx.ValidRequestID(served) {
+			t.Fatalf("%s: sender request ID adopted: header=%q logs=%s", target, served, logs.String())
+		}
+		if strings.Contains(logs.String(), "request completed") {
+			t.Fatalf("%s: generic completion record written: %s", target, logs.String())
+		}
+		if target == receivePath && (w.Code != http.StatusAccepted || !strings.Contains(logs.String(), `"request_id":"`+served+`"`)) {
+			t.Fatalf("inbox record: status=%d logs=%s", w.Code, logs.String())
+		}
+	}
+	logs.Reset()
+	other := httpx.RequestLoggingWithMetrics(logger, http.NotFoundHandler(), nil)
+	w := receiveRequest(other, "/api/v1/tasks", "", "", map[string]string{"X-Request-ID": senderID})
+	if w.Header().Get("X-Request-ID") != senderID || !strings.Contains(logs.String(), "request completed") {
+		t.Fatalf("other routes keep the sender request ID: header=%q logs=%s", w.Header().Get("X-Request-ID"), logs.String())
 	}
 }
 

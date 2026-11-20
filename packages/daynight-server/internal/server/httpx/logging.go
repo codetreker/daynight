@@ -9,11 +9,13 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
 	configvalue "github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 
+	assistanttask "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -336,8 +338,13 @@ func RequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 // RequestLoggingWithMetrics observes the same response and handler lifecycle as logging.
 func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *RequestMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		// The public assistant task inbox logs only an allowlist of server-derived
+		// fields. Its senders are unauthenticated, so their X-Request-ID is not
+		// adopted and the route's own record replaces the completion record,
+		// which would also carry the sender's method.
+		inbox := strings.HasPrefix(request.URL.Path, assistanttask.InboxPathPrefix)
 		id := request.Header.Get("X-Request-ID")
-		if !ValidRequestID(id) {
+		if inbox || !ValidRequestID(id) {
 			id = rand.Text()
 		}
 		request = request.WithContext(requestid.With(request.Context(), id))
@@ -388,6 +395,9 @@ func RequestLoggingWithMetrics(logger *slog.Logger, next http.Handler, metrics *
 		}()
 		w.Header().Set("X-Request-ID", id)
 		next.ServeHTTP(recorder.capabilities(), request)
+		if inbox {
+			return
+		}
 		status := recorder.Status
 		if status == 0 {
 			status = http.StatusOK

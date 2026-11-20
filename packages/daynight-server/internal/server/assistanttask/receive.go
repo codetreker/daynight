@@ -58,8 +58,10 @@ type inboxRoute struct {
 	limiter *inboxLimiter
 }
 
-// serve logs one line per request with only the inbox ID, classification,
-// status and body size; the token, the URL query and the body never reach logs.
+// serve logs one line per request with only the server-generated request ID,
+// inbox ID, classification, status and body size; the token, the URL query, the
+// body and any sender-supplied request ID never reach logs. The request logging
+// middleware replaces a sender's X-Request-ID on this route.
 func (h *inboxRoute) serve(w http.ResponseWriter, r *http.Request) {
 	outcome := inboxOutcome{}
 	status := h.receive(w, r, &outcome)
@@ -92,6 +94,11 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	if problem != "" {
 		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", problem, "")
 	}
+	webhookID, webhookOK := idempotencyHeader(r, "Webhook-Id")
+	idempotencyKey, keyOK := idempotencyHeader(r, "Idempotency-Key")
+	if !webhookOK || !keyOK {
+		return h.refuse(w, r, http.StatusBadRequest, "invalid_input", "Provide Webhook-Id and Idempotency-Key at most once each, with a non-empty value.", "")
+	}
 	if r.ContentLength > InboxBodyLimit {
 		return h.refuse(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", "The request body exceeds 64 KiB.", "")
 	}
@@ -117,7 +124,7 @@ func (h *inboxRoute) receive(w http.ResponseWriter, r *http.Request, outcome *in
 	}
 	result, err := h.inbox.Receive(r.Context(), service.ReceiveInput{
 		InboxID: id, Token: token, MediaType: mediaType,
-		WebhookID: r.Header.Get("Webhook-Id"), IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		WebhookID: webhookID, IdempotencyKey: idempotencyKey,
 		Body: body,
 	})
 	if err != nil {
@@ -194,6 +201,21 @@ func requestInboxToken(r *http.Request) (*string, string) {
 		return nil, "The inbox token form is invalid."
 	}
 	return &token, ""
+}
+
+// idempotencyHeader returns the header value, or "" when the header is absent.
+// An explicitly empty or repeated header is refused rather than read as absent:
+// absence writes a new event per request, so a sender that meant to supply a
+// key would otherwise duplicate events on retry.
+func idempotencyHeader(r *http.Request, name string) (string, bool) {
+	values := r.Header.Values(name)
+	switch {
+	case len(values) == 0:
+		return "", true
+	case len(values) == 1 && values[0] != "":
+		return values[0], true
+	}
+	return "", false
 }
 
 // inboxMediaType accepts application/json, any +json type and text/plain,
