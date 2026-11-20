@@ -1501,3 +1501,27 @@ test('withdrawing a hovered usage reading restores the focused card while elapse
     return box.left >= dialog.left && box.top >= dialog.top && box.right <= dialog.right && box.bottom <= dialog.bottom;
   })).toBe(true);
 });
+
+test('keyboard focus takes priority over another hovered card and restores it on blur', async ({ page }) => {
+  const details = [
+    detailFixture(projectId, taskId, { title: 'Hovered task', version: 5n }),
+    detailFixture(projectId, successorId, { title: 'Focused task', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false }),
+  ];
+  await install(page, false, false, 'Hovered task', details);
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+    const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary(id === taskId ? 'partial' : 'large') })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click(); await page.getByRole('tab', { name: 'Task chains' }).click();
+  await page.locator(`#task-chain-graph-${taskId}`).click();
+  const graph = page.locator('.task-chain-dialog'), hovered = graph.locator(`.react-flow__node[data-id="${taskId}"]`), focused = graph.locator(`.react-flow__node[data-id="${successorId}"]`);
+  const body = focused.locator('.task-node-body'), hint = graph.locator('.graph-reading-hint:popover-open');
+  await expect(hovered.locator('.task-node-usage')).toHaveText('Token 42'); await expect(focused.locator('.task-node-usage')).toHaveText('Token ≥1,000T');
+  await hovered.locator('.task-node-usage').hover(); await expect(hint).toContainText('42');
+  await page.keyboard.press('Tab'); await body.focus(); await expect(body).toBeFocused();
+  await expect(hint).toContainText('9,007,199,254,740,993');
+  await focused.locator('.task-node-details').focus(); await expect(focused.locator('.task-node-details')).toBeFocused();
+  await expect(hint).toContainText('42');
+});

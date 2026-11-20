@@ -7,7 +7,9 @@ type HintControl = {
   show: (id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => void;
   update: (id: string, reading: Reading) => void;
   leave: (id: string) => void;
-  dismiss: (id?: string) => void;
+  dismiss: () => void;
+  blur: (id: string) => void;
+  remove: (id: string) => void;
   cancelLeave: () => void;
   reposition: () => void;
 };
@@ -24,6 +26,8 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
   const [active, setActive] = useState<Active | null>(null);
   const current = useRef<Active | null>(null);
   const focused = useRef<{ id: string; button: HTMLElement; reading: Reading } | null>(null);
+  const hovered = useRef<Active | null>(null);
+  const hoveredInTip = useRef(false);
   const tip = useRef<HTMLDivElement>(null);
   const timer = useRef<number | null>(null);
   const schedulePosition = useRef<(() => void) | null>(null);
@@ -37,47 +41,93 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
       set({ id: source.id, button: source.button, anchor: source.button, mode: 'focus', reading: source.reading });
     } else set(null);
   }, [set]);
-  const dismiss = useCallback((id?: string) => {
-    if (id === undefined || focused.current?.id === id) focused.current = null;
-    if (id !== undefined && current.current?.id !== id) return;
-    cancelLeave();
-    if (id !== undefined && current.current?.mode === 'hover') restoreFocus();
+  const restoreHover = useCallback(() => {
+    const source = hovered.current;
+    if (source !== null && source.button.isConnected && source.anchor.isConnected &&
+      source.button.closest('[hidden], [inert]') === null && hasReading(source.reading)) set(source);
     else set(null);
-  }, [cancelLeave, restoreFocus, set]);
-  const reconcileDetached = useCallback(() => {
-    const value = current.current;
-    if (value?.mode !== 'hover' || (value.button.isConnected && value.anchor.isConnected)) return false;
-    cancelLeave(); restoreFocus(); return true;
-  }, [cancelLeave, restoreFocus]);
-  const show = useCallback((id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => {
-    cancelLeave();
-    if (mode === 'focus') focused.current = { id, button, reading };
-    if (hasReading(reading)) set({ id, button, anchor, mode, reading });
-    else if (current.current?.id === id) set(null);
+  }, [set]);
+  const dismiss = useCallback(() => {
+    focused.current = null; hovered.current = null; hoveredInTip.current = false;
+    cancelLeave(); set(null);
   }, [cancelLeave, set]);
-  const update = useCallback((id: string, reading: Reading) => {
-    const value = current.current;
-    const source = focused.current;
-    if (source?.id === id) source.reading = reading;
-    if (value === null && source?.id === id && source.button.isConnected && document.activeElement === source.button && hasReading(reading)) {
-      set({ id, button: source.button, anchor: source.button, mode: 'focus', reading });
-      return;
+  const blur = useCallback((id: string) => {
+    if (focused.current?.id === id) focused.current = null;
+    if (current.current?.id === id && current.current.mode !== 'hover') restoreHover();
+  }, [restoreHover]);
+  const remove = useCallback((id: string) => {
+    if (focused.current?.id === id) focused.current = null;
+    if (hovered.current?.id === id) { hovered.current = null; hoveredInTip.current = false; cancelLeave(); }
+    if (current.current?.id !== id) return;
+    if (current.current.mode === 'hover') restoreFocus();
+    else restoreHover();
+  }, [cancelLeave, restoreFocus, restoreHover]);
+  const reconcileDetached = useCallback(() => {
+    const source = hovered.current;
+    if (source === null || (source.button.isConnected && source.anchor.isConnected)) return false;
+    hovered.current = null; hoveredInTip.current = false; cancelLeave();
+    if (current.current === source || (current.current?.mode === 'hover' && current.current.id === source.id)) {
+      restoreFocus(); return true;
     }
-    if (value?.id !== id) return;
-    if (reconcileDetached()) return;
-    if (!hasReading(reading)) { restoreFocus(); return; }
-    if (value.reading.usage !== reading.usage || value.reading.execution !== reading.execution) set({ ...value, reading });
-  }, [reconcileDetached, restoreFocus, set]);
+    return false;
+  }, [cancelLeave, restoreFocus]);
   const leave = useCallback((id: string) => {
     cancelLeave();
     timer.current = window.setTimeout(() => {
       timer.current = null;
-      const value = current.current;
-      if (value?.id !== id || value.mode !== 'hover') return;
-      restoreFocus();
+      if (hovered.current?.id !== id) return;
+      hovered.current = null; hoveredInTip.current = false;
+      if (current.current?.id === id && current.current.mode === 'hover') restoreFocus();
     }, 120);
   }, [cancelLeave, restoreFocus]);
-  const control = useMemo(() => ({ show, update, leave, dismiss, cancelLeave, reposition }), [show, update, leave, dismiss, cancelLeave, reposition]);
+  const showFocus = useCallback((id: string, button: HTMLElement, reading: Reading) => {
+    if (hoveredInTip.current && hovered.current !== null && hovered.current.id !== id) {
+      hoveredInTip.current = false;
+      leave(hovered.current.id);
+    }
+    set({ id, button, anchor: button, mode: 'focus', reading });
+  }, [leave, set]);
+  const show = useCallback((id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => {
+    if (mode === 'focus') {
+      focused.current = { id, button, reading };
+      if (hasReading(reading)) showFocus(id, button, reading);
+      else if (current.current?.mode !== 'hover') set(null);
+      return;
+    }
+    cancelLeave();
+    if (mode === 'hover') {
+      hoveredInTip.current = false;
+      hovered.current = hasReading(reading) ? { id, button, anchor, mode, reading } : null;
+      if (hovered.current !== null) set(hovered.current);
+      else restoreFocus();
+    } else {
+      hovered.current = null; hoveredInTip.current = false;
+      if (focused.current?.button !== button) focused.current = null;
+      if (hasReading(reading)) set({ id, button, anchor, mode, reading });
+      else set(null);
+    }
+  }, [cancelLeave, restoreFocus, set, showFocus]);
+  const update = useCallback((id: string, reading: Reading) => {
+    const source = focused.current;
+    const newlyAvailable = source?.id === id && !hasReading(source.reading) && hasReading(reading);
+    if (source?.id === id) source.reading = reading;
+    if (hovered.current?.id === id) hovered.current = { ...hovered.current, reading };
+    if (reconcileDetached()) return;
+    const value = current.current;
+    if (source?.id === id && source.button.isConnected && document.activeElement === source.button && hasReading(reading) &&
+      (value === null || newlyAvailable)) {
+      showFocus(id, source.button, reading);
+      return;
+    }
+    if (value?.id !== id) return;
+    if (!hasReading(reading)) {
+      if (value.mode === 'hover') { hovered.current = null; hoveredInTip.current = false; cancelLeave(); restoreFocus(); }
+      else restoreHover();
+      return;
+    }
+    if (value.reading.usage !== reading.usage || value.reading.execution !== reading.execution) set({ ...value, reading });
+  }, [cancelLeave, reconcileDetached, restoreFocus, restoreHover, set, showFocus]);
+  const control = useMemo(() => ({ show, update, leave, dismiss, blur, remove, cancelLeave, reposition }), [show, update, leave, dismiss, blur, remove, cancelLeave, reposition]);
   useEffect(() => () => cancelLeave(), [cancelLeave]);
   useLayoutEffect(() => {
     const bubble = tip.current;
@@ -140,8 +190,12 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
     };
   }, [active, dismiss, reconcileDetached]);
   return <Context value={control}>{children}<div ref={tip} popover="manual" className="graph-reading-hint" role="tooltip"
-    onPointerEnter={(event) => { if (event.pointerType !== 'touch') cancelLeave(); }}
-    onPointerLeave={(event) => { if (event.pointerType !== 'touch' && current.current) leave(current.current.id); }}>
+    onPointerEnter={(event) => {
+      if (event.pointerType !== 'touch' && hovered.current !== null && current.current?.id === hovered.current.id) { hoveredInTip.current = true; cancelLeave(); }
+    }}
+    onPointerLeave={(event) => {
+      if (event.pointerType !== 'touch' && hoveredInTip.current && hovered.current !== null && current.current?.id === hovered.current.id) { hoveredInTip.current = false; leave(hovered.current.id); }
+    }}>
     {active?.reading.usage && <div>{active.reading.usage}</div>}{active?.reading.execution && <div>{active.reading.execution}</div>}
   </div></Context>;
 };

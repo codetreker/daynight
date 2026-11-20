@@ -85,7 +85,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   const reading = { usage: usage?.full ?? null, execution: execution === null ? null : executionMessages.description({ ...execution, duration: format.duration(execution.elapsedMilliseconds) }) };
   const touch = useRef(false);
   useLayoutEffect(() => { hint.update(data.task.id, reading); }, [hint, data.task.id, reading.usage, reading.execution]);
-  useEffect(() => () => hint.dismiss(data.task.id), [hint, data.task.id]);
+  useEffect(() => () => hint.remove(data.task.id), [hint, data.task.id]);
   const descriptionId = useId();
   const usageDescriptionId = useId();
   const focusedControl = useRef<HTMLButtonElement | null>(null);
@@ -142,7 +142,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
         onPointerDown={(event) => { touch.current = event.pointerType === 'touch'; }}
         onPointerCancel={() => { touch.current = false; }}
         onFocus={(event) => { revealOnFocus(event); if (event.currentTarget.matches(':focus-visible')) hint.show(data.task.id, event.currentTarget, event.currentTarget, 'focus', reading); }}
-        onBlur={() => hint.dismiss(data.task.id)}>
+        onBlur={() => hint.blur(data.task.id)}>
         <TaskNodeContent task={data.task} kind={data.kind} execution={execution} usage={usage} onReadingEnter={readingEnter} onReadingLeave={readingLeave} />
       </button>
       {execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}
