@@ -1,8 +1,9 @@
 import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
 import type { TaskStep } from '../../src/api/task-steps';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
+import { imageBrowserData } from '../helpers/sessionImageBrowser';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 import type { TaskDetail } from '../../src/api/types';
@@ -26,6 +27,7 @@ type FixtureOptions = {
   readonly previousChanges?: Partial<TaskDetail>;
   readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
   readonly additionalTasks?: readonly TaskDetail[];
+  readonly snapshotTasks?: (details: readonly TaskDetail[]) => readonly TaskDetail[];
   readonly exposeDeleteTask?: (remove: () => void) => void;
   readonly dualPauseReceipt?: boolean;
 };
@@ -36,7 +38,7 @@ async function install(page: Page, running = false, linked = false, large = fals
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   let previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n, ...options.previousChanges });
   const details = () => [...(taskRemoved ? [] : [task]), previous, ...(options.additionalTasks ?? [])];
-  const graph = () => ({ ...graphFixture(details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
+  const graph = () => ({ ...graphFixture(options.snapshotTasks?.(details()) ?? details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
   let statusRequests = 0;
   options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
   options.exposePreviousUpdate?.((changes) => { previous = { ...previous, ...changes }; });
@@ -1510,4 +1512,468 @@ test('Step touch fields retain their size while a save is pending', async ({ bro
     release.resolve();
     await expect(title).toBeEnabled(); await expect(title).toHaveValue('Pending'); await expect(description).toHaveValue('Draft');
   } finally { release.resolve(); await context.close(); }
+});
+
+const usageSecondRoot = '00000000-0000-4000-8000-000000000051';
+const usageSecondMember = '00000000-0000-4000-8000-000000000052';
+const usageMetrics = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens'];
+const usageSummary = (known: string) => ({
+  metrics: Object.fromEntries(usageMetrics.map(key => [key, { known: key === 'totalTokens' ? known : null, contributingRecords: key === 'totalTokens' ? '1' : '0', unknownRecords: key === 'totalTokens' ? '0' : '1' }])),
+  scope: 'registered_executions', completeness: 'partial', reasonCodes: ['native_recovery_gap'],
+  coverage: { executions: '2', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '1' },
+  measurementRecords: '1', lastMeasuredAt: time, observedAt: time, etag: 'summary-revision',
+});
+
+async function installChainUsage(page: Page) {
+  const requests: string[] = [];
+  let outcome: 'ok' | 'temporary' | 'forbidden' | 'missing' | 'cursor' = 'ok';
+  const respond = async (route: Route) => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    requests.push(`${request.method()} ${path}${url.search}`);
+    if (path === '/api/usage/v1/capabilities') return send({ protocol: 'daynight.usage.v1' });
+    if (path.endsWith('/usage/v1/task-summaries')) return send({ items: (request.postDataJSON() as { taskIds: string[] }).taskIds.map(taskId => ({ taskId, summary: usageSummary('42') })) });
+    const match = path.match(/\/usage\/v1\/aggregates\/chain\/([^/]+)$/);
+    if (match === null) return send({ error: { code: 'not_found', requestId: 'fixture' } }, 404);
+    if (outcome === 'temporary') return send({ error: { code: 'unavailable', requestId: 'fixture' } }, 503);
+    if (outcome === 'forbidden') return send({ error: { code: 'aggregate_scope_restricted', requestId: 'fixture' } }, 403);
+    if (outcome === 'missing') return send({ error: { code: 'not_found', requestId: 'fixture' } }, 404);
+    if (outcome === 'cursor' && url.searchParams.has('cursor')) return send({ error: { code: 'cursor_expired', requestId: 'fixture' } }, 409);
+    const id = match[1]!;
+    const second = id === usageSecondRoot || id === usageSecondMember;
+    return send({ scope: 'chain', scopeId: id, membershipPolicy: 'current_members_excludes_deleted', membershipRevision: 'membership-revision', summary: usageSummary(second ? '321' : '0'),
+      members: { total: '2', withKnownUsage: '1', complete: '0', collecting: '0', partial: '1', unsupported: '0', unavailable: '0', noData: '1', restricted: '0' },
+      missingMembers: [{ taskId: second ? usageSecondMember : previousId, title: second ? 'Second chain member' : 'History origin', completeness: 'partial', reasonCodes: ['native_recovery_gap'] }],
+      nextMembersCursor: 'next-page', observedAt: time });
+  };
+  await page.route('**/api/usage/v1/**', respond);
+  await page.route('**/api/projects/**/usage/v1/**', respond);
+  return { requests, setOutcome: (next: typeof outcome) => { outcome = next; } };
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`chain usage follows the selected chain and preserves list and graph at ${width}px in ${locale}`, async ({ page }) => {
+    const second = [detailFixture(projectId, usageSecondRoot, { title: 'Second chain', version: 5n }),
+      detailFixture(projectId, usageSecondMember, { title: 'Second chain member', dependsOn: [usageSecondRoot], blockedBy: [usageSecondRoot], ready: false, version: 5n })];
+    const writes = await install(page, false, true, false, false, false, undefined, {}, { additionalTasks: second, locale });
+    const usage = await installChainUsage(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const firstToggle = page.locator(`#task-root-${taskId}`), secondToggle = page.locator(`#task-root-${usageSecondRoot}`);
+    await firstToggle.click(); await secondToggle.click();
+    const first = page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`);
+    const secondButton = page.locator(`[data-chain-id="${usageSecondRoot}"] .chain-usage-button`);
+    await expect(first).toBeVisible(); await expect(secondButton).toBeVisible();
+    const position = await first.evaluate(element => ({ left: element.getBoundingClientRect().left, detail: element.parentElement!.querySelector('.goal-detail-link:not(.chain-usage-button)')!.getBoundingClientRect().left }));
+    if (width === 1280) expect(position.left).toBeLessThan(position.detail);
+    expect(usage.requests.filter(request => request.includes('/aggregates/'))).toHaveLength(0);
+    await first.focus(); const scrollBefore = await page.evaluate(() => window.scrollY); await page.keyboard.press('Enter');
+    const dialog = page.locator('.chain-usage-dialog');
+    await expect(dialog).toHaveAccessibleName(locale === 'en' ? 'Token usage · Target task' : 'Token 用量 · Target task');
+    await expect(dialog.getByRole('button', { name: locale === 'en' ? 'Close' : '关闭', exact: true })).toBeFocused();
+    await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+    await expect(dialog).toContainText('0');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0); await expect(first).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+    await expect(firstToggle).toHaveAttribute('aria-expanded', 'true'); await expect(secondToggle).toHaveAttribute('aria-expanded', 'true');
+    await secondButton.click();
+    await expect(dialog).toHaveAccessibleName(locale === 'en' ? 'Token usage · Second chain' : 'Token 用量 · Second chain');
+    await expect(dialog.getByRole('button', { name: 'Second chain member' })).toBeVisible();
+    await expect(dialog).toContainText('321');
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Close' : '关闭', exact: true }).click();
+    await expect(secondButton).toBeFocused();
+    expect(usage.requests.filter(request => request.includes('/aggregates/')).map(request => request.split('/').at(-1))).toEqual([taskId, usageSecondRoot]);
+    const graphUsageRequests = usage.requests.filter(request => request.includes('/task-summaries')).length;
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const graphDialog = page.locator('.task-chain-dialog');
+    await expect(graphDialog).toBeVisible();
+    await expect(graphDialog.locator('.usage-aggregate-disclosure, .task-node-usage')).toHaveCount(0);
+    await graphDialog.locator('.graph-fullscreen-toggle').click();
+    await expect(graphDialog).toHaveClass(/task-chain-dialog-fullscreen/);
+    await expect(graphDialog.locator('.usage-aggregate-disclosure, .task-node-usage')).toHaveCount(0);
+    expect(usage.requests.filter(request => request.includes('/task-summaries')).length).toBe(graphUsageRequests);
+    await graphDialog.locator('.task-chain-close').click();
+    expect(writes).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('chain usage handles temporary failure, cursor expiry, permission and missing scope', async ({ page }) => {
+  await install(page, false, true);
+  const usage = await installChainUsage(page);
+  usage.setOutcome('temporary');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const dialog = page.locator('.chain-usage-dialog');
+  await expect(dialog.getByRole('alert')).toContainText('Unable to load aggregate usage');
+  usage.setOutcome('ok'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  usage.setOutcome('cursor'); await dialog.getByRole('button', { name: 'Load more incomplete tasks' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Refresh before continuing');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Load more incomplete tasks' })).toBeDisabled();
+  usage.setOutcome('ok'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect.poll(() => usage.requests.filter(request => request.includes('/aggregates/')).at(-1)).not.toContain('?cursor=');
+  usage.setOutcome('forbidden'); await dialog.getByRole('button', { name: 'Refresh usage' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('do not have permission');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toHaveCount(0);
+  usage.setOutcome('missing'); await dialog.getByRole('button', { name: 'Retry' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('no longer available');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toHaveCount(0);
+});
+
+test('chain usage member details retain draft protection and return focus', async ({ page }) => {
+  const writes = await install(page, false, true);
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  const member = usage.getByRole('button', { name: 'History origin' });
+  await member.click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const title = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await title.fill('Keep this draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(title).toHaveValue('Keep this draft'); await expect(usage).toBeVisible();
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await leave.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(detail).toHaveCount(0); await expect(member).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(usage).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('chain usage member Step draft survives Back from Overview', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await draft.fill('Draft across Back');
+  const original = await draft.elementHandle();
+  await detail.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(detail.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(detail.getByRole('tab', { name: 'Steps', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(draft).toHaveValue('Draft across Back');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  await expect(usage).toHaveCount(0); expect(writes).toEqual([]);
+});
+
+test('temporary project metadata failure preserves chain member draft and rejected navigation', async ({ page }) => {
+  const writes = await install(page, false, true); await installChainUsage(page);
+  let failing = false;
+  await page.route(`**/api/v1/projects/${projectId}`, route => failing ? route.fulfill({ status: 503, json: { error: { code: 'unavailable', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }) : route.fallback());
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await draft.fill('Draft through project failure');
+  const original = await draft.elementHandle();
+  failing = true;
+  const failed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}` && response.status() === 503);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await failed;
+  await expect(page.locator('.snapshot-error')).toBeVisible();
+  await expect(draft).toHaveValue('Draft through project failure');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  failing = false;
+  await page.locator('.snapshot-error button').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator('.snapshot-error')).toHaveCount(0);
+  await expect(draft).toHaveValue('Draft through project failure');
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  expect(writes).toEqual([]);
+});
+
+test('a cross-Goal scoped chain uses its visible member as an anchor for the whole chain', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000061';
+  await install(page, false, true, false, false, false, undefined, {}, {
+    previousChanges: { parentId: goalId }, additionalTasks: [detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', version: 5n, ready: false })],
+  });
+  const usage = await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click();
+  const trigger = page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`);
+  await trigger.click();
+  const dialog = page.locator('.chain-usage-dialog');
+  await expect(dialog.getByRole('button', { name: 'History origin' })).toBeVisible();
+  expect(usage.requests.filter(request => request.includes('/aggregates/')).map(request => request.split('/').at(-1))).toEqual([taskId]);
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+});
+
+test('account change discards a late chain usage response', async ({ page, context }) => {
+  await install(page, false, true);
+  await installChainUsage(page);
+  const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  await page.route(`**/api/projects/${projectId}/usage/v1/aggregates/chain/${taskId}`, async route => {
+    started.resolve(); await gate.promise;
+    await route.fulfill({ json: { scope: 'chain', scopeId: taskId, membershipPolicy: 'current_members_excludes_deleted', membershipRevision: 'old', summary: usageSummary('123456'),
+      members: { total: '1', withKnownUsage: '1', complete: '0', collecting: '0', partial: '1', unsupported: '0', unavailable: '0', noData: '0', restricted: '0' },
+      missingMembers: [{ taskId: previousId, title: 'Private late result', completeness: 'partial', reasonCodes: [] }], nextMembersCursor: null, observedAt: time },
+      headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }).catch(() => {});
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  await started.promise;
+  const other = await context.newPage();
+  const secondUser = '00000000-0000-4000-8000-000000000022';
+  try {
+    await page.route('**/api/v1/me', route => route.fulfill({ json: { id: secondUser, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Other', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': secondUser } }));
+    await other.route('**/identity-sender', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Identity sender</title>' }));
+    await other.goto('/identity-sender');
+    await other.evaluate(userId => { localStorage.setItem('daynight.activeUser', JSON.stringify(userId)); const channel = new BroadcastChannel('daynight-identity'); channel.postMessage('identity-changed'); channel.close(); }, secondUser);
+    await expect(page.locator('.chain-usage-dialog')).toHaveCount(0);
+    await expect(page.getByText('Account changed', { exact: true }).first()).toBeVisible();
+    gate.resolve();
+    await expect(page.getByText('Private late result')).toHaveCount(0);
+  } finally { gate.resolve(); await other.close(); }
+});
+
+test('removing the usage anchor retains an open member detail and its draft', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, {}, { exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; } });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const title = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await title.fill('Retain this draft');
+  const original = await title.elementHandle();
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(title).toHaveValue('Retain this draft');
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  expect(await title.evaluate((element, before) => element === before, original)).toBe(true);
+  await expect(detail).toBeVisible();
+});
+
+test('removing the usage anchor retains a direct member detail and Step draft', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  const directRead = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200);
+  await usage.getByRole('button', { name: 'History origin' }).click(); await directRead;
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form input'); await draft.fill('Direct member draft');
+  const original = await draft.elementHandle();
+  const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, async route => { started.resolve(); await gate.promise; await route.fallback(); });
+  try {
+    updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+    const synchronized = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    const reread = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${previousId}` && response.status() === 200 && response.headers()['daynight-task-epoch'] === '00000000-0000-4000-8000-000000000901');
+    await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await synchronized; await started.promise;
+    await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+    gate.resolve(); await reread;
+    await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+    await expect(detail).toHaveAccessibleName('History origin'); await expect(draft).toHaveValue('Direct member draft');
+    expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  } finally { gate.resolve(); }
+  expect(writes).toEqual([]);
+});
+
+test('direct member draft survives a failed recheck but is retired on denial', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const linkedId = '00000000-0000-4000-8000-000000000075';
+  const linked = detailFixture(projectId, linkedId, { title: 'Snapshot member', dependsOn: [taskId], blockedBy: [taskId], ready: false, version: 5n });
+  const writes = await install(page, false, true, false, false, false, undefined, {}, {
+    additionalTasks: [linked], exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+    snapshotTasks: details => details.filter(detail => detail.id !== previousId).map(detail => detail.id === linkedId && !details.some(item => item.id === taskId) ? { ...detail, dependsOn: [], blockedBy: [], ready: true } : detail),
+  });
+  await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  await page.locator('.chain-usage-dialog').getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form input'); await draft.fill('Private direct draft');
+  const original = await draft.elementHandle();
+  let outcome: 'temporary' | 'denied' | 'ok' = 'temporary';
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, route => outcome === 'ok' ? route.fallback() : route.fulfill({ status: outcome === 'temporary' ? 503 : 403, json: { error: { code: outcome === 'temporary' ? 'unavailable' : 'forbidden', message: 'Fixture failure', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(detail.locator('.task-detail-error')).toBeVisible();
+  await expect(draft).toHaveCount(1); await expect(draft).toBeHidden();
+  expect(await draft.evaluate((element, before) => element === before, original)).toBe(true);
+  outcome = 'denied'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(draft).toHaveCount(0);
+  outcome = 'ok'; await detail.locator('.task-detail-error').getByRole('button', { name: 'Retry' }).click();
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  await expect(detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' })).toHaveValue('');
+  expect(writes).toEqual([]);
+});
+
+test('browser history does not restore the transient chain usage layer', async ({ page }) => {
+  await install(page, false, true); await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  await expect(page.locator('.task-detail-dialog:not(.chain-usage-dialog)')).toHaveAccessibleName('History origin');
+  await page.goBack(); await expect(usage).toHaveCount(0);
+  await page.goForward(); await expect(usage).toHaveCount(0);
+  await expect(page.locator('.task-detail-dialog:not(.chain-usage-dialog)')).toHaveAccessibleName('History origin');
+});
+
+test('Goal graph and restored nested chain graph retain usage', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000061';
+  await install(page, false, true, false, false, false, undefined, { parentId: goalId }, {
+    previousChanges: { parentId: goalId }, additionalTasks: [detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', version: 5n, ready: false })],
+  });
+  const usage = await installChainUsage(page);
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator(`#project-goal-graph-${goalId}`).click();
+  const graph = page.locator(`#task-graph-${goalId}`);
+  await expect(graph.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect.poll(() => usage.requests.filter(request => request.includes('/task-summaries')).length).toBeGreaterThan(0);
+  await expect(graph.locator('.task-node-usage').first()).toBeVisible();
+  await graph.locator('.task-chain-close').click();
+  await card.locator('.goal-list-detail').click();
+  const goal = page.locator('.goal-detail-surface'); await expect(goal).toHaveAccessibleName('Goal');
+  await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined && typeof window.selectGoalReading === 'function');
+  await page.evaluate(({ goalId, taskId }) => window.selectGoalReading(goalId, { graphRootId: taskId, task: null }), { goalId, taskId });
+  const nested = page.locator(`#task-graph-${taskId}`);
+  await expect(nested.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect(nested.locator('.task-node-usage').first()).toBeVisible();
+  await nested.locator('.graph-fullscreen-toggle').click();
+  await expect(nested.locator('.usage-aggregate-disclosure')).toBeVisible();
+  await expect(nested.locator('.task-node-usage').first()).toBeVisible();
+});
+
+
+test('removing the usage anchor retains an open member Session draft', async ({ page }) => {
+  const { source } = imageBrowserData();
+  const snapshot = { ...source, identity: { ...source.identity, projectId, taskId: previousId }, lastEventSeq: '0', lastTimelineSeq: '0',
+    lifecycle: 'active' as const, activity: 'idle' as const, connectionState: 'connected' as const, currentTurnId: null,
+    operations: { canSend: true, canCancel: false, canRespond: false } };
+  const worker = { claimId: source.claimId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
+    machine: { id: source.identity.controllerId, name: 'Session fixture' }, platform: 'linux' as const, agent: 'codex' as const,
+    agentControlMode: 'web' as const, worktreeId: source.identity.worktreeId, phase: 'executing' as const,
+    herdr: null, nativeSessionId: source.identity.nativeSessionId, claimedAt: time };
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, { status: 'done', ready: false, completedAt: time }, {
+    previousChanges: { status: 'in_progress', ready: false, blockedBy: [], startedAt: time, properties: { worker } },
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  const sessionRoot = `/api/v1/projects/${projectId}/tasks/${previousId}/sessions`;
+  const reply = (route: Route, body: unknown) => route.fulfill({ json: body, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  await page.route(`**${sessionRoot}/current`, route => reply(route, { status: 'registered', session: snapshot }));
+  await page.route(`**${sessionRoot}/${snapshot.sessionId}/timeline**`, route => reply(route, {
+    sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null,
+    hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0',
+  }));
+  await page.routeWebSocket('**/channel*', socket => {
+    socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'fixture-event-0' }));
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog');
+  await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Session', exact: true }).click();
+  const draft = detail.locator('.task-agent-session').getByRole('textbox', { name: 'Message' });
+  await draft.fill('Retain the Session draft');
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: false, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  await expect(draft).toHaveValue('Retain the Session draft');
+  await expect(detail).toBeVisible();
+});
+
+test('member detail denial after anchor deletion clears retained draft through recovery', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  let denied = false, deniedReads = 0;
+  await install(page, false, true, false, false, false, undefined, {}, {
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}`, route => {
+    if (denied) { deniedReads++; return route.fulfill({ status: 403, json: { error: { code: 'forbidden', message: 'Forbidden', requestId: 'fixture-denied' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }); }
+    const detail = detailFixture(projectId, previousId, deniedReads ? { title: 'History origin', version: 6n, dependsOn: [], blockedBy: [], ready: true, updatedAt: '2026-10-24T09:00:00Z' } : { title: 'History origin', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
+    return route.fulfill({ status: 200, body: stringifyWireJson(detail), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Task-Epoch': deniedReads ? '00000000-0000-4000-8000-000000000901' : taskSyncEpoch(projectId) } });
+  });
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click(); await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await draft.fill('Private denied draft');
+  denied = true; updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect.poll(() => deniedReads).toBeGreaterThan(0);
+  const retry = detail.getByRole('button', { name: /retry/i }).first();
+  await expect(retry).toBeVisible();
+  await expect(draft).toHaveCount(0);
+  denied = false;
+  await retry.click();
+  await expect(detail).toHaveAccessibleName('History origin');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  await expect(detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' })).toHaveValue('');
+});
+
+test('member Discussion draft survives anchor deletion and protects close', async ({ page }) => {
+  let remove!: () => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  await install(page, false, true, false, false, false, undefined, {}, {
+    exposeDeleteTask: callback => { remove = callback; }, exposePreviousUpdate: callback => { updatePrevious = callback; },
+  });
+  await installChainUsage(page);
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${previousId}/thread/messages**`, route => route.fulfill({ json: { items: [], hasMoreBefore: false, hasMoreAfter: false }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
+  await page.locator(`#task-root-${taskId}`).click(); await page.locator(`[data-chain-id="${taskId}"] .chain-usage-button`).click();
+  const usage = page.locator('.chain-usage-dialog'); await usage.getByRole('button', { name: 'History origin' }).click();
+  const detail = page.locator('.task-detail-dialog:not(.chain-usage-dialog)');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea'); await draft.fill('Keep this discussion draft');
+  updatePrevious({ dependsOn: [], blockedBy: [], ready: true, version: 6n, updatedAt: '2026-10-24T09:00:00Z' }); remove();
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.locator('[data-project-action="refresh"]').evaluate((button: HTMLButtonElement) => button.click()); await response;
+  await expect(usage.locator('[role=alert]')).toContainText('scope is no longer available');
+  await expect(draft).toHaveValue('Keep this discussion draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await leave.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Keep this discussion draft');
+  await detail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await leave.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(detail).toHaveCount(0);
 });

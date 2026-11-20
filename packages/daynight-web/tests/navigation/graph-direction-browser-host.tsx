@@ -20,7 +20,7 @@ const Host = () => {
   return <TaskExecutionClockProvider projectId={selected?.projectId ?? projectA} snapshot={null}><div><button ref={trigger} onClick={() => setSelected({ projectId: projectA, rootId: id(1) })}>Open Goal A</button>
     <button onClick={() => setSelected({ projectId: projectA, rootId: id(3) })}>Open Goal B</button>
     <button onClick={() => setSelected({ projectId: projectB, rootId: id(5) })}>Open other project</button></div>
-    {selected && <TaskChainDialog projectId={selected.projectId} rootId={selected.rootId} index={selected.projectId === projectA ? indexA : indexB}
+    {selected && <TaskChainDialog usageMode="shown" projectId={selected.projectId} rootId={selected.rootId} index={selected.projectId === projectA ? indexA : indexB}
       onOpenTask={() => {}} onClose={() => setSelected(null)} onRestoreFocus={() => trigger.current?.focus()} />}</TaskExecutionClockProvider>;
 };
 createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TaskCacheProvider scope={scope}><Host /></TaskCacheProvider></LocaleProvider>);
