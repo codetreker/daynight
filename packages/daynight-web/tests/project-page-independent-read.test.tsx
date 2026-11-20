@@ -40,6 +40,32 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); for (const value of scopes.splice(0)) value.dispose(); });
 
 it.each([
+  ['en', 'Project tasks', '← Projects', 'Could not read project information.', 'Retry'],
+  ['zh-CN', '项目任务', '← 项目', '无法读取项目信息。', '重试'],
+] as const)('keeps the project heading and fallback without a decorative label in %s', async (locale, fallback, back, error, retry) => {
+  const pending = Promise.withResolvers<typeof project>();
+  vi.mocked(getProject).mockReturnValueOnce(pending.promise).mockRejectedValueOnce(new ApiError('network')).mockResolvedValue(project);
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  const view = render(page(scope(), projectId, locale));
+  const heading = view.container.querySelector<HTMLElement>('.project-heading')!;
+  expect(within(heading).getByRole('heading', { name: fallback })).toBeVisible();
+  expect(heading.querySelector('.eyebrow')).toBeNull();
+  expect(screen.getByRole('link', { name: back })).toHaveAttribute('href', '/projects');
+  await act(async () => pending.reject(new ApiError('network')));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(error);
+  expect(within(heading).getByRole('heading', { name: fallback })).toBeVisible();
+  expect(heading.querySelector('.eyebrow')).toBeNull();
+  fireEvent.click(within(alert).getByRole('button', { name: retry }));
+  await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(within(alert).getByRole('button', { name: retry })).toBeEnabled());
+  fireEvent.click(within(alert).getByRole('button', { name: retry }));
+  expect(await within(heading).findByRole('heading', { name: project.name })).toBeVisible();
+  expect(within(heading).getByText(project.repoUrl)).toBeVisible();
+  expect(heading.querySelector('.eyebrow')).toBeNull();
+});
+
+it.each([
   ['en', 'Copy repository URL', 'Copied', 'Could not copy repository URL. Try again.'],
   ['zh-CN', '复制仓库地址', '已复制', '复制仓库地址失败，请重试。'],
 ] as const)('copies the exact repository URL with keyboard activation and retry in %s', async (locale, label, success, failure) => {

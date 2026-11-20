@@ -68,6 +68,33 @@ const expectCompactHeading = async (page: Page) => {
   await expect.poll(async () => Math.abs(await headingGap(page) - 26), 'project heading to section layout gap is 26 CSS px').toBeLessThanOrEqual(1);
 };
 
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project heading has no label at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto(`/projects/${projectId}?tab=overview`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+  const heading = page.locator('.project-heading');
+  await expect(heading.locator('h1')).toHaveText(state.project.name);
+  await expect(heading.locator('.eyebrow')).toHaveCount(0);
+  await expect(heading.locator('.project-title-line')).toBeVisible();
+  expect(await heading.locator('.project-title-line').evaluate(element => element.parentElement?.firstElementChild === element)).toBe(true);
+  await expect(heading.locator('.project-repository-value')).toHaveText(state.project.repoUrl);
+  await expect(page.locator('.back-link')).toHaveAttribute('href', '/projects');
+  await expect(page.getByRole('navigation', { name: locale === 'en' ? 'Breadcrumb' : '面包屑' })).toBeVisible();
+  await expect(page).toHaveTitle(locale === 'en' ? 'Project tasks · Daynight' : '项目任务 · Daynight');
+  for (const section of ['overview', 'statistics', 'tasks', 'prs', 'tags']) {
+    await page.locator(`#project-section-tab-${section}`).click();
+    await expect(heading.locator('.eyebrow')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  if (width === 320) {
+    await page.getByRole('button', { name: locale === 'en' ? 'Project actions' : '项目操作', exact: true }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await page.keyboard.press('Escape');
+  }
+  expect(state.writes).toEqual([]);
+});
+
 for (const width of [1280, 390]) for (const empty of [false, true]) test(`project heading has one gap above overview and tasks at ${width}px with ${empty ? 'no tasks' : 'tasks'}`, async ({ page }) => {
   const state = await install(page, empty ? [] : [row(10, 'Task')]);
   await page.setViewportSize({ width, height: 844 });
