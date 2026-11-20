@@ -152,6 +152,13 @@ test('project task tabs keep counts and focused selection visible in an overflow
   expect(await position(page)).toBe(pageScroll);
   await page.keyboard.press('ArrowLeft'); await expect(last).toBeFocused();
   await page.keyboard.press('ArrowRight'); await expect(first).toBeFocused();
+  await page.keyboard.press('Tab');
+  expect(await tabs.evaluate(element => !element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Shift+Tab'); await expect(first).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  expect(await tabs.evaluate(element => !element.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Tab'); await expect(first).toBeFocused();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(state.writes).toEqual([]);
 });
