@@ -218,10 +218,11 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         }
         if (!batch.length) return;
         // Experience reads finish before the journal is saved, so a replayed
-        // Session command carries the same summaries.
+        // Session command carries the same summaries. Their request and time
+        // budgets bound how long they can delay saving and sending.
         const experience = await relatedExperience(admitted, {
-          itemCategory: (taskId, itemId) => options.withApi(bot.botId, signal, async api => (await api.getItem(taskId, itemId)).category),
-          related: (taskId, query) => options.withApi(bot.botId, signal, async api => (await api.relatedAppendix(taskId, query)).items),
+          itemCategory: (taskId, itemId, readSignal) => options.withApi(bot.botId, readSignal, async api => (await api.getItem(taskId, itemId)).category),
+          related: (taskId, query, readSignal) => options.withApi(bot.botId, readSignal, async api => (await api.relatedAppendix(taskId, query)).items),
         }, notification.remaining(), signal);
         const intent = bot.intent!;
         const command: SessionCommand = { protocol: SESSION_PROTOCOL, sessionId: intent.sessionId!, testExecutionId: intent.executionId, executionGeneration: intent.executionGeneration,

@@ -8,6 +8,7 @@ import { withClaimStorage, type ClaimScope } from "../../../../src/commands/assi
 import * as claimOperations from "../../../../src/commands/assistant-task/claims.js";
 import { createAssistantTaskRuntime, type AssistantApplicationContext, type AssistantTaskClock, type AssistantTaskRuntime, type AssistantTaskRuntimeOptions } from "../../../../src/commands/worker/bots/assistant-tasks.js";
 import { AssistantTaskSessionError } from "../../../../src/commands/worker/bots/assistant-task-session.js";
+import { EXPERIENCE_TIME_MS } from "../../../../src/commands/worker/bots/assistant-task-experience.js";
 import type { BotRecord } from "../../../../src/commands/worker/bots/types.js";
 import { parseSessionCommand, SESSION_PROTOCOL, type SessionCommand, type SessionOperation } from "../../../../src/session/protocol.js";
 
@@ -540,6 +541,23 @@ describe("assistant-task managed loops", () => {
     f.relatedAppendix.mockRejectedValue(new AssistantTaskApiError(false, "server_error", 503));
     await runtime.tick("delivery", signal());
     expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce(); expect(f.onError).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain("相关经验");
+  });
+
+  it("sends the batch without experience once a stalled experience read reaches the time budget", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(start);
+    const reading = deferred<AbortSignal>();
+    f.options.withApi = async (_botId, readSignal, action) => { const result = action(f.api); if (f.relatedAppendix.mock.calls.length) reading.resolve(readSignal); return result; };
+    f.relatedAppendix.mockImplementation(() => new Promise(() => undefined));
+    const tick = f.create().tick("delivery", signal());
+    const readSignal = await reading.promise;
+    await vi.advanceTimersByTimeAsync(EXPERIENCE_TIME_MS - 1);
+    expect(f.send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await tick;
+    expect(readSignal.aborted).toBe(true);
+    expect(f.relatedAppendix).toHaveBeenCalledOnce(); expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce();
     expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain("相关经验");
   });
 
