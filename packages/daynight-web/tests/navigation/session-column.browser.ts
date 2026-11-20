@@ -23,23 +23,23 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty' | 'interaction';
+type Content = 'short' | 'long' | 'empty' | 'interaction' | 'interaction-two' | 'interaction-six';
 async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content === 'interaction' } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content.startsWith('interaction') } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : content === 'interaction' ? [{
+  const entries = content === 'empty' ? [] : content.startsWith('interaction') ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
     interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
-      { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) },
+      { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: content === 'interaction' ? Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) : (locale === 'en' ? ['Standard', 'Development configuration with validation and local diagnostics enabled', 'path/with/a/very/long/unbroken/segment/abcdefghijklmnopqrstuvwxyz0123456789', 'Validation profile alpha', 'Validation profile beta', 'Read-only preview'] : ['标准配置', '使用包含验证及本地诊断的标准开发配置', '路径/包含很长的连续片段/abcdefghijklmnopqrstuvwxyz0123456789', '验证配置甲', '验证配置乙', '只读预览']).slice(0, content === 'interaction-two' ? 2 : 6).map((label, index) => ({ id: `feature-${index}`, label })) },
       { fieldId: 'enabled', label: 'Enabled flag', type: 'boolean', required: true },
     ] },
   }] : Array.from({ length: content === 'long' ? 30 : 1 }, (_, index) => ({ entryId: `00000009-1111-4111-8111-${String(index + 1).padStart(12, '0')}`, entrySeq: String(index + 1), revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: content === 'long' ? `### Message ${index + 1}\n\nSession column acceptance conversation. Long content wraps within the reading column. 中文正文与输入框保持一致。\n\n\`\`\`text\n${'long_code_without_spaces_'.repeat(60)}\n\`\`\`` : 'Session column acceptance conversation' }] }));
@@ -431,23 +431,82 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} timeline nati
   await toggle.click();
   const select = page.getByLabel('Destination region', { exact: true });
   await select.selectOption('eu');
-  const multiple = page.getByLabel('Enabled features', { exact: true });
-  await multiple.selectOption(['feature-1', 'feature-3']);
-  await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
-  await expect(multiple.locator('..').locator('svg')).toHaveCount(0);
-  expect(await multiple.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+  const first = page.getByRole('checkbox', { name: 'Feature 1', exact: true });
+  const third = page.getByRole('checkbox', { name: 'Feature 3', exact: true });
+  await first.check();
+  await third.check();
   await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
   await select.click();
   await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
   await page.keyboard.press('Escape');
   await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  await expect(select).toHaveValue('eu'); await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
+  await expect(select).toHaveValue('eu'); await expect(first).toBeChecked(); await expect(third).toBeChecked();
   await expect(page.getByLabel('Enabled flag', { exact: true })).toHaveValue('false');
   await page.keyboard.press('Escape');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
   expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
   await info.attach('native-interaction-cancel', { body: JSON.stringify({ entry, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true, multiple: ['feature-1', 'feature-3'], flag: false }), contentType: 'application/json' });
+});
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const content of ['interaction-two', 'interaction-six'] as const) {
+  test(`${entry} ${locale} ${content} wraps and submits form choices`, async ({ browser }, info) => {
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 640 }, hasTouch: true });
+    try {
+      const page = await context.newPage();
+      const fixture = await open(page, locale, 'waiting_input', entry, content);
+      const rows = page.locator('.session-multiselect-choice');
+      const checks = rows.locator('input');
+      await expect(rows).toHaveCount(content === 'interaction-two' ? 2 : 6);
+      for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]] as const) {
+        await page.setViewportSize({ width, height });
+        const geometry = await rows.evaluateAll(nodes => nodes.map(node => {
+          const label = node as HTMLElement, text = label.querySelector('span')!;
+          return { width: label.clientWidth, scrollWidth: label.scrollWidth, textWidth: text.clientWidth, textScrollWidth: text.scrollWidth, height: label.getBoundingClientRect().height, font: getComputedStyle(label).fontSize };
+        }));
+        for (const row of geometry) {
+          expect(row.scrollWidth).toBeLessThanOrEqual(row.width);
+          expect(row.textScrollWidth).toBeLessThanOrEqual(row.textWidth);
+          expect(row.height).toBeGreaterThanOrEqual(44);
+          expect(row.font).toBe('16px');
+        }
+      }
+      await page.setViewportSize({ width: 320, height: 640 });
+      await rows.nth(1).tap();
+      await page.getByLabel('Destination region', { exact: true }).focus();
+      await page.keyboard.press('Tab');
+      await expect(checks.nth(0)).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
+      await rows.nth(1).evaluate(node => node.scrollIntoView({ block: 'center' }));
+      await rows.nth(1).click(); await expect(checks.nth(1)).not.toBeChecked();
+      await rows.nth(1).tap();
+      await page.setViewportSize({ width: 1360, height: 900 });
+      await page.setViewportSize({ width: 320, height: 640 });
+      await expect(checks.nth(0)).toBeChecked(); await expect(checks.nth(1)).toBeChecked();
+      await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+      await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
+      await page.locator('.session-interaction button[type=submit]').evaluate(node => node.scrollIntoView({ block: 'center' }));
+      await page.locator('.session-interaction button[type=submit]').click();
+      const command = await fixture.settingUpdate;
+      expect(command.kind).toBe('interaction_response');
+      if (command.kind !== 'interaction_response') throw new Error('Expected interaction response');
+      expect(command.payload.response).toEqual({ kind: 'form', values: [
+        { fieldId: 'region', value: 'eu' }, { fieldId: 'features', value: ['feature-0', 'feature-1'] }, { fieldId: 'enabled', value: false },
+      ] });
+      await expect(checks.nth(0)).toBeDisabled();
+      fixture.confirmSetting();
+      expect(fixture.observations.pageErrors).toEqual([]);
+      await info.attach('form-choices', { body: JSON.stringify({ entry, locale, content, widths: [320, 375, 390, 768, 1360], response: command.payload.response }), contentType: 'application/json' });
+    } finally { await context.close(); }
+  });
+}
+
+test('desktop form choices use interface typography and compact rows', async ({ page }) => {
+  await open(page, 'en', 'waiting_input', 'task', 'interaction-two');
+  const row = page.locator('.session-multiselect-choice').first();
+  await expect(row).toHaveCSS('font-size', '14px');
+  expect(await row.evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(36);
 });
 
 for (const entry of ['task', 'assistant'] as const) test(`${entry} composer follows interface and touch typography without losing its draft`, async ({ browser }) => {

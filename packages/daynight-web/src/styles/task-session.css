@@ -51,6 +51,16 @@
 .session-interaction-select { margin-top: 6px; }
 .session-choice { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
 .session-form-field { display: block; margin-bottom: 12px; }
+.session-interaction fieldset.session-multiselect { margin: 0 0 12px; }
+.session-multiselect-choices { background: #fff; border: 1px solid #d8ddea; border-radius: 6px; }
+.session-multiselect-choice { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 10px; min-height: 36px; padding: 8px 10px; cursor: pointer; }
+.session-multiselect-choice + .session-multiselect-choice { border-top: 1px solid #e8ebf1; }
+.session-multiselect-choice:has(input:enabled):hover { background: #f5f5ff; }
+.session-multiselect-choice:has(input:checked) { background: #f0f0fb; }
+.session-multiselect-choice:focus-within { outline: 2px solid #6262ba; outline-offset: -2px; }
+.session-multiselect-choice input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: #6262ba; }
+.session-multiselect-choice span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.session-interaction fieldset:disabled .session-multiselect-choice { cursor: default; }
 .session-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .session-actions .button-primary { background: #6262ba; color: white; border-color: #6262ba; }
 .session-actions .button-primary:disabled { background: #ededf5; color: #7e8398; border-color: #dce0e8; }
@@ -71,6 +81,7 @@
   .session-header { padding: 9px 12px; }
   .session-timeline { padding: 16px 12px; }
   .session-interaction { padding: 12px; }
+  .session-multiselect-choice { min-height: 44px; }
   .session-receipts { padding-inline: 12px; max-height: 48px; }
 }
 .session-image { display: block; max-width: 100%; max-height: 360px; object-fit: contain; border-radius: 6px; margin-bottom: 8px; }
@@ -192,4 +203,7 @@
 .session-pending-content span:nth-child(3) { width: 65%; }
 .session-composer-placeholder { min-height: 84px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 16px; padding: 14px; border: 1px solid #e2e6ee; border-radius: 12px; color: #7a8497; }
 
-@media (pointer: coarse) { .session-interaction input:not([type='checkbox']):not([type='radio']) { font-size: var(--text-touch-field); } }
+@media (pointer: coarse) {
+  .session-interaction input:not([type='checkbox']):not([type='radio']), .session-multiselect-choice { font-size: var(--text-touch-field); }
+  .session-multiselect-choice { min-height: 44px; }
+}
