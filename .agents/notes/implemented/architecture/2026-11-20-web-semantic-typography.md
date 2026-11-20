@@ -8,6 +8,10 @@ Web pages use unrelated font sizes and reduce some text on narrow screens.
 Reading, controls, and metadata need consistent roles, while browser font
 preferences must remain effective without unexpectedly enlarging existing layouts.
 
+This note records the role-based implementation. The [shared size scale
+proposal](../../proposed/architecture/2026-11-20-web-font-size-scale.md) keeps the
+single owner and changes how consumers select a size.
+
 ## Decision
 
 The Web entry stylesheet loads six shared `rem` roles defined in
@@ -21,10 +25,9 @@ requests, Webhooks, and Session controls and timeline details use semantic roles
 at all viewport widths. Selection text retains the existing touch conditions and
 a 16 CSS px minimum except for the narrow fine-pointer task filters described in
 the later [filter font decision](../bug-fix/2026-11-20-project-task-filter-font.md);
-count badges use the metadata role. Markdown code and tables
-use the interface role; Bot first-paragraph emphasis retains its weight without a
-separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
-owns role uses and sizes. Touch fields, including Step title and Markdown editors
+count badges use the metadata role. Markdown code and tables use the interface
+role; Bot first-paragraph emphasis retains its weight without a separate size.
+Touch fields, including Step title and Markdown editors
 on coarse pointers, use the shared `--text-touch-field` size to preserve a 16 CSS
 px minimum while responding to larger browser font preferences.
 Terminal recordings use a shared `--text-terminal` base, multiplied by their
@@ -68,8 +71,8 @@ The checker rejects local role overrides, fixed font sizes, numeric fallbacks,
 unknown aliases and invalid font shorthands, with source locations. Terminal
 base-size multiplication and typed Mermaid theme configuration are rendering
 mechanisms with explicit rules; their files remain subject to normal checks.
-The [UI standard](../../../../docs/ui-design.md#web-typography) owns the exact
-exceptions and static evaluation limits.
+The [Web validation guide](../../../../packages/daynight-web/README.md#typography-validation)
+describes checker coverage and static evaluation limits.
 
 ## Alternatives
 
