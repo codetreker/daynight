@@ -19,9 +19,27 @@ type promptQuery interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func promptMetadata(ctx context.Context, tx promptQuery, user string, scope model.PromptScope, id string) (store.PromptMetadata, error) {
+func storageScope(purpose model.PromptPurpose, scope model.PromptScope) (string, error) {
+	if scope != model.PromptScopeUser && scope != model.PromptScopeProject && scope != model.PromptScopeWorker {
+		return "", errors.New("invalid prompt scope")
+	}
+	switch purpose {
+	case model.PromptPurposeWorker:
+		return string(scope), nil
+	case model.PromptPurposeReviewer:
+		return "reviewer_" + string(scope), nil
+	default:
+		return "", errors.New("invalid prompt purpose")
+	}
+}
+
+func promptMetadata(ctx context.Context, tx promptQuery, purpose model.PromptPurpose, user string, scope model.PromptScope, id string) (store.PromptMetadata, error) {
 	var m store.PromptMetadata
-	err := tx.QueryRow(ctx, `SELECT revision,updated_at FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, user, scope, id).Scan(&m.Revision, &m.UpdatedAt)
+	key, err := storageScope(purpose, scope)
+	if err != nil {
+		return m, err
+	}
+	err = tx.QueryRow(ctx, `SELECT revision,updated_at FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, user, key, id).Scan(&m.Revision, &m.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.PromptMetadata{}, nil
 	}
@@ -34,9 +52,13 @@ func promptMetadata(ctx context.Context, tx promptQuery, user string, scope mode
 	m.UpdatedAt = promptUTC(m.UpdatedAt)
 	return m, nil
 }
-func promptText(ctx context.Context, tx promptQuery, user string, scope model.PromptScope, id string) (string, error) {
+func promptText(ctx context.Context, tx promptQuery, purpose model.PromptPurpose, user string, scope model.PromptScope, id string) (string, error) {
 	var text string
-	err := tx.QueryRow(ctx, `SELECT prompt_text FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, user, scope, id).Scan(&text)
+	key, err := storageScope(purpose, scope)
+	if err != nil {
+		return "", err
+	}
+	err = tx.QueryRow(ctx, `SELECT prompt_text FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, user, key, id).Scan(&text)
 	if err != nil {
 		return "", promptError("read prompt text", err)
 	}
@@ -50,11 +72,11 @@ func promptWorkerExists(ctx context.Context, tx promptQuery, user, id string) er
 	}
 	return nil
 }
-func (s *DAO) PromptMetadata(ctx context.Context, u string, scope model.PromptScope, id string) (store.PromptMetadata, error) {
-	return promptMetadata(ctx, s.tx, u, scope, id)
+func (s *DAO) PromptMetadata(ctx context.Context, purpose model.PromptPurpose, u string, scope model.PromptScope, id string) (store.PromptMetadata, error) {
+	return promptMetadata(ctx, s.tx, purpose, u, scope, id)
 }
-func (s *DAO) PromptText(ctx context.Context, u string, scope model.PromptScope, id string) (string, error) {
-	return promptText(ctx, s.tx, u, scope, id)
+func (s *DAO) PromptText(ctx context.Context, purpose model.PromptPurpose, u string, scope model.PromptScope, id string) (string, error) {
+	return promptText(ctx, s.tx, purpose, u, scope, id)
 }
 func (s *DAO) PromptWorkerExists(ctx context.Context, u, id string) error {
 	return promptWorkerExists(ctx, s.tx, u, id)
@@ -82,8 +104,12 @@ func scanPrompt(row pgx.Row, scope model.PromptScope, id string) (model.PromptRe
 	resource.UpdatedAt = promptUTC(resource.UpdatedAt)
 	return resource, nil
 }
-func (s *DAO) CreatePrompt(ctx context.Context, u string, scope model.PromptScope, id, text string) (model.PromptResource, error) {
-	result, err := scanPrompt(s.tx.QueryRow(ctx, `INSERT INTO worker_prompts (user_id,scope,scope_id,revision,prompt_text,updated_at) VALUES ($1,$2,$3,1,$4,statement_timestamp()) ON CONFLICT (user_id,scope,scope_id) DO NOTHING RETURNING revision,prompt_text,updated_at`, u, scope, id, text), scope, id)
+func (s *DAO) CreatePrompt(ctx context.Context, purpose model.PromptPurpose, u string, scope model.PromptScope, id, text string) (model.PromptResource, error) {
+	key, err := storageScope(purpose, scope)
+	if err != nil {
+		return model.PromptResource{}, err
+	}
+	result, err := scanPrompt(s.tx.QueryRow(ctx, `INSERT INTO worker_prompts (user_id,scope,scope_id,revision,prompt_text,updated_at) VALUES ($1,$2,$3,1,$4,statement_timestamp()) ON CONFLICT (user_id,scope,scope_id) DO NOTHING RETURNING revision,prompt_text,updated_at`, u, key, id, text), scope, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, &model.Fault{Code: "version_conflict", Message: "The prompt revision has changed."}
 	}
@@ -92,8 +118,12 @@ func (s *DAO) CreatePrompt(ctx context.Context, u string, scope model.PromptScop
 	}
 	return result, nil
 }
-func (s *DAO) UpdatePrompt(ctx context.Context, u string, scope model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
-	result, err := scanPrompt(s.tx.QueryRow(ctx, `UPDATE worker_prompts SET revision=$4,prompt_text=$5,updated_at=statement_timestamp() WHERE user_id=$1 AND scope=$2 AND scope_id=$3 AND revision=$6 RETURNING revision,prompt_text,updated_at`, u, scope, id, next, text, expected), scope, id)
+func (s *DAO) UpdatePrompt(ctx context.Context, purpose model.PromptPurpose, u string, scope model.PromptScope, id string, next, expected int64, text string) (model.PromptResource, error) {
+	key, err := storageScope(purpose, scope)
+	if err != nil {
+		return model.PromptResource{}, err
+	}
+	result, err := scanPrompt(s.tx.QueryRow(ctx, `UPDATE worker_prompts SET revision=$4,prompt_text=$5,updated_at=statement_timestamp() WHERE user_id=$1 AND scope=$2 AND scope_id=$3 AND revision=$6 RETURNING revision,prompt_text,updated_at`, u, key, id, next, text, expected), scope, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, &model.Fault{Code: "version_conflict", Message: "The prompt revision has changed."}
 	}
@@ -103,8 +133,12 @@ func (s *DAO) UpdatePrompt(ctx context.Context, u string, scope model.PromptScop
 	return result, nil
 }
 
-func (s *DAO) PromptResource(ctx context.Context, u string, scope model.PromptScope, id string) (model.PromptResource, error) {
-	result, err := scanPrompt(s.tx.QueryRow(ctx, `SELECT revision,prompt_text,updated_at FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, u, scope, id), scope, id)
+func (s *DAO) PromptResource(ctx context.Context, purpose model.PromptPurpose, u string, scope model.PromptScope, id string) (model.PromptResource, error) {
+	key, err := storageScope(purpose, scope)
+	if err != nil {
+		return model.PromptResource{}, err
+	}
+	result, err := scanPrompt(s.tx.QueryRow(ctx, `SELECT revision,prompt_text,updated_at FROM worker_prompts WHERE user_id=$1 AND scope=$2 AND scope_id=$3`, u, key, id), scope, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.PromptResource{Scope: scope, ScopeID: id, Revision: "0"}, nil
 	}

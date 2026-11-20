@@ -110,7 +110,7 @@ func TestPromptDirectGrantLockAndRecheck(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			_, err := tx.CreatePrompt(ctx, member.UserID, model.PromptScopeProject, project.ID, "member text")
+			_, err := tx.CreatePrompt(ctx, model.PromptPurposeWorker, member.UserID, model.PromptScopeProject, project.ID, "member text")
 			return err
 		})
 		done <- err
@@ -155,7 +155,7 @@ func TestPromptDirectGrantLockAndRecheck(t *testing.T) {
 			if err := tx.LockPromptProject(ctx, member, project.ID); err != nil {
 				return err
 			}
-			_, err := tx.UpdatePrompt(ctx, member.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
+			_, err := tx.UpdatePrompt(ctx, model.PromptPurposeWorker, member.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
 			return err
 		})
 		result <- err
@@ -192,7 +192,7 @@ func TestPromptOwnershipLockAndRecheck(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			_, err := tx.CreatePrompt(ctx, member.UserID, model.PromptScopeProject, project.ID, "team member")
+			_, err := tx.CreatePrompt(ctx, model.PromptPurposeWorker, member.UserID, model.PromptScopeProject, project.ID, "team member")
 			return err
 		})
 		done <- err
@@ -236,7 +236,7 @@ func TestPromptOwnershipLockAndRecheck(t *testing.T) {
 			if err := tx.LockPromptProject(ctx, member, project.ID); err != nil {
 				return err
 			}
-			_, err := tx.UpdatePrompt(ctx, member.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
+			_, err := tx.UpdatePrompt(ctx, model.PromptPurposeWorker, member.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
 			return err
 		})
 		result <- err
@@ -282,7 +282,7 @@ func TestPromptProjectDeletionWaitsAndRechecks(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			_, err := tx.CreatePrompt(ctx, principal.UserID, model.PromptScopeProject, project.ID, "prior")
+			_, err := tx.CreatePrompt(ctx, model.PromptPurposeWorker, principal.UserID, model.PromptScopeProject, project.ID, "prior")
 			return err
 		})
 		done <- err
@@ -330,7 +330,7 @@ func TestPromptProjectDeletionWaitsAndRechecks(t *testing.T) {
 			if err := tx.LockPromptProject(ctx, principal, project.ID); err != nil {
 				return err
 			}
-			_, err := tx.UpdatePrompt(ctx, principal.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
+			_, err := tx.UpdatePrompt(ctx, model.PromptPurposeWorker, principal.UserID, model.PromptScopeProject, project.ID, 2, 1, "unauthorized")
 			return err
 		})
 		result <- err
