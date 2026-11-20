@@ -255,6 +255,12 @@ measurement。停止和恢复保留 unsupported，不把无计量误写成零或
 Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
 后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
 firstParty 且生效环境、settings 与官方 endpoint 检查一致时才映射 anthropic。
+实际启动环境或生效 settings/flag 环境中的非空 `ANTHROPIC_UNIX_SOCKET` 会覆盖
+模型请求的网络去向，必须拒绝 Anthropic 资格；即使 base URL 为官方值且读回
+firstParty 也不能授予。socket 路径按值处理，`0`、`false` 等非空路径不是布尔关闭。
+WIF profile 的 `base_url` 同样可以覆盖请求端点。按实际启动环境和合并后的配置
+分别解析原生配置选择；显式官方 base URL 优先，无显式值时核验选中 profile。
+选中配置非官方、无法读取或无法确定时保持 unknown；不读取凭据内容或执行配置助手。
 Mantle、Anthropic AWS、Anthropic Google Cloud 等选择器和缺失/矛盾的原生读回
 均不能借用 Anthropic qualification；Windows 的环境变量名按大小写不敏感语义核验，
 同名不同大小写的歧义环境不授予资格；账户其他字段不进入 profile。原生初始化不属于

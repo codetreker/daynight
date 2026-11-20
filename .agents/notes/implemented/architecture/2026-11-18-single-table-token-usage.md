@@ -122,7 +122,17 @@ Unverified handshakes do not acquire a supported-version capability.
 Claude admits immutable root-message input only when the actual SDK, CLI and
 Anthropic backend are known, retaining that combination in providerVersion.
 The actual SDK initialization result must identify apiProvider=firstParty,
-in addition to consistent effective settings and endpoint checks. Mantle and
+in addition to consistent effective settings and endpoint checks. A nonempty
+ANTHROPIC_UNIX_SOCKET in the actual spawn or effective settings/flag environment
+prevents Anthropic qualification even with the official base URL and firstParty
+readback: the socket changes model request routing independently of those
+values. Socket paths such as `0` and `false` are not disabled boolean selectors.
+WIF profiles can supply an independent base_url, including through the native
+default profile. Actual and merged environments resolve that selected profile
+when no explicit official base URL overrides it; nonofficial, unreadable or
+indeterminate configuration remains unknown. This reads endpoint configuration
+without reading credential contents or executing configuration helpers.
+Mantle and
 the separate Anthropic AWS and Google Cloud providers cannot inherit the
 Anthropic profile merely because older environment selectors are absent.
 Windows environment keys are compared without case; ambiguous duplicate
