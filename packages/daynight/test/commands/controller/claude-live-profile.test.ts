@@ -1,5 +1,10 @@
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "vitest";
-import { claudeBackend, claudeProfileEndpoint } from "../../../src/commands/controller/providers/claude-live-profile.js";
+import { claudeBackend as nativeClaudeBackend, claudeProfileEndpoint, claudeGlobalEnvironment } from "../../../src/commands/controller/providers/claude-live-profile.js";
+
+// Pure classifier cases supply global evidence instead of reading machine config.
+const claudeBackend: typeof nativeClaudeBackend = (...args) => { args[6] ??= () => ({}); return nativeClaudeBackend(...args); };
 
 test("Claude backend requires actual spawn and resolved settings to agree on the official endpoint", () => {
   expect(claudeBackend({}, {}, undefined, "firstParty")).toBe("anthropic");
@@ -166,4 +171,66 @@ test("native profile discovery has no home-directory fallback outside its enviro
     expect(claudeProfileEndpoint({}, platform, noRead)).toBe(true);
     expect(claudeProfileEndpoint({ ANTHROPIC_PROFILE: "chosen" }, platform, noRead)).toBe(false);
   }
+});
+
+
+test.each(["linux", "win32"] as const)("%s global env participates in every backend capability check", platform => {
+  const root = platform === "win32" ? "C:\\home" : "/home";
+  const homeKey = platform === "win32" ? "USERPROFILE" : "HOME";
+  const environment = { [homeKey]: root };
+  for (const injected of [
+    { ANTHROPIC_UNIX_SOCKET: "false" }, { ANTHROPIC_BASE_URL: "http://localhost:18080" },
+    { CLAUDE_CODE_USE_MANTLE: "1" }, { ANTHROPIC_CONFIG_DIR: root, ANTHROPIC_PROFILE: "redirected" },
+    { CLAUDE_CODE_HOST_CREDS_FILE: "private-host-input" }, { CLAUDE_CODE_CUSTOM_OAUTH_URL: "https://claude.fedstart.com" },
+  ]) {
+    const global = (env: Record<string, unknown>, os: NodeJS.Platform) => claudeGlobalEnvironment(env, os, file => file.endsWith(".claude.json") ? JSON.stringify({ env: injected, ignored: "private field" }) : null);
+    const profile = (env: Record<string, unknown>) => env.ANTHROPIC_PROFILE !== "redirected";
+    expect(nativeClaudeBackend(environment, {}, undefined, "firstParty", platform, profile, global)).toBe("unknown");
+    expect(nativeClaudeBackend(environment, { env: { ANTHROPIC_UNIX_SOCKET: "", ANTHROPIC_BASE_URL: "https://api.anthropic.com", ANTHROPIC_PROFILE: "" } }, undefined, "firstParty", platform, profile, global)).toBe("unknown");
+  }
+});
+
+test("global configuration anchors legacy, custom directory and OAuth suffix selection before merging env", () => {
+  const reads: string[] = [];
+  const files = new Map<string, string>([["/config/.config.json", JSON.stringify({ env: { HOME: "/redirected", ANTHROPIC_UNIX_SOCKET: "0", SECRET_UNRELATED: "discard" } })], ["/config/.claude.json", JSON.stringify({ env: {} })]]);
+  const read = (file: string) => { reads.push(file); return files.get(file) ?? null; };
+  expect(JSON.stringify(claudeGlobalEnvironment({ HOME: "/home", CLAUDE_CONFIG_DIR: "/config" }, "linux", read))).toBe(JSON.stringify({ HOME: "/redirected", ANTHROPIC_UNIX_SOCKET: "0" }));
+  expect(JSON.stringify(reads)).toBe(JSON.stringify(["/config/.config.json"]));
+  files.delete("/config/.config.json"); reads.length = 0;
+  claudeGlobalEnvironment({ HOME: "/home", CLAUDE_CONFIG_DIR: "/config", CLAUDE_CODE_CUSTOM_OAUTH_URL: "https://claude.fedstart.com" }, "linux", read);
+  expect(reads).toContain("/config/.claude-custom-oauth.json");
+  reads.length = 0;
+  claudeGlobalEnvironment({}, "linux", read, () => "/system-home");
+  expect(reads).toContain("/system-home/.claude/.config.json");
+  expect(reads).toContain("/system-home/.claude.json");
+});
+
+test("global configuration fails closed for unreadable paths, malformed env and Windows ambiguous names", () => {
+  for (const source of ["{", JSON.stringify({ env: [] }), JSON.stringify({ env: { ANTHROPIC_UNIX_SOCKET: 0 } })]) {
+    expect(claudeGlobalEnvironment({ HOME: "/home" }, "linux", () => source)).toBe(null);
+  }
+  expect(claudeGlobalEnvironment({ HOME: "/home" }, "linux", () => { throw new Error("denied"); })).toBe(null);
+  expect(claudeGlobalEnvironment({ CLAUDE_CONFIG_DIR: "relative" }, "linux", () => null)).toBe(null);
+  expect(claudeGlobalEnvironment({ CLAUDE_CONFIG_DIR: "C:/config", claude_config_dir: "C:/config" }, "win32", () => null)).toBe(null);
+  const global = () => ({ anthropic_unix_socket: "", ANTHROPIC_UNIX_SOCKET: "" });
+  expect(nativeClaudeBackend({ USERPROFILE: "C:/home" }, {}, undefined, "firstParty", "win32", () => true, global)).toBe("unknown");
+});
+
+
+test("the default production resolver rejects a socket configured only in the isolated native global file", () => {
+  const scratch = join(process.cwd(), ".tmp");
+  mkdirSync(scratch, { recursive: true });
+  const home = mkdtempSync(join(scratch, "claude-global-"));
+  const environment = process.platform === "win32" ? { USERPROFILE: home } : { HOME: home };
+  try {
+    expect(nativeClaudeBackend(environment, {}, undefined, "firstParty")).toBe("anthropic");
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ env: { ANTHROPIC_UNIX_SOCKET: "false" } }));
+    const before = JSON.stringify(environment);
+    expect(nativeClaudeBackend(environment, {}, undefined, "firstParty")).toBe("unknown");
+    expect(JSON.stringify(environment)).toBe(before);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("flag env cannot erase a resolved managed endpoint override", () => {
+  expect(claudeBackend({ ANTHROPIC_BASE_URL: "https://api.anthropic.com" }, { env: { ANTHROPIC_BASE_URL: "http://localhost:18080" } }, { env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } }, "firstParty")).toBe("unknown");
 });

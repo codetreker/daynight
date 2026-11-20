@@ -254,7 +254,12 @@ measurement。停止和恢复保留 unsupported，不把无计量误写成零或
 
 Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
 后端身份取自实际启动 SDK 的 initializationResult().account.apiProvider；只有
-firstParty 且生效环境、settings 与官方 endpoint 检查一致时才映射 anthropic。
+firstParty 且实际启动环境、原生全局配置 env、生效 settings、再合并 flag 后的
+环境分别通过官方 endpoint 检查且后端一致时才映射 anthropic。flag 不能覆盖
+生效 managed settings 中的端点差异来取得资格。全局配置按原生 legacy/当前文件选择顺序解析，
+只提取 env，不传输或保留其他全局字段；无法确定、读取或解析时保持 unknown。
+主机凭据文件可在启动后注入环境，custom OAuth 可改变默认请求端点，配置任一
+入口时保持 unknown；不读取独立凭据文件。
 实际启动环境或生效 settings/flag 环境中的非空 `ANTHROPIC_UNIX_SOCKET` 会覆盖
 模型请求的网络去向，必须拒绝 Anthropic 资格；即使 base URL 为官方值且读回
 firstParty 也不能授予。socket 路径按值处理，`0`、`false` 等非空路径不是布尔关闭。
