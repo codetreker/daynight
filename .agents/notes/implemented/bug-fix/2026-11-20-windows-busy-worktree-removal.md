@@ -32,13 +32,21 @@ re-admits the mutation; a changed identity aborts instead of deleting whatever
 now occupies the path. `operation.check()` around each delay covers cancellation
 and deadline, which identity verification does not.
 
-Both removal sites use it. Inside `removeWorktreeContents`, entry removal
+`reprove` is a required parameter rather than an optional one. A default no-op
+would silently weaken any caller that forgot it: before this change a first
+`EBUSY` ended the removal, so an omitted callback would newly allow five
+unverified attempts. Requiring it makes every call site state its own evidence,
+and the compiler rejects a new caller that has none.
+
+Every removal site supplies one. Inside `removeWorktreeContents`, entry removal
 reproves the parent directory and the entry's own inode and type, and nested
-directory removal reproves the directory. The task worktree root is removed by
-`removeEmptyDirectory` in `worktrees.ts` instead, outside the content walk, and
-that call is the one the agent's working directory actually holds; it passes the
-surrounding `verifyOwnership`, which already proves the worktree is still empty
-and its Git metadata unchanged.
+directory removal reproves the directory. Outside the content walk,
+`removeEmptyDirectory` in `worktrees.ts` removes the task worktree root, the
+directory the agent's own working directory holds; it passes the surrounding
+`verifyOwnership`, which already proves the worktree is still empty with
+unchanged Git metadata. `removeEmptyReservation` passes a callback that repeats
+its captured directory identities, including the reservation leaf, and confirms
+no Git registration appeared.
 
 The retry is not platform-guarded. `EBUSY` is diagnostic on its own and a single
 code path keeps the behavior covered by tests on every platform.
@@ -78,6 +86,12 @@ out the worktree root, which `visit(target, root, true)` deliberately preserves
 and `removeEmptyDirectory` removes afterwards. The root is the agent's own
 working directory and therefore the single path most likely to be busy, so
 omitting it would have left the original failure in place.
+
+**Default `reprove` to a no-op for callers without evidence.** This keeps the
+signature smaller, but it converts an omission into a silent weakening: the
+reservation cleanup path would have retried five times on a directory it never
+reverified, where a single `EBUSY` previously stopped it. A required parameter
+turns that omission into a compile error.
 
 ## Consequences
 

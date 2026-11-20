@@ -491,6 +491,46 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(target, "foreign"), "utf8")).toBe("keep\n");
   });
 
+  it("completes reservation cleanup once a transient holder releases it", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) === owned && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(entry, options);
+    });
+    await adapter.removeUnpublishedReservation(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a reservation replaced during the busy backoff instead of removing its replacement", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    // Prepared outside the reservation so it keeps its own inode; recreating the
+    // same name in place can reuse the inode just freed and leave identity equal.
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      await actualFs.rmdir(target);
+      await actualFs.rename(replacement, target);
+      throw busyError();
+    });
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
+  });
+
   it("rejects symlink parents when cleaning a reservation by task identity", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     const outside = path.join(f.root, "outside");
