@@ -47,7 +47,7 @@ import { createWorkerConfigurationDiagnostics } from "./configuration-diagnostic
 import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
-import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
@@ -434,9 +434,11 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     return work;
   };
   let reportDrain: Promise<void> | undefined;
+  let reportFailure: unknown;
+  const stopReporter = (): Promise<void> => reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { reportFailure = error; });
   const drainReport = (): Promise<void> => {
     if (!managementSignal.aborted) return Promise.resolve();
-    return reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { managementFailures.push(error); });
+    return stopReporter();
   };
   let taskStop: Promise<void> | undefined;
   const stopTasks = (deadline: number): Promise<void> => {
@@ -1161,7 +1163,17 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     }
     const finishManagement = async (): Promise<void> => {
       await joinStartup();
-      try { await (reportDrain ?? reporter?.stop()); } catch (error) { managementFailures.push(error); }
+      await stopReporter();
+      if (reportFailure !== undefined) {
+        try {
+          if (!hasOwnedCommandCleanupFailure(reportFailure)) throw reportFailure;
+          // The original stop has joined the reporting loop. Re-observe its
+          // retained failures after native owners reconcile their receipts;
+          // stop never restarts collection or replaces a pending writer.
+          await reporter?.stop();
+          failures.push(reportFailure);
+        } catch (error) { managementFailures.push(error); }
+      }
       observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
       try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
       try { await diagnostics?.close(); } catch (error) { managementFailures.push(error); }

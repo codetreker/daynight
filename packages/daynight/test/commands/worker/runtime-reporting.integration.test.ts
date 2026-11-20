@@ -3,7 +3,7 @@ import type { ArchiveProbeResult } from "../../../src/commands/controller/archiv
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { ApiError } from "../../../src/api/client.js";
@@ -17,11 +17,14 @@ import type { WorkerConfigurationManager } from "../../../src/commands/worker/co
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
-import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
+import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import * as atomicFiles from "../../../src/platform/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import * as workerStores from "../../../src/commands/worker/store.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
+import * as instanceLocks from "../../../src/commands/worker/instance-lock.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
@@ -1215,14 +1218,91 @@ describe("worker runtime configuration reporting", () => {
     }
   });
 
-  it("preserves reporter cleanup uncertainty as the runtime result while completing resource teardown", async () => {
+  it("re-observes joined reporter failures after the original native stop receipt closes", async () => {
+    const f = await fixture(), marker = path.join(f.homeDirectory, "report-command-runs");
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    const reconciling = deferred<void>(), release = deferred<void>(), reportStopped = deferred<void>();
+    let store: ReturnType<typeof openWorkerStore> | undefined;
+    const open = workerStores.openWorkerStore;
+    const opened = vi.spyOn(workerStores, "openWorkerStore").mockImplementation((...args) => store = open(...args));
+    let rejectedStop = false, failure: Error | undefined;
+    let firstReceipt: { generation: string; event: { resourceId: string; proof: unknown } } | undefined;
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory) {
+        const receipt = JSON.parse(String(text));
+        if (receipt.event.stage === "stopped") {
+          if (!rejectedStop) {
+            rejectedStop = true; firstReceipt = receipt; f.signal.abort();
+            throw new Error("Original telemetry command stop receipt could not be saved.");
+          }
+          reconciling.resolve(); await release.promise;
+        }
+      }
+      return replace(file, text, ...rest);
+    });
+    let stop: ReturnType<typeof vi.spyOn> | undefined;
+    mocks.createdReporter.mockImplementationOnce((reporter: ReturnType<typeof createWorkerReporter>) => {
+      const original = reporter.stop;
+      stop = vi.spyOn(reporter, "stop").mockImplementation(async () => {
+        try { await original(); }
+        catch (error) { reportStopped.resolve(); throw error; }
+      });
+    });
+    collect.mockImplementationOnce(async operation => {
+      try {
+        await runOwnedCommand({ file: process.execPath, args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(marker)},'once\\n');`], environment: process.env }, operation);
+        throw new Error("Expected the owned stop receipt to fail.");
+      } catch (error) {
+        expect(hasUnconfirmedOwnedCommandCleanup(error)).toBe(true);
+        failure = new Error("Telemetry command failed.", { cause: error });
+        return { telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error: failure }] };
+      }
+    });
+    const running = start(f);
+    try {
+      await Promise.all([reconciling.promise, reportStopped.promise]);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(store!.listTasks()).toEqual([]);
+      release.resolve();
+      await expect(running).rejects.toBe(failure);
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect(collect).toHaveBeenCalledOnce();
+      expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+      expect(() => store!.listTasks()).toThrow();
+      const saved = await Promise.all((await readdir(directory)).filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(saved).toHaveLength(1);
+      expect(firstReceipt!.generation).toBe("1");
+      expect(saved[0]).toMatchObject({ generation: firstReceipt!.generation, event: { resourceId: firstReceipt!.event.resourceId, stage: "stopped", proof: firstReceipt!.event.proof } });
+      expect(await readFile(marker, "utf8")).toBe("once\n");
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock!.release();
+    } finally { release.resolve(); f.signal.abort(); await Promise.allSettled([running]); saving.mockRestore(); opened.mockRestore(); }
+  }, 20_000);
+
+  it("retains management storage and its lock when reporter cleanup has no original close proof", async () => {
     const f = await fixture();
+    const acquire = instanceLocks.acquireWorkerInstanceLock;
+    let originalLock: Awaited<ReturnType<typeof acquire>> | undefined;
+    const acquired = vi.spyOn(instanceLocks, "acquireWorkerInstanceLock").mockImplementation(async paths => originalLock = await acquire(paths));
     const failure = new OwnedCommandCleanupError([new Error("unjoined process")], new Error("probe failed"));
     collect.mockResolvedValue({ telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error: failure }] });
     const running = start(f); const rejected = expect(running).rejects.toBe(failure);
-    await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce()); await eventually(() => expect(report).toHaveBeenCalled());
-    f.signal.abort(); await rejected;
-    expect(shutdown).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(mocks.webClose).toHaveBeenCalledOnce();
+    let store: WorkerCoordinatorOptions["store"] | undefined;
+    try {
+      await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce()); await eventually(() => expect(report).toHaveBeenCalled());
+      store = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store;
+      f.signal.abort(); await rejected;
+      expect(shutdown).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(mocks.webClose).toHaveBeenCalledOnce();
+      expect(store.listTasks()).toEqual([]);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      f.signal.abort(); await Promise.allSettled([running]);
+      // The fixture supplied an unresolvable synthetic responsibility. Only
+      // its test owner releases the retained handles after the assertions.
+      store?.close(); await originalLock?.release(); acquired.mockRestore();
+    }
   });
 });
 
