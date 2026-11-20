@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -287,7 +288,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 			if _, err := teams.Get(ctx, p, id); err != nil {
 				return ToolResult{}, err
 			}
-			if err := actor.Authorization.Require(scopepolicy.TeamRead); err != nil {
+			if err := scopeadmission.Require(*actor.Authorization, scopepolicy.TeamRead); err != nil {
 				return ToolResult{}, err
 			}
 		}

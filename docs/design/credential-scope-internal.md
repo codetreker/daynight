@@ -14,30 +14,6 @@ PAT 与 MCP grant 的适用性以及操作所需的权限。目录返回独立�
 继续由其原有绑定及授权规则处理，不能把缺失的受限策略解释为固定授权。
 Scope 检查与现有凭据有效性、资源访问、角色和业务条件共同生效。
 
-## Project 管理准入
-
-`service/project` 的 scoped 入口显式接收凭据授权，与原有 Project、成员和
-邀请操作共用业务实现。项目可见性和适用的角色检查先于 scope 拒绝，受限
-预览与写入在对应准入之后执行。REST 和 MCP 的 scoped 接入与原生产装配
-分离；请求使用认证时取得的策略快照，不将策略保存在 Principal 中。
-
-项目读取与成员名单需要 `project:read`，普通创建和设置需要
-`project:write`；原有完整写响应还需要 `project:read`。按 Team 筛选项目
-另需 `team:read` 和 Team 可见性。仓库切换及其预览需要
-`project:repository`；转移预览需要 `project:transfer`，返回既有访问
-数据的完整转移回执还需 `project:read`。删除需要 `project:delete`，删除
-预览还需要 `task:read`、`attachment:read` 和 `worker:read`，以保护其中的
-任务、附件与 Worker 投影。
-
-成员管理与候选查找需要 `project:members`，包含现有成员和访问数据的完整
-写响应还需要 `project:read`。已发邀请管理需要 `project:invitations`；
-收到邀请的检查和接受分别需要 `project:invitation-read` 和
-`project:invitation-accept`，完整响应中的现有访问数据还需要
-`project:read`。内部最小邀请视图和接受回执不返回这些访问数据。
-成员候选查找在原快照内重新取得当前凭据授权，直接添加成员在原事务中
-的两次凭据复核点重新取得授权；缺少对应事务绑定读取能力时拒绝 scoped
-调用。版本、角色、凭据有效性和事务完成语义继续适用。
-
 ## Tag 目录准入
 
 `service/tag.NewScoped` 提供显式接收 `model.CredentialAuthorization` 的目录
@@ -72,6 +48,28 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `Daynight-Scope-Status: insufficient_scope`。MCP 沿用业务 envelope，返回
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
+
+## 账户与集成准入
+
+账户资料、Worker 与 Reviewer Prompt、用户可见用量及 GitHub 用户操作的
+scoped 服务入口接收明确的 `model.CredentialAuthorization`，并通过
+`scopeadmission` 检查操作所需的全部权限。原有身份、资源可见性和角色检查
+继续适用；固定 session 与 OAuth API profile 保留原有限制。权限不足时，
+已确认可见的资源使用原有 `403 forbidden` 响应和
+`Daynight-Scope-Status: insufficient_scope`，不可见资源与凭据失效保持原有
+拒绝。真实路由注册同时记录操作、自动 HEAD、回退和独立 profile 分类。
+
+账户资料更新需要 `account:write`；`GET /api/v1/me` 保留自省行为。
+Prompt 读取需要 `prompt:read`，原 PUT 回执包含既有资源事实，因而需要
+`prompt:write` 与 `prompt:read`。用户用量读取需要 `usage:read`，能力检查、
+生产者和专用上传凭据沿用原协议。普通项目 PR 投影使用 `project:read`；
+GitHub 集成读取及管理分别使用 `github:read` 和 `github:manage`，返回既有
+资料的管理写入还需要读取权限。
+
+先以窄查询确认目标和原有业务权限，再检查 scope，最后读取受保护投影或
+执行写入。账户和用量的既有事务内凭据复核同时复核当前策略；缺少复核
+能力时受限入口失败关闭。GitHub 操作在远端证明或跨阶段定位后继续时，
+重新取得原凭据当前策略；涉及事务内凭据复核的路径在该事务中复核。
 
 ## Team 准入
 
@@ -120,14 +118,10 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 ## 装配边界
 
-生产仍使用原有 `tag.New`、REST 和 MCP 注册，尚未启用受限凭据签发或
-scoped Tag 或 Team 装配。scoped 入口只接受显式授权事实，不以缺失 policy 放行。
-凭据持久化、认证时读取最新策略、完整入口分类、迁移和公开启用由相应
-实现接入；Tag 的直接操作使用调用方已认证的策略快照。生产 Bot 组装也保持
-原有入口；scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
-联合装配必须将请求授权提供器绑定到同一次认证的凭据事实，并为需要复核的
-操作提供同一快照或事务内针对原 Principal 的权威读取；`ScopeProtected` 等
-构造状态标记不能证明提供器的身份绑定或读取来源。只读快照的策略读取不能
-使用要求行锁的写事务接口。
+生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
+放行。PAT 已具备策略存储与复核能力；MCP 持久化、认证时读取最新策略、
+完整入口分类、历史回填和公开启用由相应实现接入。Tag 的直接操作使用调用方
+已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。

@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -72,14 +73,14 @@ type scopedProjectFixture struct {
 
 func (s *scopedProjectFixture) RegisterRepository(_ context.Context, a model.CredentialAuthorization, input coreproject.CreateProject, _ bool) (model.Project, bool, error) {
 	s.calls = append(s.calls, "create")
-	if err := a.Require(scopepolicy.ProjectRead, scopepolicy.ProjectWrite); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead, scopepolicy.ProjectWrite); err != nil {
 		return model.Project{}, false, err
 	}
 	return model.Project{ID: testProjectID, Name: input.Name}, true, nil
 }
 func (s *scopedProjectFixture) ResolveRepository(_ context.Context, a model.CredentialAuthorization, address string) (model.Project, error) {
 	s.calls = append(s.calls, "resolve")
-	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return model.Project{}, err
 	}
 	project := sampleProject(testProjectID)
@@ -88,14 +89,14 @@ func (s *scopedProjectFixture) ResolveRepository(_ context.Context, a model.Cred
 }
 func (s *scopedProjectFixture) RepositoryPreview(_ context.Context, a model.CredentialAuthorization, id, _, _ string) (coreproject.RepositoryPreview, error) {
 	s.calls = append(s.calls, "repository-preview")
-	if err := a.Require(scopepolicy.ProjectRepository); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRepository); err != nil {
 		return coreproject.RepositoryPreview{}, err
 	}
 	return coreproject.RepositoryPreview{ProjectID: id, ProjectName: "visible name"}, nil
 }
 func (s *scopedProjectFixture) SetRepository(_ context.Context, a model.CredentialAuthorization, id string, _ coreproject.RepositoryChange) (coreproject.RepositoryReceipt, error) {
 	s.calls = append(s.calls, "repository-set")
-	if err := a.Require(scopepolicy.ProjectRepository); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRepository); err != nil {
 		return coreproject.RepositoryReceipt{}, err
 	}
 	return coreproject.RepositoryReceipt{ProjectID: id, Changed: true}, nil
@@ -106,14 +107,14 @@ func (s *scopedProjectFixture) Get(_ context.Context, a model.CredentialAuthoriz
 	if !s.visible {
 		return model.Project{}, &model.Fault{Code: "not_found", Message: "not found"}
 	}
-	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return model.Project{}, err
 	}
 	return sampleProject(id), nil
 }
 func (s *scopedProjectFixture) ListScoped(_ context.Context, a model.CredentialAuthorization, _ coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
 	s.calls = append(s.calls, "list")
-	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return coreproject.ProjectPage{}, err
 	}
 	return coreproject.ProjectPage{Items: []model.Project{sampleProject(testProjectID)}}, nil
@@ -123,21 +124,21 @@ func (s *scopedProjectFixture) TransferPreviewWithName(_ context.Context, a mode
 	if !s.visible {
 		return coreproject.TransferPreview{}, "", &model.Fault{Code: "not_found", Message: "not found"}
 	}
-	if err := a.Require(scopepolicy.ProjectTransfer); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectTransfer); err != nil {
 		return coreproject.TransferPreview{}, "", err
 	}
 	return coreproject.TransferPreview{SourceTeam: model.TeamRef{ID: testTeamID}, TargetTeam: model.TeamRef{ID: testTargetID}, Ownership: model.ProjectOwnership{TeamID: testTeamID, Version: 1}, TargetTeamVersion: 1}, "visible name", nil
 }
 func (s *scopedProjectFixture) TransferPreview(_ context.Context, a model.CredentialAuthorization, _, _ string) (coreproject.TransferPreview, error) {
 	s.calls = append(s.calls, "preview")
-	if err := a.Require(scopepolicy.ProjectTransfer); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectTransfer); err != nil {
 		return coreproject.TransferPreview{}, err
 	}
 	return coreproject.TransferPreview{SourceTeam: model.TeamRef{ID: testTeamID}, Ownership: model.ProjectOwnership{TeamID: testTeamID, Version: 1}, TargetTeamVersion: 1}, nil
 }
 func (s *scopedProjectFixture) Transfer(_ context.Context, a model.CredentialAuthorization, _ string, _ coreproject.TransferInput) (coreproject.TransferReceipt, error) {
 	s.calls = append(s.calls, "transfer")
-	if err := a.Require(scopepolicy.ProjectTransfer, scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectTransfer, scopepolicy.ProjectRead); err != nil {
 		return coreproject.TransferReceipt{}, err
 	}
 	return coreproject.TransferReceipt{ProjectID: testProjectID}, nil
@@ -147,14 +148,14 @@ type scopedInvitationFixture struct{ calls []string }
 
 func (s *scopedInvitationFixture) InspectInvitation(_ context.Context, a model.CredentialAuthorization, _ string) (coreproject.InvitationInspection, error) {
 	s.calls = append(s.calls, "inspect")
-	if err := a.Require(scopepolicy.ProjectInvitationRead, scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectInvitationRead, scopepolicy.ProjectRead); err != nil {
 		return coreproject.InvitationInspection{}, err
 	}
 	return coreproject.InvitationInspection{ProjectID: testProjectID, ProjectName: "visible name"}, nil
 }
 func (s *scopedInvitationFixture) AcceptInvitation(_ context.Context, a model.CredentialAuthorization, _, _ string) (coreproject.InvitationAcceptance, error) {
 	s.calls = append(s.calls, "accept")
-	if err := a.Require(scopepolicy.ProjectInvitationAccept, scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectInvitationAccept, scopepolicy.ProjectRead); err != nil {
 		return coreproject.InvitationAcceptance{}, err
 	}
 	return coreproject.InvitationAcceptance{ProjectID: testProjectID, Joined: true}, nil
@@ -503,7 +504,7 @@ func TestScopedMCPRefusalDoesNotHideUnknownOrMixedFailures(t *testing.T) {
 	if err := f.entry.EnableScopedAuthentication(testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{"read": a}}); err != nil {
 		t.Fatal(err)
 	}
-	scopeErr := a.Require(scopepolicy.ProjectWrite)
+	scopeErr := scopeadmission.Require(a, scopepolicy.ProjectWrite)
 	errorsByMode := map[string]error{
 		"refused":  scopeErr,
 		"mixed":    errors.Join(scopeErr, errors.New("independent failure")),

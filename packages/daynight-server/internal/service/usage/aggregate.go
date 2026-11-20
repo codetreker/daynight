@@ -62,12 +62,15 @@ func (s *Service) Aggregate(ctx context.Context, p model.Principal, project, kin
 		if err != nil {
 			return err
 		}
-		if len(members) > 10000 {
-			return core.Fault("aggregate_scope_too_large")
-		}
 		now, err := dao.Now(ctx)
 		if err != nil {
 			return err
+		}
+		if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+			return err
+		}
+		if len(members) > 10000 {
+			return core.Fault("aggregate_scope_too_large")
 		}
 		out.ObservedAt = now
 		out.MembershipRevision, err = core.Hash(members)

@@ -103,7 +103,7 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
         buttons[index < 0 ? event.key === 'ArrowDown' ? 0 : buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
       }
     }}>
-    <div className="assignee-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input className="assignee-search" ref={search} aria-label={m.search} placeholder={m.search} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>
+    <div className="assignee-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input className="assignee-search" data-touch-text="coarse" ref={search} aria-label={m.search} placeholder={m.search} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>
     {catalogue.status === 'error' ? <div className="assignee-menu-state" role="alert"><p>{m.loadFailed}</p><button className="button" type="button" ref={retry} onClick={catalogue.retry}>{m.retry}</button></div>
       : catalogue.status !== 'ready' ? <div className="assignee-menu-state" role="status"><span className="spinner" aria-hidden="true" />{m.loading}</div>
       : <div className="assignee-options" role="listbox" aria-label={label}>{matches.length === 0 ? <p className="assignee-menu-state">{m.noPeople}</p> : matches.map((choice, index) => <button type="button" role="option" aria-selected={value === choice.value} aria-disabled={selectionBlocked} tabIndex={-1}

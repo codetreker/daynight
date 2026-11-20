@@ -48,6 +48,20 @@ type inboxReceiver interface {
 // authentication: the inbox token or a verified Daynight delivery is the only
 // credential, and the route never reads cookies.
 func RegisterInboxRoute(mux *http.ServeMux, inbox inboxReceiver) {
+	registerInboxRoute(mux, inbox, nil)
+}
+
+// RegisterClassifiedInboxRoute records the public route's independent profile.
+func RegisterClassifiedInboxRoute(mux *http.ServeMux, inbox inboxReceiver, record func(RouteClassification)) {
+	registerInboxRoute(mux, inbox, record)
+}
+
+func registerInboxRoute(mux *http.ServeMux, inbox inboxReceiver, record func(RouteClassification)) {
+	if record != nil {
+		pattern := core.InboxPathPrefix + "{inboxId}"
+		record(RouteClassification{Pattern: pattern, Method: http.MethodPost, Owner: "inbox-token-or-daynight-delivery", Profile: "inbox-token-or-daynight-delivery"})
+		record(RouteClassification{Pattern: pattern, Method: "*", Owner: "method-fallback", Profile: "public-fallback"})
+	}
 	r := &inboxRoute{inbox: inbox, quiet: slog.New(slog.DiscardHandler), limiter: newInboxLimiter(time.Now)}
 	mux.HandleFunc(core.InboxPathPrefix+"{inboxId}", r.serve)
 }

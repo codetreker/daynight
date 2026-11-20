@@ -39,17 +39,26 @@ type appHandler struct {
 // RegisterAppRoutes installs the independent App adapter. origin is the trusted
 // configured public origin, never an incoming Host header.
 func RegisterAppRoutes(mux *http.ServeMux, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
+	registerAppRoutes(NewRouteRegistry(mux, nil), ops, auth, origin, logger, config...)
+}
+
+// RegisterAppRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterAppRoutesWithRegistry(routes *RouteRegistry, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
+	registerAppRoutes(routes, ops, auth, origin, logger, config...)
+}
+
+func registerAppRoutes(routes *RouteRegistry, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
 	h := &appHandler{operations: ops, origin: origin, logger: logger}
-	mux.HandleFunc("GET /api/v1/github/apps", auth.Require(h.list))
-	mux.HandleFunc("POST /api/v1/github/apps", auth.Require(h.create))
-	mux.HandleFunc("GET /api/v1/github/apps/{id}", auth.Require(h.get))
-	mux.HandleFunc("/api/v1/github/apps", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	routes.handle("GET /api/v1/github/apps", auth.Require(h.list), routeRead)
+	routes.handle("POST /api/v1/github/apps", auth.Require(h.create), routeReadManage)
+	routes.handle("GET /api/v1/github/apps/{id}", auth.Require(h.get), routeRead)
+	routes.handle("/api/v1/github/apps", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")), routeFallback)
 	allow := "GET, HEAD"
 	if len(config) > 0 {
-		registerAppConfigRoutes(mux, config[0], auth, origin, logger)
+		registerAppConfigRoutes(routes, config[0], auth, origin, logger)
 		allow += ", PATCH"
 	}
-	mux.HandleFunc("/api/v1/github/apps/{id}", auth.Require(httpx.ResourceMethodNotAllowed(logger, allow)))
+	routes.handle("/api/v1/github/apps/{id}", auth.Require(httpx.ResourceMethodNotAllowed(logger, allow)), routeFallback)
 }
 
 func (h *appHandler) response(v core.AppMetadata) api.GitHubApp {

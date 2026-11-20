@@ -22,6 +22,7 @@ type fixture struct {
 	store.GitHubReadDAO
 	trace                                                                  []string
 	accessErr, connectionErr, countsErr, listErr, detailErr, completionErr error
+	visibilityErr, repositoryVisibilityErr                                 error
 	page                                                                   store.GitHubPRPage
 	counts                                                                 store.GitHubPRCounts
 	query                                                                  store.GitHubPRQuery
@@ -57,6 +58,20 @@ func (f *fixture) Connection(ctx context.Context, id string) (githubpr.Connectio
 		panic("incorrect connection arguments")
 	}
 	return githubpr.Connection{ProjectID: id, Revision: 7}, f.connectionErr
+}
+func (f *fixture) RequireRepositoryVisible(ctx context.Context, id string, repositoryID int64) error {
+	f.trace = append(f.trace, "repository-visibility")
+	if ctx != f.wantCtx || id != projectID || repositoryID != 123 {
+		panic("incorrect repository visibility arguments")
+	}
+	return f.repositoryVisibilityErr
+}
+func (f *fixture) RequirePullRequestVisible(ctx context.Context, id string, n int64, repositoryID *int64) error {
+	f.trace = append(f.trace, "pr-visibility")
+	if ctx != f.wantCtx || id != projectID || n != 42 {
+		panic("incorrect visibility arguments")
+	}
+	return f.visibilityErr
 }
 func (f *fixture) PullRequest(ctx context.Context, id string, n int64, repositoryID *int64) (githubpr.PullRequest, error) {
 	f.detailRepositoryID = repositoryID

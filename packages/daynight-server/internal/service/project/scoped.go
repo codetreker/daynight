@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -35,26 +36,26 @@ func (s *ScopedProjects) visible(ctx context.Context, a model.CredentialAuthoriz
 			return err
 		}
 	}
-	return a.Require(ops...)
+	return scopeadmission.Require(a, ops...)
 }
 func (s *ScopedProjects) Create(ctx context.Context, a model.CredentialAuthorization, input core.CreateProject) (model.Project, error) {
 	project, _, err := s.CreateWithAccess(ctx, a, input)
 	return project, err
 }
 func (s *ScopedProjects) CreateWithAccess(ctx context.Context, a model.CredentialAuthorization, input core.CreateProject) (model.Project, model.ProjectAccess, error) {
-	if err := a.Require(scopepolicy.ProjectWrite, scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectWrite, scopepolicy.ProjectRead); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
 	return s.app.CreateWithAccess(ctx, a.Principal, input)
 }
 func (s *ScopedProjects) RegisterRepository(ctx context.Context, a model.CredentialAuthorization, input core.CreateProject, confirm bool) (model.Project, bool, error) {
-	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return model.Project{}, false, err
 	}
-	return s.app.registerRepository(ctx, a.Principal, input, confirm, func() error { return a.Require(scopepolicy.ProjectWrite) })
+	return s.app.registerRepository(ctx, a.Principal, input, confirm, func() error { return scopeadmission.Require(a, scopepolicy.ProjectWrite) })
 }
 func (s *ScopedProjects) ResolveRepository(ctx context.Context, a model.CredentialAuthorization, address string) (model.Project, error) {
-	if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return model.Project{}, err
 	}
 	return s.app.ResolveRepository(ctx, a.Principal, address)
@@ -91,12 +92,12 @@ func (s *ScopedProjects) ListScoped(ctx context.Context, a model.CredentialAutho
 				}
 				return err
 			}
-			return a.Require(scopepolicy.ProjectRead, scopepolicy.TeamRead)
+			return scopeadmission.Require(a, scopepolicy.ProjectRead, scopepolicy.TeamRead)
 		})
 		if err != nil {
 			return core.ProjectPage{}, err
 		}
-	} else if err := a.Require(scopepolicy.ProjectRead); err != nil {
+	} else if err := scopeadmission.Require(a, scopepolicy.ProjectRead); err != nil {
 		return core.ProjectPage{}, err
 	}
 	return s.app.ListScoped(ctx, a.Principal, request)
@@ -140,7 +141,7 @@ func (s *ScopedProjects) TransferPreviewWithName(ctx context.Context, a model.Cr
 		if err := ownerAdmin(access); err != nil {
 			return err
 		}
-		if err := a.Require(scopepolicy.ProjectTransfer); err != nil {
+		if err := scopeadmission.Require(a, scopepolicy.ProjectTransfer); err != nil {
 			return err
 		}
 		out, err = core.TransferPreviewFor(ctx, dao, a.Principal, id, target)
@@ -205,7 +206,7 @@ func currentAuthorization(expected model.CredentialAuthorization, current model.
 	if current.Principal != expected.Principal || current.Profile != expected.Profile {
 		return model.Unauthenticated(errors.New("credential authorization identity changed"))
 	}
-	return current.Require(ops...)
+	return scopeadmission.Require(current, ops...)
 }
 
 type ScopedMemberships struct {
@@ -220,7 +221,7 @@ func (s *ScopedMemberships) visible(ctx context.Context, a model.CredentialAutho
 	if err := a.Validate(); err != nil {
 		return err
 	}
-	return s.memberships.read(ctx, a.Principal, id, admin, func(store.ProjectReader, model.ProjectAccess) error { return a.Require(ops...) })
+	return s.memberships.read(ctx, a.Principal, id, admin, func(store.ProjectReader, model.ProjectAccess) error { return scopeadmission.Require(a, ops...) })
 }
 func (s *ScopedMemberships) List(ctx context.Context, a model.CredentialAuthorization, id string) ([]model.ProjectParticipant, error) {
 	out, err := s.ListWithAccess(ctx, a, id)
@@ -295,7 +296,7 @@ func (s *ScopedMemberships) InspectInvitation(ctx context.Context, a model.Crede
 	}
 	var result core.InvitationInspection
 	err := s.memberships.inspect(ctx, a.Principal, secret, func(dao store.ProjectReader, invitation model.ProjectInvitation) error {
-		if err := a.Require(scopepolicy.ProjectInvitationRead, scopepolicy.ProjectRead); err != nil {
+		if err := scopeadmission.Require(a, scopepolicy.ProjectInvitationRead, scopepolicy.ProjectRead); err != nil {
 			return err
 		}
 		var err error
@@ -321,7 +322,7 @@ func (s *ScopedMemberships) InspectInvitationBasic(ctx context.Context, a model.
 	}
 	var result InvitationIdentity
 	err := s.memberships.inspect(ctx, a.Principal, secret, func(dao store.ProjectReader, invitation model.ProjectInvitation) error {
-		if err := a.Require(scopepolicy.ProjectInvitationRead); err != nil {
+		if err := scopeadmission.Require(a, scopepolicy.ProjectInvitationRead); err != nil {
 			return err
 		}
 		value, err := dao.Project(ctx, invitation.ProjectID)
@@ -370,7 +371,7 @@ func (s *ScopedMemberships) admitInvitationAcceptance(ctx context.Context, a mod
 	if err := core.ValidateMemberActor(a.Principal, expected); err != nil {
 		return err
 	}
-	return s.memberships.inspect(ctx, a.Principal, secret, func(store.ProjectReader, model.ProjectInvitation) error { return a.Require(ops...) })
+	return s.memberships.inspect(ctx, a.Principal, secret, func(store.ProjectReader, model.ProjectInvitation) error { return scopeadmission.Require(a, ops...) })
 }
 
 type ScopedDirectMembers struct {

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -68,10 +69,24 @@ func ValidateRevokeGrant(p model.Principal, appID, id string, in RevokeGrantInpu
 	}
 	return nil
 }
-func grantFacts(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, version int64) (store.GitHubGrantFacts, error) {
-	f, err := dao.Facts(ctx, p.UserID)
-	if err != nil {
-		return f, err
+func grantFacts(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, version int64, scoped bool) (store.GitHubGrantFacts, error) {
+	var f store.GitHubGrantFacts
+	var err error
+	if scoped {
+		reader, ok := dao.(store.GitHubGrantWriteAdmissionDAO)
+		if !ok {
+			return f, fmt.Errorf("GitHub grant transaction cannot check admission facts")
+		}
+		facts, e := reader.GrantWriteAdmission(ctx, p.UserID)
+		if e != nil {
+			return f, e
+		}
+		f = store.GitHubGrantFacts{Team: store.GitHubGrantTeam{TeamRef: model.TeamRef{ID: facts.TeamID}, Version: facts.TeamVersion}, AppVersion: facts.AppVersion, ImpactVersion: facts.ImpactVersion, IsAdmin: facts.IsAdmin}
+	} else {
+		f, err = dao.Facts(ctx, p.UserID)
+		if err != nil {
+			return f, err
+		}
 	}
 	if !f.IsAdmin {
 		return f, &model.Fault{Code: "not_found", Message: "App was not found."}
@@ -82,10 +97,14 @@ func grantFacts(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Prin
 	return f, nil
 }
 func CreateGrant(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, in CreateGrantInput) (store.GitHubTeamGrant, error) {
+	return CreateGrantWithAdmission(ctx, dao, p, in, nil)
+}
+
+func CreateGrantWithAdmission(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, in CreateGrantInput, admit func() error) (store.GitHubTeamGrant, error) {
 	if err := team.RequireActor(p, in.ExpectedUserID); err != nil {
 		return store.GitHubTeamGrant{}, err
 	}
-	f, err := grantFacts(ctx, dao, p, in.Version)
+	f, err := grantFacts(ctx, dao, p, in.Version, admit != nil)
 	if err != nil {
 		return store.GitHubTeamGrant{}, err
 	}
@@ -94,6 +113,15 @@ func CreateGrant(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Pri
 	}
 	if f.ImpactVersion == math.MaxInt64 {
 		return store.GitHubTeamGrant{}, &model.Fault{Code: "version_exhausted", Message: "App impact version is exhausted."}
+	}
+	if admit != nil {
+		if err := admit(); err != nil {
+			return store.GitHubTeamGrant{}, err
+		}
+		// Preserve validation of the full Team projection after authorization.
+		if _, err := dao.Facts(ctx, p.UserID); err != nil {
+			return store.GitHubTeamGrant{}, err
+		}
 	}
 	existing, err := dao.LiveGrant(ctx)
 	if err != nil {
@@ -115,10 +143,14 @@ func CreateGrant(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Pri
 	return g, nil
 }
 func RevokeGrant(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, id string, in RevokeGrantInput) error {
+	return RevokeGrantWithAdmission(ctx, dao, p, id, in, nil)
+}
+
+func RevokeGrantWithAdmission(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Principal, id string, in RevokeGrantInput, admit func() error) error {
 	if err := team.RequireActor(p, in.ExpectedUserID); err != nil {
 		return err
 	}
-	f, err := grantFacts(ctx, dao, p, in.Version)
+	f, err := grantFacts(ctx, dao, p, in.Version, admit != nil)
 	if err != nil {
 		return err
 	}
@@ -128,11 +160,29 @@ func RevokeGrant(ctx context.Context, dao store.GitHubGrantWriteDAO, p model.Pri
 	if f.ImpactVersion == math.MaxInt64 {
 		return &model.Fault{Code: "version_exhausted", Message: "App impact version is exhausted."}
 	}
-	if _, err = dao.Grant(ctx, id); err != nil {
+	if admit != nil {
+		reader := dao.(store.GitHubGrantWriteAdmissionDAO) // grantFacts already established this capability.
+		err = reader.RequireLiveGrant(ctx, id)
+	} else {
+		_, err = dao.Grant(ctx, id)
+	}
+	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
 			return &model.Fault{Code: "github_grant_changed", Message: "Grant changed.", Cause: err}
 		}
 		return err
+	}
+	if admit != nil {
+		if err := admit(); err != nil {
+			return err
+		}
+		// Keep the full existing Team and grant validation after admission.
+		if _, err := dao.Facts(ctx, p.UserID); err != nil {
+			return err
+		}
+		if _, err := dao.Grant(ctx, id); err != nil {
+			return err
+		}
 	}
 	if err = dao.StopGrantConnections(ctx, id, DisconnectionDecision()); err != nil {
 		return err
@@ -154,27 +204,65 @@ func grantReadError(err error) error {
 	}
 	return err
 }
+func grantReadAdmission(ctx context.Context, dao store.GitHubGrantReadDAO, admit func() error, appID, actor, teamID, grantID string, teamOnly bool) error {
+	if admit == nil {
+		return nil
+	}
+	visibility, ok := dao.(store.GitHubGrantVisibilityDAO)
+	if !ok {
+		return fmt.Errorf("GitHub grant snapshot cannot check visibility")
+	}
+	if err := visibility.GrantVisibility(ctx, appID, actor, teamID, grantID, teamOnly); err != nil {
+		return grantReadError(err)
+	}
+	return admit()
+}
+
 func PreviewGrant(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID, teamID string) (store.GitHubGrantPreview, error) {
+	return PreviewGrantWithAdmission(ctx, dao, p, appID, teamID, nil)
+}
+
+func PreviewGrantWithAdmission(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID, teamID string, admit func() error) (store.GitHubGrantPreview, error) {
 	if err := ValidateAppRead(p, appID); err != nil {
 		return store.GitHubGrantPreview{}, err
 	}
 	if err := grantID(teamID); err != nil {
 		return store.GitHubGrantPreview{}, err
 	}
+	if err := grantReadAdmission(ctx, dao, admit, appID, p.UserID, teamID, "", false); err != nil {
+		return store.GitHubGrantPreview{}, err
+	}
 	result, err := dao.Preview(ctx, appID, p.UserID, teamID)
-	return result, grantReadError(err)
+	if err != nil {
+		return store.GitHubGrantPreview{}, grantReadError(err)
+	}
+	return result, nil
 }
 func GetGrant(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID, id string) (store.GitHubTeamGrant, error) {
+	return GetGrantWithAdmission(ctx, dao, p, appID, id, nil)
+}
+
+func GetGrantWithAdmission(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID, id string, admit func() error) (store.GitHubTeamGrant, error) {
 	if err := ValidateAppRead(p, appID); err != nil {
 		return store.GitHubTeamGrant{}, err
 	}
 	if err := grantID(id); err != nil {
 		return store.GitHubTeamGrant{}, err
 	}
+	if err := grantReadAdmission(ctx, dao, admit, appID, p.UserID, "", id, false); err != nil {
+		return store.GitHubTeamGrant{}, err
+	}
 	result, err := dao.Grant(ctx, appID, p.UserID, id)
-	return result, grantReadError(err)
+	if err != nil {
+		return store.GitHubTeamGrant{}, grantReadError(err)
+	}
+	return result, nil
 }
 func ListGrants(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID string, request model.PageRequest) (GrantPage, error) {
+	return ListGrantsWithAdmission(ctx, dao, p, appID, request, nil)
+}
+
+func ListGrantsWithAdmission(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, appID string, request model.PageRequest, admit func() error) (GrantPage, error) {
 	if err := ValidateAppRead(p, appID); err != nil {
 		return GrantPage{}, grantReadError(err)
 	}
@@ -189,6 +277,9 @@ func ListGrants(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Princ
 	var after *string
 	if page.After != nil {
 		after = &page.After.ID
+	}
+	if err := grantReadAdmission(ctx, dao, admit, appID, p.UserID, "", "", false); err != nil {
+		return GrantPage{}, err
 	}
 	result, err := dao.Grants(ctx, appID, p.UserID, after, page.Limit)
 	if err != nil {
@@ -209,6 +300,10 @@ func ListGrants(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Princ
 	return out, nil
 }
 func ListTeamApps(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, teamID string, request model.PageRequest) (TeamAppPage, error) {
+	return ListTeamAppsWithAdmission(ctx, dao, p, teamID, request, nil)
+}
+
+func ListTeamAppsWithAdmission(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Principal, teamID string, request model.PageRequest, admit func() error) (TeamAppPage, error) {
 	if err := model.RequirePrincipal(p); err != nil {
 		return TeamAppPage{}, grantReadError(err)
 	}
@@ -226,6 +321,9 @@ func ListTeamApps(ctx context.Context, dao store.GitHubGrantReadDAO, p model.Pri
 	var after *string
 	if page.After != nil {
 		after = &page.After.ID
+	}
+	if err := grantReadAdmission(ctx, dao, admit, "", p.UserID, teamID, "", true); err != nil {
+		return TeamAppPage{}, err
 	}
 	result, err := dao.TeamApps(ctx, teamID, p.UserID, after, page.Limit)
 	if err != nil {

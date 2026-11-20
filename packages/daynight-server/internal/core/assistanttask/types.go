@@ -5,11 +5,15 @@ import (
 	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
 type Actor struct {
 	Principal model.Principal
 	BotID     *string
+	// Authorization is supplied by the scoped assembly; nil retains the existing profile.
+	Authorization *model.CredentialAuthorization
+	operations    []scopepolicy.Operation
 }
 type TaskResult struct {
 	Task  model.AssistantTask

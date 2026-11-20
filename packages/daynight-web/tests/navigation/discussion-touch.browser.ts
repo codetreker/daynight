@@ -102,8 +102,18 @@ for (const type of ['task', 'goal'] as const) for (const surface of ['modal', 'f
   await page.setViewportSize({ width: 320, height: 844 }); const state = await install(page, locale, type);
   await open(page, type, surface, locale);
   const article = page.locator('.thread-message').first(), buttons = article.locator('.thread-message-actions button'), input = page.locator('.thread-composer textarea');
+  for (const root of [12, 16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(page.locator('.task-detail-title')).toHaveCSS('font-size', `${root * 1.375}px`);
+    await expect(article.locator('.thread-author')).toHaveCSS('font-size', `${root * 0.875}px`);
+    await expect(article.locator('.thread-message-time')).toHaveCSS('font-size', `${root * 0.75}px`);
+    await expect(article.locator('.markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
+    await expect(input).toHaveCSS('font-size', `${root}px`);
+  }
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await geometry(article, true); await input.fill('Existing draft');
   await buttons.first().click(); await expect(input).toBeFocused(); await expect(input).toHaveValue('Existing draft');
+  await expect(page.locator('.thread-reply-preview p')).toHaveCSS('font-size', '16px');
   await article.locator('.thread-message-time').focus(); await page.keyboard.press('Tab'); await expect(buttons.first()).toBeFocused();
   await page.keyboard.press('Enter'); await expect(input).toBeFocused(); await expect(input).toHaveValue('Existing draft');
   await buttons.first().focus(); await page.keyboard.press('Tab'); await expect(buttons.last()).toBeFocused(); await page.keyboard.press('Enter');

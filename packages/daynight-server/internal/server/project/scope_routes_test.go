@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 )
 
@@ -27,7 +28,7 @@ type scopedTestProjects struct {
 
 func (s *scopedTestProjects) ListScoped(_ context.Context, a model.CredentialAuthorization, _ coreproject.ProjectListRequest) (coreproject.ProjectPage, error) {
 	s.calls++
-	return coreproject.ProjectPage{}, a.Require(scopepolicy.ProjectRead)
+	return coreproject.ProjectPage{}, scopeadmission.Require(a, scopepolicy.ProjectRead)
 }
 
 type scopedTestMemberships struct{ scopedMemberships }

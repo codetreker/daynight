@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopeadmission"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -23,7 +24,7 @@ func (s *combinedTagFixture) List(ctx context.Context, a model.CredentialAuthori
 		s.t.Fatalf("unexpected context, project or principal: %+v %q %v", a.Principal, project, ctx.Err())
 	}
 	s.calls++
-	if err := a.Require(scopepolicy.TagRead); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.TagRead); err != nil {
 		return tagservice.Page{}, err
 	}
 	return tagservice.Page{Items: []tagservice.Item{tagTestItem("combined")}}, nil
@@ -31,7 +32,7 @@ func (s *combinedTagFixture) List(ctx context.Context, a model.CredentialAuthori
 
 func (s *combinedTagFixture) Create(_ context.Context, a model.CredentialAuthorization, project, name string, _ *string) (tagservice.WriteResult, error) {
 	s.calls++
-	if err := a.Require(scopepolicy.TagWrite); err != nil {
+	if err := scopeadmission.Require(a, scopepolicy.TagWrite); err != nil {
 		return tagservice.WriteResult{Outcome: store.TransactionNotCommitted}, err
 	}
 	return tagTestWrite(tagTestItem(name)), nil

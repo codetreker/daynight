@@ -31,16 +31,25 @@ type projectAppHandler struct {
 
 // RegisterProjectAppRoutes installs the App-aware project connection adapter.
 func RegisterProjectAppRoutes(mux *http.ServeMux, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerProjectAppRoutes(NewRouteRegistry(mux, nil), ops, auth, logger)
+}
+
+// RegisterProjectAppRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterProjectAppRoutesWithRegistry(routes *RouteRegistry, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerProjectAppRoutes(routes, ops, auth, logger)
+}
+
+func registerProjectAppRoutes(routes *RouteRegistry, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &projectAppHandler{operations: ops, logger: logger}
 	base := "/api/v1/projects/{projectId}/github"
-	mux.HandleFunc("GET "+base, auth.Require(h.status))
-	mux.HandleFunc("GET "+base+"/installation", auth.Require(h.discover))
-	mux.HandleFunc("POST "+base+"/connect", auth.Require(h.connect))
-	mux.HandleFunc("POST "+base+"/disconnect", auth.Require(h.disconnect))
-	mux.HandleFunc("PATCH "+base+"/settings", auth.Require(h.settings))
-	mux.HandleFunc("PATCH "+base+"/sync", auth.Require(h.sync))
+	routes.handle("GET "+base, auth.Require(h.status), routeRead)
+	routes.handle("GET "+base+"/installation", auth.Require(h.discover), routeRead)
+	routes.handle("POST "+base+"/connect", auth.Require(h.connect), routeReadManage)
+	routes.handle("POST "+base+"/disconnect", auth.Require(h.disconnect), routeReadManage)
+	routes.handle("PATCH "+base+"/settings", auth.Require(h.settings), routeReadManage)
+	routes.handle("PATCH "+base+"/sync", auth.Require(h.sync), routeReadManage)
 	for _, route := range []struct{ path, allow string }{{"", "GET, HEAD"}, {"/installation", "GET, HEAD"}, {"/connect", "POST"}, {"/disconnect", "POST"}, {"/settings", "PATCH"}, {"/sync", "PATCH"}} {
-		mux.HandleFunc(base+route.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, route.allow)))
+		routes.handle(base+route.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, route.allow)), routeFallback)
 	}
 }
 
