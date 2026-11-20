@@ -24,7 +24,7 @@ Posting does not advance reading. If A was last consumed, unseen B then local po
 
 Retain the complete intended body and reply/claim identity before sending. Posting requires current credentials, write access and a live parent. Body is nonempty UTF-8 without NUL. The entire encoded message, including attribution, must fit 64 KiB; otherwise `payload_too_large` is returned.
 
-A confirmed receipt contains the assigned message and ID. Posting changes no Task status, version, timestamps, properties or dependencies, and triggers no Agent or execution. Discussion of a future upload establishes neither file presence nor consumption.
+A confirmed receipt contains the assigned message and ID. With scoped credential admission enabled, a credential lacking `thread:read` receives only `projectId`, `taskId` and `messageId`; retain that ID as the confirmed receipt. Reading requires `thread:read` and posting requires `thread:post`. Posting changes no Task status, version, timestamps, properties or dependencies, and triggers no Agent or execution. Discussion of a future upload establishes neither file presence nor consumption.
 
 ## Recover uncertain posts
 

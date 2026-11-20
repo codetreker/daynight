@@ -306,3 +306,26 @@ Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
 附件准入与完整上传回执的取舍见[附件决策](../../.agents/notes/implemented/architecture/2026-11-20-attachment-scope-admission.md)。
+
+## Steps 与讨论准入
+
+Steps 读取使用 `step:read`。既有 REST 写响应包含完整 Steps 集合，MCP 写响应
+也包含已有数据，因此写入需要 `step:write` 与 `step:read`。权限检查在原项目
+访问及写入角色检查后、读取 Steps 内容或修改之前执行；版本、排序、容量和
+事务完成语义保持原有规则。项目资源检查不隐含 `task:read` 或 `project:read`。
+
+讨论读取使用 `thread:read`，发帖和回复使用 `thread:post`。REST 原响应包含
+既有作者资料，因此还需要 `thread:read`；指定 `Daynight-Return: receipt-v1`
+时仅返回项目、任务和新消息 ID，并回显 header。MCP 按事务中的当前策略选择
+原消息响应或最小回执。项目访问、有效凭据和指定 claim 的真实执行归属仍分别
+检查。发帖在原 Thread 事务中读取当前策略，OAuth 按 grant、access 顺序锁定，
+与 grant 编辑保持互斥；读取使用原快照中的当前策略。失败继续区分确定未提交
+和提交结果未知。
+
+REST 的 Steps 集合及单项 GET（包括自动 HEAD）对应读取，集合 POST、单项
+PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执行业务。
+讨论 messages GET（包括自动 HEAD）对应读取，POST 对应发帖。MCP 的
+`task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
+`task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
+`task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
+复用原解析与资源检查，原产品装配保持不变。
