@@ -81,3 +81,48 @@ func TestWebhookWriteReadsPolicyAfterCredentialLock(t *testing.T) {
 		t.Fatal("write did not finish")
 	}
 }
+
+func TestWebhookSnapshotRejectsMissingAndMalformedCredentialPolicies(t *testing.T) {
+	db := isolatedStore(t)
+	ctx := t.Context()
+	user, token, session := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	mustQueryExec(t, db, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, user, uuid.NewString())
+	mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,business_scopes,scope_version) VALUES($1,$2,decode(repeat('42',32),'hex'),'scope',now(),ARRAY['webhook:read'],1)`, token, user)
+	mustQueryExec(t, db, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,decode(repeat('43',32),'hex'),now(),now()+interval '1 hour')`, session, user)
+	pat := model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: token}
+	browser := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
+	read := func(p model.Principal, profile model.CredentialPolicyProfile) (model.CredentialAuthorization, error) {
+		var auth model.CredentialAuthorization
+		err := db.ReadWebhookSnapshot(ctx, func(sc store.WebhookReadScope) error {
+			var e error
+			auth, e = sc.(webhookAuthorizationReader).CurrentWebhookAuthorization(ctx, p, profile)
+			return e
+		})
+		return auth, err
+	}
+	got, err := read(browser, model.SessionProfile)
+	if err != nil || got.Principal != browser || got.Policy != nil {
+		t.Fatalf("session authorization=%+v err=%v", got, err)
+	}
+	missing := browser
+	missing.CredentialID = uuid.NewString()
+	if _, err = read(missing, model.SessionProfile); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing session: %v", err)
+	}
+	if _, err = read(browser, model.OAuthAPIProfile); err == nil {
+		t.Fatal("mismatched profile accepted")
+	}
+	missing = pat
+	missing.CredentialID = uuid.NewString()
+	if _, err = read(missing, model.ScopedPATProfile); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing PAT: %v", err)
+	}
+	mustQueryExec(t, db, `UPDATE personal_access_tokens SET scope_version=NULL WHERE id=$1`, token)
+	if _, err = read(pat, model.ScopedPATProfile); err == nil {
+		t.Fatal("missing scope version accepted")
+	}
+	mustQueryExec(t, db, `UPDATE personal_access_tokens SET business_scopes=ARRAY['unknown'],scope_version=1 WHERE id=$1`, token)
+	if _, err = read(pat, model.ScopedPATProfile); err == nil {
+		t.Fatal("unknown scope accepted")
+	}
+}
