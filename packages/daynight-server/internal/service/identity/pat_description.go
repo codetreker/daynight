@@ -35,6 +35,9 @@ func (s *Identity) ListPATsV2(ctx context.Context, p model.Principal) ([]model.P
 }
 
 func (s *Identity) CreatePATV2(ctx context.Context, p model.Principal, expectedUserID string, input core.CreatePAT, description *string) (core.MintedPAT, error) {
+	if s.deviceCatalog != nil {
+		return core.MintedPAT{}, &model.Fault{Code: "invalid_input", Message: "Select scopes before creating a token."}
+	}
 	var result core.MintedPAT
 	err := s.strict(ctx, func(scope store.IdentityScope) error {
 		dao, management, err := patManagement(scope)

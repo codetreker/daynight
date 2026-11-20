@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
@@ -262,13 +263,16 @@ func (s *Identity) CreatePAT(ctx context.Context, dao store.IdentityDAO, p model
 	return s.createPAT(ctx, dao, p, input, nil, now)
 }
 func (s *Identity) createPAT(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, description *string, now time.Time) (MintedPAT, error) {
+	return s.createPATWithPolicy(ctx, dao, p, input, description, nil, now)
+}
+func (s *Identity) createPATWithPolicy(ctx context.Context, dao store.IdentityDAO, p model.Principal, input CreatePAT, description *string, policy *scopepolicy.Policy, now time.Time) (MintedPAT, error) {
 	now = now.Truncate(time.Microsecond)
 	expiry, err := ValidateCreatePAT(p, input, now)
 	if err != nil {
 		return MintedPAT{}, err
 	}
 	result := MintedPAT{Secret: secret.Random("dnpat_")}
-	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry, Description: description}
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, Name: input.Name, TokenHash: secret.Hash(result.Secret), CreatedAt: now, ExpiresAt: expiry, Description: description, ScopePolicy: policy}
 	if err = s.StorePAT(ctx, dao, p, result.Credential); err != nil {
 		return MintedPAT{}, err
 	}
