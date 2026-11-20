@@ -45,7 +45,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
         return <div className="field configuration-tool-field" key={tool} data-tool={tool}>
           <label htmlFor={id}>{names[tool]}</label>
           <div className="configuration-tool-input">
-            <input id={id} type="text" spellCheck={false} autoComplete="off" value={choice?.kind === 'path' ? choice.path : ''}
+            <input data-touch-text="responsive" id={id} type="text" spellCheck={false} autoComplete="off" value={choice?.kind === 'path' ? choice.path : ''}
               placeholder={choice === null ? m.awaitingImport : m.auto} disabled={disabled || unavailable !== null}
               aria-invalid={error !== undefined} aria-describedby={description}
               onChange={event => onChange(tool, { kind: 'path', path: event.target.value })} />
