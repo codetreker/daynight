@@ -53,10 +53,6 @@ func (s selectedObservationSources) TaskSessionSources(_ context.Context, _ stri
 	}
 	return values, nil
 }
-func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []model.Task) (store.SnapshotScope, error) {
-	return loadSelectedExecutionSources(ctx, snapshot, projectID, taskExecutionIdentities(tasks))
-}
-
 func loadSelectedExecutionSources(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []executionIdentity) (store.SnapshotScope, error) {
 	return loadSelectedExecutionSourcesWithPolicy(ctx, snapshot, projectID, tasks, false)
 }

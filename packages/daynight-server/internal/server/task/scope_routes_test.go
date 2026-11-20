@@ -226,3 +226,81 @@ func TestScopedTaskSearchRoutesForwardAuthorizationAndFailure(t *testing.T) {
 		t.Fatalf("search response %d %s calls=%d", w.Code, w.Body, calls)
 	}
 }
+
+func TestScopedReadRouteRegistrationAndAuthenticationBoundaries(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tasks, observations, sync := &taskservice.Tasks{}, &taskservice.Observations{}, &taskservice.TaskSync{}
+	if err := taskhttp.ScopedReadRoutes(nil, tasks, observations, sync, readRouteAuth{}, logger, time.Second); err == nil {
+		t.Fatal("missing mux accepted")
+	}
+	mux := http.NewServeMux()
+	if err := taskhttp.ScopedReadRoutes(mux, tasks, observations, sync, readRouteAuth{}, logger, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	w := scopedRouteResponse(t, mux, "/tasks", "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid authorization: %d %s", w.Code, w.Body)
+	}
+	for _, scopes := range [][]scopepolicy.ScopeID{{"project:read"}, {"task:read"}} {
+		h := scopedReadFixture(t, scopes...)
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/task-properties/schema", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		want := http.StatusForbidden
+		if scopes[0] == "task:read" {
+			want = http.StatusOK
+		}
+		if w.Code != want {
+			t.Fatalf("schema %v: %d %s", scopes, w.Code, w.Body)
+		}
+	}
+	h := scopedReadFixture(t, "task:read")
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		r := httptest.NewRequest(method, "/api/v1/projects/"+testProjectID+"/tasks/not-an-id/goal-dependencies", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		want := http.StatusBadRequest
+		if method == http.MethodPost {
+			want = http.StatusMethodNotAllowed
+		}
+		if w.Code != want {
+			t.Fatalf("Goal query %s: %d %s", method, w.Code, w.Body)
+		}
+	}
+}
+
+func TestScopedSearchRouteRegistrationAndAuthenticationBoundaries(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	search := func(context.Context, model.CredentialAuthorization, string, tasksearch.Request) (tasksearch.Page, error) {
+		t.Fatal("rejected search was invoked")
+		return tasksearch.Page{}, nil
+	}
+	if err := taskhttp.ScopedTaskSearchRoutes(nil, search, readRouteAuth{}, logger); err == nil {
+		t.Fatal("missing search mux accepted")
+	}
+	for _, valid := range []bool{false, true} {
+		mux := http.NewServeMux()
+		a := model.CredentialAuthorization{}
+		if valid {
+			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a = model.CredentialAuthorization{Principal: testPrincipal(), Profile: model.ScopedPATProfile, Policy: &policy}
+		}
+		if err := taskhttp.ScopedTaskSearchRoutes(mux, search, readRouteAuth{a}, logger); err != nil {
+			t.Fatal(err)
+		}
+		method := http.MethodPost
+		want := http.StatusUnauthorized
+		if valid {
+			method, want = http.MethodGet, http.StatusMethodNotAllowed
+		}
+		r := httptest.NewRequest(method, "/api/v1/projects/"+testProjectID+"/tasks/search", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Fatalf("search auth/fallback valid=%v: %d %s", valid, w.Code, w.Body)
+		}
+	}
+}
