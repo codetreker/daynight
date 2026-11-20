@@ -157,6 +157,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   await page.getByRole('button', { name: 'Refresh' }).click();
   const worker = page.locator('.task-row-machine');
   await expect(worker).toBeVisible();
+  await expect(worker).toHaveCSS('font-size', '12px');
   await expect.poll(() => worker.textContent()).toBe(`Claim machine: ${replacement}`);
   const layout = await worker.evaluate(el => {
     const node = el.firstChild!;
@@ -172,16 +173,22 @@ test('refresh replaces and removes the current Worker even when Session observat
   expect(layout.overflow).toBe(false);
   expect(layout.tailRight).toBeLessThanOrEqual(320);
   expect(layout.tailLastTop).toBeGreaterThan(layout.tailFirstTop);
+  await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+  await expect(worker).toHaveCSS('font-size', '18px');
+  expect(await worker.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   await expect(page.getByText(`Claim machine: ${longWorker}`)).toHaveCount(0);
   current = { ...current, state: 'completed' };
   await page.getByRole('button', { name: 'Refresh' }).click();
   await expect(worker).toHaveText(`Recorded machine: ${replacement}`);
+  await expect(worker).toHaveCSS('font-size', '12px');
   await page.getByLabel('Language').selectOption('zh-CN');
   await expect(worker).toHaveText(`执行机器记录：${replacement}`);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   current = null;
   await page.getByRole('button', { name: '刷新' }).click();
   await expect(worker).toHaveText('暂无执行机器记录');
+  await expect(worker).toHaveCSS('font-size', '12px');
 });
 
 for (const width of [320, 390, 1280]) {

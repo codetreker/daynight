@@ -23,7 +23,7 @@ provide semantic sizes relative to the browser's default root font size. At a
 | Detail heading | `--text-detail-heading` | 22px | Detail titles |
 | Page heading | `--text-page-heading` | 28px | Page titles |
 
-The [ordinary Task row](spec/daynight-web.md#项目普通-task-行) uses metadata for its secondary status labels.
+The [ordinary Task row](spec/daynight-web.md#项目普通-task-行) uses metadata for its machine record and secondary status labels.
 
 Use a shared role or inherit it; do not override the variables locally or add
 numeric fallbacks. The browser controls the root size, and the body uses the
