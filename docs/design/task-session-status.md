@@ -1,6 +1,6 @@
 # 普通 Task 列表与项目汇总的 Session 状态
 
-项目独立 Task 行、任务链展开成员、Goal 展开成员和个人进行中列表的共享普通 Task 行显示各自当前 Session 观测。任务链头和 Goal 标题另显示成员的四态汇总，辅助定位需要响应或检查的会话。任务状态、暂停标记、标题入口及依赖关系保持各自语义；Session 状态不修改任务，不创建或启动 Session。依赖图卡片和助手会话不使用此列表观测。
+项目独立 Task 行、任务链展开成员、Goal 展开成员和个人进行中列表的共享普通 Task 行显示各自当前 Session 观测。任务链头和 Goal 标题另显示成员的四态汇总，辅助定位需要响应或检查的会话。普通 Task 行以统一主状态表达生命周期和当前 Session；真实任务状态、暂停标记、标题入口及依赖关系保持各自语义。Session 状态不修改任务，不创建或启动 Session。依赖图卡片和助手会话不使用此列表观测。
 
 ## 状态与入口
 
@@ -12,15 +12,17 @@
 
 ### 普通 Task 行
 
-进行中 Task 的观测区分 `no_session`（无当前执行）、`not_registered`、`pending`、`working`、`notice`、`warning`、`unavailable`、`unobserved` 或 `expired`。共享行根据自身 `allowAgents` 和观测决定文字：许可为 false 且观测为 `no_session` 时不显示无当前 Session 文字；许可为 true 时保留该文字。其它观测不受许可影响。共享状态组件只省略文字，不修改观测；若没有任务状态、其它文字或有效入口，则不渲染状态容器，以免留下布局间距。许可或观测变化随现有更新重新呈现，不增加请求或定时器。
+进行中 Task 的观测区分 `no_session`（无当前执行）、`not_registered`、`pending`、`working`、`notice`、`warning`、`unavailable`、`unobserved` 或 `expired`。共享行根据自身 `allowAgents` 和观测决定文字：许可为 false 且观测为 `no_session` 时不显示无当前 Session 文字；许可为 true 时保留该文字。其它观测不受许可影响。`TaskRowStatus` 只选择展示文案，不修改观测；没有可显示观测时使用真实生命周期文案，始终保留唯一主状态。许可或观测变化随现有更新重新呈现，不增加请求或定时器。
 
 缺项或尚未准入显示未观测；单项观测不可用及整体读取失败显示不可用，非 `unavailable` 的成功观测失效显示过期。三者均不是已确认无当前执行；completed Worker 及旧 Session 是历史记录，不提供当前入口。`needsAttention` 仅在真实、有效的事实支持时展示，并独立于无当前 Session 文字的省略。可读性与活动状态独立：有效且 `canOpen` 的 pending、暂缓 warning 或活动未知的 Session 仍提供入口；过期、观测失败或身份失效不能沿用旧入口。可用入口与行主体是独立控件，只导航该 Task 的 Session，不改变链或 Goal 展开状态。
 
-共享状态组件在本地化展示时将 `warning` 与 `needsAttention=true` 合为一个 Session 关注提示，按钮、纯文本和按钮可访问名称使用同一描述；独立 warning 与 `notice` 加关注保留各自含义。原始状态、关注属性及入口判定不变。
+`TaskRow` 将主状态位置交给 `TaskRowStatus`，不再并排输出 Session 和生命周期标签。非进行中只显示生命周期且不提供 Session 入口。进行中按 notice → 有效关注 → 具体观测 → 生命周期选择一句文案：notice 固定为“需要响应”／“Needs a response”；其余有效关注为“需要关注”／“Needs attention”，包括带关注的 warning；无关注 warning 为“需要检查”／“Needs checking”；其余使用“工作中”／“Working”、“待同步”／“Pending sync”、会话未注册、尚未观测、不可用、状态已过期或按许可规则展示的无当前会话。无具体观测时使用“进行中”／“In progress”。中英文均无固定 Session 前缀，不拼接关注后缀或生命周期。原始状态、关注属性及入口判定不变。
+
+进行中且 `canOpen` 并存在调用方入口时，整句为带下划线的原生按钮，悬停提示打开 Session；否则为纯文本。按钮可访问名称包含可见短语、任务标题、真实生命周期及打开动作，去除重复短语；纯文本补充未在可见短语表达的生命周期。活动或关注变化而入口仍有效时，保持同一按钮节点及焦点。入口撤回时切成纯文本，继续复用 `.session-status-action` 的行级焦点跟踪；仅原控件已消失且焦点落回 body 时，将焦点移到同一显示实例的可见标题。其他有效焦点不受影响。此展示边界不增加 API、存储、请求、后台工作或部署顺序。
 
 项目与个人列表各自的适配器提供同一显示归一化规则所需的观测事实。个人必填 `sessionRow` 与完整 Session 由同一次 Engine 采样生成，复用项目投影规则及服务端 Task 版本、执行来源和采样后 recheck；浏览器严格解析其精确版本和组合，不从完整 Session 缺少的归档／阅读事实或没有 claimId 的轻量 Worker 摘要猜测绑定；completed Worker 和无 active claim 均不能沿用历史 Session 入口。已确认注册、绑定和有效期但活动未知时可保持独立阅读入口，观测失败或绑定未知时不可打开。
 
-仅 warning 在真实启动后不足 120 秒时暂缓完整检查提示及关注后缀，独立且有效的 Session 入口保持可用；启动时间未知时立即展示，满 120 秒后只显示仍有效的观测。重新挂载、刷新和元数据编辑不重置起点。
+仅 warning 在真实启动后不足 120 秒时暂缓检查及关注提示，独立且有效的 Session 入口保持可用；启动时间未知时立即展示，满 120 秒后只显示仍有效的观测。重新挂载、刷新和元数据编辑不重置起点。
 
 ### 链与 Goal 汇总
 
@@ -68,7 +70,7 @@
 
 ## 视觉与可访问性
 
-Session 状态消费[共享语义配色](web-visual-tokens.md#任务状态与交互色)：working 使用 activity，notice 与 warning 使用 attention，明确失败反馈使用 error。观察协议不因配色改变。Task 生命周期、Session 活动和 runtime 在线健康分别显示，绿色在线连接点不能替代 working 注记。
+Session 状态消费[共享语义配色](web-visual-tokens.md#任务状态与交互色)：无有效关注的 working 使用 activity，notice、warning 或有效关注使用 attention，精确色值由共享配色文档拥有。观察协议保持不变，明确失败反馈仍由独立 error 角色表达。普通 Task 行的主状态统一呈现生命周期与 Session 活动，保留独立可访问的真实生命周期；runtime 在线健康仍独立，在线绿色连接点不能替代 working 注记。超时保留独立图标、说明及配色，不覆盖统一文案，因此有效工作观测在超时后仍显示“工作中”。图卡、详情与汇总保留各自的生命周期文字。
 
 链与 Goal 汇总的进行中状态保持无背景和边框的正文。汇总角标使用 Georgia 斜体，回退 Times New Roman/serif，字号 8.5px、行高 12px、字距 0.03em；没有背景、边框、图标或动画。固定状态区域预留右侧余量，绝对定位角标，显隐和词长变化不改变标题、状态坐标或行高。Goal 各生命周期状态的状态区域均定位角标；状态文字及背景仍由 Goal 自身决定。
 
@@ -78,4 +80,4 @@ Session 状态消费[共享语义配色](web-visual-tokens.md#任务状态与交
 
 API 所属测试覆盖必填四态 map、规范 UUID 与容量、非法输入、body→receipt→解码顺序，以及原非成功响应和关系 decoder。缓存与 store 所属测试覆盖同事务请求基线、snapshot/delta overlay、最终 scope fence、旧值与旧缺席、多标签页执行变化、30 秒精确边界、延迟发布、失败/auth pause 和恢复，并证明 Session-only 更新不写 Task 缓存或触发正文与普通通知。
 
-生产组件测试覆盖独立行、链、Goal 成员及个人行的等价完整状态与独立入口，双时钟、119999／120000ms 宽限、过期及绑定变化；汇总测试覆盖根任务、折叠与筛选隐藏的普通成员、外部前置排除和全部优先级，以及标题、子任务状态与链状态导航动作。少量顺序浏览器流程验证列表/Overview 无 current、现有 task-sync 更新状态、实际 Session 导航、角标几何和内容/草稿稳定；完整客户端与缓存故障矩阵保留在各自模块。性能对照记录同条件请求数、字节及服务端读取工作，不能从理论调度降幅推断生产 CPU 或带宽降幅。决策及替代方案由[列表状态接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存。
+生产组件测试覆盖独立行、链、Goal 成员及个人行的等价完整状态与独立入口，中英文 notice、warning 和关注组合各只显示一句、生命周期回退与可访问名称、有效入口同节点更新和撤回焦点恢复、超时叠加工作中及关注色对比，双时钟、119999／120000ms 宽限、过期及绑定变化；汇总测试覆盖根任务、折叠与筛选隐藏的普通成员、外部前置排除和全部优先级，以及标题、子任务状态与链状态导航动作。少量顺序浏览器流程验证列表/Overview 无 current、现有 task-sync 更新状态、实际 Session 导航、角标几何和内容/草稿稳定；完整客户端与缓存故障矩阵保留在各自模块。性能对照记录同条件请求数、字节及服务端读取工作，不能从理论调度降幅推断生产 CPU 或带宽降幅。决策及替代方案由[列表状态接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存。

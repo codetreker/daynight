@@ -14,9 +14,11 @@ an unknown or failed observation with confirmed absence.
 
 The shared Task row passes its own `allowAgents` value to the Session status
 presentation. When that value is false and the observation is `no_session`, the
-presentation omits the absence text; if no status, attention or entry remains it
-omits the container as well. Automatic Tasks retain the absence text. Attention
-and an independently admitted Session entry remain available, and other states
+presentation omits the absence text. The later
+[unified status decision](../simplification/2026-11-20-unified-task-row-status.md)
+uses the lifecycle phrase when no other observation text remains. Automatic Tasks
+retain the absence text. Attention and an independently admitted Session entry
+remain available, and other states
 retain their distinctions. The source observation and its admission are not
 changed. The [Session status design](../../../../docs/design/task-session-status.md)
 owns the display conditions.

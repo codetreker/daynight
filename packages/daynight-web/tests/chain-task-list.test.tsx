@@ -207,7 +207,8 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
     const rows = within(children()).getAllByRole('link').filter(link => link.classList.contains('task-row-title'));
     expect(rows.map((row) => row.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
-    expect(rows.map((row) => row.closest('.task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.closest('.task-row')!.querySelector('.task-row-primary-status')!.firstChild!.textContent)).toEqual(['会话尚未观测', '待处理', '已完成']);
+    expect(rows[0]!.closest('.task-row')!.querySelector('.task-row-status-lifecycle')).toHaveTextContent('进行中');
     expect(rows.map((row) => row.closest('.task-row')!.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
     expect(rows[1]!.closest('.task-row')).toHaveTextContent('未就绪');
