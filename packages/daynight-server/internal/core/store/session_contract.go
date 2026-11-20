@@ -23,6 +23,14 @@ type SessionScope interface {
 	BotDAO() BotWriteDAO
 }
 
+// SessionCredentialScope provides credential policy reads in the Session
+// transaction. Locks held by these DAOs last through the Session write.
+type SessionCredentialScope interface {
+	SessionPATScopeDAO() PATScopeDAO
+	SessionPATManagementDAO() PATManagementDAO
+	SessionOAuthScopeDAO() OAuthScopeDAO
+}
+
 // SessionRecord contains only durable ledger state; transient content remains
 // owned by the Session engine.
 type SessionRecord struct {
@@ -138,6 +146,7 @@ type SessionDAO interface {
 	LockBotSessionStop(context.Context, string, string, string) (BotSessionStop, error)
 	DeleteBotSession(context.Context, string, string) error
 	RedactDeletedBot(context.Context, string) error
+	SessionOperationExists(context.Context, string, string) (bool, error)
 	SessionOperation(context.Context, string, string) (SessionOperation, error)
 	InsertSessionOperation(context.Context, SessionOperation) error
 	SetSessionOperationReceipt(context.Context, sp.Operation) error

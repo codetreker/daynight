@@ -319,6 +319,7 @@ func testSessionDAOClosedTransactionDoesNotReportSuccess(t *testing.T, db *postg
 		"bot stop proof":         func() error { _, e := dao.LockBotSessionStop(ctx, id, other, id); return e },
 		"bot cleanup":            func() error { return dao.DeleteBotSession(ctx, id, other) },
 		"bot redact":             func() error { return dao.RedactDeletedBot(ctx, id) },
+		"operation exists":       func() error { _, e := dao.SessionOperationExists(ctx, id, other); return e },
 		"operation read":         func() error { _, e := dao.SessionOperation(ctx, id, other); return e },
 		"operation insert":       func() error { return dao.InsertSessionOperation(ctx, op) },
 		"operation receipt":      func() error { return dao.SetSessionOperationReceipt(ctx, sp.Operation{}) },
@@ -430,6 +431,15 @@ func testSessionReadsRejectCorruptPersistedJSON(t *testing.T, db *postgres.Store
 	for _, column := range []string{"command", "receipt"} {
 		mustQueryExec(t, db, `UPDATE session_operations SET `+column+`='[]' WHERE session_id=$1`, id)
 		sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
+			for _, check := range []struct {
+				session, operation string
+				want               bool
+			}{{id, operation, true}, {id, uuid.NewString(), false}, {uuid.NewString(), operation, false}} {
+				exists, err := dao.SessionOperationExists(ctx, check.session, check.operation)
+				if err != nil || exists != check.want {
+					t.Fatalf("operation existence: got %v, want %v: %v", exists, check.want, err)
+				}
+			}
 			if _, err := dao.SessionOperation(ctx, id, operation); err == nil {
 				t.Fatalf("corrupt %s accepted", column)
 			}

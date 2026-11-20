@@ -63,6 +63,15 @@ existing Worker resource checks, including for MCP grants.
 The optional Bot attention projection requires Assistant Task read permission;
 its creation response is admitted before the definition is written.
 
+Session command admission classifies messages by their operation, including
+image-only messages, and treats other commands as control. The scoped execution
+reads the original actor's current policy in the Session transaction at submit,
+offer and final begin. A replay first probes only operation existence and requires
+Session read before loading its intent or receipt. A refusal before dispatch is
+committed with the operation receipt; an already dispatched fact is retained.
+The Session transaction exposes its credential DAOs without transferring their
+lifetime to the caller. The legacy production assembly remains unchanged.
+
 ## Alternatives
 
 **Group grants.** Treating a selected group as an enduring grant would authorize
