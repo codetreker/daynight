@@ -40,8 +40,15 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
   const dismiss = useCallback((id?: string) => {
     if (id === undefined || focused.current?.id === id) focused.current = null;
     if (id !== undefined && current.current?.id !== id) return;
-    cancelLeave(); set(null);
-  }, [cancelLeave, set]);
+    cancelLeave();
+    if (id !== undefined && current.current?.mode === 'hover') restoreFocus();
+    else set(null);
+  }, [cancelLeave, restoreFocus, set]);
+  const reconcileDetached = useCallback(() => {
+    const value = current.current;
+    if (value?.mode !== 'hover' || (value.button.isConnected && value.anchor.isConnected)) return false;
+    cancelLeave(); restoreFocus(); return true;
+  }, [cancelLeave, restoreFocus]);
   const show = useCallback((id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => {
     cancelLeave();
     if (mode === 'focus') focused.current = { id, button, reading };
@@ -57,9 +64,10 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
       return;
     }
     if (value?.id !== id) return;
+    if (reconcileDetached()) return;
     if (!hasReading(reading)) { restoreFocus(); return; }
     if (value.reading.usage !== reading.usage || value.reading.execution !== reading.execution) set({ ...value, reading });
-  }, [restoreFocus, set]);
+  }, [reconcileDetached, restoreFocus, set]);
   const leave = useCallback((id: string) => {
     cancelLeave();
     timer.current = window.setTimeout(() => {
@@ -89,6 +97,7 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
     const valid = () => button.isConnected && button.closest('[hidden], [inert]') === null && ownerOf(document.activeElement) === owner;
     const position = () => {
       frame = 0;
+      if (reconcileDetached()) return;
       if (!valid()) { dismiss(); return; }
       const viewport = window.visualViewport;
       let left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
@@ -116,7 +125,7 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
     const focusin = (event: FocusEvent) => { if (event.target instanceof Element && ownerOf(event.target) !== owner) dismiss(); };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     observer?.observe(button); observer?.observe(bubble);
-    const mutation = new MutationObserver(() => { if (!valid()) dismiss(); else schedule(); });
+    const mutation = new MutationObserver(() => { if (reconcileDetached()) return; if (!valid()) dismiss(); else schedule(); });
     mutation.observe(document.body, { attributes: true, attributeFilter: ['inert', 'hidden'], childList: true, subtree: true });
     document.addEventListener('keydown', keydown, true); document.addEventListener('pointerdown', pointerdown, true); document.addEventListener('focusin', focusin, true);
     window.addEventListener('scroll', schedule, true); window.addEventListener('resize', schedule);
@@ -129,7 +138,7 @@ export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) 
       window.removeEventListener('scroll', schedule, true); window.removeEventListener('resize', schedule);
       window.visualViewport?.removeEventListener('scroll', schedule); window.visualViewport?.removeEventListener('resize', schedule);
     };
-  }, [active, dismiss]);
+  }, [active, dismiss, reconcileDetached]);
   return <Context value={control}>{children}<div ref={tip} popover="manual" className="graph-reading-hint" role="tooltip"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') cancelLeave(); }}
     onPointerLeave={(event) => { if (event.pointerType !== 'touch' && current.current) leave(current.current.id); }}>

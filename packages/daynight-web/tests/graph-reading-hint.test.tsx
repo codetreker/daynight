@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { GraphReadingHintProvider, useGraphReadingHint } from '../src/features/task-graph/GraphReadingHint';
@@ -9,6 +9,17 @@ const Source = ({ usage, id = 'task' }: { usage: string | null; id?: string }) =
   useLayoutEffect(() => { hint.update(id, reading); }, [hint, id, usage]);
   return <button onFocus={(event) => hint.show(id, event.currentTarget, event.currentTarget, 'focus', reading)} onBlur={() => hint.dismiss(id)}
     onPointerEnter={(event) => hint.show(id, event.currentTarget, event.currentTarget, 'hover', reading)} onPointerLeave={() => hint.leave(id)}>{id === 'task' ? 'Task' : id}</button>;
+};
+
+const ReadingSource = ({ id, usage, execution }: { id: string; usage: string | null; execution: string | null }) => {
+  const hint = useGraphReadingHint();
+  const reading = { usage, execution };
+  useLayoutEffect(() => { hint.update(id, reading); }, [hint, id, usage, execution]);
+  useEffect(() => () => hint.dismiss(id), [hint, id]);
+  return <button onFocus={(event) => hint.show(id, event.currentTarget, event.currentTarget, 'focus', reading)} onBlur={() => hint.dismiss(id)}>
+    {id}{usage !== null && <span data-testid={`${id}-usage`} onPointerEnter={(event) => hint.show(id, event.currentTarget.closest('button')!, event.currentTarget, 'hover', reading)}>{usage}</span>}
+    {execution !== null && <span data-testid={`${id}-execution`} onPointerEnter={(event) => hint.show(id, event.currentTarget.closest('button')!, event.currentTarget, 'hover', reading)}>{execution}</span>}
+  </button>;
 };
 
 describe('graph reading hint', () => {
@@ -80,6 +91,59 @@ describe('graph reading hint', () => {
       expect(tip).toBeEmptyDOMElement();
       expect(a).toHaveFocus();
     } finally { vi.useRealTimers(); }
+  });
+
+  it('restores focus when a hovered usage anchor is removed, while preserving valid execution data', () => {
+    const content = (a: boolean, usage: string | null, execution: string | null) => <GraphReadingHintProvider>
+      {a && <ReadingSource id="A" usage="A usage" execution="A duration" />}
+      <ReadingSource id="B" usage={usage} execution={execution} />
+    </GraphReadingHintProvider>;
+    const view = render(content(true, 'B usage', 'B duration'));
+    const a = screen.getByRole('button', { name: /A usage/ });
+    const tip = view.container.querySelector('.graph-reading-hint')!;
+    act(() => a.focus());
+    fireEvent.pointerEnter(screen.getByTestId('B-usage'));
+    expect(tip).toHaveTextContent('B usage');
+    view.rerender(content(true, null, 'B duration'));
+    expect(tip).toHaveTextContent('A usage');
+    expect(tip).toHaveTextContent('A duration');
+    expect(tip).not.toHaveTextContent('B usage');
+    expect(a).toHaveFocus();
+    fireEvent.pointerEnter(screen.getByTestId('B-execution'));
+    expect(tip).toHaveTextContent('B duration');
+    expect(tip).not.toHaveTextContent('B usage');
+  });
+
+  it('restores focus when a hovered card unmounts and does not undo Escape', () => {
+    const content = (b: boolean) => <GraphReadingHintProvider>
+      <ReadingSource id="A" usage="A usage" execution={null} />
+      {b && <ReadingSource id="B" usage="B usage" execution="B duration" />}
+    </GraphReadingHintProvider>;
+    const view = render(content(true));
+    const a = screen.getByRole('button', { name: /A usage/ });
+    const tip = view.container.querySelector('.graph-reading-hint')!;
+    act(() => a.focus());
+    fireEvent.pointerEnter(screen.getByTestId('B-usage'));
+    view.rerender(content(false));
+    expect(tip).toHaveTextContent('A usage');
+    expect(a).toHaveFocus();
+    view.rerender(content(true));
+    fireEvent.pointerEnter(screen.getByTestId('B-usage'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    view.rerender(content(false));
+    expect(tip).toBeEmptyDOMElement();
+    expect(a).toHaveFocus();
+  });
+
+  it('closes the hovered hint when its anchor disappears without a focused card', () => {
+    const content = (usage: string | null) => <GraphReadingHintProvider><ReadingSource id="B" usage={usage} execution="B duration" /></GraphReadingHintProvider>;
+    const view = render(content('B usage'));
+    const tip = view.container.querySelector('.graph-reading-hint')!;
+    fireEvent.pointerEnter(screen.getByTestId('B-usage'));
+    view.rerender(content(null));
+    expect(tip).toBeEmptyDOMElement();
+    fireEvent.pointerEnter(screen.getByTestId('B-execution'));
+    expect(tip).toHaveTextContent('B duration');
   });
 
 });

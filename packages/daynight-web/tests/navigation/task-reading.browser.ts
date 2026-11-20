@@ -1467,3 +1467,37 @@ test('hovering a second card restores the focused card’s latest reading unless
   await page.keyboard.press('Escape'); await expect(hint).toHaveCount(0); await page.mouse.move(0, 0); await page.clock.fastForward(200);
   await expect(hint).toHaveCount(0); await expect(body).toBeFocused(); await expect(graph).toBeVisible();
 });
+
+test('withdrawing a hovered usage reading restores the focused card while elapsed time remains', async ({ page }) => {
+  const details = [
+    detailFixture(projectId, taskId, { title: 'Focused execution', version: 5n, status: 'done', ready: false, startedAt: '2026-10-22T09:00:00Z', completedAt: '2026-10-22T09:30:00Z' }),
+    detailFixture(projectId, successorId, { title: 'Hovered execution', version: 5n, status: 'in_progress', ready: false, startedAt: '2026-10-22T08:00:00Z', dependsOn: [taskId], blockedBy: [] }),
+  ];
+  await install(page, false, false, 'Focused execution', details);
+  let denied = false, calls = 0;
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+    calls++;
+    if (denied) return route.fulfill({ status: 403, json: { error: { code: 'forbidden', requestId: 'denied' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary('large') })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+  await page.setViewportSize({ width: 1280, height: 900 }); await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click(); await page.getByRole('tab', { name: 'Task chains' }).click();
+  await page.locator(`#task-chain-graph-${taskId}`).click();
+  const graph = page.locator('.task-chain-dialog'), first = graph.locator(`.react-flow__node[data-id="${taskId}"]`), second = graph.locator(`.react-flow__node[data-id="${successorId}"]`);
+  const body = first.locator('.task-node-body'), hint = graph.locator('.graph-reading-hint:popover-open');
+  await expect(second.locator('.task-node-usage')).toHaveText('Token ≥1,000T'); await expect(second.locator('.task-duration')).toBeVisible();
+  await page.keyboard.press('Tab'); await body.focus(); await second.locator('.task-node-usage').hover();
+  await expect(hint).toContainText('9,007,199,254,740,993'); await expect(body).toBeFocused();
+  const before = calls; denied = true; await page.clock.fastForward(16_000); await expect.poll(() => calls).toBeGreaterThan(before);
+  await expect(second.locator('.task-node-usage')).toHaveCount(0); await expect(second.locator('.task-duration')).toBeVisible();
+  await expect(body).toBeFocused();
+  const focusedDescription = first.locator('.task-execution-description');
+  await expect(hint).toHaveText(await focusedDescription.textContent() ?? '');
+  expect(await hint.evaluate(element => {
+    const box = element.getBoundingClientRect(), dialog = element.closest('[role="dialog"]')!.getBoundingClientRect();
+    return box.left >= dialog.left && box.top >= dialog.top && box.right <= dialog.right && box.bottom <= dialog.bottom;
+  })).toBe(true);
+});
