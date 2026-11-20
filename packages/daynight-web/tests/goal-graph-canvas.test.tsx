@@ -24,8 +24,8 @@ describe('Goal graph canvas', () => {
     expect(view.container.querySelectorAll('.task-node-details')).toHaveLength(51);
     expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
-      expect(node.style.width).toBe('320px');
-      expect(node.style.height).toBe('144px');
+      expect(node.style.width).toBe('300px');
+      expect(node.style.height).toBe('124px');
     }
     const card = screen.getByRole('button', { name: 'task-0, To do' });
     expect(card).not.toHaveAttribute('aria-haspopup');

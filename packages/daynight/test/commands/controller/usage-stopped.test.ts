@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -15,19 +16,24 @@ import { deleteWebRecording } from "../../../src/commands/worker/web-recording-s
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import { createWebArchiveMaintenance } from "../../../src/commands/worker/web-archive-backfill.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { mapClaudeUsageEvent } from "../../../src/commands/controller/providers/claude-usage.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
-const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot") => {
+const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" | "claude" = "copilot", standalone = false, grant: "valid" | "expired" | "none" = "valid", beforeMeasurement?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/usage-stopped-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider, cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: provider, agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const executionId = randomUUID();
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", provider, cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: provider, agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: standalone ? "" : "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString(),
+    ...(standalone ? { testExecutionId: executionId, ownerUserId: randomUUID(), usageScope: "standalone_test", initialInput: "none" } as const : { projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID() }) };
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
   const journalPath = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
-  const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0", provider);
-  journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, "1");
+  const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : provider === "claude" ? "0.3.247/2.1.247/anthropic" : "0.169.0", provider);
+  if (grant !== "none") journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + (grant === "valid" ? 3_600_000 : -3_600_000)).toISOString() }, "1");
+  beforeMeasurement?.(journal);
   if (provider === "copilot") journal.usage.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
+  if (provider === "claude") journal.usage.enqueueMeasurement(state.stateId, mapClaudeUsageEvent({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_stopped", stop_reason: "end_turn", model: "claude-test", usage: { input_tokens: 17, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })!);
   journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original content" }] });
   prepare?.(journal);
   journal.patchSnapshot({ lifecycle: "stopped", nativeSessionId: state.nativeSessionId, nativeStopped: true, stoppedAt: new Date().toISOString() }); journal.close();
@@ -43,8 +49,8 @@ const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifec
   return { home, journalPath, ticket, state, read };
 };
 
-test("replays original grants after native stop, seals crash gaps, and never holds storage across HTTP", async () => {
-  const f = await fixture(), before = f.read(), paths: string[] = [], events: Record<string, unknown>[] = [];
+test.each([false, true])("replays original grants after native stop without sharing history ACKs (standalone %s)", async standalone => {
+  const f = await fixture(undefined, "copilot", standalone), before = f.read(), paths: string[] = [], events: Record<string, unknown>[] = [];
   const request: typeof fetch = async (input, init) => {
     // A real permit acquisition proves each network operation is outside local storage admission.
     const permit = acquireControllerStoragePermit(f.journalPath, undefined, { fileMustExist: true }); permit.release();
@@ -55,7 +61,7 @@ test("replays original grants after native stop, seals crash gaps, and never hol
     const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; events.push(...body.events);
     return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
   };
-  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0 });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0, retryable: false });
   expect(events.filter(event => event.kind === "measurement")).toHaveLength(1);
   expect(events.find(event => event.kind === "execution_state")).toMatchObject({ collectionState: "partial", seal: true, reasonCodes: ["missing_final", "native_recovery_gap"] });
   expect(paths.some(value => value.endsWith("registrations") || value.endsWith("grant"))).toBe(false);
@@ -64,16 +70,184 @@ test("replays original grants after native stop, seals crash gaps, and never hol
 
 test("rejects changed execution identity before network or acknowledgement", async () => {
   const f = await fixture(), request = vi.fn<typeof fetch>();
-  await expect(replayStoppedControllerUsage({ ...f, ticket: { ...f.ticket, claimId: randomUUID() }, serverToken: "parent", request })).rejects.toThrow();
+  await expect(replayStoppedControllerUsage({ ...f, ticket: { ...f.ticket, sessionId: randomUUID() }, serverToken: "parent", request })).rejects.toThrow();
   expect(request).not.toHaveBeenCalled(); expect(countStoppedControllerUsage(f)).toBe(1);
 });
 
-test("retains pending evidence after a failed late upload without changing Session ACK", async () => {
-  const f = await fixture(), before = f.read();
-  const request: typeof fetch = async () => { throw new Error("offline"); };
+test.each([false, true])("retains pending evidence after a failed late upload without changing Session ACK (standalone %s)", async standalone => {
+  const f = await fixture(undefined, "copilot", standalone), before = f.read();
+  let unavailable = true;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: capability.profileId, provider: "copilot", capability: { ...capability, qualification: "unverified" }, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${"g".repeat(43)}`);
+    if (unavailable) return new Response(null, { status: 503 });
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] };
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
   const result = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
-  expect(result.pending).toBeGreaterThan(0); expect(countStoppedControllerUsage(f)).toBe(1);
+  expect(result.pending).toBeGreaterThan(0); expect(result.retryable).toBe(true); expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
   expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+  unavailable = false;
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 0, retryable: false });
+  expect(f.read().usage).toEqual([]);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each([
+  { grant: "none", provider: "codex" }, { grant: "expired", provider: "codex" },
+  { grant: "none", provider: "copilot" }, { grant: "expired", provider: "copilot" },
+] as const)("standalone $provider evidence with $grant grant is retained without promising a late upload", async ({ grant, provider }) => {
+  const f = await fixture(undefined, provider, true, grant), before = f.read();
+  const request = vi.fn<typeof fetch>(async input => {
+    expect(new URL(String(input)).pathname).toBe("/api/usage/v1/capabilities");
+    return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] });
+  });
+  expect(before.usage).toHaveLength(provider === "copilot" ? 1 : 0);
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
+  expect(f.read()).toEqual(before);
+  expect(countStoppedControllerUsage(f)).toBe(provider === "copilot" ? 1 : 0);
+});
+
+test("a revoked original grant leaves measurements retained without recommending archive retries", async () => {
+  const f = await fixture(undefined, "copilot", true), before = f.read();
+  const request: typeof fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: capability.profileId, provider: "copilot", capability, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    return new Response(null, { status: 403 });
+  };
+  const result = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(result.pending).toBeGreaterThan(0); expect(result.retryable).toBe(false);
+  expect(countStoppedControllerUsage(f)).toBeGreaterThan(0);
+  expect(f.read().usage).toContainEqual(before.usage[0]);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each(["claude", "copilot"] as const)("unqualified %s measurements remain retained after state ACK without a spurious upload retry", async provider => {
+  const f = await fixture(undefined, provider, true), before = f.read(), batches: Record<string, unknown>[][] = [];
+  const cap = { ...capability, profileId: provider === "claude" ? "claude-message-input-0.3.247-v1" : capability.profileId };
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    // Even a verified default cannot qualify an unmatched exact native version.
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: cap.profileId, provider, capability: cap, qualifiedVersions: [] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; batches.push(body.events);
+    expect(body.events.every(payload => payload.kind === "execution_state")).toBe(true);
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: null, sourceRevision: null, stateSequence: payload.stateSequence, finality: null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
+  expect(batches).toHaveLength(1);
+  expect(f.read().usage).toEqual(before.usage);
+  // The next archive call must not claim that it attempted the retained measurement.
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
+  expect(batches).toHaveLength(1);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each(["promoted", "demoted", "metrics-changed", "reordered"] as const)("stopped Claude filters incompatible state snapshots without mutating retained evidence (%s)", async change => {
+  const verified = { ...capability, profileId: "claude-message-input-0.3.247-v1" };
+  const previous = change === "promoted" ? { ...verified, qualification: "unverified" } : verified;
+  const current = change === "demoted" ? { ...verified, qualification: "unverified" }
+    : change === "metrics-changed" ? { ...verified, metrics: { ...verified.metrics, inputTokens: "supported" } }
+    : change === "reordered" ? Object.fromEntries(Object.entries({ ...verified, metrics: Object.fromEntries(Object.entries(verified.metrics).reverse()) }).reverse()) : verified;
+  // More than one batch of old states precedes the measurement, including for
+  // canReplay's limit=1 selection after the upload.
+  const oldCount = change === "promoted" ? 101 : 1;
+  const f = await fixture(undefined, "claude", true, "valid", journal => {
+    const state = journal.usage.states()[0]!;
+    for (let i = 0; i < oldCount; i++) journal.usage.enqueueState(state.stateId, { collectionState: previous.qualification === "unverified" ? "unavailable" : "partial", capability: previous, reasonCodes: ["profile_unverified", "native_recovery_gap", "subagent_scope_unknown"], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+  }), before = f.read(), batches: Record<string, unknown>[][] = [];
+  let invalidBatches = 0;
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: verified.profileId, provider: "claude", capability: current, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability: current }] }] });
+    expect(url.pathname).toBe(`/api/usage/v1/states/${f.state.stateId}/batches`);
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; batches.push(body.events);
+    // The real service validates every state capability before applying any
+    // measurement or checking whether the state revision is stale.
+    if (body.events.some(event => event.kind === "execution_state" && !isDeepStrictEqual(event.capability, current))) {
+      invalidBatches++; return Response.json({ error: { code: "invalid_state" } }, { status: 400 });
+    }
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
+  const retained = change === "reordered" ? 0 : oldCount + (change === "demoted" ? 1 : 0);
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: retained, retryable: false });
+  expect(invalidBatches).toBe(0);
+  expect(batches.flat().filter(event => event.kind === "measurement")).toHaveLength(change === "demoted" ? 0 : 1);
+  const remaining = f.read();
+  if (change !== "reordered") expect(remaining.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state")).toEqual(before.usage.filter(row => JSON.parse((row as { payload: string }).payload).kind === "execution_state"));
+  const db = new Database(f.journalPath, { readonly: true });
+  try { expect((db.prepare("SELECT count(*) AS count FROM usage_outbox WHERE quarantined=1").get() as { count: number }).count).toBe(0); }
+  finally { db.close(); }
+  expect(remaining.execution).toEqual(before.execution); expect(remaining.outbox).toEqual(before.outbox);
+});
+
+test.each(["verified", "unverified"])("a temporarily incompatible capability preserves the original %s seal for later replay", async qualification => {
+  const original = { ...capability, profileId: "claude-message-input-0.3.247-v1", qualification };
+  let advertised = original, unavailable = true;
+  const f = await fixture(undefined, "claude", true, "valid", journal => {
+    const state = journal.usage.states()[0]!;
+    journal.usage.enqueueState(state.stateId, { collectionState: qualification === "verified" ? "partial" : "unavailable", capability: original, reasonCodes: ["profile_unverified", "native_recovery_gap", "subagent_scope_unknown"], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+  }), before = f.read(), batches: Record<string, unknown>[][] = [];
+  const retainedEvidence = () => {
+    const db = new Database(f.journalPath, { readonly: true });
+    try { return { events: db.prepare("SELECT * FROM usage_outbox ORDER BY local_sequence").all(), meta: db.prepare("SELECT * FROM usage_meta ORDER BY key").all() }; }
+    finally { db.close(); }
+  };
+  const evidence = retainedEvidence();
+  const request: typeof fetch = async (input, init) => {
+    if (new URL(String(input)).pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: original.profileId, provider: "claude", capability: advertised, qualifiedVersions: [{ providerVersion: f.state.providerVersion, capability: advertised }] }] });
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; batches.push(body.events);
+    expect(body.events.filter(event => event.kind === "execution_state").every(event => isDeepStrictEqual(event.capability, advertised))).toBe(true);
+    if (unavailable) return new Response(null, { status: 503 });
+    return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(payload => ({ eventId: payload.eventId, sourceKey: payload.sourceKey ?? null, sourceRevision: payload.sourceRevision ?? null, stateSequence: payload.stateSequence ?? null, finality: payload.finality ?? null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: usageBodyHash(f.state, payload) })) });
+  };
+  const first = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(first.retryable).toBe(true); expect(retainedEvidence()).toEqual(evidence);
+  advertised = { ...original, qualification: qualification === "verified" ? "unverified" : "verified" };
+  // Keep the original measurement pending while this attempt proves that the
+  // incompatible original seal cannot be sent or permanently quarantined.
+  const second = await replayStoppedControllerUsage({ ...f, serverToken: "parent", request });
+  expect(second.retryable).toBe(qualification === "unverified");
+  expect(retainedEvidence()).toEqual(evidence);
+  if (qualification === "verified") expect(batches).toHaveLength(1);
+  else expect(batches.at(-1)!.every(event => event.kind === "measurement")).toBe(true);
+  advertised = original; unavailable = false;
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: qualification === "verified" ? 0 : 1, retryable: false });
+  const originalSeal = before.usage.map(row => JSON.parse((row as { payload: string }).payload)).find(event => event.kind === "execution_state");
+  expect(batches.at(-1)).toContainEqual(originalSeal);
+  expect(f.read().usage.every(row => JSON.parse((row as { payload: string }).payload).kind === "measurement")).toBe(true);
+  expect(f.read().execution).toEqual(before.execution); expect(f.read().outbox).toEqual(before.outbox);
+});
+
+test.each([200, 401, 404, 501, 503])("known capability refusal differs from a transient failure (%s) with measurement-only retention", async status => {
+  const f = await fixture(journal => {
+    const state = journal.usage.states()[0]!;
+    const event = journal.usage.enqueueState(state.stateId, { collectionState: "partial", capability, reasonCodes: [], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+    expect(journal.usage.acknowledge([event], [{ eventId: event.eventId, sourceKey: null, sourceRevision: null, stateSequence: String(event.payload.stateSequence), finality: null, outcome: "inserted", bodyHash: event.bodyHash }])).toBe(true);
+  }, "copilot", true), before = f.read();
+  const request = vi.fn<typeof fetch>(async input => {
+    expect(new URL(String(input)).pathname).toBe("/api/usage/v1/capabilities");
+    return status === 200 ? Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] }) : new Response(null, { status });
+  });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: status === 503 });
+  expect(request).toHaveBeenCalledOnce(); expect(f.read()).toEqual(before);
+  expect(countStoppedControllerUsage(f)).toBe(1);
+});
+
+test.each(["missing", "invalid"])("a known %s profile does not make retained state events perpetually retryable", async kind => {
+  const f = await fixture(journal => {
+    const state = journal.usage.states()[0]!;
+    journal.usage.enqueueState(state.stateId, { collectionState: "partial", capability, reasonCodes: [], nativeStartedAt: null, nativeEndedAt: new Date().toISOString(), observedAt: new Date().toISOString(), seal: true });
+  }, "copilot", true), before = f.read();
+  const request: typeof fetch = async input => {
+    if (new URL(String(input)).pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: kind === "missing" ? [] : [{ id: capability.profileId, provider: "copilot", capability: { ...capability, qualification: "invalid" }, qualifiedVersions: [] }] });
+    return new Response(null, { status: 503 });
+  };
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 2, retryable: false });
+  expect(f.read()).toEqual(before); expect(countStoppedControllerUsage(f)).toBe(2);
 });
 
 test("prevents explicit recording cleanup from deleting the sole pending usage journal", async () => {
@@ -99,7 +273,7 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
     expect(new URL(String(input)).pathname.endsWith("capabilities")).toBe(true);
     return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] });
   };
-  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1 });
+  expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1, retryable: false });
   let task = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, serverOrigin: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, worktreeId: f.ticket.worktreeId, claimId: f.ticket.claimId, status: "done", cleanup: { kind: "terminal", discardRecording: mode === "explicit" }, webExecution: { executionId: f.ticket.executionId, executionGeneration: f.ticket.executionGeneration, launchId: f.ticket.launchId, sessionId: f.ticket.sessionId } } as LocalTask;
   if (mode === "explicit") {
     await expect(deleteWebRecording(f.home, task, () => task, () => true)).rejects.toThrow("unresolved local conflicts");
@@ -112,7 +286,7 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
     let failed!: () => void;
     const rejected = new Promise<void>(resolve => { failed = resolve; });
     const emit = vi.fn<Parameters<typeof createWebArchiveMaintenance>[0]["emit"]>(event => { if (event.kind === "cleanup-error") failed(); });
-    const maintenance = createWebArchiveMaintenance({ homeDirectory: f.home, serverUrl: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, signal: signal.signal, store: worker, webStore, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit });
+    const maintenance = createWebArchiveMaintenance({ homeDirectory: f.home, serverUrl: f.ticket.serverOrigin, workerId: f.ticket.workerId!, userId: f.ticket.userId!, signal: signal.signal, store: worker, webStore, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit });
     try {
       await maintenance.discardLocal(() => true, false, signal.signal);
       await rejected;
@@ -139,7 +313,7 @@ test("stopped Codex capability stays unsupported instead of becoming a failed co
       return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(event => ({ eventId: event.eventId, sourceKey: null, sourceRevision: null, stateSequence: event.stateSequence, finality: null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: rows.find(row => row.event_id === event.eventId)!.body_hash })) });
     } finally { db.close(); }
   };
-  expect(await replayStoppedControllerUsage({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "parent-token", request })).toEqual({ pending: 0 });
+  expect(await replayStoppedControllerUsage({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "parent-token", request })).toEqual({ pending: 0, retryable: false });
   expect(events).toHaveLength(1);
   expect(events[0]).toMatchObject({ kind: "execution_state", collectionState: "unsupported", reasonCodes: ["provider_unsupported"], seal: true });
 });
