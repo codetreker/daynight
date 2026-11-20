@@ -13,6 +13,7 @@ import (
 )
 
 func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input ItemInput) (model.AssistantTaskItem, error) {
+	actor = actor.requiringBranches("SaveItem", "default")
 	var result model.AssistantTaskItem
 	if !strictID(input.ID) || !keyValid(input.Key) || !validState(input.State, "open", "closed") || !textValid(input.Category, false) || input.Episode < 1 {
 		return result, invalid("Item identity, key, episode or state is invalid.")
@@ -131,6 +132,7 @@ func (m *Module) systemRecord(ctx context.Context, dao store.AssistantTaskDAO, t
 	return insertRecord(ctx, dao, record)
 }
 func (m *Module) AddRecord(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input RecordInput) (model.AssistantTaskRecord, error) {
+	actor = actor.requiringBranches("AddRecord", "default")
 	var result model.AssistantTaskRecord
 	if actor.BotID == nil {
 		return result, forbidden()

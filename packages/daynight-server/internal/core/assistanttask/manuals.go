@@ -24,6 +24,7 @@ func finishUser(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, ta
 	return err
 }
 func (m *Module) AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AppendixInput) (model.AssistantTaskAppendix, error) {
+	actor = actor.requiringBranches("AddAppendix", "default")
 	var result model.AssistantTaskAppendix
 	if !strictID(input.ID) || !textValid(input.Text, true) {
 		return result, invalid("Appendix ID and text are required.")
@@ -81,6 +82,11 @@ func (m *Module) AddAppendix(ctx context.Context, dao store.AssistantTaskDAO, ac
 	return result, finishWork(ctx, dao, actor, task, now)
 }
 func (m *Module) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input AppendixInput) (model.AssistantTaskAppendix, error) {
+	branch := "edit"
+	if input.State == "deleted" {
+		branch = "delete"
+	}
+	actor = actor.requiringBranches("UpdateAppendix", branch)
 	var result model.AssistantTaskAppendix
 	if actor.BotID != nil {
 		return result, forbidden()
@@ -149,6 +155,7 @@ func (m *Module) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO,
 	return result, finishUser(ctx, dao, actor, task, now)
 }
 func (m *Module) Propose(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input ProposalInput) (ProposalResult, error) {
+	actor = actor.requiringBranches("Propose", "default")
 	var result ProposalResult
 	if !strictID(input.ID) || !textValid(input.Body, true) || !textValid(input.Reason, true) || input.BaseVersion < 1 {
 		return result, invalid("Proposal identity, body, reason and base version are required.")
@@ -218,6 +225,7 @@ func (m *Module) Propose(ctx context.Context, dao store.AssistantTaskDAO, actor 
 	return ProposalResult{Proposal: proposal, RejectedMatches: matches}, finishWork(ctx, dao, actor, task, now)
 }
 func (m *Module) Decide(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input DecisionInput) (model.AssistantTaskProposal, error) {
+	actor = actor.requiringBranches("Decide", "default")
 	var result model.AssistantTaskProposal
 	if actor.BotID != nil {
 		return result, forbidden()
@@ -305,6 +313,7 @@ func (m *Module) Decide(ctx context.Context, dao store.AssistantTaskDAO, actor A
 	return result, finishUser(ctx, dao, actor, task, now)
 }
 func (m *Module) Rollback(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input RollbackInput) (model.AssistantTaskManual, error) {
+	actor = actor.requiringBranches("Rollback", "default")
 	var result model.AssistantTaskManual
 	if actor.BotID != nil {
 		return result, forbidden()
