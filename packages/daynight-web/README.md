@@ -1439,9 +1439,7 @@ its title and `aria-describedby` provide exact endpoints, elapsed duration and
 saved threshold. Button names stay
 stable across ticks, and no live region announces every update.
 
-The renderer preserves 220×96/136 cards, independent Details/inspection/expansion
-controls, external context borders and selected/prerequisite
-outlines. A 42px bottom reserve keeps English Details clear of elapsed text.
+The renderer uses 300×124 cards and a 60px action footer where needed, with independent Details/inspection/expansion controls, external context borders and selected/prerequisite outlines. Graph duration uses at most two adjacent units; the canvas exposes the complete reading on hover, keyboard focus or touch while preserving inspection.
 Standalone visual timing is excluded from button-name calculation while its
 accessible description retains the warning meaning. Goal child rows reuse
 `useTaskExecution` and `TaskExecutionDuration` after their title, with a clock icon
@@ -1985,10 +1983,7 @@ controls adding at most twenty hidden direct neighbors in P, with exact new-task
 new-induced-edge and remaining counts. Manual expansion has no edge cap. Every
 real edge with both endpoints in S appears, without shortcuts or aggregate cards.
 
-Ordinary member cards are 220 by 96 pixels without hidden direct neighbors, using a 94px body
-and two border pixels with no footer or separator. Cards with expansion controls
-are 220 by 136, including a 40px two-column footer; an unused direction retains
-its column. External cards remain 220 by 136 with an independent Expand footer.
+Ordinary member cards are 300 by 124 pixels without hidden direct neighbors. Cards with expansion controls are 300 by 184, including a 60px two-column footer; an unused direction retains its column. External chain cards retain the independent Expand footer. Cards show up to three title lines and no Goal ownership; external context has a short label.
 Each visible snapshot derives expansion data once. Layout, React
 Flow, route ports, viewport fitting and keyboard reveal share actual dimensions.
 The canvas separates native body inspection from sibling Details
@@ -3039,8 +3034,8 @@ ordinary component. Progress and aggregate chain status count main members only,
 and each task has one ordinary-component membership. Complete ancestry remains
 available to inspection through the full project index. The Dagre
 adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
-220px-wide visible cards with 96px compact or 136px action-footer heights.
-External cards retain the 136px footer for their independent Expand action. The
+300px-wide visible cards with 124px bodies or 184px action-footer heights.
+External chain cards retain the footer for their independent Expand action. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
@@ -3067,7 +3062,7 @@ leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
 Goal graphs use a separate compact component and rank-grid layout, with a
 readable initial viewport and an explicit full overview. Their complete projection
 contains every direct member and its accessible direct prerequisites outside the
-Goal. Every 220×96 card has a native inspection body and a sibling Details button;
+Goal. Every 300×124 card has a native inspection body and a sibling Details button;
 Goal cards provide no expansion or external navigation. Complete project ancestry
 drives the shared selection, prerequisite, real-edge and arrow styles, while the
 current projection determines visible highlights and the deduplicated hidden

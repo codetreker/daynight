@@ -96,8 +96,8 @@ describe("task execution presentation", () => {
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(layout).toHaveBeenCalledTimes(1);
     for (const node of nodes) {
-      expect(node.style.width).toBe("320px");
-      expect(node.style.height).toBe("144px");
+      expect(node.style.width).toBe("300px");
+      expect(node.style.height).toBe("124px");
     }
     expect(card.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
   });

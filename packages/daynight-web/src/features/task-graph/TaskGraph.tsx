@@ -28,7 +28,7 @@ type ViewportAction = { readonly kind: 'expand'; readonly sequence: number; read
 
 type CanvasProps = TaskGraphProps & { topologyKey: string; selectedTaskId: string | null; onInspectTask: (id: string) => void; clearInspection: () => void; geometry: CanvasLayout; projection: ChainProjection; visibleIds: ReadonlySet<string>; expansions: ReadonlyMap<string, TaskExpansions>; action: ViewportAction | null; onExpandTask: (id: string, direction: TaskExpansionDirection) => void; onResetOverview: () => void };
 
-const TaskCanvas = ({ index, summaries, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
+const TaskCanvas = ({ index, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
   const { messages: { graph: m } } = useI18n();
   const resetButton = useRef<HTMLButtonElement>(null);
   const getFocusFallback = useCallback(() => fullscreen?.buttonRef.current ?? resetButton.current, [fullscreen]);
@@ -43,19 +43,13 @@ const TaskCanvas = ({ index, summaries, rootId, onOpenTask, onNavigateExternalTa
     style: { width: node.width, height: node.height },
     data: {
       task: index.nodes.get(node.id)!, kind: node.kind,
-      ownerLabel: summaries === undefined ? null : (() => {
-        const parentId = index.nodes.get(node.id)!.parentId;
-        if (parentId === null) return m.unassignedGoal;
-        const goal = summaries.get(parentId);
-        return goal?.type === 'goal' ? m.goalOwner({ title: `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}` }) : m.unavailableGoal({ id: parentId });
-      })(),
       center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
       size: { width: node.width, height: node.height },
       actions: { kind: 'chain', onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask,
       revealRequest: action?.kind === 'expand' && action.anchorId === node.id ? action.sequence : null,
       expansions: expansions.get(node.id)! },
     },
-  })), [geometry, index, summaries, m, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
+  })), [geometry, index, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
   const viewportFactory = useCallback((width: number, height: number) => getInitialTaskViewport(geometry, rootId, width, height, folded), [geometry, rootId, folded]);
   const onFramingReset = useCallback(() => resetButton.current?.focus({ preventScroll: true }), []);
   return (

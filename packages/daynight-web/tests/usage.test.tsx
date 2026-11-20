@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { getTaskUsageRecords, getTaskUsageSummaries, getUsageCapabilities, parseUsageSummary, usageMetricKeys } from '../src/api/usage';
-import { TaskNodeUsageSummary, TaskUsageSummary, UsageProjectProvider, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
+import { formatGraphTokens, TaskNodeUsageSummary, TaskUsageSummary, UsageProjectProvider, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
 import { TaskUsagePanel } from '../src/features/usage/TaskUsagePanel';
 import { TaskDetailPanels } from '../src/features/task-detail/TaskDetailPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -51,23 +51,34 @@ it('renders graph readings in priority order, retains them on transient failure 
   });
   vi.stubGlobal('fetch', fetch);
   const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial'));
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 12.3K'));
   const refresh = async (next: typeof state) => {
     state = next;
     const calls = fetch.mock.calls.length;
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(calls + 2));
   };
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', 'Known Total: 12,345 · Partial');
   await refresh('failure');
-  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial');
+  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 12.3K');
   await refresh('revoked');
   await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toBeNull());
   await refresh('output');
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Output: 9,007,199,254,740,993 · Partial'));
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token ≥1,000T'));
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', 'Known Output: 9,007,199,254,740,993 · Partial');
   await refresh('zero');
-  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Input: 0 · Partial'));
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Token 0'));
   view.setLocale('zh-CN');
-  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('已知输入: 0 · 部分');
+  expect(view.container.querySelector('.task-node-usage')).toHaveAttribute('title', '已知输入: 0 · 部分');
+});
+
+it.each([
+  ['0', '0'], ['999', '999'], ['1000', '1K'], ['56780', '56.8K'],
+  ['999949', '999.9K'], ['999950', '1M'], ['1000000000', '1B'],
+  ['1000000000000', '1T'], ['999999999999999', '1,000T'],
+  ['1000000000000000', '≥1,000T'], ['999999999999999999999999999999', '≥1,000T'],
+])('abbreviates graph token integer %s as %s', (value, expected) => {
+  expect(formatGraphTokens(value)).toBe(expected);
 });
 
 it('preserves exact decimal strings and rejects unsafe number and leading-zero metrics', () => {
