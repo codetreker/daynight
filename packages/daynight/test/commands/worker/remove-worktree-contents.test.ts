@@ -5,7 +5,7 @@ import type { FileHandle } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { removeWorktreeContents } from "../../../src/commands/worker/remove-worktree-contents.js";
+import { removeWorktreeContents, retryWhileBusy } from "../../../src/commands/worker/remove-worktree-contents.js";
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -351,6 +351,24 @@ describe("owned worktree content removal", () => {
     });
     expect(attempts).toBe(3);
     expect(admitted).toBe(3);
+  });
+
+  it.each(["cancellation", "deadline"] as const)("starts no further attempt when %s arrives while revalidation awaits", async stop => {
+    const controller = new AbortController();
+    const op = stop === "cancellation" ? operation(controller.signal) : createOperation({ limits: { totalMs: 40 } });
+    if (stop === "deadline") operations.push(op);
+    let attempts = 0;
+    // A verifier that performs asynchronous work and does not check the
+    // operation itself: the retry boundary is what must stop the next attempt.
+    const result = await retryWhileBusy(op, async () => {
+      if (stop === "cancellation") controller.abort(new Error("stop"));
+      await new Promise<void>(resolve => setTimeout(resolve, 60));
+    }, async () => {
+      attempts++;
+      throw busy();
+    }).then(() => null, (error: unknown) => error);
+    expect(result).toBe(op.signal.reason);
+    expect(attempts).toBe(1);
   });
 
   it("stops retrying a busy removal after cancellation and starts no further mutations", async () => {

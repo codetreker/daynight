@@ -31,6 +31,11 @@ export const retryWhileBusy = async <T>(operation: Operation, reprove: () => Pro
       await delay(busyRetryDelaysMs[attempt]!);
       operation.check();
       await reprove();
+      // `reprove` ends in asynchronous reads, so cancellation and the deadline
+      // can arrive while it awaits. Checking here, at the admission boundary
+      // every caller shares, keeps a retry from starting a mutation instead of
+      // relying on each verifier to end with a check of its own.
+      operation.check();
     }
   }
 };

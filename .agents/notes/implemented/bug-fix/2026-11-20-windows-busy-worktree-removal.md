@@ -29,8 +29,11 @@ Each delay is a window in which another writer can replace the target, so the
 caller supplies a `reprove` callback that runs after every delay. It re-verifies
 the same ownership evidence the caller established before its first attempt and
 re-admits the mutation; a changed identity aborts instead of deleting whatever
-now occupies the path. `operation.check()` around each delay covers cancellation
-and deadline, which identity verification does not.
+now occupies the path. `operation.check()` runs around each delay and again after `reprove`
+returns: a verifier ends in asynchronous reads, so cancellation and the
+deadline can arrive while it awaits, and checking at the shared boundary stops
+the next attempt without depending on each verifier to end with a check of its
+own. Identity verification does not cover either condition.
 
 `reprove` is a required parameter rather than an optional one. A default no-op
 would silently weaken any caller that forgot it: before this change a first
