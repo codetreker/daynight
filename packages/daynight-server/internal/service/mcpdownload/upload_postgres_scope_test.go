@@ -20,6 +20,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
@@ -186,6 +187,9 @@ func TestScopedFinalizeRechecksPolicyWithPostgresAndTargetGate(t *testing.T) {
 					var fault *model.Fault
 					if !errors.As(got.err, &fault) || fault.Code != "insufficient_scope" || !errors.Is(got.err, scopepolicy.ErrInsufficientScope) || got.data["writeOutcome"] != "not_committed" || got.data["attachment"] != nil {
 						t.Fatalf("finalize=%v err=%v", got.data, got.err)
+					}
+					if public, known := operation.KnownFault(got.err); !known || public.Code != "insufficient_scope" {
+						t.Fatalf("finalize refusal was not classifiable: %v", got.err)
 					}
 					var state string
 					var reserved, ledger int64

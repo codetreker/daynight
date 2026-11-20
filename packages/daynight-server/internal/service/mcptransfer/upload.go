@@ -545,7 +545,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
 	}
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
-		defer func() { err = errors.Join(err, lease.Close()) }()
+		defer func() {
+			if closeErr := lease.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}()
 	}
 	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
 	defer cancelUpload()
@@ -562,7 +566,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		}
 		return nil, e
 	}
-	defer func() { err = errors.Join(err, p.Close()) }()
+	defer func() {
+		if closeErr := p.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	r, e := s.lifecycle.admittedUploadRecord(p.Context, p)
 	if e != nil {
 		return nil, e
@@ -602,7 +610,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, e
 	}
-	defer func() { err = errors.Join(err, admission.Close()) }()
+	defer func() {
+		if closeErr := admission.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 	targetCtx, cancelTarget := filestorage.GateContext(p.Context, admission)
 	defer cancelTarget()
 	opCtx, cancel := context.WithCancel(targetCtx)
@@ -634,7 +646,11 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		cancel()
 		return <-done
 	}
-	defer func() { err = errors.Join(err, stop()) }()
+	defer func() {
+		if stopErr := stop(); stopErr != nil {
+			err = errors.Join(err, stopErr)
+		}
+	}()
 	reader, e := s.stream(opCtx, p, r.ID, total)
 	if e != nil {
 		return nil, e
@@ -705,7 +721,10 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		defer finishCancel()
 		finishErr = s.lifecycle.markAdmittedUnknown(finishCtx, p, d.OperationID, encodeUpload(d))
 	}
-	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", errors.Join(e, renewErr, finishErr, cleanupErr))
+	if renewErr != nil || finishErr != nil || cleanupErr != nil {
+		e = errors.Join(e, renewErr, finishErr, cleanupErr)
+	}
+	return map[string]any{"transferId": r.ID, "operationId": d.OperationID, "writeOutcome": outcome}, fmt.Errorf("upload commit: %w", e)
 }
 
 func authorizeUploadPublication(ctx context.Context, scope store.AttachmentMutationScope, a transfer.Actor, project, task string) error {

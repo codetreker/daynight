@@ -353,7 +353,10 @@ func (s *Attachments) admitTransfer(ctx context.Context, principal model.Princip
 		}
 		return s.operations.checkPathConflict(ctx, scope.AttachmentDAO(), address)
 	}); err != nil {
-		return nil, errors.Join(err, permit.Close())
+		if closeErr := permit.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return nil, err
 	}
 	return &TransferAdmission{service: s, principal: principal, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit, authorize: authorize}, nil
 }
