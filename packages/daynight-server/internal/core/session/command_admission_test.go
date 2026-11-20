@@ -14,6 +14,19 @@ import (
 	"github.com/google/uuid"
 )
 
+type missingOperationProbe struct{ store.SessionDAO }
+
+func TestScopedReplayFailsWithoutExistenceProbe(t *testing.T) {
+	s := &Execution{commandAdmission: func(context.Context, store.SessionScope, model.Principal, scopepolicy.Operation) error {
+		t.Fatal("admission ran without a reliable existence probe")
+		return nil
+	}}
+	err := s.admitReplay(t.Context(), &operationTx{dao: missingOperationProbe{}}, model.Principal{}, "session", "operation")
+	if err == nil {
+		t.Fatal("missing operation existence capability accepted")
+	}
+}
+
 func TestCommandAdmissionUsesBehaviorIncludingPureImage(t *testing.T) {
 	for _, tc := range []struct {
 		kind, payload string

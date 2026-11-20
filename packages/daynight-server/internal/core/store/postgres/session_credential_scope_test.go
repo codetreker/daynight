@@ -107,7 +107,7 @@ func TestSessionCredentialScopeSharesTransactionAndLocks(t *testing.T) {
 					}
 				}
 				// Locking the credential does not end the Session transaction.
-				_, err := scope.SessionDAO().SessionOperationExists(ctx, uuid.NewString(), uuid.NewString())
+				_, err := scope.SessionDAO().(store.SessionOperationExistenceDAO).SessionOperationExists(ctx, uuid.NewString(), uuid.NewString())
 				return err
 			})
 			if err != nil || completion.Outcome != store.TransactionCommitted {

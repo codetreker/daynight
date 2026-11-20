@@ -95,7 +95,11 @@ func (s *Execution) admitReplay(ctx context.Context, tx *operationTx, p model.Pr
 	if s.commandAdmission == nil {
 		return nil
 	}
-	exists, err := tx.dao.SessionOperationExists(ctx, session, id)
+	probe, ok := tx.dao.(store.SessionOperationExistenceDAO)
+	if !ok {
+		return errors.New("session transaction cannot probe operation existence")
+	}
+	exists, err := probe.SessionOperationExists(ctx, session, id)
 	if err != nil {
 		return err
 	}

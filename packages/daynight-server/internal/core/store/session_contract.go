@@ -31,6 +31,12 @@ type SessionCredentialScope interface {
 	SessionOAuthScopeDAO() OAuthScopeDAO
 }
 
+// SessionOperationExistenceDAO probes a ledger key without reading its receipt
+// or intent. Scoped command admission requires this transaction-bound capability.
+type SessionOperationExistenceDAO interface {
+	SessionOperationExists(context.Context, string, string) (bool, error)
+}
+
 // SessionRecord contains only durable ledger state; transient content remains
 // owned by the Session engine.
 type SessionRecord struct {
@@ -146,7 +152,6 @@ type SessionDAO interface {
 	LockBotSessionStop(context.Context, string, string, string) (BotSessionStop, error)
 	DeleteBotSession(context.Context, string, string) error
 	RedactDeletedBot(context.Context, string) error
-	SessionOperationExists(context.Context, string, string) (bool, error)
 	SessionOperation(context.Context, string, string) (SessionOperation, error)
 	InsertSessionOperation(context.Context, SessionOperation) error
 	SetSessionOperationReceipt(context.Context, sp.Operation) error
