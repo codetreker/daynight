@@ -31,7 +31,7 @@ Terminal recordings use a shared `--text-terminal` base, multiplied by their
 independent zoom scale; reading-role changes do not affect terminal output.
 
 Business states, errors, controls, tool paths, and code use the interface role;
-IDs, times, versions, and secondary counts use metadata. The [ordinary Task row decision](../bug-fix/2026-11-20-task-row-metadata-size.md) assigns its secondary badges and status text to metadata while preserving other status contexts. The [claim phase decision](../bug-fix/2026-11-20-task-claim-phase-size.md) assigns the read-only execution phase badge in Task details to metadata. Shared forms, Portal
+IDs, times, versions, and secondary counts use metadata. The [ordinary Task row decision](../bug-fix/2026-11-20-task-row-metadata-size.md) assigns its secondary badges and status text to metadata while preserving other status contexts. The [claim phase decision](../bug-fix/2026-11-20-task-claim-phase-size.md) assigns the read-only execution phase badge in Task details to metadata. The [machine record decision](../bug-fix/2026-11-20-task-row-machine-size.md) assigns ordinary row Worker records to metadata. Shared forms, Portal
 dialogs, account notices, attachment controls, Goal details and Bot management
 use the same roles. Superseded fixed declarations are removed or mapped to their
 semantic role, so later overrides cannot conceal a competing size definition.

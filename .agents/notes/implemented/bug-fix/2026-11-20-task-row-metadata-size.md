@@ -28,6 +28,8 @@ change even though their hierarchy and geometry are independently owned.
 
 ## Consequences
 
+The later [machine record decision](2026-11-20-task-row-machine-size.md) extends the same hierarchy to Worker records.
+
 Equivalent ordinary rows share the smaller auxiliary text at every viewport and
 scale with browser font preferences. Other contexts retain their existing sizes;
 browser checks remain necessary for wrapping and Session interaction.
