@@ -30,6 +30,7 @@
 .thread-avatar.agent { border-radius: 8px; background: #efeffb; color: #6664ad; }
 .thread-message-main { min-width: 0; flex: 1; }
 .thread-message-header { display: flex; align-items: center; gap: 8px; min-height: 25px; flex-wrap: wrap; }
+.thread-message-identity { display: contents; }
 .thread-author { color: #3d4860; font-weight: 550; font-size: var(--text-interface); overflow-wrap: anywhere; }
 .thread-agent-badge { font-size: var(--text-interface); font-weight: 500; line-height: 1.4; padding: 1px 5px; border-radius: 3px; color: #7773a4; border: 1px solid #e6e4f4; background: #f7f6fc; display: inline-flex; align-items: center; gap: 3px; }
 .thread-message-time { border: 0; background: transparent; color: #9aa3b3; font-size: var(--text-metadata); padding: 2px 0; cursor: pointer; }
@@ -110,9 +111,10 @@
   .thread-day-divider { margin: 6px 0 18px; }
   .thread-message { gap: 9px; margin-bottom: 23px; }
   .thread-avatar { width: 27px; height: 27px; }
-  .thread-message-header { gap: 6px; min-height: 24px; }
-  .thread-message-actions { opacity: 1; gap: 0; }
-  .thread-message-actions .thread-icon-button { width: 22px; height: 22px; }
+  .thread-message-header { gap: 6px; min-height: 30px; flex-wrap: nowrap; align-items: flex-start; justify-content: space-between; }
+  .thread-message-identity { display: flex; flex: 0 1 auto; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px; padding-block: 4px; }
+  .thread-message-actions { opacity: 1; gap: 4px; flex: none; }
+  .thread-message-actions .thread-icon-button { width: 30px; height: 30px; }
   .thread-message-markdown { --markdown-pre-padding: 9px; }
   .thread-reply-quote { padding: 6px 8px; }
   .thread-composer-wrap { padding: 0 13px 13px; }
