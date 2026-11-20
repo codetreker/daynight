@@ -2,7 +2,7 @@ import { expect, type Locator } from '@playwright/test';
 
 export async function expectGraphCardBadges(card: Locator) {
   const badges = card.locator('.task-node-meta-labels > *');
-  await expect(badges).toHaveCount(4);
+  await expect(badges).toHaveCount(3);
   const result = await badges.evaluateAll(elements => {
     const boxes = elements.map(element => element.getBoundingClientRect());
     const parent = elements[0]!.parentElement!.getBoundingClientRect();
@@ -16,5 +16,5 @@ export async function expectGraphCardBadges(card: Locator) {
   expect(result.inside).toBe(true);
   expect(result.separate).toBe(true);
   expect(result.unclipped).toBe(true);
-  expect(result.rows).toBeLessThanOrEqual(2);
+  expect(result.rows).toBe(1);
 }

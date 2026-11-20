@@ -1,0 +1,201 @@
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+
+type Reading = { readonly usage: string | null; readonly execution: string | null };
+type Mode = 'hover' | 'focus' | 'touch';
+type Active = { id: string; button: HTMLElement; anchor: HTMLElement; mode: Mode; reading: Reading };
+type HintControl = {
+  show: (id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => void;
+  update: (id: string, reading: Reading) => void;
+  leave: (id: string) => void;
+  dismiss: () => void;
+  blur: (id: string) => void;
+  remove: (id: string) => void;
+  cancelLeave: () => void;
+  reposition: () => void;
+};
+const Context = createContext<HintControl | null>(null);
+export const useGraphReadingHint = () => {
+  const value = useContext(Context);
+  if (value === null) throw new Error('Graph reading requires its canvas provider.');
+  return value;
+};
+const hasReading = (reading: Reading) => reading.usage !== null || reading.execution !== null;
+const ownerOf = (element: Element | null) => element?.closest('dialog, [role="dialog"], [role="alertdialog"]') ?? null;
+
+export const GraphReadingHintProvider = ({ children }: { children: ReactNode }) => {
+  const [active, setActive] = useState<Active | null>(null);
+  const current = useRef<Active | null>(null);
+  const focused = useRef<{ id: string; button: HTMLElement; reading: Reading } | null>(null);
+  const hovered = useRef<Active | null>(null);
+  const hoveredInTip = useRef(false);
+  const tip = useRef<HTMLDivElement>(null);
+  const timer = useRef<number | null>(null);
+  const schedulePosition = useRef<(() => void) | null>(null);
+  const reposition = useCallback(() => schedulePosition.current?.(), []);
+  const cancelLeave = useCallback(() => { if (timer.current !== null) window.clearTimeout(timer.current); timer.current = null; }, []);
+  const set = useCallback((value: Active | null) => { current.current = value; setActive(value); }, []);
+  const restoreFocus = useCallback(() => {
+    const source = focused.current;
+    if (source !== null && source.button.isConnected && document.activeElement === source.button &&
+      source.button.closest('[hidden], [inert]') === null && hasReading(source.reading)) {
+      set({ id: source.id, button: source.button, anchor: source.button, mode: 'focus', reading: source.reading });
+    } else set(null);
+  }, [set]);
+  const restoreHover = useCallback(() => {
+    const source = hovered.current;
+    if (source !== null && source.button.isConnected && source.anchor.isConnected &&
+      source.button.closest('[hidden], [inert]') === null && hasReading(source.reading)) set(source);
+    else set(null);
+  }, [set]);
+  const dismiss = useCallback(() => {
+    focused.current = null; hovered.current = null; hoveredInTip.current = false;
+    cancelLeave(); set(null);
+  }, [cancelLeave, set]);
+  const blur = useCallback((id: string) => {
+    if (focused.current?.id === id) focused.current = null;
+    if (current.current?.id === id && current.current.mode !== 'hover') restoreHover();
+  }, [restoreHover]);
+  const remove = useCallback((id: string) => {
+    if (focused.current?.id === id) focused.current = null;
+    if (hovered.current?.id === id) { hovered.current = null; hoveredInTip.current = false; cancelLeave(); }
+    if (current.current?.id !== id) return;
+    if (current.current.mode === 'hover') restoreFocus();
+    else restoreHover();
+  }, [cancelLeave, restoreFocus, restoreHover]);
+  const reconcileDetached = useCallback(() => {
+    const source = hovered.current;
+    if (source === null || (source.button.isConnected && source.anchor.isConnected)) return false;
+    hovered.current = null; hoveredInTip.current = false; cancelLeave();
+    if (current.current === source || (current.current?.mode === 'hover' && current.current.id === source.id)) {
+      restoreFocus(); return true;
+    }
+    return false;
+  }, [cancelLeave, restoreFocus]);
+  const leave = useCallback((id: string) => {
+    cancelLeave();
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      if (hovered.current?.id !== id) return;
+      hovered.current = null; hoveredInTip.current = false;
+      if (current.current?.id === id && current.current.mode === 'hover') restoreFocus();
+    }, 120);
+  }, [cancelLeave, restoreFocus]);
+  const showFocus = useCallback((id: string, button: HTMLElement, reading: Reading) => {
+    if (hoveredInTip.current && hovered.current !== null && hovered.current.id !== id) {
+      hoveredInTip.current = false;
+      leave(hovered.current.id);
+    }
+    set({ id, button, anchor: button, mode: 'focus', reading });
+  }, [leave, set]);
+  const show = useCallback((id: string, button: HTMLElement, anchor: HTMLElement, mode: Mode, reading: Reading) => {
+    if (mode === 'focus') {
+      focused.current = { id, button, reading };
+      if (hasReading(reading)) showFocus(id, button, reading);
+      else if (current.current?.mode !== 'hover') set(null);
+      return;
+    }
+    cancelLeave();
+    if (mode === 'hover') {
+      hoveredInTip.current = false;
+      hovered.current = hasReading(reading) ? { id, button, anchor, mode, reading } : null;
+      if (hovered.current !== null) set(hovered.current);
+      else restoreFocus();
+    } else {
+      hovered.current = null; hoveredInTip.current = false;
+      if (focused.current?.button !== button) focused.current = null;
+      if (hasReading(reading)) set({ id, button, anchor, mode, reading });
+      else set(null);
+    }
+  }, [cancelLeave, restoreFocus, set, showFocus]);
+  const update = useCallback((id: string, reading: Reading) => {
+    const source = focused.current;
+    const newlyAvailable = source?.id === id && !hasReading(source.reading) && hasReading(reading);
+    if (source?.id === id) source.reading = reading;
+    if (hovered.current?.id === id) hovered.current = { ...hovered.current, reading };
+    if (reconcileDetached()) return;
+    const value = current.current;
+    if (source?.id === id && source.button.isConnected && document.activeElement === source.button && hasReading(reading) &&
+      (value === null || newlyAvailable)) {
+      showFocus(id, source.button, reading);
+      return;
+    }
+    if (value?.id !== id) return;
+    if (!hasReading(reading)) {
+      if (value.mode === 'hover') { hovered.current = null; hoveredInTip.current = false; cancelLeave(); restoreFocus(); }
+      else restoreHover();
+      return;
+    }
+    if (value.reading.usage !== reading.usage || value.reading.execution !== reading.execution) set({ ...value, reading });
+  }, [cancelLeave, reconcileDetached, restoreFocus, restoreHover, set, showFocus]);
+  const control = useMemo(() => ({ show, update, leave, dismiss, blur, remove, cancelLeave, reposition }), [show, update, leave, dismiss, blur, remove, cancelLeave, reposition]);
+  useEffect(() => () => cancelLeave(), [cancelLeave]);
+  useLayoutEffect(() => {
+    const bubble = tip.current;
+    if (!bubble) return;
+    if (typeof bubble.showPopover === 'function') {
+      if (active && !bubble.matches(':popover-open')) bubble.showPopover();
+      if (!active && bubble.matches(':popover-open')) bubble.hidePopover();
+    }
+    return () => { if (typeof bubble.hidePopover === 'function' && bubble.matches(':popover-open')) bubble.hidePopover(); };
+  }, [active !== null]);
+  useLayoutEffect(() => {
+    if (!active || !tip.current) return;
+    const { button } = active;
+    const bubble = tip.current;
+    const owner = ownerOf(button);
+    let frame = 0;
+    const valid = () => button.isConnected && button.closest('[hidden], [inert]') === null && ownerOf(document.activeElement) === owner;
+    const position = () => {
+      frame = 0;
+      if (reconcileDetached()) return;
+      if (!valid()) { dismiss(); return; }
+      const viewport = window.visualViewport;
+      let left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
+      let right = left + (viewport?.width ?? window.innerWidth), bottom = top + (viewport?.height ?? window.innerHeight);
+      if (owner instanceof HTMLElement) {
+        const box = owner.getBoundingClientRect();
+        left = Math.max(left, box.left); top = Math.max(top, box.top); right = Math.min(right, box.right); bottom = Math.min(bottom, box.bottom);
+      }
+      bubble.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
+      bubble.style.maxHeight = `${Math.max(0, bottom - top - 16)}px`;
+      const anchor = (current.current?.anchor ?? button).getBoundingClientRect();
+      const box = bubble.getBoundingClientRect();
+      bubble.style.left = `${Math.max(left + 8, Math.min(anchor.left, right - box.width - 8))}px`;
+      bubble.style.top = `${anchor.bottom + box.height + 8 <= bottom ? anchor.bottom + 6 : Math.max(top + 8, anchor.top - box.height - 6)}px`;
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(position); };
+    schedulePosition.current = schedule;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && valid()) { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); dismiss(); return; }
+      if (document.activeElement !== button || bubble.scrollHeight <= bubble.clientHeight) return;
+      const amount = event.key === 'ArrowDown' ? 40 : event.key === 'ArrowUp' ? -40 : event.key === 'PageDown' ? bubble.clientHeight : event.key === 'PageUp' ? -bubble.clientHeight : 0;
+      if (amount !== 0) { event.preventDefault(); event.stopPropagation(); bubble.scrollTop += amount; }
+    };
+    const pointerdown = (event: PointerEvent) => { if (event.target instanceof Node && !button.contains(event.target) && !bubble.contains(event.target)) dismiss(); };
+    const focusin = (event: FocusEvent) => { if (event.target instanceof Element && ownerOf(event.target) !== owner) dismiss(); };
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(button); observer?.observe(bubble);
+    const mutation = new MutationObserver(() => { if (reconcileDetached()) return; if (!valid()) dismiss(); else schedule(); });
+    mutation.observe(document.body, { attributes: true, attributeFilter: ['inert', 'hidden'], childList: true, subtree: true });
+    document.addEventListener('keydown', keydown, true); document.addEventListener('pointerdown', pointerdown, true); document.addEventListener('focusin', focusin, true);
+    window.addEventListener('scroll', schedule, true); window.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('scroll', schedule); window.visualViewport?.addEventListener('resize', schedule);
+    schedule();
+    return () => {
+      schedulePosition.current = null;
+      if (frame) cancelAnimationFrame(frame); observer?.disconnect(); mutation.disconnect();
+      document.removeEventListener('keydown', keydown, true); document.removeEventListener('pointerdown', pointerdown, true); document.removeEventListener('focusin', focusin, true);
+      window.removeEventListener('scroll', schedule, true); window.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('scroll', schedule); window.visualViewport?.removeEventListener('resize', schedule);
+    };
+  }, [active, dismiss, reconcileDetached]);
+  return <Context value={control}>{children}<div ref={tip} popover="manual" className="graph-reading-hint" role="tooltip"
+    onPointerEnter={(event) => {
+      if (event.pointerType !== 'touch' && hovered.current !== null && current.current?.id === hovered.current.id) { hoveredInTip.current = true; cancelLeave(); }
+    }}
+    onPointerLeave={(event) => {
+      if (event.pointerType !== 'touch' && hoveredInTip.current && hovered.current !== null && current.current?.id === hovered.current.id) { hoveredInTip.current = false; leave(hovered.current.id); }
+    }}>
+    {active?.reading.usage && <div>{active.reading.usage}</div>}{active?.reading.execution && <div>{active.reading.execution}</div>}
+  </div></Context>;
+};
