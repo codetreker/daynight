@@ -47,6 +47,11 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   let prepareMode: 'normal' | 'lost_before_create' = 'normal';
   let nextCompletion: 'failed' | 'expired' | 'released' | null = null;
   const held: Route[] = [];
+  type QueryState = SessionOperation['state'] | '404';
+  type ControlledQuery = { sequence: number; operationId: string; source: 'automatic' | 'explicit'; state: QueryState; settled: boolean; release: () => void; context: { nativeSessionId: string | null; loading: boolean } | null; failure: string | null };
+  const controlledQueries: ControlledQuery[] = [];
+  const queryPlans: { operationId: string; source: ControlledQuery['source']; state: QueryState; hold: boolean; target?: string; loading?: boolean }[] = [];
+
   const budget = { revision: '1', maxBytes: '1073741824', committedBytes: '0', reservedBytes: '0', maxResources: 1000, committedResources: 0, reservedResources: 0 };
   const { claimId: _claimId, identity, ...independent } = snapshotJson;
   const base: SessionSnapshot = options.testSession ? { ...independent, testExecutionId: '00000072-1111-4111-8111-111111111111', initialInputState: 'not_required', identity: { ownerUserId: userId, controllerId: identity.controllerId, controllerInstanceId: identity.controllerInstanceId, agentControlMode: identity.agentControlMode, provider: identity.provider, nativeSessionId: capability.expectedNativeSessionId } } : snapshotJson;
@@ -75,12 +80,32 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
     }
     if (path.startsWith('/draft-fixture-api/operation/') || path.includes('/operations/')) {
       const id = path.split('/').at(-1)!; observations.queries.push(id);
-      if (queryState === '404') return send({ error: { code: 'not_found', message: 'Unknown operation.', requestId: randomUUID() } }, 404);
-      const command = observations.commands.find(value => value.operationId === id);
-      const original = originalOperations.get(id);
-      if (!command && !original) return send({ error: 'unknown operation' }, 404);
-      const result = command ? operation(command, queryState) : { ...original!, state: queryState };
-      return send(path.startsWith('/api/v1/test-sessions/') ? { operation: result } : path.includes('/operations/') ? { operation: result, currentBinding: true } : result);
+      const source = request.headers()['x-draft-query-source'] === 'explicit' ? 'explicit' : 'automatic';
+      const headers = request.headers();
+      const context = headers['x-draft-query-target'] === undefined ? null : { nativeSessionId: headers['x-draft-query-target'] || null, loading: headers['x-draft-query-loading'] === 'true' };
+      const planIndex = queryPlans.findIndex(plan => plan.operationId === id && plan.source === source &&
+        (plan.target === undefined || plan.target === context?.nativeSessionId) && (plan.loading === undefined || plan.loading === context?.loading));
+      const plan = planIndex < 0 ? undefined : queryPlans.splice(planIndex, 1)[0];
+      const state = plan?.state ?? queryState;
+      let release = () => {};
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const observation: ControlledQuery = { sequence: controlledQueries.length + 1, operationId: id, source, state, settled: false, release, context, failure: null };
+      controlledQueries.push(observation);
+      if (plan?.hold) await gate;
+      try {
+        if (state === '404') {
+          await send({ error: { code: 'not_found', message: 'Unknown operation.', requestId: randomUUID() } }, 404);
+          observation.settled = true; return;
+        }
+        const command = observations.commands.find(value => value.operationId === id);
+        const original = originalOperations.get(id);
+        if (!command && !original) {
+          await send({ error: 'unknown operation' }, 404); observation.settled = true; return;
+        }
+        const result = command ? operation(command, state) : { ...original!, state };
+        await send(path.startsWith('/api/v1/test-sessions/') ? { operation: result } : path.includes('/operations/') ? { operation: result, currentBinding: true } : result);
+        observation.settled = true; return;
+      } catch (error) { observation.failure = String(error); throw error; }
     }
     const match = /\/image-uploads\/([^/]+)(?:\/(chunks|complete))?$/.exec(path);
     if (!match) { observations.errors.push(`${request.method()} ${path}`); return send({ error: 'unexpected request' }, 404); }
@@ -129,7 +154,8 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
   await context.route('**/draft-fixture-api/**', handle);
   await context.route('**/api/v1/projects/**/sessions/**', handle);
   if (options.testSession) await context.route('**/api/v1/test-sessions/**', handle);
-  return { observations, uploads, capability,
+  return { observations, uploads, capability, controlledQueries,
+    planQuery: (operationId: string, source: ControlledQuery['source'], state: QueryState, hold = false, match: { target?: string; loading?: boolean } = {}) => { queryPlans.push({ operationId, source, state, hold, ...match }); },
     setPrepare: (mode: typeof prepareMode) => { prepareMode = mode; },
     completeNextAs: (state: NonNullable<typeof nextCompletion>) => { nextCompletion = state; },
     changeCommandCatalog: (available: boolean) => {
@@ -145,7 +171,7 @@ export async function installDraftAPI(context: BrowserContext, overrides: Partia
       Object.assign(capability, { expectedNativeSessionId: nativeSessionId, revision: String(BigInt(capability.revision) + 1n) });
       publishSnapshots.forEach(publish => publish());
     },
-    setDispatch: (mode: typeof dispatchMode) => { dispatchMode = mode; }, setQuery: (state: typeof queryState) => { queryState = state; }, seedOperation: (value: SessionOperation) => { originalOperations.set(value.operationId, value); }, cleanup: async () => { await Promise.all(held.splice(0).map(route => route.abort().catch(() => {}))); } };
+    setDispatch: (mode: typeof dispatchMode) => { dispatchMode = mode; }, setQuery: (state: typeof queryState) => { queryState = state; }, seedOperation: (value: SessionOperation) => { originalOperations.set(value.operationId, value); }, cleanup: async () => { controlledQueries.forEach(query => query.release()); await Promise.all(held.splice(0).map(route => route.abort().catch(() => {}))); } };
 }
 export async function openDraft(page: Page) {
   await page.goto(fixtureUrl);
