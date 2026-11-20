@@ -81,7 +81,7 @@ func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
 
 // RegisterRoutesWithScopeObserver reports account classifications from actual registrations.
 func (h *Authentication) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
-	h.registerRoutes(mux, observe, nil)
+	h.registerRoutes(mux, observe, nil, nil)
 }
 
 // RegisterScopedRoutes selects policy-aware profile admission while preserving the
@@ -93,13 +93,44 @@ func (h *Authentication) RegisterScopedRoutes(mux *http.ServeMux, scoped ScopedA
 	}
 	h.registerRoutes(mux, observe, scoped.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
 		h.patchMeAuthorized(w, r, authorization, profile, recheck)
-	}))
+	}), nil)
 }
 
-func (h *Authentication) registerRoutes(mux *http.ServeMux, observe func(ScopeRoute), scopedPatch http.HandlerFunc) {
+// RegisterScopedAccountRoutes combines scope-aware profile and credential management.
+func (h *Authentication) RegisterScopedAccountRoutes(mux *http.ServeMux, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) error {
+	if scoped == nil || profile == nil {
+		return errors.New("scoped profile dependencies are required")
+	}
+	pat, ok := h.identity.(ScopedPATOperations)
+	if !ok {
+		return errors.New("identity service does not support scoped PAT management")
+	}
+	if _, enabled := pat.DeviceScopeCatalog(); !enabled {
+		return errors.New("PAT scope catalog is unavailable")
+	}
+	h.registerRoutes(mux, observe, scoped.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
+		h.patchMeAuthorized(w, r, authorization, profile, recheck)
+	}), pat)
+	return nil
+}
+
+// RegisterPATScopeRoutes registers account routes with scoped PAT management.
+func (h *Authentication) RegisterPATScopeRoutes(mux *http.ServeMux, observe func(ScopeRoute)) error {
+	pat, ok := h.identity.(ScopedPATOperations)
+	if !ok {
+		return errors.New("identity service does not support scoped PAT management")
+	}
+	if _, enabled := pat.DeviceScopeCatalog(); !enabled {
+		return errors.New("PAT scope catalog is unavailable")
+	}
+	h.registerRoutes(mux, observe, nil, pat)
+	return nil
+}
+
+func (h *Authentication) registerRoutes(mux *http.ServeMux, observe func(ScopeRoute), scopedPatch http.HandlerFunc, pat ScopedPATOperations) {
 	routes := accountRouteRegistry{mux: mux, observe: observe}
 	h.registerDeviceRoutes(mux)
-	h.registerCredentialRoutes(routes)
+	h.registerCredentialRoutes(routes, pat)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)

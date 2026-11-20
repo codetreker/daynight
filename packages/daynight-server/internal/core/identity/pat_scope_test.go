@@ -280,3 +280,41 @@ func TestPATScopeFailurePaths(t *testing.T) {
 		})
 	}
 }
+
+func TestPATScopeEditChecksCatalogAgainstLockedPolicy(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	policy, _ := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 3)
+	token := model.PersonalAccessToken{ID: uuid.NewString(), UserID: p.UserID, ScopePolicy: &policy}
+	for _, tc := range []struct {
+		name      string
+		available []scopepolicy.ScopeID
+		code      string
+	}{
+		{"retain unavailable", []scopepolicy.ScopeID{"project:read"}, ""},
+		{"unavailable addition", []scopepolicy.ScopeID{"task:read"}, "invalid_input"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, err := scopepolicy.NewCatalogSnapshot(scopepolicy.PAT, tc.available)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := &scopeReceiver{t: t, ctx: ctx, p: p, token: token, now: now, fresh: now.Add(time.Second)}
+			session := &scopeSessionReceiver{t: t, ctx: ctx, p: p, scope: d}
+			_, err = NewIdentity("").UpdatePATScopeWithCatalog(ctx, session, d, d, p, token.ID, p.UserID, 3, []scopepolicy.ScopeID{"task:read", "project:read"}, catalog, now)
+			if tc.code != "" {
+				checkFault(t, err, tc.code)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"session", "target", "time", "session"}
+			if tc.code == "" {
+				want = append(want, "write")
+			}
+			if !reflect.DeepEqual(d.calls, want) {
+				t.Fatalf("calls %v", d.calls)
+			}
+		})
+	}
+}

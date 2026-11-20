@@ -28,6 +28,20 @@ Scope 检查与现有凭据有效性、资源访问、角色和业务条件共�
 旧批准入口在 scoped 装配中不能绕过显式选择；旧生产装配仍保留原行为。
 目录及 v2 设备入口在真实路由注册时声明 browser-only 分类，方法回退单独登记。
 
+## 账户凭据管理准备入口
+
+显式 scoped 管理入口提供 PAT 和 OAuth grant 的完整安全列表，保留原有字段，
+并以 `scopePolicy` 返回规范权限集合和精确的十进制版本；固定 OAuth profile
+的策略为 `null`。手动 PAT 创建使用与 CLI 相同的目录，提交实际非空选择；
+明文凭据只在确认提交后返回一次。两类 scope 编辑要求主站浏览器 session、
+同源请求、预期账号、目录修订及目标的预期 scope 版本。
+
+编辑在事务中复核 session 和目标，锁后以数据库时间检查有效性，并只替换权限
+字段。选择可保留或移除已保存但当前不可用的有效 ID，新增项必须在当前目录
+中可用。目录修订或版本冲突要求重新读取；提交结果未知时读取列表核对，不
+自动重发。PAT 期限和最近使用时间使用独立字段，不覆盖权限版本或集合。
+原生产装配继续使用现有接口，scoped 管理入口由后续启用阶段显式接入。
+
 ## MCP 应用授权准备入口
 
 显式 scoped OAuth 装配复用浏览器共享目录中的 MCP 快照。v2 inspect 沿用原请求
@@ -166,9 +180,27 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 `Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
 拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
 
+## Session 命令准入
+
+`service/session.NewScopedCommands` 接收事务内授权来源。发送文字、纯图片或
+混合消息需要 `session:send`，取消、交互响应和设置或命令控制需要
+`session:control`。原有身份、资源归属、角色及状态检查继续生效。Task、Test
+和 Bot 的用户命令共享同一准入；固定 profile 保留原绑定限制。
+
+首次提交返回原最小受理回执。重放先只探测 operationId 是否存在，存在时在
+加载旧意图、比较 hash 或返回回执前检查 `session:read`；回执查询也需要该
+权限。每次 offer 和最终 begin 在同一 Session 事务内以持久原 Actor 读取当前
+凭据策略，并与状态更新或拒绝回执一起提交。撤权的未派发操作逐项拒绝，
+已进入派发或已被 Provider 接受的事实继续按原回执规则结算。凭据读取错误
+不会伪装成已确认的拒绝。
+
+事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
+凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
+scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Tag、Team、Bot、Session、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方

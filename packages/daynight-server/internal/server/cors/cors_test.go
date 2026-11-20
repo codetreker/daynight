@@ -130,11 +130,11 @@ func TestCredentialRouteCORSExclusions(t *testing.T) {
 		path     string
 		excluded bool
 	}{
-		{"/api/v2/me/tokens", true}, {"/api/v2/me/tokens/id/description", true},
+		{"/api/v2/me/tokens", true}, {"/api/v2/me/tokens/id/description", true}, {"/api/v2/me/tokens/id/scopes", true},
 		{"/api/v1/me/credential-scope-catalog", true}, {"/api/v2/auth/device/inspect", true}, {"/api/v2/auth/device/decision", true},
 		{"/api/v2/auth/device/inspect/other", false},
-		{"/api/v3/oauth/grants", true}, {"/api/v3/oauth/grants/id/description", true},
-		{"/api/v2/me/tokens/id", false}, {"/api/v2/me/tokens/id/description/extra", false},
+		{"/api/v3/oauth/grants", true}, {"/api/v3/oauth/grants/id/description", true}, {"/api/v3/oauth/grants/id/scopes", true},
+		{"/api/v2/me/tokens/id", false}, {"/api/v2/me/tokens/id/description/extra", false}, {"/api/v2/me/tokens/id/scopes/extra", false},
 		{"/api/v2/me/tokens-extra", false}, {"/api/v1/me/tokens", false}, {"/api/v2/oauth/grants", false},
 	} {
 		for _, method := range []string{"GET", "OPTIONS"} {

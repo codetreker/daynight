@@ -46,6 +46,14 @@ An unconfirmed decision remains protected across reloads; a pending read cannot
 prove that an earlier transaction has finished. The existing production pages
 remain assembled until the coordinated cutover.
 
+Opt-in account management exposes complete PAT and OAuth grant rows with their
+scope policies, and creates manual PATs with the CLI catalog. Scope edits bind
+the browser account, catalog revision and observed scope version. They retain or
+remove previously issued unavailable IDs but cannot add unavailable IDs. The
+target row and browser session are rechecked in the transaction; expiration and
+usage writes remain independent of scope fields. Fixed OAuth profiles have no
+editable business policy. The existing production assembly remains unchanged.
+
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
 registrations declare operation classifications for scoped assembly, including
@@ -80,6 +88,15 @@ The necessary discovery within Bot creation retains Bot admission and the
 existing Worker resource checks, including for MCP grants.
 The optional Bot attention projection requires Assistant Task read permission;
 its creation response is admitted before the definition is written.
+
+Session command admission classifies messages by their operation, including
+image-only messages, and treats other commands as control. The scoped execution
+reads the original actor's current policy in the Session transaction at submit,
+offer and final begin. A replay first probes only operation existence and requires
+Session read before loading its intent or receipt. A refusal before dispatch is
+committed with the operation receipt; an already dispatched fact is retained.
+The Session transaction exposes its credential DAOs without transferring their
+lifetime to the caller. The legacy production assembly remains unchanged.
 
 ## Alternatives
 
