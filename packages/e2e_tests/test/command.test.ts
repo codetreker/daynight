@@ -15,7 +15,8 @@ const active = async (pid: number): Promise<boolean> => {
     const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    // A process reaped between opening and reading its stat file reports ESRCH.
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH')) return false;
     throw error;
   }
 };

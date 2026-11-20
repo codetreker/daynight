@@ -208,14 +208,16 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
-  const usage = ticket.provider !== "claude" ? createUsageRuntime({
+  // Bot and legacy Test tickets share testExecutionId. Only the standalone
+  // launcher can establish a Test's metering scope without guessing its origin.
+  const usage = ticket.testExecutionId !== undefined && ticket.usageScope !== "standalone_test" ? null : createUsageRuntime({
     provider: ticket.provider,
     serverOrigin: ticket.serverOrigin, store: journal.usage, generation: ticket.executionGeneration,
     identity: { sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId },
     connection: () => { const fence = relay?.currentFence(), nativeSessionId = journal.getSnapshot().nativeSessionId; return fence && nativeSessionId ? { connectionEpoch: fence.connectionEpoch, nativeSessionId } : null; },
     readParentToken: async () => { const config = await loadServerConfiguration(resolveConfigurationPaths(options.homeDirectory)); if (config.serverUrl !== ticket.serverOrigin || !config.serverToken) throw new Error("Original usage parent credential is unavailable."); return config.serverToken; },
     onDiagnostic: diagnostic,
-  }) : null;
+  });
   own(async () => { await usage?.close(); });
   function stopForAccountingFailure(error: unknown): void {
     accountingFailure ??= error;

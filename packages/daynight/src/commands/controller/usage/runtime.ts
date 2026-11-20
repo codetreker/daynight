@@ -1,10 +1,11 @@
 import type { UsageStore, UsageState } from "./types.js";
 import { createUsageUploader, type UsageUploaderOptions } from "./uploader.js";
 import { usageCollectionState, usageProfileReasons } from "./profiles.js";
+import { mapClaudeUsageEvent } from "../providers/claude-usage.js";
 import { mapCopilotUsageEvent } from "../providers/copilot-usage.js";
 
 /** Metering failures stay outside the native command and timeline failure paths. */
-export const createUsageRuntime = (options: UsageUploaderOptions & { generation: string; provider?: "copilot" | "codex" }) => {
+export const createUsageRuntime = (options: UsageUploaderOptions & { generation: string; provider?: "copilot" | "codex" | "claude" }) => {
   const uploader = createUsageUploader(options), store: UsageStore = options.store;
   let current: UsageState | null = null, warned = false, closed = false;
   const provider = options.provider ?? "copilot";
@@ -46,8 +47,11 @@ export const createUsageRuntime = (options: UsageUploaderOptions & { generation:
       safe(() => {
         ready(input);
         if (!current || current.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) return;
-        const body = provider === "copilot" ? mapCopilotUsageEvent(input.event) : null;
-        if (body) store.enqueueMeasurement(current.stateId, body);
+        const body = provider === "copilot" ? mapCopilotUsageEvent(input.event) : provider === "claude" ? mapClaudeUsageEvent(input.event) : null;
+        if (body) {
+          store.enqueueMeasurement(current.stateId, body);
+          if (body.reasonCodes.includes("native_integer_unrepresentable")) gap("native_integer_unrepresentable");
+        }
         if (!warned && store.nearCapacity()) { warned = true; options.onDiagnostic?.("Usage journal is approaching its capacity."); }
       });
     },

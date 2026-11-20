@@ -46,16 +46,28 @@ export const UsageSummaryView = ({ summary, compact = false }: { readonly summar
 };
 const UsageProjectContext = createContext<string | null>(null);
 export const UsageProjectProvider = ({ projectId, children }: { readonly projectId: string; readonly children: ReactNode }) => <UsageProjectContext value={projectId}>{children}</UsageProjectContext>;
-const GraphUsageSummary = ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => {
-  const { summary } = useTaskUsage(projectId, taskId), { locale } = useI18n();
-  if (summary === null || (summary.metrics.totalTokens.known === null && summary.metrics.outputTokens.known === null && summary.metrics.inputTokens.known === null)) return null;
-  const reading = usageCompactReading(summary, locale);
-  const text = `${reading.label}: ${reading.value} · ${reading.state}`;
-  return <span className="task-node-usage" title={text}>
-    {text}
-  </span>;
+const graphTokenNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+export const formatGraphTokens = (value: string): string => {
+  const tokens = BigInt(value);
+  if (tokens >= 1_000_000_000_000_000n) return '≥1,000T';
+  const formatted = graphTokenNumber.format(tokens);
+  return formatted === '1000T' ? '1,000T' : formatted;
 };
-export const TaskNodeUsageSummary = ({ taskId }: { readonly taskId: string }) => { const projectId = useContext(UsageProjectContext); return projectId === null ? null : <GraphUsageSummary projectId={projectId} taskId={taskId} />; };
+
+export const useGraphTaskUsage = (taskId: string): { readonly short: string; readonly full: string } | null => {
+  const projectId = useContext(UsageProjectContext);
+  const { summary } = useTaskUsage(projectId, taskId);
+  const { locale } = useI18n();
+  if (summary === null) return null;
+  const key = usageCompactMetric(summary);
+  if (key === null) return null;
+  const reading = usageCompactReading(summary, locale);
+  return { short: `Token ${formatGraphTokens(summary.metrics[key].known!)}`, full: `${reading.label}: ${reading.value} · ${reading.state}` };
+};
+export const TaskNodeUsageSummary = ({ taskId }: { readonly taskId: string }) => {
+  const reading = useGraphTaskUsage(taskId);
+  return reading === null ? null : <span className="task-node-usage" title={reading.full}>{reading.short}</span>;
+};
 export const UsageError = ({ error, retry }: { readonly error: unknown; readonly retry: () => void }) => {
   const { locale } = useI18n(), m = usageWords(locale === 'zh-CN');
   return <div className="usage-error" role="alert"><span>{error instanceof ApiError && error.code === 'usage_unsupported' ? m.unsupported : m.error}</span> <button type="button" className="button" onClick={retry}>{m.retry}</button></div>;
