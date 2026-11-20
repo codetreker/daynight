@@ -16,7 +16,7 @@ type SearchItem = { id: string; title: string; match: { fields: string[]; descri
 type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(540_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();

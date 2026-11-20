@@ -94,6 +94,7 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 	} else {
 		sql = `UPDATE project_github SET version=$2, generation=$3, revision=$4, enabled=$5, app_id=$6,
 		 installation_id=$7, repository_id=$8, installation_account_login=$9, repository_full_name=$10,
+		 repository_default_branch=CASE WHEN repository_id IS DISTINCT FROM $8 THEN NULL ELSE repository_default_branch END,
 		 repository_private=$11, poll_interval_minutes=$12, access_state=$13, access_reason=$14,
 		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17, sync_enabled=$19,
          claim_token=CASE WHEN generation<>$3 THEN NULL ELSE claim_token END,

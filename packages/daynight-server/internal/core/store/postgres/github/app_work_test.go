@@ -128,6 +128,50 @@ func TestAppWorkPublishesWithCapturedIdentity(t *testing.T) {
 	}
 }
 
+func TestRepositoryDefaultBranchPublication(t *testing.T) {
+	f := newAppWorkFixture(t)
+	tx := begin(t, f.db, pgx.TxOptions{})
+	w, lease, _ := f.claimed(t, tx)
+	ctx := t.Context()
+	branch := "trunk"
+	o := store.GitHubRepositoryObservation{InstallationID: 20, RepositoryID: 30, RepositoryFullName: "owner/repo", RepositoryDefaultBranch: &branch}
+	check := func(want *string) {
+		t.Helper()
+		var got *string
+		if err := tx.QueryRow(ctx, `SELECT repository_default_branch FROM project_github WHERE project_id=$1`, f.project).Scan(&got); err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("default branch=%v want=%v err=%v", got, want, err)
+		}
+	}
+	check(nil)
+	if ok, err := w.PublishRepository(ctx, lease, o); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	check(&branch)
+	other := o
+	other.RepositoryID++
+	other.RepositoryDefaultBranch = nil
+	if ok, err := w.PublishRepository(ctx, lease, other); err != nil || ok {
+		t.Fatalf("wrong identity: %v %v", ok, err)
+	}
+	check(&branch)
+	o.RepositoryFullName = "owner/renamed"
+	if ok, err := w.PublishRepository(ctx, lease, o); err != nil || !ok {
+		t.Fatalf("rename: %v %v", ok, err)
+	}
+	check(&branch)
+	o.RepositoryDefaultBranch = nil
+	if ok, err := w.PublishRepository(ctx, lease, o); err != nil || !ok {
+		t.Fatalf("unknown: %v %v", ok, err)
+	}
+	check(nil)
+	branch = "main"
+	o.RepositoryDefaultBranch = &branch
+	if ok, err := w.PublishRepository(ctx, lease, o); err != nil || !ok {
+		t.Fatalf("changed default: %v %v", ok, err)
+	}
+	check(&branch)
+}
+
 func assertAppWorkFenced(t *testing.T, w store.GitHubAppWorkDAO, lease store.GitHubLease, now time.Time, f appWorkFixture) {
 	t.Helper()
 	ctx := t.Context()
