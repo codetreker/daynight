@@ -56,7 +56,7 @@ func TestWebhookAppEventLogThroughGCStress(t *testing.T) {
 		args []any
 	}{
 		{`INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$1::uuid::text,now(),now())`, []any{user}},
-		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'log-chain',now(),now()+interval '1 day')`, []any{session, user, secret.Hash(token)}},
+		{`INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['project:read','task:read','task:status','task:write','webhook:delete','webhook:deliver','webhook:read','webhook:secret','webhook:write','worker:read'],1,$1,$2,$3,'log-chain',now(),now()+interval '1 day')`, []any{session, user, secret.Hash(token)}},
 		{`INSERT INTO teams(id,name) VALUES($1,'logs')`, []any{team}},
 		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, []any{team, user}},
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'logs','https://example.test/logs')`, []any{project}},

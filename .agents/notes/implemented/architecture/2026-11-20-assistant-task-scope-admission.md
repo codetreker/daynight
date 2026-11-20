@@ -21,8 +21,7 @@ Scoped admission reads the current policy through a transaction-bound reader,
 after the applicable identity and resource checks and before effects, and repeats
 credential and policy checks before completion. The existing Bot and claim checks
 remain mandatory. The route inventory and business admission share the same scope
-contract. The existing production assembly retains its credential path until
-scoped assembly and authoritative storage are connected.
+contract. Production binds scoped assembly to authoritative credential storage.
 
 ## Alternatives
 
@@ -39,7 +38,6 @@ missed. A transaction-bound reader preserves that boundary.
 Scope permission does not confer Bot identity, claim ownership or access to
 another user's task. A rejected operation cannot publish the generated inbox
 secret. The transaction reader must hold the credential lock until completion;
-production activation and the authoritative storage implementation remain
-separate work. The [credential scope contract](2026-11-20-credential-scope-contract.md)
+production supplies that reader through its original transaction. The [credential scope contract](2026-11-20-credential-scope-contract.md)
 owns the shared vocabulary and the [Assistant Task design](../../../../docs/design/assistant-task.md)
 describes the component boundary.

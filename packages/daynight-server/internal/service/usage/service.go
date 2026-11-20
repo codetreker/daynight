@@ -155,7 +155,7 @@ func uniqueParents(sorted []string) []string {
 	}
 	return unique
 }
-func readPermission(ctx context.Context, scope store.UsageScope, p model.Principal, session store.UsageSession, admin bool) (string, error) {
+func (s *Service) readPermission(ctx context.Context, scope store.UsageScope, p model.Principal, session store.UsageSession, admin bool) (string, error) {
 	if session.BotID != nil {
 		return "", core.Fault("resource_unavailable")
 	}
@@ -171,7 +171,7 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 		if p.UserID != session.OwnerID {
 			return "", core.Fault("resource_unavailable")
 		}
-		if err = recheckUsageScope(ctx, scope, p, now); err != nil {
+		if err = s.recheckUsageScope(ctx, scope, p, now); err != nil {
 			return "", err
 		}
 		return p.UserID, nil
@@ -190,7 +190,7 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 	if admin && p.UserID != session.OwnerID && a.Role != model.ProjectAdmin {
 		return "", core.Fault("resource_unavailable")
 	}
-	if err = recheckUsageScope(ctx, scope, p, now); err != nil {
+	if err = s.recheckUsageScope(ctx, scope, p, now); err != nil {
 		return "", err
 	}
 	epoch, err := dao.PermissionEpoch(ctx, p.UserID, *session.ProjectID)
@@ -215,7 +215,7 @@ func (s *Service) State(ctx context.Context, p model.Principal, id string) (mode
 		if err != nil {
 			return err
 		}
-		if _, err = readPermission(ctx, scope, p, session, true); err != nil {
+		if _, err = s.readPermission(ctx, scope, p, session, true); err != nil {
 			return err
 		}
 		now, err := scope.UsageDAO().Now(ctx)

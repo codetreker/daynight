@@ -35,7 +35,7 @@ type routes struct {
 }
 
 // RegisterRoutes binds owner operations to the existing browser authenticator.
-func RegisterRoutes(mux *http.ServeMux, grants lifecycle, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, grants lifecycle, auth *authhttp.Authentication, logger *slog.Logger) {
 	registerRoutes(mux, grants, nil, auth, logger, nil)
 }
 
@@ -45,7 +45,7 @@ type scopedManagement interface {
 }
 
 // RegisterScopedRoutes opts into scoped grant reads and edits after migration.
-func RegisterScopedRoutes(mux *http.ServeMux, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger) {
 	RegisterScopedRoutesWithScopeObserver(mux, grants, scoped, auth, logger, nil)
 }
 
@@ -55,11 +55,11 @@ type ScopeRoute struct {
 	BrowserOnly, Fallback bool
 }
 
-func RegisterScopedRoutesWithScopeObserver(mux *http.ServeMux, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func RegisterScopedRoutesWithScopeObserver(mux httpx.RouteRegistrar, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	registerRoutes(mux, grants, scoped, auth, logger, observe)
 }
 
-func registerRoutes(mux *http.ServeMux, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
+func registerRoutes(mux httpx.RouteRegistrar, grants lifecycle, scoped scopedManagement, auth *authhttp.Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	h := &routes{grants: grants, scoped: scoped, auth: auth, logger: logger}
 	handle := func(pattern string, fn http.HandlerFunc, fallback bool) {
 		mux.HandleFunc(pattern, fn)

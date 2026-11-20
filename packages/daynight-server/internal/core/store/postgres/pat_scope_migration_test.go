@@ -40,7 +40,7 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 		if err := pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM information_schema.columns WHERE table_schema=current_schema() AND column_name IN ('business_scopes','scope_version','approved_business_scopes') AND table_name IN ('personal_access_tokens','device_authorizations')) AND NOT EXISTS(SELECT FROM schema_migrations WHERE version=108)`).Scan(&ok); err != nil || !ok {
 			t.Fatalf("failed migration left schema or ledger changes: %v %v", ok, err)
 		}
-		if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
+		if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 			t.Fatal(err)
 		}
 		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*)=1 AND bool_and(business_scopes IS NULL AND scope_version IS NULL AND name='old' AND encode(token_hash,'hex')=repeat('01',32) AND expires_at IS NOT NULL AND last_used_at IS NOT NULL) FROM personal_access_tokens) AND (SELECT count(*)=2 AND bool_and(approved_business_scopes IS NULL) AND count(*) FILTER (WHERE status='approved' AND user_id='00000000-0000-0000-0000-000000000002')=1 AND count(*) FILTER (WHERE status='pending' AND user_id IS NULL)=1 FROM device_authorizations)`).Scan(&ok); err != nil || !ok {
@@ -53,7 +53,7 @@ VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BC
 
 	t.Run("empty startup and existing writers", func(t *testing.T) {
 		pool := emptyPool(t)
-		if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
+		if err := migrate(ctx, pool, schemaMigrations[:index+1]); err != nil {
 			t.Fatal(err)
 		}
 		_, err := pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES ('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',decode(repeat('01',32),'hex'),'new',now()); INSERT INTO device_authorizations(id,device_code_hash,user_code,status,created_at,expires_at,next_poll_at,poll_interval_seconds) VALUES ('00000000-0000-0000-0000-000000000003',decode(repeat('02',32),'hex'),'BCDFGHJKLM','pending',now(),now()+interval '1 hour',now(),5)`)

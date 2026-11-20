@@ -13,8 +13,45 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialpolicy"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestLifecycleScopedCredentialAdmissionUsesTransactionPolicy(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	principal := model.Principal{Kind: model.PATCredential, UserID: queryID(1), CredentialID: queryID(2)}
+	workerID := queryID(3)
+	putWorkerSnapshot(t, database, workerSnapshotFixture(principal.UserID, workerID, time.Now().UTC()))
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,business_scopes,scope_version) VALUES($1,$2,decode(repeat('01',32),'hex'),'lifecycle',clock_timestamp(),ARRAY['worker:read','worker:report'],1)`, principal.CredentialID, principal.UserID); err != nil {
+		t.Fatal(err)
+	}
+	workers, err := workerservice.NewScopedWorkers(database, &credentialpolicy.Source{Database: database, Origin: "https://example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := model.LifecycleInstanceRequest{ProtocolVersion: 1, OperationID: queryID(4), InstanceID: queryID(5), Capabilities: model.LifecycleCapabilities{Disable: true, Resume: true, Inventory: 1, DispatchFence: 1}, Platform: "linux"}
+	receipt, err := workers.RegisterLifecycle(ctx, principal, workerID, request)
+	if err != nil || receipt.InstanceEpoch != "1" || receipt.InstanceID != request.InstanceID {
+		t.Fatalf("scoped lifecycle registration: %+v %v", receipt, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE personal_access_tokens SET business_scopes=ARRAY['worker:read'],scope_version=2 WHERE id=$1`, principal.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	request.OperationID = queryID(6)
+	request.InstanceID = queryID(7)
+	_, err = workers.RegisterLifecycle(ctx, principal, workerID, request)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "insufficient_scope" {
+		t.Fatalf("reduced policy did not refuse lifecycle write: %v", err)
+	}
+	state, err := workers.Lifecycle(ctx, principal, workerID)
+	if err != nil || state.Instance == nil || state.Instance.InstanceID != receipt.InstanceID || state.Instance.InstanceEpoch != receipt.InstanceEpoch {
+		t.Fatalf("refused write changed original instance: %+v %v", state, err)
+	}
+}
 
 func TestLifecycleWireCommitLossPreservesIntentAndOriginalReceipt(t *testing.T) {
 	parallelRootDatabaseTest(t)

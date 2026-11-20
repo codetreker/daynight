@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
@@ -36,7 +37,7 @@ const (
 )
 
 type runtimeRouteRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(RuntimeScopeRoute)
 }
 

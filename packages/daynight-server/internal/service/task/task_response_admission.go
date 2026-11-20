@@ -49,6 +49,7 @@ func MCPTaskResponseFromContext(ctx context.Context) (MCPTaskResponse, bool) {
 // but before the surrounding transaction commits. Returning its error directly
 // from the transaction callback is required to roll back the completed writes.
 func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error {
+	task = projectTaskWriteResponse(ctx, task)
 	actual := task
 	if len(task.Tags) != 0 {
 		// Reserve space for any legal rename and later version/time-only touches.

@@ -17,10 +17,14 @@ and applies the shared scope guard alongside existing resource and lifecycle
 admission before mutation. Task Tag associations are Task writes; catalog
 management remains independent. Ordinary status and claim-bound completion use
 separate operations. Explicit scoped REST and MCP adapters carry the authenticated
-policy and response selection into the same service operations. Legacy production
-assembly remains unchanged.
+policy and response selection into the same service operations. Production uses those scoped registrations.
 
 Full Task and property responses require Task read permission before writing.
+Ordinary and tag-only writes omit managed Session properties without Session
+read permission before response sizing and serialization; internal facts retain
+the complete Task. Full claim, report and claim-bound completion responses
+require Session read permission before mutation because supported clients require
+their Worker facts.
 An explicit REST receipt or MCP receipt contains only the Project and Task IDs
 and resulting version; MCP also retains its write outcome. MCP defaults to that
 receipt for a restricted credential without Task read permission. Its optional
@@ -46,5 +50,4 @@ confirmation without disclosing those fields.
 Every requested permission is required before the write, preserving atomic
 refusal and existing role, version and claim checks. Receipt consumers must read
 separately when they need the Task contents. Current request authorization uses
-the authenticated policy snapshot; existing production assembly and activation
-of scoped credentials remain separate work.
+the authenticated policy snapshot; production supplies that snapshot through scoped authentication.

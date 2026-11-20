@@ -50,7 +50,7 @@ type ReadOnlyRoutes struct {
 func NewReadOnlyRoutes(broker *ro.Broker, auth *authhttp.Authentication, logger *slog.Logger) *ReadOnlyRoutes {
 	return &ReadOnlyRoutes{broker: broker, auth: auth, logger: logger, connections: map[*websocket.Conn]context.CancelFunc{}, drained: make(chan struct{}), requestTargets: map[string]int{}, bodyTimeout: 5 * time.Second, operationTimeout: ro.OperationTimeout, heartbeatInterval: 5 * time.Second}
 }
-func (h *ReadOnlyRoutes) RegisterRoutes(mux *http.ServeMux) {
+func (h *ReadOnlyRoutes) RegisterRoutes(mux httpx.RouteRegistrar) {
 	h.RegisterRoutesWithScopeObserver(mux, nil)
 }
 
@@ -65,7 +65,7 @@ func NewScopedReadOnlyRoutes(broker *ro.Broker, auth ScopedAuthentication, logge
 	return routes
 }
 
-func (h *ReadOnlyRoutes) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
+func (h *ReadOnlyRoutes) RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) {
 	routes := routeRegistry{mux: mux, observe: observe}
 	const base = "/api/v1/me/workers/{workerId}/readonly"
 	routes.handle("POST "+base+"/requests", h.auth.Require(h.request), routeInspect)

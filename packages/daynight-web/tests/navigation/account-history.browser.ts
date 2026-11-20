@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -14,12 +15,13 @@ const install = async (page: Page) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
     if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send(user);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v2/me/tokens') return request.method() === 'POST'
-      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', description: null, lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
+      ? send({ id: '00000000-0000-4000-8000-000000000022', name: 'Device', description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, createdAt: time, expiresAt: null, token: 'once-only-secret' }, 201)
       : send({ items: [] });
     if (path === '/api/v3/oauth/grants') return send({ userId, grants: [] });
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, revision: '1', text: 'Original prompt', updatedAt: time });
@@ -206,7 +208,7 @@ test('account links open their selected page in a new tab', async ({ page, conte
 
 test('credential-specific setup and device links land on credentials', async ({ page }) => {
   await install(page);
-  await page.route('**/api/v1/auth/device/inspect', route => route.fulfill({ json: { userCode: 'BCDFG-HJKLM', status: 'approved', expiresAt: '2099-10-20T09:00:00Z' }, headers: { 'Daynight-User-ID': userId } }));
+  await page.route('**/api/v2/auth/device/inspect', route => route.fulfill({ json: { userCode: 'BCDFG-HJKLM', status: 'approved', expiresAt: '2099-10-20T09:00:00Z' }, headers: { 'Daynight-User-ID': userId } }));
   await page.goto('/account');
   const enter = async (path: string) => page.evaluate(destination => {
     history.pushState(null, '', destination); dispatchEvent(new PopStateEvent('popstate'));

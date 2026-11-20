@@ -65,6 +65,20 @@ func deviceBody(d deviceStartResponse, decision string) string {
 	return string(b)
 }
 
+func scopedDeviceBody(t *testing.T, h *authHarness, d deviceStartResponse, decision string) string {
+	t.Helper()
+	body := map[string]any{"userCode": d.UserCode, "decision": decision, "expectedUserId": d.ExpectedUserID}
+	if decision == "approve" {
+		catalog, enabled := h.Identity.DeviceScopeCatalog()
+		if !enabled {
+			t.Fatal("PAT scope catalog is unavailable")
+		}
+		body["catalogRevision"] = catalog.CatalogRevision
+		body["scopes"] = []string{"task:read"}
+	}
+	return testsupport.JSONBody(t, body)
+}
+
 func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.Login(t, "device-user")
@@ -75,7 +89,7 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	if inspect.Status != "pending" || inspect.UserCode != d.UserCode {
 		t.Fatalf("inspection: %+v", inspect)
 	}
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), cookies, nil, h.Origin); w.Code != 204 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), cookies, nil, h.Origin); w.Code != 204 {
 		t.Fatalf("approval: %d %s", w.Code, w.Body)
 	}
 	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE device_authorizations SET next_poll_at=$1`, time.Now().Add(-time.Second)); err != nil {
@@ -252,11 +266,11 @@ func TestDeviceHTTPDeniedExpiredLimitsAndFailures(t *testing.T) {
 	cookie := h.Login(t, "device-user")
 	cookies := []*http.Cookie{cookie}
 	d := deviceHTTPStart(t, h)
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "deny"), cookies, nil, h.Origin); w.Code != 204 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "deny"), cookies, nil, h.Origin); w.Code != 204 {
 		t.Fatalf("deny: %d", w.Code)
 	}
 	deviceHTTPOAuthError(t, deviceHTTPPoll(h, d), 400, "access_denied")
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), cookies, nil, h.Origin); w.Code != 409 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), cookies, nil, h.Origin); w.Code != 409 {
 		t.Fatalf("duplicate decision: %d", w.Code)
 	}
 	expired := deviceHTTPStart(t, h)
@@ -294,7 +308,7 @@ func TestDeviceHTTPAccountSwitchCannotApproveReviewedAccount(t *testing.T) {
 	if inspect.Status != "pending" {
 		t.Fatal("unexpected initial grant status")
 	}
-	if w := h.Request("POST", "/api/v1/auth/device/decision", deviceBody(d, "approve"), []*http.Cookie{bob}, nil, h.Origin); w.Code != 403 {
+	if w := h.Request("POST", "/api/v2/auth/device/decision", scopedDeviceBody(t, h, d, "approve"), []*http.Cookie{bob}, nil, h.Origin); w.Code != 403 {
 		t.Fatalf("changed account decision: %d %s", w.Code, w.Body)
 	}
 	inspect = testsupport.DecodeResponse[identity.DeviceInspection](t, h.Request("POST", "/api/v1/auth/device/inspect", `{"userCode":"`+d.UserCode+`"}`, []*http.Cookie{alice}, nil, h.Origin), 200)

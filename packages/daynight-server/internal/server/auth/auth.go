@@ -75,19 +75,19 @@ func (h *Authentication) cookie(name, value string, expires time.Time, maxAge in
 	return &http.Cookie{Name: name, Value: value, Path: "/", Secure: h.secure, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expires, MaxAge: maxAge}
 }
 
-func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
+func (h *Authentication) RegisterRoutes(mux httpx.RouteRegistrar) {
 	h.RegisterRoutesWithScopeObserver(mux, nil)
 }
 
 // RegisterRoutesWithScopeObserver reports account classifications from actual registrations.
-func (h *Authentication) RegisterRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) {
+func (h *Authentication) RegisterRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) {
 	h.registerRoutes(mux, observe, nil, nil)
 }
 
 // RegisterScopedRoutes selects policy-aware profile admission while preserving the
 // existing authentication and account-management routes. scoped must retain the
 // original authentication and Origin checks.
-func (h *Authentication) RegisterScopedRoutes(mux *http.ServeMux, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) {
+func (h *Authentication) RegisterScopedRoutes(mux httpx.RouteRegistrar, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) {
 	if scoped == nil || profile == nil {
 		panic("scoped profile dependencies are required")
 	}
@@ -97,7 +97,7 @@ func (h *Authentication) RegisterScopedRoutes(mux *http.ServeMux, scoped ScopedA
 }
 
 // RegisterScopedAccountRoutes combines scope-aware profile and credential management.
-func (h *Authentication) RegisterScopedAccountRoutes(mux *http.ServeMux, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) error {
+func (h *Authentication) RegisterScopedAccountRoutes(mux httpx.RouteRegistrar, scoped ScopedAuthentication, profile ScopedProfile, recheck identityservice.ProfileScopeRecheck, observe func(ScopeRoute)) error {
 	if scoped == nil || profile == nil {
 		return errors.New("scoped profile dependencies are required")
 	}
@@ -115,7 +115,7 @@ func (h *Authentication) RegisterScopedAccountRoutes(mux *http.ServeMux, scoped 
 }
 
 // RegisterPATScopeRoutes registers account routes with scoped PAT management.
-func (h *Authentication) RegisterPATScopeRoutes(mux *http.ServeMux, observe func(ScopeRoute)) error {
+func (h *Authentication) RegisterPATScopeRoutes(mux httpx.RouteRegistrar, observe func(ScopeRoute)) error {
 	pat, ok := h.identity.(ScopedPATOperations)
 	if !ok {
 		return errors.New("identity service does not support scoped PAT management")
@@ -127,7 +127,7 @@ func (h *Authentication) RegisterPATScopeRoutes(mux *http.ServeMux, observe func
 	return nil
 }
 
-func (h *Authentication) registerRoutes(mux *http.ServeMux, observe func(ScopeRoute), scopedPatch http.HandlerFunc, pat ScopedPATOperations) {
+func (h *Authentication) registerRoutes(mux httpx.RouteRegistrar, observe func(ScopeRoute), scopedPatch http.HandlerFunc, pat ScopedPATOperations) {
 	routes := accountRouteRegistry{mux: mux, observe: observe}
 	h.registerDeviceRoutes(mux)
 	h.registerCredentialRoutes(routes, pat)

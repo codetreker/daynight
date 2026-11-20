@@ -20,7 +20,7 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, principal, session := testutil.AuthRecords(t, s)
 	login := model.LoginTransaction{ID: uuid.NewString(), StateHash: testutil.DeviceHash("state"), BrowserBindingHash: testutil.DeviceHash("browser"), ScopeHash: testutil.DeviceHash("scope"), Provider: "github", ReturnPath: "/projects", ExpiresAt: now.Add(time.Hour)}
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: testutil.DeviceHash("pat"), Name: "DAO PAT", CreatedAt: now}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: testutil.DeviceHash("pat"), Name: "DAO PAT", CreatedAt: now}
 	identityScopeTest(t, s, func(scope IdentityScope) error {
 		dao := scope.IdentityDAO()
 		if err := dao.CleanupCredentials(ctx, now); err != nil {

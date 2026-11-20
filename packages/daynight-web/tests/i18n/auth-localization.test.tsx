@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { directAccessFixture } from "../helpers/taskSync";
 import { stringifyWireJson } from "../helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -32,6 +33,7 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 const defaults = (url: string): Response => {
+  if (url === "/api/v1/me/credential-scope-catalog") return json(credentialScopeCatalogs);
   if (url === "/api/v1/me") return json(user);
   if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(userId));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
@@ -127,7 +129,7 @@ describe("authentication language changes", () => {
   it("keeps token inputs and one pending creation across an application language change, then preserves the revealed secret", async () => {
     window.history.replaceState(null, "", "/account");
     const pending = deferred<Response>();
-    const created = { id: tokenId, name: "原始 device", description: null, lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" };
+    const created = { id: tokenId, name: "原始 device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" };
     let issued = false;
     const fetcher = install((url, init) => url === "/api/v2/me/tokens" ? init?.method === "POST" ? pending.promise : json({ items: issued ? [created] : [] }) : defaults(url));
     const interaction = userEvent.setup();
@@ -321,7 +323,7 @@ describe("authentication language changes", () => {
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {
     const invitationId = "00000000-0000-4000-8000-000000000005";
     const fetcher = install((url) => {
-      if (url === "/api/v2/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", description: null, lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
+      if (url === "/api/v2/me/tokens") return json({ items: [{ id: tokenId, name: "Raw 令牌", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z" }] });
       if (url === `/api/v1/projects/${projectId}/invitations`) return json({ items: [{ id: invitationId, projectId, createdBy: userId, createdAt: timestamp, expiresAt: "2099-10-29T12:34:56Z", consumedBy: null, consumedAt: null, revokedAt: null }] });
       return defaults(url);
     });
@@ -401,7 +403,7 @@ describe("authentication language changes", () => {
     let checks = 0;
     const fetcher = install((url, init) => {
       if (url === "/api/v1/me") checks++;
-      if (url === "/api/v2/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", description: null, lastUsedAt: null, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
+      if (url === "/api/v2/me/tokens" && init?.method === "POST") return json({ id: tokenId, name: "Raw device", description: null, lastUsedAt: null, scopePolicy: credentialScopePolicy, createdAt: timestamp, expiresAt: "2099-10-22T12:34:56Z", token: "kept-raw-secret" }, 201);
       return defaults(url);
     });
     const interaction = userEvent.setup();

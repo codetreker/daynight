@@ -23,10 +23,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/google/uuid"
 )
 
@@ -131,13 +129,9 @@ func TestOAuthProfileComposition(t *testing.T) {
 }
 
 func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
-	if app.PrivateContent != nil || app.Uploads == nil {
-		t.Fatal("unexpected private content composition")
-	}
-	_, err := app.Uploads.Execute(context.Background(), transfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
-	if err == nil || !strings.Contains(err.Error(), "upload service unavailable") {
-		t.Fatalf("upload without private storage: %v", err)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
+	if app.PrivateContent != nil || app.Uploads != nil {
+		t.Fatal("incomplete private storage assembled scoped transfer services")
 	}
 	if err := app.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -392,7 +386,7 @@ func (f *observedAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForPersistenceAndReusesTimedOutClose(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
 	started, release, completed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseClose := func() { releaseOnce.Do(func() { close(release) }) }
@@ -477,7 +471,7 @@ func (f *blockingAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
 	var persistenceCalls atomic.Int32
 	app.persistence = &Persistence{Close: func() { persistenceCalls.Add(1) }}
 	failure := errors.New("file close failed")
@@ -572,7 +566,7 @@ func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
 	t.Setenv("DAYNIGHT_USAGE_CURSOR_KEY", "")
 	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "false")
 	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
 	defer func() {
 		if err := app.Close(t.Context()); err != nil {
 			t.Error(err)
@@ -580,5 +574,34 @@ func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
 	}()
 	if app.UsageError != nil || app.Usage == nil || app.Usage.Capabilities()["writeEnabled"] != false {
 		t.Fatalf("usage assembly: service=%v error=%v", app.Usage, app.UsageError)
+	}
+}
+
+func TestOpenAppCleansResourcesOnScopedUsageConfigurationFailure(t *testing.T) {
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "invalid")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	openers.monitoring = func(string) (monitoringBackend, error) {
+		t.Fatal("monitoring opened after invalid usage configuration")
+		return nil, nil
+	}
+	app, err := openApp(t.Context(), c, nil, openers)
+	var invalid *configvalue.ConfigurationError
+	if app != nil || !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_USAGE_WRITE_ENABLED" || backend.closes != 1 {
+		t.Fatalf("usage startup failure lost its field or cleanup: app=%v error=%v closes=%d", app, err, backend.closes)
+	}
+}
+
+func TestOpenAppRejectsMissingRequiredMonitoringOpener(t *testing.T) {
+	c := appTestConfig(t)
+	c.Monitoring.Redis.RedisURL = "redis://redis.example"
+	backend := newAppBackend(t)
+	openers := appTestOpeners(t, c, backend)
+	app, err := openApp(t.Context(), c, nil, openers)
+	if app != nil || err == nil || !strings.Contains(err.Error(), "monitoring store opener is unavailable") || backend.closes != 1 {
+		t.Fatalf("missing monitoring dependency did not fail and clean resources: app=%v error=%v closes=%d", app, err, backend.closes)
 	}
 }

@@ -40,7 +40,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if empty.Items == nil || len(empty.Items) != 0 {
 		t.Fatalf("empty tokens: %+v", empty)
 	}
-	createResponse := h.Request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.Origin)
+	createResponse := createScopedHTTPPAT(t, h, cookie, "CI agent", nil)
 	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createResponse, 201)
 	if !strings.Contains(createResponse.Body.String(), `"lastUsedAt":null`) {
 		t.Fatal("created PAT must contain null lastUsedAt")
@@ -73,7 +73,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if got := h.Request("POST", "/mutation", "", cookies, bearer, "https://foreign.test"); got.Code != 204 {
 		t.Fatalf("Bearer origin behavior: %d %s", got.Code, got.Body)
 	}
-	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v2/me/tokens", `{"name":"nested","expiresAt":null}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
 		got := h.Request(call.method, call.path, call.body, cookies, bearer, h.Origin)
 		testsupport.AssertProjectError(t, got, 403, "forbidden")
 	}
@@ -400,7 +400,7 @@ func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
 	user := testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", cookies, nil, ""), http.StatusOK)
 	mint := func(name string) api.CreatedPersonalAccessToken {
 		t.Helper()
-		return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request(http.MethodPost, "/api/v1/me/tokens", `{"name":"`+name+`","expiresAt":null}`, cookies, nil, h.Origin), http.StatusCreated)
+		return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, createScopedHTTPPAT(t, h, cookie, name, nil), http.StatusCreated)
 	}
 	expired, active := mint("Expired independently"), mint("Active independently")
 	result, err := h.Database.Pool.Exec(context.Background(), `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, expired.ID)

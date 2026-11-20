@@ -35,7 +35,7 @@ type grantHandler struct {
 
 // RegisterGrantRoutes installs the independent grant adapter. The caller supplies
 // authentication for each route.
-func RegisterGrantRoutes(mux *http.ServeMux, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterGrantRoutes(mux httpx.RouteRegistrar, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
 	registerGrantRoutes(NewRouteRegistry(mux, nil), ops, auth, logger)
 }
 

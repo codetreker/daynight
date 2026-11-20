@@ -93,3 +93,33 @@ func TestScopedTaskFullResponseRequiresReadBeforeWrite(t *testing.T) {
 		t.Fatalf("full response refusal: status=%d headers=%v body=%s", w.Code, w.Header(), w.Body)
 	}
 }
+
+func TestScopedMutationMethodFallbacks(t *testing.T) {
+	f := newHTTPFixture(t, io.Discard)
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := scopedTaskAuthentication{model.CredentialAuthorization{Principal: f.principal, Profile: model.ScopedPATProfile, Policy: &policy}}
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := taskhttp.RegisterScopedWriteRoutes(mux, f.Tasks, scopedGoalOperations{}, auth, logger); err != nil {
+		t.Fatal(err)
+	}
+	if err := taskhttp.RegisterScopedWorkerClaimRoutes(mux, f.Tasks, auth, logger); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ suffix, allow string }{
+		{"/status", "PUT"}, {"/properties/name", "PUT, DELETE"},
+		{"/worker-claim", "POST, PATCH"}, {"/worker-claim/release", "POST"}, {"/worker-claim/withdraw", "POST"},
+	} {
+		t.Run(tc.suffix, func(t *testing.T) {
+			r := httptest.NewRequest("TRACE", "/api/v1/projects/"+testProjectID+"/tasks/"+testTaskID+tc.suffix, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != tc.allow || !strings.Contains(w.Body.String(), `"method_not_allowed"`) {
+				t.Fatalf("fallback: %d Allow=%q %s", w.Code, w.Header().Get("Allow"), w.Body)
+			}
+		})
+	}
+}

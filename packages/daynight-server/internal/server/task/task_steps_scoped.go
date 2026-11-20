@@ -92,7 +92,7 @@ func (s scopedStepAdapter) Delete(ctx context.Context, p model.Principal, projec
 }
 
 // TaskStepsScopedRoutes mounts the existing protocol with scoped admission.
-func TaskStepsScopedRoutes(mux *http.ServeMux, steps ScopedStepService, auth ScopedStepAuthentication, logger *slog.Logger, observe ...func(StepScopeRoute)) {
+func TaskStepsScopedRoutes(mux httpx.RouteRegistrar, steps ScopedStepService, auth ScopedStepAuthentication, logger *slog.Logger, observe ...func(StepScopeRoute)) {
 	var observer func(StepScopeRoute)
 	if len(observe) > 0 {
 		observer = observe[0]

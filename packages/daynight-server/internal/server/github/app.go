@@ -38,7 +38,7 @@ type appHandler struct {
 
 // RegisterAppRoutes installs the independent App adapter. origin is the trusted
 // configured public origin, never an incoming Host header.
-func RegisterAppRoutes(mux *http.ServeMux, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
+func RegisterAppRoutes(mux httpx.RouteRegistrar, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
 	registerAppRoutes(NewRouteRegistry(mux, nil), ops, auth, origin, logger, config...)
 }
 

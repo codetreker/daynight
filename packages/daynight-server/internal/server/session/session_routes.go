@@ -80,23 +80,29 @@ func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger 
 func newRoutes(service serviceCalls, auth *authhttp.RequestAuthentication, logger *slog.Logger) *Routes {
 	return &Routes{service: service, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
-func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
+func (h *Routes) RegisterRoutes(mux httpx.RouteRegistrar) {
 	h.RegisterRoutesWithProducerObserver(mux, nil)
 }
 
 // RegisterRoutesWithProducerObserver records the producer routes as they are
 // registered. Other Session operations have their own admission owners.
-func (h *Routes) RegisterRoutesWithProducerObserver(mux *http.ServeMux, observe func(ProducerRoute)) {
+func (h *Routes) RegisterRoutesWithProducerObserver(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
 	h.registerRoutes(mux, observe, nil)
 }
 
 // RegisterRoutesWithImageOccurrenceObserver records occurrence admission on
 // the actual registrations, including the implicit HEAD route.
-func (h *Routes) RegisterRoutesWithImageOccurrenceObserver(mux *http.ServeMux, observe func(ImageOccurrenceRoute)) {
+func (h *Routes) RegisterRoutesWithImageOccurrenceObserver(mux httpx.RouteRegistrar, observe func(ImageOccurrenceRoute)) {
 	h.registerRoutes(mux, nil, observe)
 }
 
-func (h *Routes) registerRoutes(mux *http.ServeMux, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
+// RegisterRoutesWithScopeObservers records both producer and image occurrence
+// classifications from the same registration pass.
+func (h *Routes) RegisterRoutesWithScopeObservers(mux httpx.RouteRegistrar, producer func(ProducerRoute), occurrence func(ImageOccurrenceRoute)) {
+	h.registerRoutes(mux, producer, occurrence)
+}
+
+func (h *Routes) registerRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute), observeOccurrence func(ImageOccurrenceRoute)) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux, observe)
 	h.registerArchiveRoutes(mux, observe)

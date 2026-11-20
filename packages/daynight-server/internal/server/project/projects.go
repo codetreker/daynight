@@ -19,7 +19,7 @@ type projectHandler struct {
 }
 
 // RegisterRoutes mounts the authenticated Project endpoints.
-func RegisterRoutes(mux *http.ServeMux, projects ProjectOperations, auth RouteAuthentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, projects ProjectOperations, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &projectHandler{projects: projects, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))

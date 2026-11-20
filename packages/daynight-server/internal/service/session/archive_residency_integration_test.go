@@ -44,7 +44,7 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 	user := testsupport.FixtureIdentitySession(t, f.db, model.User{ID: otherID, UniAuthID: uuid.NewString()}, model.Session{ID: uuid.NewString(), TokenHash: tokenHash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	pat := uuid.NewString()
 	hash := sha256.Sum256([]byte(pat))
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'archive owner',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['session:control','session:produce','session:read','session:send'],1,$1,$2,$3,'archive owner',now(),now()+interval '1 day')`, pat, user.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
 	other := model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: pat}

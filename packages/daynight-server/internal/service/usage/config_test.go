@@ -1,9 +1,52 @@
 package usage
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
+
+func TestScopedEnvironmentRejectsConfigurationBeforeConstructingProducer(t *testing.T) {
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "invalid")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
+	service, err := ScopedFromEnvironment(nil, nil)
+	var invalid *configvalue.ConfigurationError
+	if service != nil || !errors.As(err, &invalid) || invalid.Field != "DAYNIGHT_USAGE_WRITE_ENABLED" {
+		t.Fatalf("configuration error was hidden by missing authorization: service=%v error=%v", service, err)
+	}
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "true")
+	if service, err = ScopedFromEnvironment(nil, nil); service != nil || err == nil || !strings.Contains(err.Error(), "usage producer authorization is required") {
+		t.Fatalf("valid configuration accepted missing producer authorization: service=%v error=%v", service, err)
+	}
+}
+
+func TestScopedEnvironmentInstallsExactProducerAuthorization(t *testing.T) {
+	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "true")
+	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "copilot-event-1.0.11-v1@1.0.11+1.0.105")
+	actor := model.Principal{Kind: model.SessionCredential, UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "20000000-0000-4000-8000-000000000001"}
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	failure := errors.New("producer authorization unavailable")
+	calls := 0
+	service, err := ScopedFromEnvironment(nil, func(ctx context.Context, scope store.UsageScope, actual model.Principal, at time.Time, write bool) (model.CredentialAuthorization, error) {
+		calls++
+		if ctx != t.Context() || scope != nil || actual != actor || !at.Equal(now) || !write {
+			t.Fatal("producer authorization received different operation inputs")
+		}
+		return model.CredentialAuthorization{}, failure
+	})
+	if err != nil || service == nil || service.Capabilities()["writeEnabled"] != true {
+		t.Fatalf("enabled scoped usage assembly: service=%v error=%v", service, err)
+	}
+	if err := service.requireProducer(t.Context(), nil, actor, now, true); !errors.Is(err, failure) || calls != 1 {
+		t.Fatalf("configured producer source was not preserved: calls=%d error=%v", calls, err)
+	}
+}
 
 func lookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) { v, ok := values[key]; return v, ok }

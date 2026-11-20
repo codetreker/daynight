@@ -19,7 +19,7 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
+func workerRoutes(mux httpx.RouteRegistrar, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
 	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "claim"), handler.claimWorker)))
 	mux.HandleFunc("PATCH "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "update"), handler.updateWorker)))

@@ -29,7 +29,7 @@ type taskHandler struct {
 	taskOnly     bool
 }
 
-func TaskRoutes(mux *http.ServeMux, tasks TaskService, observations ObservationService, auth RouteAuthentication, logger *slog.Logger) {
+func TaskRoutes(mux httpx.RouteRegistrar, tasks TaskService, observations ObservationService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskHandler{tasks: tasks, observations: observations, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(declaredBot(logger, taskBotRefusal("task", "create"), handler.create)))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-work", auth.Require(handler.work))

@@ -12,7 +12,7 @@ import (
 )
 
 func TestWebhookRuntimeRejectsInvalidAndFailedStarts(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
 	if err := app.Start(nil); err != nil {
 		t.Fatalf("application without webhook runtime: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestWebhookRuntimeRejectsInvalidAndFailedStarts(t *testing.T) {
 }
 
 func TestWebhookRuntimeDrainRetainsEngineUntilAllWorkersStop(t *testing.T) {
-	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
 	supervisor, logWorker := make(chan struct{}), make(chan struct{})
 	app.webhookRuntime = &webhookRuntime{runner: webhook.NewRunner(nil, &webhook.Service{}, false), retention: webhook.NewRetention(nil), done: supervisor, logDone: logWorker}
 	for i, ch := range []chan struct{}{supervisor, logWorker} {

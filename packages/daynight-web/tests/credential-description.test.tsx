@@ -1,10 +1,13 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
 import type { PersonalAccessToken } from "../src/api/auth";
 import type { OwnerGrant } from "../src/api/oauth-grants";
 import { TokensPanel, type TokenManagementApi } from "../src/features/management/TokensPanel";
 import { OwnerGrantsPanel } from "../src/features/management/OwnerGrantsPanel";
+import { useCredentialDescriptions } from "../src/features/management/CredentialDescription";
+import type { CredentialPanel } from "../src/features/management/useCredentialPanel";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("en");
@@ -24,17 +27,48 @@ const save = () => fireEvent.submit(document.getElementById("credential-descript
 afterEach(() => { invalidateAuthRequests(); sessionStorage.clear(); });
 
 describe("credential descriptions", () => {
+  it("restores focus to the moved pencil after a confirmed write finishes settling", async () => {
+    const settlement = deferred<void>();
+    const transport = fixture();
+    const Harness = () => {
+      const [items, setItems] = useState<readonly PersonalAccessToken[] | null>([token]);
+      const [pending, setPending] = useState(false);
+      const panel: CredentialPanel<PersonalAccessToken> = {
+        items, setItems, pending, loading: false, error: null, busy: () => pending,
+        read: async () => { throw new Error("Unexpected description readback"); },
+        write: async operation => {
+          setPending(true);
+          let dispatched = false;
+          await operation({ signal: new AbortController().signal, onDispatch: () => { dispatched = true; }, dispatched: () => dispatched, current: () => true, settled: () => { throw new Error("Unexpected early settlement"); } });
+          await settlement.promise;
+          setPending(false);
+        },
+      };
+      const descriptions = useCredentialDescriptions({ panel, userId: user.id, mismatch: vi.fn(), transport: transport.describe, visible: true, name: item => item.name, onOpen: () => {} });
+      return <>{descriptions.recovery}{items!.map(item => <div key={item.id}>{descriptions.label(item)}</div>)}{descriptions.editor}</>;
+    };
+    render(<Harness />); await edit(); change("backup"); save();
+    await screen.findByText("Description updated.");
+    const pencil = screen.getByRole("button", { name: /^Edit description: CLI/ });
+    expect(pencil).toBeDisabled();
+    expect(pencil.parentElement).toHaveClass("credential-description-line");
+    await act(async () => settlement.resolve());
+    expect(pencil).toBeEnabled();
+    await waitFor(() => expect(pencil).toHaveFocus());
+    expect(transport.describe).toHaveBeenCalledOnce();
+  });
   it("adds literal text, clears it and restores the pencil after it moves", async () => {
     const transport = fixture(); render(page(transport)); await edit(); change("  <b>backup</b>  "); save();
     await screen.findByText("Description updated.");
     expect(screen.getByText("<b>backup</b>")).toHaveClass("credential-description");
     expect(document.querySelector(".credential-description b")).toBeNull();
-    const pencil = screen.getByRole("button", { name: /^Edit description: CLI/ }); expect(pencil).toHaveFocus();
+    const pencil = screen.getByRole("button", { name: /^Edit description: CLI/ }); await waitFor(() => expect(pencil).toHaveFocus());
     expect(pencil.parentElement).toHaveClass("credential-description-line");
     expect(transport.describe).toHaveBeenLastCalledWith(token.id, { expectedUserId: user.id, expectedDescription: null, description: "<b>backup</b>" }, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     fireEvent.click(pencil); change("  "); save(); await screen.findByText("Description updated.");
     expect(screen.queryByText("<b>backup</b>")).toBeNull();
     expect(screen.getByRole("button", { name: /^Edit description: CLI/ }).parentElement).toHaveClass("credential-name");
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Edit description: CLI/ })).toHaveFocus());
     expect(transport.describe.mock.calls[1]?.[1]).toEqual({ expectedUserId: user.id, expectedDescription: "<b>backup</b>", description: null });
   });
   it("cancels a local edit and distinguishes records with identical names and timestamps", async () => {

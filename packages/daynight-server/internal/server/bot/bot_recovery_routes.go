@@ -24,16 +24,16 @@ type recoveryService interface {
 
 // RegisterRecoveryRoutes keeps recovery secrets in request bodies on an
 // independent versioned API; the ordinary Bot DTO and grant API remain stable.
-func RegisterRecoveryRoutes(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger) {
+func RegisterRecoveryRoutes(mux httpx.RouteRegistrar, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger) {
 	registerRecoveryRoutes(mux, service, auth, responses, logger, nil)
 }
 
 // RegisterRecoveryRoutesWithScopeObserver reports classifications at registration.
-func RegisterRecoveryRoutesWithScopeObserver(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
+func RegisterRecoveryRoutesWithScopeObserver(mux httpx.RouteRegistrar, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
 	registerRecoveryRoutes(mux, service, auth, responses, logger, observe)
 }
 
-func registerRecoveryRoutes(mux *http.ServeMux, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
+func registerRecoveryRoutes(mux httpx.RouteRegistrar, service recoveryService, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
 	const base = "/api/v1/me/workers/{workerId}/bots/{botId}/recovery/v1/"
 	routes := runtimeRouteRegistry{mux: mux, observe: observe}
 	for _, route := range []struct {

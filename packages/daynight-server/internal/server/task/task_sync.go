@@ -18,7 +18,7 @@ import (
 
 var taskSyncTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$`)
 
-func TaskSyncRoutes(mux *http.ServeMux, sync SyncOperation, auth RouteAuthentication, logger *slog.Logger, window time.Duration) {
+func TaskSyncRoutes(mux httpx.RouteRegistrar, sync SyncOperation, auth RouteAuthentication, logger *slog.Logger, window time.Duration) {
 	handler := &taskHandler{sync: sync, logger: logger, window: window}
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-sync", auth.Require(handler.taskSync))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-sync", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))

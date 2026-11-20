@@ -26,6 +26,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	profileprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/profile"
@@ -792,11 +793,11 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 	base := "/api/v1/projects/" + project.ID
 	collection := base + "/tasks"
 	taskPath := collection + "/" + task.ID
-	want := map[string]int{"snapshot": 1, "access": 1}
+	want := map[string]int{"snapshot": 2, "access": 1}
 	if allowed {
 		switch path {
 		case base:
-			want["project"] = 1
+			want["project"], want["snapshot"], want["access"] = 1, 3, 2
 		case base + "/task-graph?taskId=" + task.ID:
 			want["project"], want["presence"], want["graph"], want["observed"] = 1, 1, 1, 1
 		case collection:
@@ -808,9 +809,9 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 		case taskPath + "/attachments/files/" + item.Path, taskPath + "/preview/" + item.Path:
 			want["presence"], want["metadata"] = 1, 1
 		case base + "/members":
-			want["participants"] = 1
+			want["participants"], want["snapshot"], want["access"] = 1, 3, 2
 		case base + "/invitations":
-			want["invitations"] = 1
+			want["invitations"], want["snapshot"], want["access"] = 1, 3, 2
 		default:
 			t.Fatalf("unconfigured root resource: %s", path)
 		}
@@ -991,6 +992,14 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 	mint := func(browser *http.Client, user model.User, name string) api.CreatedPersonalAccessToken {
 		t.Helper()
 		integration.session(t, browser, user)
+		_, catalogBody := identityRequest(t, browser, http.MethodGet, server.URL+"/api/v1/me/credential-scope-catalog", "", nil, http.StatusOK)
+		var catalog struct {
+			PAT scopepolicy.CatalogSnapshot `json:"pat"`
+		}
+		if err := json.Unmarshal(catalogBody, &catalog); err != nil {
+			t.Fatal(err)
+		}
+		integration.session(t, browser, user)
 		var draft model.PersonalAccessToken
 		plan.expect(integration.lockSession(identityHTTPPrincipal(user, model.SessionCredential)), identityHTTPCall{"CleanupCredentials", func(args []any) any { identityHTTPNow(t, args[1].(time.Time)); return nil }}, identityHTTPCall{"InsertPAT", func(args []any) any {
 			draft = args[1].(model.PersonalAccessToken)
@@ -998,8 +1007,8 @@ func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
 				unexpectedHTTPCall(t, "private PAT draft")
 			}
 			return nil
-		}})
-		_, body := identityRequest(t, browser, http.MethodPost, server.URL+"/api/v1/me/tokens", jsonBody(t, map[string]any{"name": name, "expiresAt": nil}), origin, http.StatusCreated)
+		}}, integration.lockSession(identityHTTPPrincipal(user, model.SessionCredential)))
+		_, body := identityRequest(t, browser, http.MethodPost, server.URL+"/api/v2/me/tokens", jsonBody(t, map[string]any{"expectedUserId": user.ID, "name": name, "expiresAt": nil, "catalogRevision": catalog.PAT.CatalogRevision, "scopes": []string{"project:read", "project:write"}}), origin, http.StatusCreated)
 		created := identityDecode[api.CreatedPersonalAccessToken](t, body)
 		if created.ID == "" || !strings.HasPrefix(created.Token, "dnpat_") || created.ID != draft.ID || !bytes.Equal(draft.TokenHash, secret.Hash(created.Token)) {
 			t.Fatal("PAT creation did not return its proposed credential")

@@ -32,7 +32,8 @@ func TestScopedWorkerOperations(t *testing.T) {
 			{"own permission", []scopepolicy.ScopeID{op.scope}, false, true},
 			{"agent authorization alone", []scopepolicy.ScopeID{"agent:authorize"}, false, false},
 			{"full response requires read", []scopepolicy.ScopeID{op.scope}, true, false},
-			{"full response with read", []scopepolicy.ScopeID{"task:read", op.scope}, true, true},
+			{"full response with task read", []scopepolicy.ScopeID{"task:read", op.scope}, true, op.name == "release" || op.name == "withdraw"},
+			{"full response with session read", []scopepolicy.ScopeID{"session:read", "task:read", op.scope}, true, true},
 		} {
 			t.Run(op.name+"/"+tc.name, func(t *testing.T) {
 				state := model.WorkerActive

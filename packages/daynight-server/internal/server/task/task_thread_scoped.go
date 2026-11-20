@@ -17,7 +17,7 @@ type ScopedThreadService interface {
 	List(context.Context, model.CredentialAuthorization, string, string, service.ThreadListRequest) (service.ThreadPageDocument, error)
 }
 
-type ThreadAuthorizedHandler func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
+type ThreadAuthorizedHandler = func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
 type ThreadScopedAuthentication interface {
 	RequireAuthorization(ThreadAuthorizedHandler) http.HandlerFunc
 }
@@ -41,7 +41,7 @@ func (s authorizedThreadService) List(ctx context.Context, p model.Principal, pr
 }
 
 // ScopedTaskThreadRoutes retains the existing HTTP protocol and Bot admission.
-func ScopedTaskThreadRoutes(mux *http.ServeMux, threads ScopedThreadService, auth ThreadScopedAuthentication, logger *slog.Logger) {
+func ScopedTaskThreadRoutes(mux httpx.RouteRegistrar, threads ScopedThreadService, auth ThreadScopedAuthentication, logger *slog.Logger) {
 	ScopedTaskThreadRoutesObserved(mux, threads, auth, logger, nil)
 }
 
@@ -53,7 +53,7 @@ type ThreadScopeRoute struct {
 	Fallback          bool
 }
 
-func ScopedTaskThreadRoutesObserved(mux *http.ServeMux, threads ScopedThreadService, auth ThreadScopedAuthentication, logger *slog.Logger, observe func(ThreadScopeRoute)) {
+func ScopedTaskThreadRoutesObserved(mux httpx.RouteRegistrar, threads ScopedThreadService, auth ThreadScopedAuthentication, logger *slog.Logger, observe func(ThreadScopeRoute)) {
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/thread/messages"
 	wrap := func(operation string) http.HandlerFunc {
 		return auth.RequireAuthorization(func(w http.ResponseWriter, r *http.Request, a model.CredentialAuthorization) {

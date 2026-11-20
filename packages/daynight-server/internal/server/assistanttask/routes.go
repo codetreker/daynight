@@ -80,7 +80,7 @@ type RouteClassification struct {
 	Branches                              []string
 }
 
-func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, tasks operations, auth authentication, logger *slog.Logger) {
 	_ = registerRoutes(mux, tasks, auth, logger, nil, nil)
 }
 
@@ -90,14 +90,14 @@ type AuthorizationResolver func(context.Context, model.Principal) (model.Credent
 
 // RegisterScopedRoutes installs the scoped admission path without changing the
 // existing assembly. The resolver must return an explicit, matching profile.
-func RegisterScopedRoutes(mux *http.ServeMux, tasks operations, auth authentication, logger *slog.Logger, resolve AuthorizationResolver, record func(RouteClassification)) error {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, tasks operations, auth authentication, logger *slog.Logger, resolve AuthorizationResolver, record func(RouteClassification)) error {
 	if resolve == nil || record == nil {
 		return errors.New("assistant task authorization resolver and route recorder are required")
 	}
 	return registerRoutes(mux, tasks, auth, logger, resolve, record)
 }
 
-func registerRoutes(mux *http.ServeMux, tasks operations, auth authentication, logger *slog.Logger, resolve AuthorizationResolver, record func(RouteClassification)) error {
+func registerRoutes(mux httpx.RouteRegistrar, tasks operations, auth authentication, logger *slog.Logger, resolve AuthorizationResolver, record func(RouteClassification)) error {
 	h := &handler{tasks: tasks, logger: logger}
 	var registrationErr error
 	register := func(path, allowed string, methods map[string]classifiedOperation) {

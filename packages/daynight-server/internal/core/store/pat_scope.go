@@ -9,8 +9,7 @@ import (
 )
 
 // PATScopeDAO exposes transaction-bound reads and conditional scope updates.
-// Scoped reads reject missing or malformed persisted policy; legacy callers use
-// IdentityDAO until the scoped credential cutover is complete.
+// Scoped reads reject missing or malformed persisted policy.
 type PATScopeDAO interface {
 	PATByHash(context.Context, []byte, time.Time) (model.PersonalAccessToken, error)
 	ListPATScopes(context.Context, string) ([]model.PersonalAccessToken, error)

@@ -37,7 +37,7 @@ func (h *taskStepsHandler) decodeObject(w http.ResponseWriter, request *http.Req
 	return httpx.DecodeObjectLimitWithTimeout(w, request, httpx.MaxJSONBody, h.bodyReadTimeout, allowed...)
 }
 
-func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
+func TaskStepsRoutes(mux httpx.RouteRegistrar, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
 	registerTaskStepsRoutes(mux, steps, auth, logger, nil)
 }
 
@@ -47,7 +47,7 @@ type StepScopeRoute struct {
 	Fallback   bool
 }
 
-func registerTaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger, observe func(StepScopeRoute)) {
+func registerTaskStepsRoutes(mux httpx.RouteRegistrar, steps StepService, auth RouteAuthentication, logger *slog.Logger, observe func(StepScopeRoute)) {
 	handler := newTaskStepsHandler(steps, logger)
 	handle := func(pattern string, handler http.HandlerFunc, operations ...scopepolicy.Operation) {
 		mux.HandleFunc(pattern, handler)

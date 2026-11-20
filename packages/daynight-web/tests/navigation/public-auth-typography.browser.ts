@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopeCatalog } from "../helpers/credentialScopes";
 import { expect, test, type Page } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000201';
@@ -8,7 +9,7 @@ const user = {
   name: '长名称 LongAccountNameWithoutSpaces'.repeat(5), email: `${'long'.repeat(22)}@example.test`, emailVerified: true, avatarUrl: null,
 };
 const consent = {
-  requestId, userId, status: 'pending', clientName: '长客户端名称 LongClientNameWithoutSpaces'.repeat(6),
+  catalogRevision: credentialScopeCatalog.catalogRevision, requestId, userId, status: 'pending', clientName: '长客户端名称 LongClientNameWithoutSpaces'.repeat(6),
   clientId: 'typography-client', clientProvenance: 'dcr', redirectUri: `http://127.0.0.1:41235/${'callback'.repeat(20)}?source=typography`,
   resource: 'http://127.0.0.1:4211/mcp', scope: 'daynight:mcp', codeExpired: false,
 };
@@ -175,12 +176,13 @@ for (const locale of ['en', 'zh-CN']) {
     }
     await page.screenshot({ path: testInfo.outputPath(`${locale}-login-320-enlarged.png`), fullPage: true });
     signedIn = true;
-    await page.route('**/api/v1/auth/device/inspect', route => route.fulfill({ json: { userCode: code, status: 'pending', expiresAt: new Date(Date.now() + 600_000).toISOString() }, headers: { 'Daynight-User-ID': userId } }));
+    await page.route('**/api/v1/me/credential-scope-catalog', route => route.fulfill({ json: credentialScopeCatalogs, headers: { 'Daynight-User-ID': userId } }));
+    await page.route('**/api/v2/auth/device/inspect', route => route.fulfill({ json: { userCode: code, status: 'pending', catalogRevision: credentialScopeCatalog.catalogRevision, expiresAt: new Date(Date.now() + 600_000).toISOString() }, headers: { 'Daynight-User-ID': userId } }));
     await page.goto('/device');
-    await expect(page.locator('#device-user-code')).toBeVisible();
+    await expect(page.locator('#scoped-device-code')).toBeVisible();
     await page.setViewportSize({ width: 320, height: 900 });
-    await expectRole(page, '#device-user-code', '--text-lg');
-    await page.locator('#device-user-code').fill(code);
+    await expectRole(page, '#scoped-device-code', '--text-lg');
+    await page.locator('#scoped-device-code').fill(code);
     await page.locator('.device-code-form button').click();
     await expect(page.locator('.device-code code')).toHaveText(code);
     await expectRole(page, '.device-code code', '--text-xl');
@@ -193,7 +195,7 @@ for (const locale of ['en', 'zh-CN']) {
     }
     await page.screenshot({ path: testInfo.outputPath(`${locale}-device-320.png`), fullPage: true });
     const request = Promise.withResolvers<void>();
-    await page.route(`**/api/v1/oauth/requests/${requestId}`, async route => { await request.promise; return route.fulfill({ json: consent }); });
+    await page.route(`**/api/v2/oauth/requests/${requestId}`, async route => { await request.promise; return route.fulfill({ json: consent, headers: { 'Daynight-User-ID': userId } }); });
     await page.goto(`/oauth/consent?request=${requestId}`);
     await expect(page.locator('.device-loading')).toBeVisible();
     await expectFits(page);

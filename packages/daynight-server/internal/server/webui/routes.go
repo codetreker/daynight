@@ -10,7 +10,7 @@ import (
 	resources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 )
 
-func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
+func (ui *UI) RegisterRoutes(mux httpx.RouteRegistrar, logger *slog.Logger) {
 	page := uiHandler(logger, ui.Page)
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{

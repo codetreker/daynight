@@ -11,7 +11,7 @@ configuration to a credential that is allowed to write but not read it.
 
 ## Decision
 
-The candidate Webhook service and HTTP assembly apply the shared credential
+The production Webhook service and HTTP assembly apply the shared credential
 scope policy alongside existing owner and role authorization. The current policy
 is read in the business snapshot or after the write transaction's credential
 lock. A configuration mutation requires delivery permission when its actual
@@ -35,8 +35,7 @@ existing credential lock preserves the intended ordering.
 
 ## Consequences
 
-Existing production assembly remains on its original authentication profile
-until scoped assembly is enabled. Availability filtering retains ordinary
+Production uses scoped authentication and Webhook assembly. Availability filtering retains ordinary
 management when dispatch is unavailable without changing saved policies. Full
 responses keep their authorized post-commit snapshot and unknown-outcome behavior;
 minimal receipts avoid a second disclosure read after a confirmed commit.

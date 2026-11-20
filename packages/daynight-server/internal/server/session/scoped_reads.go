@@ -125,7 +125,7 @@ func (a scopedReadAuthentication) Require(next httpx.AuthenticatedHandler) http.
 }
 
 // RegisterScopedHistoryRoutes configures authorization for the history routes.
-func RegisterScopedHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
+func RegisterScopedHistoryRoutes(mux httpx.RouteRegistrar, reader HistoryReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
 	if mux == nil || reader == nil || auth == nil || bind == nil {
 		return errors.New("scoped Session history dependencies are required")
 	}
@@ -134,7 +134,7 @@ func RegisterScopedHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth 
 }
 
 // RegisterScopedInspectionRoutes configures authorization for inspection.
-func RegisterScopedInspectionRoutes(mux *http.ServeMux, reader inspectionReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
+func RegisterScopedInspectionRoutes(mux httpx.RouteRegistrar, reader inspectionReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
 	if mux == nil || reader == nil || auth == nil || bind == nil {
 		return errors.New("scoped Session inspection dependencies are required")
 	}
@@ -143,7 +143,7 @@ func RegisterScopedInspectionRoutes(mux *http.ServeMux, reader inspectionReader,
 }
 
 // RegisterScopedGroupDirectoryRoutes configures authorization for grouped history.
-func RegisterScopedGroupDirectoryRoutes(mux *http.ServeMux, reader groupDirectoryReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
+func RegisterScopedGroupDirectoryRoutes(mux httpx.RouteRegistrar, reader groupDirectoryReader, auth inspectionAuthentication, bind ReadContextBinder, logger *slog.Logger) error {
 	if mux == nil || reader == nil || auth == nil || bind == nil {
 		return errors.New("scoped Session directory dependencies are required")
 	}

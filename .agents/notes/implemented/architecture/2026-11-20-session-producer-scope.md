@@ -28,8 +28,7 @@ Usage grants retain their original parent and resource binding. Later production
 and delivery recheck that parent rather than substituting a newer controller
 credential. Existing persisted results and recovery receipts retain their original
 completion semantics. Fixed profiles retain their own protocol restrictions.
-The legacy production assembly remains in place until scoped authorization is
-enabled. The [internal design](../../../../docs/design/credential-scope-internal.md)
+Production enables scoped authorization for Session and usage producers. The [internal design](../../../../docs/design/credential-scope-internal.md)
 describes the resulting admission contract.
 
 ## Alternatives
@@ -47,6 +46,6 @@ the original binding without granting a child token general permissions.
 Scope revocation prevents subsequent producer work and delivery at the next
 existing check, while already committed results remain stored. The scoped
 constructors require an authority source tied to the same transaction or
-snapshot; production activation must supply it for each protected path. These
+snapshot; production supplies it for each protected path. These
 checks do not replace the existing resource authorization or make a Session
 producer a general-purpose user credential.

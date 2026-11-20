@@ -1,6 +1,7 @@
 package session
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
@@ -24,7 +25,7 @@ const (
 	producerFallback
 )
 
-func registerProducerRoute(mux *http.ServeMux, pattern string, handler http.HandlerFunc, class producerRouteClass, observe func(ProducerRoute)) {
+func registerProducerRoute(mux httpx.RouteRegistrar, pattern string, handler http.HandlerFunc, class producerRouteClass, observe func(ProducerRoute)) {
 	entry := ProducerRoute{Pattern: pattern}
 	switch class {
 	case producerCredential:

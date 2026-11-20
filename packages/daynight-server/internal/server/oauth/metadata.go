@@ -1,13 +1,14 @@
 package oauth
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 )
 
 // RegisterMetadata publishes only the capabilities supported by the public profile.
-func RegisterMetadata(mux *http.ServeMux, issuer string) {
+func RegisterMetadata(mux httpx.RouteRegistrar, issuer string) {
 	metadata := func(value any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")

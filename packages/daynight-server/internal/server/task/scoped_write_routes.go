@@ -26,7 +26,7 @@ func taskReceiptRequested(ctx context.Context) bool {
 
 // RegisterScopedWriteRoutes mounts only Task mutation routes. Read and Worker
 // routes have separate scoped owners and must be registered by their assembly.
-func RegisterScopedWriteRoutes(mux *http.ServeMux, tasks TaskService, goals GoalDependencyService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
+func RegisterScopedWriteRoutes(mux httpx.RouteRegistrar, tasks TaskService, goals GoalDependencyService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
 	if mux == nil || tasks == nil || goals == nil || auth == nil || logger == nil {
 		return errors.New("scoped Task write routes require all dependencies")
 	}
@@ -51,7 +51,15 @@ func RegisterScopedWriteRoutes(mux *http.ServeMux, tasks TaskService, goals Goal
 	register("PUT /api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}", true, declaredBot(logger, taskBotRefusal("task_property", "set"), h.setProperty))
 	register("DELETE /api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}", true, declaredBot(logger, taskBotRefusal("task_property", "remove"), h.removeProperty))
 	register("PATCH /api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies", false, g.edit)
+	registerScopedMethodFallback(mux, auth, logger, "/api/v1/projects/{projectId}/tasks/{taskId}/status", "PUT")
+	registerScopedMethodFallback(mux, auth, logger, "/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}", "PUT, DELETE")
 	return nil
+}
+
+func registerScopedMethodFallback(mux httpx.RouteRegistrar, auth ScopedWriteAuthentication, logger *slog.Logger, path, allow string) {
+	mux.HandleFunc(path, auth.RequireScoped(func(w http.ResponseWriter, r *http.Request, a model.CredentialAuthorization) {
+		httpx.ResourceMethodNotAllowed(logger, allow)(w, r, a.Principal)
+	}))
 }
 
 type taskMutationReceipt struct {

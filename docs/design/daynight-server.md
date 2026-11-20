@@ -198,7 +198,7 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
 `070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名、改色和删除旋转标签目录 epoch；改名、改色和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；名称引用批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
 
-Tag 目录的显式授权入口 `service/tag.NewScoped` 共享上述快照和事务，在项目访问通过后、Tag 数据操作前执行 `core/tag.RequireAuthorization`。读取使用 `tag:read`，完整创建与更新回执同时需要 `tag:write` 与 `tag:read`，删除最小回执仅需 `tag:delete`。关联清理保留删除动作的隐式效果，主动任务关联写入保持独立。REST/MCP scoped 注册共享原解析与投影；生产装配仍使用原入口。权限和错误合同见[凭据 Scope 内部合同](credential-scope-internal.md)。
+Tag 目录的显式授权入口 `service/tag.NewScoped` 共享上述快照和事务，在项目访问通过后、Tag 数据操作前执行 `core/tag.RequireAuthorization`。读取使用 `tag:read`，完整创建与更新回执同时需要 `tag:write` 与 `tag:read`，删除最小回执仅需 `tag:delete`。关联清理保留删除动作的隐式效果，主动任务关联写入保持独立。生产 REST/MCP 注册使用 scoped 入口，共享原解析与投影。权限和错误合同见[凭据 Scope 内部合同](credential-scope-internal.md)。
 
 标签重名只在精确唯一索引标记和可靠的操作阶段回滚同时成立时映射为 409 `tag_name_conflict`。REST 检查完整错误树：标记分支只允许一个数据库错误；包围该标记、同样报告 SQLSTATE 23505 的存储包装描述同一故障，不重复计数。附加错误分支、清理失败、提交尝试及未知结果仍保留各自失败语义。
 

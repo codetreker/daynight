@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs, credentialScopePolicy } from "../helpers/credentialScopes";
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -21,10 +22,11 @@ const install = async (page: Page, locale: Locale) => {
     if (request.method() !== 'GET') {
       state.writes.push(`${request.method()} ${path}`);
       if (state.allowSecrets && request.method() === 'POST' && path === `/api/v1/teams/${teamId}/invitations`) return send({ id: '00000000-0000-4000-8000-000000000051', teamId, createdBy: userId, createdAt: time, expiresAt: '2099-10-27T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null, link: `${new URL(request.url()).origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` }, 201);
-      if (state.allowSecrets && request.method() === 'POST' && path === '/api/v2/me/tokens') return send({ id: '00000000-0000-4000-8000-000000000052', name: 'Device', createdAt: time, expiresAt: null, description: null, lastUsedAt: null, token: 'once-only-secret' }, 201);
+      if (state.allowSecrets && request.method() === 'POST' && path === '/api/v2/me/tokens') return send({ id: '00000000-0000-4000-8000-000000000052', name: 'Device', createdAt: time, expiresAt: null, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, token: 'once-only-secret' }, 201);
       return send({ error: { code: 'unexpected_write', message: 'Unexpected write', requestId: 'fixture' } }, 500);
     }
     state.reads.push(path);
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send({ id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [team(teamId)], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}` || path === `/api/v1/teams/${teamId}`) return send(team(path.split('/').at(-1)!));
@@ -35,8 +37,8 @@ const install = async (page: Page, locale: Locale) => {
       if (hold) await hold.promise;
       if (state.fail) return send({ error: { code: 'unavailable', message: 'Layout fixture could not read the list.', requestId: 'fixture' } }, 503);
       const credentialId = '00000000-0000-4000-8000-000000000051', expiresAt = '2099-10-20T09:00:00Z';
-      if (path === '/api/v3/oauth/grants') return send({ userId, grants: state.populated ? [{ id: credentialId, clientName: 'Local editor', clientId: 'https://editor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt: time, expiresAt, description: null, lastUsedAt: null, revokedAt: null, status: 'active' }] : [] });
-      if (path === '/api/v2/me/tokens') return send({ items: state.populated ? [{ id: credentialId, name: 'Local CLI', createdAt: time, expiresAt, description: null, lastUsedAt: null }] : [] });
+      if (path === '/api/v3/oauth/grants') return send({ userId, grants: state.populated ? [{ id: credentialId, clientName: 'Local editor', clientId: 'https://editor.example', resource: 'https://service.example/mcp', scope: 'daynight:mcp', createdAt: time, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null, revokedAt: null, status: 'active' }] : [] });
+      if (path === '/api/v2/me/tokens') return send({ items: state.populated ? [{ id: credentialId, name: 'Local CLI', createdAt: time, expiresAt, description: null, scopePolicy: credentialScopePolicy, lastUsedAt: null }] : [] });
       return send({ items: state.populated ? [{ id: credentialId, teamId, createdBy: userId, createdAt: time, expiresAt, consumedBy: null, consumedAt: null, revokedAt: null }] : [] });
     }
     if (path === '/api/v1/me/worker-prompt') return send({ scope: 'user', scopeId: userId, text: '', revision: '0', updatedAt: null });

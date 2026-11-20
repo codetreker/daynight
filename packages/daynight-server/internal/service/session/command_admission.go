@@ -21,8 +21,6 @@ type CommandAuthorizationSource interface {
 	SessionWrite(context.Context, store.SessionScope, model.Principal) (model.CredentialAuthorization, error)
 }
 
-// NewScopedCommands constructs the command-scoped variant. Production assembly
-// remains on New until scoped credentials are activated.
 func NewScopedCommands(writer store.SessionWriter, engine *sessioncore.Engine, source CommandAuthorizationSource) (*Service, error) {
 	if source == nil {
 		return nil, errors.New("session command authorization source is required")

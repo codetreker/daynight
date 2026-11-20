@@ -60,16 +60,16 @@ func syncReceipt(native service.WorkerReportResult, prompts []model.PromptResult
 	return result
 }
 
-func RegisterRoutes(mux *http.ServeMux, workers workerService, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, workers workerService, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &workersHandler{workers: workers, logger: logger}
 	registerRoutes(mux, handler, auth.Require)
 }
 
-func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
+func registerRoutes(mux httpx.RouteRegistrar, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
 	registerRoutesObserved(mux, handler, require, nil)
 }
 
-func registerRoutesObserved(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc, observe func(ScopeRoute)) {
+func registerRoutesObserved(mux httpx.RouteRegistrar, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc, observe func(ScopeRoute)) {
 	logger := handler.logger
 	routes := routeRegistry{mux: mux, observe: observe}
 	registerLifecycleRoutes(routes, handler, require)

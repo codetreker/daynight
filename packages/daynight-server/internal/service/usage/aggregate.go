@@ -66,7 +66,7 @@ func (s *Service) Aggregate(ctx context.Context, p model.Principal, project, kin
 		if err != nil {
 			return err
 		}
-		if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+		if err := s.recheckUsageScope(ctx, scope, p, now); err != nil {
 			return err
 		}
 		if len(members) > 10000 {

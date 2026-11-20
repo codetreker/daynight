@@ -37,7 +37,7 @@ type Authentication interface {
 	Require(httpx.AuthenticatedHandler) http.HandlerFunc
 }
 
-type AuthorizedHandler func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
+type AuthorizedHandler = func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)
 
 type ScopedAuthentication interface {
 	RequireAuthorization(AuthorizedHandler) http.HandlerFunc
@@ -50,7 +50,7 @@ type handler[A any] struct {
 }
 
 // RegisterRoutes mounts the authenticated project tag catalog endpoints.
-func RegisterRoutes(mux *http.ServeMux, ops Operations, auth Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux httpx.RouteRegistrar, ops Operations, auth Authentication, logger *slog.Logger) {
 	registerRoutes(mux, ops, func(next func(http.ResponseWriter, *http.Request, model.Principal)) http.HandlerFunc {
 		return auth.Require(httpx.AuthenticatedHandler(next))
 	}, func(p model.Principal) model.Principal { return p }, logger)
@@ -58,7 +58,7 @@ func RegisterRoutes(mux *http.ServeMux, ops Operations, auth Authentication, log
 
 // RegisterScopedRoutes requires an explicitly authenticated policy snapshot.
 // Production selects this registration only when scoped credentials are enabled.
-func RegisterScopedRoutes(mux *http.ServeMux, ops ScopedOperations, auth ScopedAuthentication, logger *slog.Logger) {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, ops ScopedOperations, auth ScopedAuthentication, logger *slog.Logger) {
 	registerRoutes(mux, ops, func(next func(http.ResponseWriter, *http.Request, model.CredentialAuthorization)) http.HandlerFunc {
 		return auth.RequireAuthorization(func(w http.ResponseWriter, r *http.Request, a model.CredentialAuthorization) {
 			if err := a.Validate(); err != nil {
@@ -70,7 +70,7 @@ func RegisterScopedRoutes(mux *http.ServeMux, ops ScopedOperations, auth ScopedA
 	}, func(a model.CredentialAuthorization) model.Principal { return a.Principal }, logger)
 }
 
-func registerRoutes[A any](mux *http.ServeMux, ops operations[A], authenticate func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, principal func(A) model.Principal, logger *slog.Logger) {
+func registerRoutes[A any](mux httpx.RouteRegistrar, ops operations[A], authenticate func(func(http.ResponseWriter, *http.Request, A)) http.HandlerFunc, principal func(A) model.Principal, logger *slog.Logger) {
 	h := &handler[A]{operations: ops, principal: principal, logger: logger}
 	methodNotAllowed := func(allowed string) func(http.ResponseWriter, *http.Request, A) {
 		return func(w http.ResponseWriter, r *http.Request, a A) {

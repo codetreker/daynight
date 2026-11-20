@@ -138,8 +138,8 @@ func TestThreadCredentialKindsExpiryAndOwnership(t *testing.T) {
 			columns := "id,user_id,token_hash,created_at,expires_at"
 			values := "$1,$2,$3,now(),$4"
 			if tc.kind == model.PATCredential {
-				columns += ",name"
-				values += ",'Token'"
+				columns += ",name,business_scopes,scope_version"
+				values += ",'Token',ARRAY['task:read'],1"
 			}
 			args := []any{id, user, hash[:], future}
 			if tc.kind == model.OAuthCredential {

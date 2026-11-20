@@ -28,7 +28,7 @@ func TestProfileCredentialNativeKindsOwnerAndExpiry(t *testing.T) {
 	ctx := t.Context()
 	user, session, _ := testutil.AuthRecords(t, db)
 	now := time.Now().UTC()
-	token := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now}
+	token := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now}
 	identityScopeTest(t, db, func(scope store.IdentityScope) error { return scope.IdentityDAO().InsertPAT(ctx, token) })
 	pat := model.Principal{Kind: model.PATCredential, UserID: user.ID, CredentialID: token.ID}
 	for _, actor := range []model.Principal{session, pat} {
@@ -97,7 +97,7 @@ func testProfileCredentialMutation(t *testing.T, db *postgres.Store, kind model.
 		table = "personal_access_tokens"
 		actor = model.Principal{Kind: kind, UserID: user.ID, CredentialID: uuid.NewString()}
 		identityScopeTest(t, db, func(scope store.IdentityScope) error {
-			return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
+			return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
 		})
 	}
 	statement := `DELETE FROM ` + table + ` WHERE id=$1`
@@ -191,7 +191,7 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 				table = "personal_access_tokens"
 				actor = model.Principal{Kind: kind, UserID: user.ID, CredentialID: uuid.NewString()}
 				identityScopeTest(t, db, func(scope store.IdentityScope) error {
-					return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
+					return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
 				})
 			}
 			expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)

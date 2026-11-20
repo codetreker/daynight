@@ -10,7 +10,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
-func (h *Routes) registerTestRoutes(mux *http.ServeMux, observe func(ProducerRoute)) {
+func (h *Routes) registerTestRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
 	routes := map[string]struct {
 		handler httpx.AuthenticatedHandler
 		read    bool

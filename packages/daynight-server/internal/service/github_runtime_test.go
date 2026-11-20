@@ -250,7 +250,7 @@ type githubAssemblyWithoutAdminStore struct {
 }
 
 func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
-	app := NewModules(config.Config{}, nil, func(context.Context) error { return nil }, nil, nil)
+	app := NewModules(config.Config{}, compositionOnlyStore{}, func(context.Context) error { return nil }, nil, nil)
 	if err := app.assembleGitHub(nil, slog.Default()); err == nil {
 		t.Fatal("missing App store accepted")
 	}

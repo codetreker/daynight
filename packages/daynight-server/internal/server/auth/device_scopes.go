@@ -22,13 +22,13 @@ type ScopedDeviceOperations interface {
 
 // RegisterScopedDeviceRoutes uses the same identity service as the v1 token
 // endpoint so a scoped approval cannot be redeemed by the legacy issuer.
-func (h *Authentication) RegisterScopedDeviceRoutes(mux *http.ServeMux, mcp scopepolicy.CatalogSnapshot) error {
+func (h *Authentication) RegisterScopedDeviceRoutes(mux httpx.RouteRegistrar, mcp scopepolicy.CatalogSnapshot) error {
 	return h.RegisterScopedDeviceRoutesWithScopeObserver(mux, mcp, nil)
 }
 
 // RegisterScopedDeviceRoutesWithScopeObserver reports the actual browser-only
 // registrations and their method fallbacks for scope route reconciliation.
-func (h *Authentication) RegisterScopedDeviceRoutesWithScopeObserver(mux *http.ServeMux, mcp scopepolicy.CatalogSnapshot, observe func(ScopeRoute)) error {
+func (h *Authentication) RegisterScopedDeviceRoutesWithScopeObserver(mux httpx.RouteRegistrar, mcp scopepolicy.CatalogSnapshot, observe func(ScopeRoute)) error {
 	identity, ok := h.identity.(ScopedDeviceOperations)
 	if !ok {
 		return errors.New("identity service does not support scoped device authorization")

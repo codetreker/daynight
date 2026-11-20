@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"net/http"
 	"strings"
 
@@ -16,7 +17,7 @@ type ScopeRoute struct {
 }
 
 type routeRegistry struct {
-	mux     *http.ServeMux
+	mux     httpx.RouteRegistrar
 	observe func(ScopeRoute)
 }
 

@@ -504,6 +504,7 @@ func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) 
 			if err == nil {
 				want := credential
 				want.TokenHash = nil
+				want.ScopePolicy = nil
 				want.ExpiresAt = &expiry
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("stale expiry/metadata after lock: %#v want=%#v", got, want)

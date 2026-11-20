@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,14 +23,12 @@ import (
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Dependencies struct {
@@ -152,7 +151,7 @@ func (s *httpTestStore) WriteUsage(context.Context, func(store.UsageScope) error
 
 func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
 	if s.ReadSnapshotCall == nil {
-		unexpectedHTTPCall(s.t, "ReadSnapshot")
+		return fn(newHTTPTestSnapshot(s.t))
 	}
 	return s.ReadSnapshotCall(ctx, fn)
 }
@@ -689,7 +688,7 @@ const uiTestScriptPath = "/assets/app-12345678.js"
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{Store: &httpTestStore{t: t}, Files: attachmentTestFiles(t)}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,22 +833,23 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseWork)
-	schema := map[string]any{"type": "object"}
-	err := fixture.application.mcp.RegisterTool(&sdk.Tool{Name: "test_shutdown", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
-		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
-			close(entered)
-			<-ctx.Done()
-			close(canceled)
-			<-release
-			return mcphttp.ToolResult{}, ctx.Err()
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
+	scope := newHTTPTestSnapshot(t)
+	scope.Projects = projectHTTPReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+		if p != fixture.handler.principal || project != fixture.task.ProjectID {
+			t.Errorf("MCP shutdown operation changed actor or project: %#v %s", p, project)
+			return model.ProjectAccess{}, model.ErrNotFound
+		}
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return model.ProjectAccess{}, ctx.Err()
+	}}
+	fixture.store.ReadSnapshotCall = func(_ context.Context, run func(store.SnapshotScope) error) error { return run(scope) }
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
-		request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test_shutdown","arguments":{}}}`))
+		request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_ready","arguments":{"projectId":%q,"view":"summary"}}}`, fixture.task.ProjectID)))
 		if err != nil {
 			return
 		}
@@ -873,7 +873,7 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	})
 	await(t, entered)
 	shutdown, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	err = fixture.application.Shutdown(shutdown)
+	err := fixture.application.Shutdown(shutdown)
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected MCP drain timeout, got %v", err)
@@ -1021,6 +1021,17 @@ type rootWebhookReadScope struct {
 	calls     []string
 }
 
+func (s *rootWebhookReadScope) CurrentWebhookAuthorization(_ context.Context, p model.Principal, profile model.CredentialPolicyProfile) (model.CredentialAuthorization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "Authorization")
+	a, err := assemblyAuthorization(p)
+	if p != s.principal || a.Profile != profile {
+		s.t.Fatalf("webhook authorization changed identity or profile: %#v %s", p, profile)
+	}
+	return a, err
+}
+
 func (s *rootWebhookReadScope) CredentialDAO() store.CredentialReader { return s }
 func (s *rootWebhookReadScope) WebhookDAO() store.WebhookReader       { return s }
 func (s *rootWebhookReadScope) Credential(_ context.Context, p model.Principal) (store.ThreadCredential, error) {
@@ -1090,7 +1101,7 @@ func TestWebhookRuntimeRouteAssembly(t *testing.T) {
 	if len(scopes) != 2 {
 		t.Fatalf("scope count: %d", len(scopes))
 	}
-	for i, want := range [][]string{{"Credential", "Policy"}, {"Credential", "Endpoints"}} {
+	for i, want := range [][]string{{"Credential", "Authorization", "Policy"}, {"Credential", "Authorization", "Endpoints"}} {
 		scopes[i].mu.Lock()
 		got := append([]string(nil), scopes[i].calls...)
 		scopes[i].mu.Unlock()

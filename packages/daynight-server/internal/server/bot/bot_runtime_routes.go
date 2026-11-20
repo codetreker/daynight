@@ -32,16 +32,16 @@ type runtimeRoutes struct {
 	logger    *slog.Logger
 }
 
-func RegisterRuntimeRoutes(mux *http.ServeMux, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger) {
+func RegisterRuntimeRoutes(mux httpx.RouteRegistrar, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger) {
 	registerRuntimeRoutes(mux, service, deletion, auth, responses, logger, nil)
 }
 
 // RegisterRuntimeRoutesWithScopeObserver reports classifications at registration.
-func RegisterRuntimeRoutesWithScopeObserver(mux *http.ServeMux, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
+func RegisterRuntimeRoutesWithScopeObserver(mux httpx.RouteRegistrar, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
 	registerRuntimeRoutes(mux, service, deletion, auth, responses, logger, observe)
 }
 
-func registerRuntimeRoutes(mux *http.ServeMux, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
+func registerRuntimeRoutes(mux httpx.RouteRegistrar, service runtimeService, deletion runtimeDeletion, auth *authhttp.Authentication, responses *sessionhttp.Routes, logger *slog.Logger, observe func(RuntimeScopeRoute)) {
 	h := &runtimeRoutes{service: service, deletion: deletion, auth: auth, responses: responses, logger: logger}
 	routes := runtimeRouteRegistry{mux: mux, observe: observe}
 	const base = "/api/v1/me/workers/{workerId}/bots/{botId}/"

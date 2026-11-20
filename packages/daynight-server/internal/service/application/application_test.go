@@ -13,6 +13,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -412,4 +413,27 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 			verifySharedEngine(t, app)
 		})
 	}
+}
+
+func (m *strictIdentity) DeviceScopeCatalog() (scopepolicy.CatalogSnapshot, bool) {
+	m.unexpected("DeviceScopeCatalog")
+	return scopepolicy.CatalogSnapshot{}, false
+}
+func (m *strictIdentity) ListScopedPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
+	return nil, m.unexpected("ListScopedPATs")
+}
+func (m *strictIdentity) CreateScopedPAT(context.Context, model.Principal, string, identitycore.CreatePAT, *string, string, []scopepolicy.ScopeID) (identitycore.MintedPAT, error) {
+	return identitycore.MintedPAT{}, m.unexpected("CreateScopedPAT")
+}
+func (m *strictIdentity) UpdateScopedPAT(context.Context, model.Principal, string, string, int64, string, []scopepolicy.ScopeID) (model.PersonalAccessToken, error) {
+	return model.PersonalAccessToken{}, m.unexpected("UpdateScopedPAT")
+}
+func (m *strictIdentity) InspectDeviceV2(context.Context, model.Principal, string) (identitycore.DeviceInspectionV2, error) {
+	return identitycore.DeviceInspectionV2{}, m.unexpected("InspectDeviceV2")
+}
+func (m *strictIdentity) DecideDeviceV2(context.Context, model.Principal, string, string, string, string, []scopepolicy.ScopeID) error {
+	return m.unexpected("DecideDeviceV2")
+}
+func (m *strictIdentity) PatchUserAuthorized(context.Context, model.CredentialAuthorization, model.UserProfilePatch, identity.ProfileScopeRecheck) (model.User, error) {
+	return model.User{}, m.unexpected("PatchUserAuthorized")
 }

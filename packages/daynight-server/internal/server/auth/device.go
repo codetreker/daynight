@@ -16,7 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func (h *Authentication) registerDeviceRoutes(mux *http.ServeMux) {
+func (h *Authentication) registerDeviceRoutes(mux httpx.RouteRegistrar) {
 	mux.HandleFunc("POST /api/v1/auth/device/code", h.deviceCode)
 	mux.HandleFunc("POST /api/v1/auth/device/token", h.deviceToken)
 	mux.HandleFunc("POST /api/v1/auth/device/inspect", h.requireDeviceBrowser(h.deviceInspect))

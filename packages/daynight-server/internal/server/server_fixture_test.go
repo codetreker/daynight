@@ -210,7 +210,10 @@ func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*ta
 	for name, count := range want {
 		counts[name] = count
 	}
-	counts["snapshot"], counts["access"] = 1, 1
+	counts["snapshot"], counts["access"] = 2, 1
+	if snapshots, ok := want["snapshot"]; ok {
+		counts["snapshot"] = snapshots
+	}
 	plan := newHTTPCallPlan(f.t, counts)
 	base := newTaskHTTPMockBase(f.t, "Task HTTP snapshot")
 	reader := &taskHTTPReaderMock{taskHTTPMockBase: base.withLabel("tasks")}
@@ -245,11 +248,12 @@ func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*ta
 	configure(reader, projects, sessions, scope, plan)
 	f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error {
 		plan.Called("snapshot")
-		if run == nil || f.active {
+		if run == nil {
 			unexpectedHTTPCall(f.t, "snapshot callback")
 		}
+		previousContext, previousActive := f.ctx, f.active
 		f.ctx, f.active = ctx, true
-		defer func() { f.active = false }()
+		defer func() { f.ctx, f.active = previousContext, previousActive }()
 		return run(scope)
 	}
 }
@@ -1312,7 +1316,11 @@ func (f *stepHTTPFixture) expectStepsWrite(expected stepHTTPWritePlan) {
 
 func (f *stepHTTPFixture) expectStepAccessError(write bool) {
 	base := newTaskHTTPMockBase(f.t, "Step denied access")
-	plan := newHTTPCallPlan(f.t, map[string]int{"scope": 1, "access": 1})
+	scopes := 1
+	if !write {
+		scopes = 2
+	}
+	plan := newHTTPCallPlan(f.t, map[string]int{"scope": scopes, "access": 1})
 	access := func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
 		plan.Called("access")
 		if actor != f.principal || project != f.project.ID || ctx.Err() != nil {
@@ -1435,8 +1443,8 @@ func (f *stepHTTPFixture) referencedAttachment(path, contentType string, content
 	return model.Attachment{ProjectID: f.project.ID, TaskID: f.target.ID, Path: path, ContentType: contentType, SizeBytes: int64(len(content)), CreatedAt: f.target.CreatedAt, UpdatedAt: f.target.CreatedAt}
 }
 
-func (f *stepHTTPFixture) expectAttachmentRead(item model.Attachment) {
-	f.expectSnapshot(map[string]int{"presence": 1, "metadata": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+func (f *stepHTTPFixture) expectAttachmentRead(item model.Attachment, snapshots int) {
+	f.expectSnapshot(map[string]int{"snapshot": snapshots, "presence": 1, "metadata": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, _ *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskPresenceFn = func(ctx context.Context, project, task string) (store.TaskPresence, error) {
 			f.require(ctx, project)
 			plan.Called("presence")
@@ -2609,7 +2617,7 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	var requestContext context.Context
 	check := func(ctx context.Context, name string, valid bool) {
 		counts[name]++
-		if ctx != requestContext || counts[name] != 1 || !valid {
+		if ctx.Done() != requestContext.Done() || counts[name] != 1 || !valid {
 			t.Errorf("startup %s changed context, arguments or count", name)
 			panic("invalid startup DAO call")
 		}
@@ -2617,6 +2625,10 @@ func startupExpectWrite(t *testing.T, f *sessionHTTPFixture, current model.Task,
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil
+	}
+	tasks.TaskHeaderFn = func(ctx context.Context, id string) (model.TaskHeader, error) {
+		check(ctx, "header", id == current.ID && counts["access"] == 1)
+		return model.TaskHeader{ProjectID: current.ProjectID, ID: current.ID, Type: current.Type, Version: current.Version}, nil
 	}
 	tasks.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
 		check(ctx, "task", id == current.ID && counts["access"] == 1)
@@ -2735,12 +2747,16 @@ func startupExpectTaskRead(t *testing.T, f *sessionHTTPFixture, value model.Task
 	}
 	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectReader { return project }, TaskDAOFn: func() store.TaskReader { return task }}
 	f.store.ReadSnapshotCall = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		snapshots++
-		if snapshots != 1 || work == nil {
+		if work == nil {
 			unexpectedHTTPCall(t, "startup snapshot")
 		}
 		requestContext = ctx
-		return work(scope)
+		before := access
+		err := work(scope)
+		if access != before {
+			snapshots++
+		}
+		return err
 	}
 	t.Cleanup(func() {
 		if snapshots != 1 || access != 1 || reads != 1 || epochs != 1 {

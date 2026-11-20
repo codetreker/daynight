@@ -16,8 +16,7 @@ existing business admission boundaries. Transaction and snapshot sources read
 the current policy for that identity and profile, preserving PAT locks and OAuth
 grant-before-access ordering and resource binding. Existing resource checks
 remain in force. User channels recheck before each delivery and release the
-connection after refusal. HTTP and MCP expose opt-in scoped registration while
-the existing production assembly remains unchanged. The
+connection after refusal. Production HTTP and MCP use the scoped registrations. The
 [internal contract](../../../../docs/design/credential-scope-internal.md#session-读取与订阅准入)
 describes the affected reads and assembly boundary.
 
@@ -48,10 +47,9 @@ work instead of returning a partial policy.
 
 Scoped callers must provide current authorization sources; missing or mismatched
 facts fail closed. Existing Session roles and protocol profiles remain separate
-from business scope. Production activation and complete cross-domain route
-classification remain with the coordinated scope cutover.
+from business scope. Production activation checks cross-domain route classification as described in the
+[activation decision](2026-11-21-credential-scope-activation.md).
 Scoped PAT image status and retry require the guarded command execution; a
 read-only scoped assembly remains closed. The [image admission
 decision](2026-11-20-session-image-scope.md) records the combined checks and
-settlement. Fixed profiles and the existing production entry retain their
-original behavior.
+settlement. Fixed profiles retain their original protocol restrictions.

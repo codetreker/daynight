@@ -2,16 +2,106 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	assistantcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	assistantservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestAssistantTaskScopedCredentialAdmissionUsesTransactionPolicy(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	bot := testutil.RuntimeStoredBot(t, database)
+	principal := testutil.RuntimeBotPAT(t, database, bot)
+	scopes := []scopepolicy.ScopeID{"assistant-task:operate", "assistant-task:read", "assistant-task:write"}
+	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, scopes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE personal_access_tokens SET business_scopes=$2,scope_version=1 WHERE id=$1`, principal.CredentialID, scopes); err != nil {
+		t.Fatal(err)
+	}
+	actor := assistantcore.Actor{Principal: principal, Authorization: &model.CredentialAuthorization{Principal: principal, Profile: model.ScopedPATProfile, Policy: &policy}}
+	tasks := assistantservice.New(database)
+	input := assistantcore.CreateInput{ID: queryID(1), Name: "Scoped task", Kind: "continuous", Takeover: "manual", Body: "Manual", Rules: json.RawMessage(`[]`), Trigger: json.RawMessage(`null`)}
+	created, err := tasks.Create(ctx, actor, input)
+	if err != nil || created.Task.ID != input.ID {
+		t.Fatalf("scoped creation: %+v %v", created, err)
+	}
+	watchdog, err := tasks.EnableWatchdog(ctx, actor, queryID(2), bot.ID)
+	if err != nil || watchdog.Task.Application != "watchdog" || watchdog.Task.HolderBotID == nil || *watchdog.Task.HolderBotID != bot.ID {
+		t.Fatalf("scoped watchdog: %+v %v", watchdog, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE personal_access_tokens SET business_scopes=ARRAY['assistant-task:read'],scope_version=2 WHERE id=$1`, principal.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	input.ID = queryID(3)
+	_, err = tasks.Create(ctx, actor, input)
+	if !errors.Is(err, scopepolicy.ErrInsufficientScope) {
+		t.Fatalf("stale observed policy authorized creation: %v", err)
+	}
+	var count int
+	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_tasks WHERE id=$1`, input.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("refused creation persisted: %d %v", count, err)
+	}
+	read, err := tasks.Get(ctx, actor, created.Task.ID)
+	if err != nil || read.Task.ID != created.Task.ID {
+		t.Fatalf("retained read policy: %+v %v", read, err)
+	}
+}
+
+func TestAssistantTaskCredentialAuthorizationPreservesSessionAndRejectsUnsupportedCredential(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	user, session, _ := testutil.AuthRecords(t, database)
+	_, err := database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		authorization, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, session)
+		if err != nil {
+			return err
+		}
+		if authorization.Principal != session || authorization.Profile != model.SessionProfile || authorization.Policy != nil {
+			t.Fatalf("session profile changed: %+v", authorization)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := session
+	missing.CredentialID = queryID(41)
+	_, err = database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		_, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, missing)
+		return err
+	})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing credential was not refused: %v", err)
+	}
+	grant, _, _ := testutil.OAuthFamily(t, database, user.ID, time.Now().UTC())
+	oauth := model.Principal{Kind: model.OAuthCredential, UserID: user.ID}
+	if err := database.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE grant_id=$1`, grant.ID).Scan(&oauth.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		_, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, oauth)
+		return err
+	})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
+		t.Fatalf("Assistant Task accepted unsupported OAuth credential: %v", err)
+	}
+}
 
 func TestAssistantTaskMigrationOwnsTablesAndIndexes(t *testing.T) {
 	database := isolatedStore(t)

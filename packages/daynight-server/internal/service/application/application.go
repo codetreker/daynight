@@ -10,6 +10,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
@@ -37,6 +38,14 @@ import (
 
 // IdentityOperations is the identity output consumed by protocol adapters.
 type IdentityOperations interface {
+	DeviceScopeCatalog() (scopepolicy.CatalogSnapshot, bool)
+	ListScopedPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	CreateScopedPAT(context.Context, model.Principal, string, identitycore.CreatePAT, *string, string, []scopepolicy.ScopeID) (identitycore.MintedPAT, error)
+	UpdateScopedPAT(context.Context, model.Principal, string, string, int64, string, []scopepolicy.ScopeID) (model.PersonalAccessToken, error)
+	InspectDeviceV2(context.Context, model.Principal, string) (identitycore.DeviceInspectionV2, error)
+	DecideDeviceV2(context.Context, model.Principal, string, string, string, string, []scopepolicy.ScopeID) error
+	PatchUserAuthorized(context.Context, model.CredentialAuthorization, model.UserProfilePatch, identity.ProfileScopeRecheck) (model.User, error)
+
 	CallbackURL() string
 	PreviewSSO() *identity.PreviewSSO
 	ValidateLogin(string, string) error
@@ -89,6 +98,7 @@ type TaskStepsOperations interface {
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
+	Scoped           *Scoped
 	Usage            *usageapp.Service
 	CredentialUsage  *credentialusage.Recorder
 	Identity         IdentityOperations

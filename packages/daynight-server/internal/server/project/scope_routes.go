@@ -51,7 +51,7 @@ func scopedAuthorization(ctx context.Context, p model.Principal) (model.Credenti
 // RegisterScopedRoutes composes the existing HTTP handlers with explicit scoped
 // authorization. The caller must supply transaction-bound revalidation to the
 // scoped services; this entry is separate from the legacy production assembly.
-func RegisterScopedRoutes(mux *http.ServeMux, projects scopedProjects, memberships scopedMemberships, members scopedDirectMembers, auth ScopedAuthentication, logger *slog.Logger) error {
+func RegisterScopedRoutes(mux httpx.RouteRegistrar, projects scopedProjects, memberships scopedMemberships, members scopedDirectMembers, auth ScopedAuthentication, logger *slog.Logger) error {
 	if mux == nil || projects == nil || memberships == nil || members == nil || auth == nil || logger == nil {
 		return errors.New("scoped project routes require all dependencies")
 	}

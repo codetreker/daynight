@@ -43,7 +43,7 @@ Task 读取先检查 task:read；缺少 session:read 时，在读取 TaskSession
 只计 member 范围内进行中的普通 Task；工作分组扫描完整可见进行中成员后，保留
 原目标分页。聚合的 observedAt 来自 Task 查询，三个活动计数为零、unknownCount
 等于上述任务数、complete=false，结果 partial=true。即使任务没有执行记录，也
-不能通过无投影响应区分其 Session 存在性。原生产装配保留既有观察流程。
+不能通过无投影响应区分其 Session 存在性。生产装配使用 scoped 观察流程。包含完整 Project 的 Graph 使用请求独立的权限集合，在初始快照与每批 live 采样后的新快照中复核当前凭证的 task:read、project:read 和本次采样使用的 session:read。任一权限被移除均中止整次响应，不发布此前读取的 Project 或 Session。task-only Graph 只返回 project.id，不读取项目内容，也不附加 project:read；同一服务实例的其他请求保持各自的权限要求。
 
 ## 工作分组与稳定遍历
 

@@ -126,14 +126,61 @@ func TestPATScopeStorage(t *testing.T) {
 	requireMissing(t, err)
 }
 
+func TestInsertPATRejectsMissingForeignAndNonInitialPolicy(t *testing.T) {
+	tx, scope := identityTransaction(t)
+	ctx := t.Context()
+	foreign, err := scopepolicy.NewPolicy(scopepolicy.MCP, []scopepolicy.ScopeID{"task:read"}, 1)
+	requireNoError(t, err)
+	edited, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 2)
+	requireNoError(t, err)
+	for _, test := range []struct {
+		name   string
+		policy *scopepolicy.Policy
+	}{
+		{"missing", nil},
+		{"foreign credential kind", &foreign},
+		{"already edited policy", &edited},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNoError(t, execStatement(ctx, tx, `SAVEPOINT invalid_pat`))
+			pat := testutil.DeviceCredential(time.Now().UTC())
+			pat.UserID, pat.ScopePolicy = uuid.NewString(), test.policy
+			err := scope.IdentityDAO().InsertPAT(ctx, pat)
+			if err == nil {
+				t.Fatal("PAT without a valid explicit initial policy was inserted")
+			}
+			if test.policy == nil {
+				var failure *pgconn.PgError
+				if !errors.As(err, &failure) || failure.Code != "23502" {
+					t.Fatalf("missing policy did not fail the NOT NULL storage boundary: %v", err)
+				}
+			}
+			requireNoError(t, execStatement(ctx, tx, `ROLLBACK TO SAVEPOINT invalid_pat`))
+			var count int
+			requireNoError(t, tx.QueryRow(ctx, `SELECT count(*) FROM personal_access_tokens WHERE id=$1`, pat.ID).Scan(&count))
+			if count != 0 {
+				t.Fatal("rejected PAT persisted")
+			}
+		})
+	}
+}
+
+func execStatement(ctx context.Context, tx pgx.Tx, sql string) error {
+	_, err := tx.Exec(ctx, sql)
+	return err
+}
+
 func TestPATScopeRejectsMissingAndCorruptStorage(t *testing.T) {
 	tx, scope := identityTransaction(t)
 	ctx, dao := t.Context(), scope.IdentityDAO()
+	// Corruption checks exercise defensive readers against a damaged schema as well as invalid values.
+	_, err := tx.Exec(ctx, `ALTER TABLE personal_access_tokens ALTER COLUMN business_scopes DROP NOT NULL, ALTER COLUMN scope_version DROP NOT NULL`)
+	requireNoError(t, err)
 	scoped := dao.(store.PATScopeDAO)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, err := dao.UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: "scope-corrupt"}, now)
 	requireNoError(t, err)
-	pat := model.PersonalAccessToken{ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("legacy-pat"), Name: "legacy", CreatedAt: now}
+	pat := model.PersonalAccessToken{ScopePolicy: testutil.PATPolicy(), ID: uuid.NewString(), UserID: user.ID, TokenHash: hash("legacy-pat"), Name: "legacy", CreatedAt: now}
 	requireNoError(t, dao.InsertPAT(ctx, pat))
 	for _, tc := range []struct {
 		name    string

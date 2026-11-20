@@ -19,7 +19,11 @@ owns the protocol and transaction details.
 
 The account page consumes PAT v2 and OAuth v3 metadata through strict parsers.
 Shared description controls render literal single-line text and keep the edit
-trigger beside the description or, when empty, the name. Drafts and observed
+trigger beside the description or, when empty, the name. Focus restoration keeps
+the credential target until its panel finishes reading or writing and the pencil
+is enabled. A confirmed receipt may move the pencil before the write settles;
+attempting focus during that interval would consume restoration on a disabled
+control. Drafts and observed
 values are keyed by credential within each identity-bound panel. Explicit
 reconciliation obtains a new observation without replaying a write. Each panel
 serializes full-list reads, mutations and publication so an older snapshot

@@ -26,7 +26,7 @@ func testObservationSnapshotRechecksCredentialsAndMembershipWithoutWrites(t *tes
 	hash := sha256.Sum256([]byte(actor.CredentialID))
 	table := "personal_access_tokens"
 	if kind == model.PATCredential {
-		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
+		mustQueryExec(t, db, `INSERT INTO personal_access_tokens(business_scopes,scope_version,id,user_id,token_hash,name,created_at,expires_at) VALUES(ARRAY['attachment:delete','attachment:read','attachment:upload','session:control','session:produce','session:read','session:send','task:read','thread:post','thread:read','usage:read'],1,$1,$2,$3,'observation',$4,$5)`, actor.CredentialID, actor.UserID, hash[:], seen.Add(-10*time.Minute), seen.Add(10*time.Minute))
 	} else {
 		table = "oauth_access_tokens"
 		mustQueryExec(t, db, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'observation-test','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, queryID(202), actor.UserID, seen.Add(-10*time.Minute), seen.Add(time.Hour))

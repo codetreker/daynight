@@ -1,3 +1,4 @@
+import { credentialScopeCatalogs } from "../helpers/credentialScopes";
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -28,6 +29,7 @@ const install = async (page: Page, src: string, png: string) => {
     const request = route.request(), path = new URL(request.url()).pathname;
     requests.push(`${request.method()} ${path}`);
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
+    if (path === '/api/v1/me/credential-scope-catalog') return send(credentialScopeCatalogs);
     if (path === '/api/v1/me') return send({ id: userId, personalTeam: personal, name, email, emailVerified: true, avatarUrl: src });
     if (path === '/api/v1/teams') return send({ items: [team(teamId)], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}` || path === `/api/v1/teams/${personalId}`) return send(team(path.split('/').at(-1)!));

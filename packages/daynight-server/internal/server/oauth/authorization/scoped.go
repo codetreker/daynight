@@ -33,13 +33,13 @@ type ScopeRoute struct {
 	BrowserOnly, Fallback bool
 }
 
-func (h *AuthorizationHTTP) RegisterScopedRoutes(mux *http.ServeMux) error {
+func (h *AuthorizationHTTP) RegisterScopedRoutes(mux httpx.RouteRegistrar) error {
 	return h.RegisterScopedRoutesWithScopeObserver(mux, nil)
 }
 
 // RegisterScopedRoutesWithScopeObserver keeps the v2 surface opt-in until the
 // scoped issuer and matching browser catalog are assembled together.
-func (h *AuthorizationHTTP) RegisterScopedRoutesWithScopeObserver(mux *http.ServeMux, observe func(ScopeRoute)) error {
+func (h *AuthorizationHTTP) RegisterScopedRoutesWithScopeObserver(mux httpx.RouteRegistrar, observe func(ScopeRoute)) error {
 	scoped, ok := h.service.(ScopedAuthorizationService)
 	if !ok {
 		return errors.New("authorization service does not support scoped approval")

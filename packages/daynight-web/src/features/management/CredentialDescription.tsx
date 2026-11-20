@@ -51,12 +51,12 @@ export const useCredentialDescriptions = <T extends DescribedCredential>({ panel
     });
   };
   useEffect(() => {
-    if (selected === null && restore.current !== null && visible) {
+    if (selected === null && restore.current !== null && visible && !panel.pending && !panel.loading) {
       const target = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-credential-description]")).find(button => button.dataset.credentialDescription === restore.current);
       if (target !== undefined) target.focus();
       restore.current = null;
     }
-  }, [selected, visible, panel.items]);
+  }, [selected, visible, panel.items, panel.pending, panel.loading]);
   useEffect(() => {
     if (panel.items === null) return;
     const present = new Set(panel.items.map(item => item.id));

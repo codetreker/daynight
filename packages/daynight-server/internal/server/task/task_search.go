@@ -23,7 +23,7 @@ type searchHandler struct {
 	operationTimeout time.Duration
 }
 
-func TaskSearchRoutes(mux *http.ServeMux, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
+func TaskSearchRoutes(mux httpx.RouteRegistrar, search SearchOperation, auth RouteAuthentication, logger *slog.Logger) {
 	h := &searchHandler{run: search, logger: logger, operationTimeout: 5 * time.Second}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks/search", auth.Require(h.search))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {

@@ -59,7 +59,7 @@ func usageContext(ctx context.Context, auth model.CredentialAuthorization) (cont
 	return context.WithValue(ctx, usageAuthorizationKey{}, auth), nil
 }
 
-func recheckUsageScope(ctx context.Context, scope store.UsageScope, p model.Principal, now time.Time) error {
+func (s *Service) recheckUsageScope(ctx context.Context, scope store.UsageScope, p model.Principal, now time.Time) error {
 	auth, ok := ctx.Value(usageAuthorizationKey{}).(model.CredentialAuthorization)
 	if !ok {
 		return nil
@@ -70,11 +70,17 @@ func recheckUsageScope(ctx context.Context, scope store.UsageScope, p model.Prin
 	if auth.Policy == nil {
 		return nil
 	}
-	reader, ok := scope.(CurrentUsageAuthorization)
-	if !ok {
-		return fmt.Errorf("usage transaction cannot recheck scoped credential")
+	var current model.CredentialAuthorization
+	var err error
+	if s.producerAuthorization != nil {
+		current, err = s.producerAuthorization(ctx, scope, p, now, false)
+	} else {
+		reader, ok := scope.(CurrentUsageAuthorization)
+		if !ok {
+			return fmt.Errorf("usage transaction cannot recheck scoped credential")
+		}
+		current, err = reader.CurrentUsageAuthorization(ctx, p, now)
 	}
-	current, err := reader.CurrentUsageAuthorization(ctx, p, now)
 	if err != nil {
 		return err
 	}

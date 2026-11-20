@@ -19,6 +19,7 @@ import (
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -63,8 +64,8 @@ func testTeamHTTPSessionPATAndIdentityPermissions(t *testing.T, fixture teamInte
 	if !reflect.DeepEqual(got, team) {
 		t.Fatal("identity mismatch changed Team")
 	}
-	token := decodeResponse[api.CreatedPersonalAccessToken](t, h.Request("POST", "/api/v1/me/tokens", `{"name":"Team API","expiresAt":null}`, cookies, nil, h.Origin), 201)
-	pat := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Token}, "https://foreign.test"), 201)
+	token := h.MintBrowserPAT(t, cookies[0], identitycore.CreatePAT{Name: "Team API"})
+	pat := decodeResponse[api.Team](t, h.Request("POST", "/api/v1/teams", body, nil, []string{"Bearer " + token.Secret}, "https://foreign.test"), 201)
 	if pat.Membership.UserID != user.ID {
 		t.Fatal("PAT principal changed")
 	}

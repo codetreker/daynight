@@ -135,7 +135,7 @@ func (s *Service) TaskSummaries(ctx context.Context, p model.Principal, project 
 		if err != nil {
 			return err
 		}
-		if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+		if err := s.recheckUsageScope(ctx, scope, p, now); err != nil {
 			return err
 		}
 		out.Items, err = summaries(ctx, scope, store.UsageFilter{ProjectID: project, TaskIDs: ids}, ids, permission, now)
@@ -163,7 +163,7 @@ func (s *Service) TestSummary(ctx context.Context, p model.Principal, id string)
 		if session.Scope != "test" {
 			return core.Fault("resource_unavailable")
 		}
-		permission, err := readPermission(ctx, scope, p, session, false)
+		permission, err := s.readPermission(ctx, scope, p, session, false)
 		if err != nil {
 			return err
 		}
@@ -331,7 +331,7 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 			if session.Scope != "test" {
 				return core.Fault("resource_unavailable")
 			}
-			permission, err = readPermission(ctx, scope, p, session, false)
+			permission, err = s.readPermission(ctx, scope, p, session, false)
 		} else {
 			permission, err = authorizeProject(ctx, scope, p, project)
 			if err != nil {
@@ -354,7 +354,7 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 			return err
 		}
 		if sessionID == "" {
-			if err := recheckUsageScope(ctx, scope, p, now); err != nil {
+			if err := s.recheckUsageScope(ctx, scope, p, now); err != nil {
 				return err
 			}
 		}

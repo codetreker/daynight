@@ -19,12 +19,34 @@ type database interface {
 }
 type versionDecision func(model.PromptResource, int64, string) (int64, bool, error)
 type Prompts struct {
+	current       func(context.Context, any, model.Principal, bool) (model.CredentialAuthorization, error)
 	store         database
 	decideVersion versionDecision
 }
 
 func New(db database) *Prompts { return &Prompts{store: db, decideVersion: core.Next} }
-func invalid() error           { return &model.Fault{Code: "invalid_input", Message: "Prompt input is invalid."} }
+func NewScoped(db database, current func(context.Context, any, model.Principal, bool) (model.CredentialAuthorization, error)) (*Prompts, error) {
+	if current == nil {
+		return nil, errors.New("prompt credential policy is required")
+	}
+	p := New(db)
+	p.current = current
+	return p, nil
+}
+func (p *Prompts) admit(ctx context.Context, tx any, a model.CredentialAuthorization, write bool, operations ...scopepolicy.Operation) error {
+	if p.current != nil {
+		current, err := p.current(ctx, tx, a.Principal, write)
+		if err != nil {
+			return err
+		}
+		if current.Principal != a.Principal || current.Profile != a.Profile {
+			return model.Unauthenticated(nil)
+		}
+		a = current
+	}
+	return scopeadmission.Require(a, operations...)
+}
+func invalid() error { return &model.Fault{Code: "invalid_input", Message: "Prompt input is invalid."} }
 func notFound(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
 		return &model.Fault{Code: "not_found", Message: "Prompt resource was not found.", Cause: err}
@@ -93,12 +115,12 @@ func (p *Prompts) getAuthorized(ctx context.Context, purpose model.PromptPurpose
 	if err := authorization.Validate(); err != nil {
 		return model.PromptResource{}, err
 	}
-	return p.get(ctx, purpose, authorization.Principal, scope, id, func() error {
-		return scopeadmission.Require(authorization, scopepolicy.PromptRead)
+	return p.get(ctx, purpose, authorization.Principal, scope, id, func(tx any) error {
+		return p.admit(ctx, tx, authorization, false, scopepolicy.PromptRead)
 	})
 }
 
-func (p *Prompts) get(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id string, admit func() error) (model.PromptResource, error) {
+func (p *Prompts) get(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id string, admit func(any) error) (model.PromptResource, error) {
 	id, err := normalize(principal, scope, id)
 	if err != nil {
 		return model.PromptResource{}, err
@@ -109,7 +131,7 @@ func (p *Prompts) get(ctx context.Context, purpose model.PromptPurpose, principa
 			return err
 		}
 		if admit != nil {
-			if err := admit(); err != nil {
+			if err := admit(snapshot); err != nil {
 				return err
 			}
 		}
@@ -140,12 +162,12 @@ func (p *Prompts) putAuthorized(ctx context.Context, purpose model.PromptPurpose
 	if err := authorization.Validate(); err != nil {
 		return model.PromptResource{}, err
 	}
-	return p.put(ctx, purpose, authorization.Principal, scope, id, expectedUserID, revision, text, func() error {
-		return scopeadmission.Require(authorization, scopepolicy.PromptWrite, scopepolicy.PromptRead)
+	return p.put(ctx, purpose, authorization.Principal, scope, id, expectedUserID, revision, text, func(tx any) error {
+		return p.admit(ctx, tx, authorization, true, scopepolicy.PromptWrite, scopepolicy.PromptRead)
 	})
 }
 
-func (p *Prompts) put(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string, admit func() error) (model.PromptResource, error) {
+func (p *Prompts) put(ctx context.Context, purpose model.PromptPurpose, principal model.Principal, scope model.PromptScope, id, expectedUserID, revision, text string, admit func(any) error) (model.PromptResource, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.PromptResource{}, err
 	}
@@ -183,7 +205,7 @@ func (p *Prompts) put(ctx context.Context, purpose model.PromptPurpose, principa
 			}
 		}
 		if admit != nil {
-			if err := admit(); err != nil {
+			if err := admit(tx); err != nil {
 				return err
 			}
 		}

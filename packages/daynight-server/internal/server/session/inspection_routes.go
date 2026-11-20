@@ -20,7 +20,7 @@ type inspectionAuthentication interface {
 
 // RegisterInspectionRoutes exposes the read-only, explicit Session identity
 // inspection shared by Task observation and future Session command clients.
-func RegisterInspectionRoutes(mux *http.ServeMux, reader inspectionReader, auth inspectionAuthentication, logger *slog.Logger) {
+func RegisterInspectionRoutes(mux httpx.RouteRegistrar, reader inspectionReader, auth inspectionAuthentication, logger *slog.Logger) {
 	const path = sessionBase + "/{sessionId}/inspection"
 	mux.HandleFunc("GET "+path, auth.Require(func(w http.ResponseWriter, r *http.Request, principal model.Principal) {
 		w.Header().Set("Cache-Control", "no-store")

@@ -15,8 +15,8 @@ The scoped Tag service accepts explicit credential authorization and shares the
 existing catalog operations with the original service. Core owns the Tag operation
 requirements and profile validation. Each snapshot or project write checks existing
 resource access before scope admission, and admission precedes catalog access or
-mutation. REST and MCP have opt-in registration paths that reuse their parsers and
-response mapping. Production assembly retains its existing entry points.
+mutation. Production REST and MCP use scoped registration paths that reuse their parsers
+and response mapping.
 
 Reads require `tag:read`. Full create and update replies require both `tag:write`
 and `tag:read` before writing. Deletion requires only `tag:delete`, since its receipt
@@ -36,7 +36,7 @@ leaking those facts or inventing a new receipt protocol for Tag operations.
 
 **Inferring unrestricted access from an absent policy.** Missing scoped credential
 facts could then authorize work. The scoped API requires an explicit validated
-profile; the original product assembly remains a separate entry point.
+profile; production authentication must supply those facts.
 
 ## Consequences
 

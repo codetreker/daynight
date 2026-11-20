@@ -25,7 +25,7 @@ Scope 检查与现有凭据有效性、资源访问、角色和业务条件共�
 批准在设备行锁后复核数据库时间，在同一事务保存决定、账号和规范权限集合。
 领取使用原 v1 CLI form 和响应，在设备行锁后复核期限，并在同一事务消费授权、
 创建带实际批准集合的 PAT。只在确认提交后交付明文，同一授权至多签发一次。
-旧批准入口在 scoped 装配中不能绕过显式选择；旧生产装配仍保留原行为。
+生产旧批准入口拒绝缺少显式选择的批准；刷新同一授权页面后继续处理原请求。
 目录及 v2 设备入口在真实路由注册时声明 browser-only 分类，方法回退单独登记。
 
 ## 账户凭据管理准备入口
@@ -40,7 +40,7 @@ Scope 检查与现有凭据有效性、资源访问、角色和业务条件共�
 字段。选择可保留或移除已保存但当前不可用的有效 ID，新增项必须在当前目录
 中可用。目录修订或版本冲突要求重新读取；提交结果未知时读取列表核对，不
 自动重发。PAT 期限和最近使用时间使用独立字段，不覆盖权限版本或集合。
-原生产装配继续使用现有接口，scoped 管理入口由后续启用阶段显式接入。
+生产账户页使用 scoped 管理入口；期限与撤销继续复用原接口。
 
 ## MCP 应用授权准备入口
 
@@ -62,8 +62,7 @@ access 与 refresh 不复制该集合；refresh 继续读取和保留原 grant �
 提交未知不能交付或重放 redirect 和 token，通过原请求状态核对决定。
 
 v2 浏览器 HTTP 注册显式声明 browser-only 路由及方法回退，保留精确 Origin、
-账户和 Cookie 绑定、严格字段解析及禁止缓存。生产 OAuth 构造和路由继续使用
-原装配，受限签发与 v2 路由由统一启用阶段接入。
+账户和 Cookie 绑定、严格字段解析及禁止缓存。生产 OAuth 构造和路由使用 scoped 装配，公开 token、refresh 和 revoke 保留原协议。
 
 ## 凭据存储与复核
 
@@ -74,9 +73,12 @@ OAuth access 与 refresh 不复制权限；按 access hash 读取原 grant 的�
 策略会失败，scoped MCP 读取也拒绝缺失策略。编辑和 refresh 使用同一 grant 锁，
 编辑按账户、有效状态及预期版本更新，最近使用时间独立。
 
-准备迁移保留历史及旧写入者的空字段；现有产品签发、批准和装配维持原行为。
-历史回填及 scoped 认证装配须在启用时协调；不能把尚未回填的 MCP 空字段
-当作无限权限。迁移复用既有 access hash 和 grant 索引，不增加热路径索引。
+准备迁移 108、109 增加策略字段；最终启用迁移把历史 PAT、MCP grant 和已批准未兑换
+请求的空策略回填为启用版本冻结的类型全集，版本从 1 开始。未决请求仍需明确选择，
+固定 API profile 不保存业务策略。回填不改变 token hash、原协议 scope、期限、撤销、
+绑定或一次性消费状态；已经明确保存的策略不会扩权。PAT 策略列不允许 NULL，且无
+隐式全集默认值。认证拒绝缺失或损坏的策略。迁移复用既有 access hash 和 grant
+索引，不增加热路径索引。
 
 ## 任务读取准入与投影
 
@@ -85,12 +87,17 @@ Task/Goal 的详情、列表、ready、搜索、属性、schema、依赖、分�
 准入。搜索在自己的 TaskSearch 快照内执行同一规则。明确的 scoped 构造和路由
 注册复用原查询及分页。REST 读取、搜索与写入入口可组合到同一 ServeMux；
 MCP 读取与写入注册各自只拥有所属工具，可组合到同一 Entry，且不重复注册。
-原生产装配维持既有行为。
+生产装配使用这些 scoped 读取与投影。
 
 普通任务读取不要求 `project:read`。包含完整 Project 的 Graph 与 Sync 同时要求
 该权限；REST Graph 携带 `Daynight-Projection: task-only-v1` 时，服务回显该头并
 只返回 `project.id`。MCP task_graph 缺少项目读取权限时采用相同最小投影，包含
 `dependsOnly`，其余节点、依赖、统计和 projection 声明保持原合同。
+
+完整 Graph 在初次读取和 live 采样后的最终快照中均复核当前凭据的
+`task:read`、`project:read`，以及本次采样所需的 `session:read`。任一权限
+撤回后不交付已读取的完整 Project。task-only Graph 保持窄投影，且不附加
+`project:read`；单次完整查询的要求不会改变共享服务的后续查询。
 
 缺少 `session:read` 时，普通组合查询不读取任何 Session 来源或采样 live 状态。
 Task 属性中的执行记录 `worker`、`sessionStartup` 被排除；普通自定义属性保留。
@@ -158,22 +165,23 @@ Task 写入服务按解析后的字段合并所需操作，项目访问、原有
 返回相同身份和十进制字符串版本及既有写入结果；省略视图且受限凭据缺少
 `task:read` 时选择该回执，显式 summary/full 需要读取权限。省略 MCP
 版本时的现有预读同样需要 `task:read`。服务在提交前检查实际 MCP 回执的
-响应容量。Goal 依赖编辑保留原最小回执。
+响应容量。普通写入与仅 Tag 更新在响应预算检查前移除未经授权的 `worker` 和
+`sessionStartup`，保留数据库与内部事件的完整事实。Goal 依赖编辑保留原最小回执。
 
-直接写入使用本次认证的策略快照；既有生产装配保持原行为，scoped 写入
-入口由启用阶段接入。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
+直接写入使用本次认证的策略快照；生产装配使用 scoped 写入入口。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
 
 ## Worker 任务执行准入
 
 领取、执行状态上报、释放及撤回分别使用 `worker:claim`、`worker:report`
 和 `worker:release`。带 claim 的完成继续使用 `worker:complete`。这些检查
 与原项目访问、执行归属、版本及 claim 校验共同生效；原完整 Task 响应仍需
-`task:read`，显式最小回执只包含身份和版本。`agent:authorize` 只控制
+`task:read`；领取、上报和带 claim 完成的原完整回执还必须保留 Worker
+事实，因此在变更前同时要求 `session:read`。显式最小回执只包含身份和版本。`agent:authorize` 只控制
 `allowAgents`，不授予实际执行能力。
 
 Task Session 恢复 grant 在原有服务端请求入口复核 `worker:retry` 与
-`session:produce`，并保留原 claim、owner、代次和停止证明检查。旧生产
-装配保持原行为；scoped 路由与授权事实由启用阶段接入。CLI 的本机操作
+`session:produce`，并保留原 claim、owner、代次和停止证明检查。生产
+装配接通 scoped 路由与授权事实。CLI 的本机操作
 继续遵守其现有语义。
 
 决策见[Worker 执行准入记录](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scope-admission.md)。
@@ -191,7 +199,7 @@ OAuth Grant ID 锁定当前凭据并读取策略；同一 Grant 的新 access �
 `attachment:upload`。完整附件元数据回执另需 `attachment:read`。最终发布在
 附件事务中、文件副作用前复核；原内部回执结算和清理不因后续权限收窄而中断。
 重试已有传输时，权限拒绝本身不证明原操作未提交；只有能够确认未提交的写入才
-返回 `not_committed`。传输记录不保存 scope，生产装配继续使用原入口。
+返回 `not_committed`。传输记录不保存 scope，生产装配使用 scoped 私有传输入口。
 
 | 操作 | 所需 scope | 准入与输出 |
 | --- | --- | --- |
@@ -283,8 +291,10 @@ access 的顺序锁定，原凭据、归属和删除协调检查继续生效。�
 HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影时，另需
 `assistant-task:read`；创建在写入前复核该权限。MCP 的 `bot_list`、`bot_show`、
 `bot_create`、`bot_delete` 保留既有输出，不请求该投影。创建所需的内部模型
-发现遵守 Bot 准入及原 Worker 资源检查，并在每次发现前复核当前权限；它不把
-独立 Worker 检查能力授予 Bot 定义凭据。
+发现使用本次创建的完整操作要求及原 Worker 资源检查；操作要求绑定到单次
+发现请求，在派发、结果投递和返回前读取当前权限复核，保留原请求是否需要
+`assistant-task:read` 的选择。该内部能力不要求或授予独立的 `worker:inspect`；
+Defaults 的独立检查继续使用 Worker 检查准入。
 
 既有 Bot 或指定 Worker 的可见性检查先于 scope 拒绝，分页读取、定义写入和
 删除屏障在授权后执行。可靠的 scope 拒绝在 REST 保留 403 `forbidden` 并附加
@@ -330,7 +340,7 @@ schema 与资源绑定。用户通道在握手及每次投递前复核当前权�
 | 带配置交换的报告 | `worker:report`、`worker:read` | 报告写入前；原回执包含完整 desired |
 | 报告实际改变 desired | 另需 `worker:configure` | 同一报告事务内的最终候选与已锁目标比较 |
 | 报告提交后的 Prompt 选择 | `prompt:read` | 独立 Prompt 快照；拒绝只影响逐项结果 |
-| readonly 主动请求 | `worker:inspect` | 派发前、结果交付及返回前复核原请求者 |
+| 独立 readonly 主动请求 | `worker:inspect` | 派发前、结果交付及返回前复核原请求者 |
 | readonly 生产者连接、检查与结果生产 | `worker:report` | 原 PAT 当前权限复核，失权关闭通道 |
 
 `core/worker.ExchangeConfigurationAuthorized` 在实际 desired 写入前检查配置
@@ -345,9 +355,11 @@ Bootstrap 或已采纳工具的无变化请求不额外要求配置权限；观�
 `service/worker.NewScopedReadOnly` 使用同一身份事务中的 `LockActivePAT` 与
 `PATScopeDAO.ReadLockedPATScope` 分别确认有效性及当前策略；原有效性查询本身
 不携带 Scope。Session 和固定 API OAuth 保留原身份及应用绑定。Broker 使用
-独立 requester、producer 授权函数，主动检查不隐含 Worker 配置读取许可，
-生产者不要求主动检查许可。请求者失权只拒绝对应结果，生产者失权断开共享
-连接并释放待处理请求。
+独立 requester、producer 授权函数；每个待处理请求保存其原请求者的授权函数，
+派发、结果投递和最终返回使用同一绑定。公共主动检查使用 `worker:inspect`，
+Bot 创建内部发现使用本次创建的操作要求，并继续检查 Worker 有效性与归属。
+主动检查不隐含 Worker 配置读取许可，生产者不要求主动检查许可。请求者失权
+只拒绝对应结果，生产者失权断开共享连接并释放待处理请求。
 
 Worker 的显式 scoped HTTP 注册复用原解析与响应，要求 scoped 服务和认证。
 readonly 注册配合 scoped Broker 使用。实际注册的 `ScopeRoute` 包含普通操作、
@@ -370,7 +382,7 @@ HTTP 权限拒绝保留 403 `forbidden` 和 `Daynight-Scope-Status`，不改变�
 
 事务能力提供与 Session 写入共用事务的 PAT 与 OAuth DAO。PAT 复核锁定原
 凭据并检查有效期；OAuth 按 grant、access 顺序锁定并读取当前 grant 策略。
-scoped 命令服务显式装配后使用这些能力，原生产装配保持不变。
+scoped 命令服务显式装配后使用这些能力，生产装配使用该准入。
 同时启用 MCP 命令与回执时，组合注册持有构造时安装了不可替换命令准入的
 Execution；替换服务的公开执行字段不会改变该入口实际调用的实例。
 启用时，`NewScopedCommandsAndProducer` 在同一 Session 服务装配命令和
@@ -386,7 +398,7 @@ attempt 的完成结果仍按原记录结算，已验证的 copying 继续由原
 
 重试 POST 在写入、计费或生成完整回执前同时检查 `session:control` 和
 `session:read`。真实 Task 和 Test Session 路由及隐式 HEAD 在注册时记录这些
-权限和动态投影，原生产装配保持不变。具体权衡见
+权限和动态投影，生产装配使用该准入。具体权衡见
 [图片准入决策](../../.agents/notes/implemented/architecture/2026-11-20-session-image-scope.md)。
 scoped 路由绑定构造时安装了命令准入的原 Execution；仅读取装配不能放行
 这些受限凭据。
@@ -409,12 +421,21 @@ Bot 授权恢复在事务中撤销旧连接 lease 后，旧连接父凭据不再
 
 ## 装配边界
 
-生产仍使用既有业务装配，尚未启用
-受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
-放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
-启用由相应实现接入。Tag 的直接操作使用调用方
-已认证的策略快照；附件 Open 的权威读取与 scoped Bot 授权事实来源由启用阶段
-接入对应凭据的当前读取。
+生产 Server 与 Web 统一装配 scoped 签发、认证、领域准入及管理入口。scoped
+入口只接受显式授权事实，不以缺失 policy 放行。Tag 的直接操作使用调用方
+已认证的策略快照；附件 Open、Bot、Worker 及其他延迟准入读取原凭据当前策略，
+现有事务复核使用该事务绑定的授权能力。Cookie、固定 OAuth API 和专用内部凭据
+仍受各自 profile 与资源绑定约束。
+
+升级必须先排空旧 Server、连接及业务写入者，保存数据库与附件恢复点，再执行
+准备迁移及冻结全集回填。新 Server 验证实际 REST/MCP 注册分类完整后才接流量，
+目录由实际挂载能力裁剪，部署暂时关闭的能力不缩小历史全集。新签发和编辑只在所有
+处理凭据的实例均执行 scope 时开放。
+
+迁移失败保留启动错误及 readiness 拒绝。账本已提交后，即使尚未服务请求，旧制品
+也不能在新库恢复启动。提交未知时保持排空，核对账本、checksum 与 schema 后决定
+前滚；只有确认没有迁移后业务写入且恢复点已验证时，才可恢复旧数据库和配套制品。
+生产切换与发布需要独立授权；隔离验证证明代码及升级行为。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
 附件准入与完整上传回执的取舍见[附件决策](../../.agents/notes/implemented/architecture/2026-11-20-attachment-scope-admission.md)。
@@ -440,4 +461,4 @@ PATCH、DELETE、status PUT 和 position PUT 对应写入；方法回退不执�
 `task_step_list`、`task_step_show`、`task_thread_read` 对应读取，
 `task_step_add`、`task_step_update`、`task_step_set_status`、`task_step_move`、
 `task_step_delete` 和 `task_thread_post` 对应各自写入。显式 scoped 注册入口
-复用原解析与资源检查，原产品装配保持不变。
+复用原解析与资源检查，生产装配使用这些 scoped 入口。

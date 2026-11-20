@@ -14,7 +14,7 @@ import (
 // RegisterScopedWorkerClaimRoutes mounts Worker claim mutations with the same
 // response selection and authenticated policy used by scoped Task writes.
 // Product assembly chooses when to enable these routes.
-func RegisterScopedWorkerClaimRoutes(mux *http.ServeMux, tasks TaskService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
+func RegisterScopedWorkerClaimRoutes(mux httpx.RouteRegistrar, tasks TaskService, auth ScopedWriteAuthentication, logger *slog.Logger) error {
 	if mux == nil || tasks == nil || auth == nil || logger == nil {
 		return errors.New("scoped Worker claim routes require all dependencies")
 	}
@@ -36,5 +36,8 @@ func RegisterScopedWorkerClaimRoutes(mux *http.ServeMux, tasks TaskService, auth
 	register("PATCH "+path, "update", h.updateWorker)
 	register("POST "+path+"/release", "release", h.releaseWorker)
 	register("POST "+path+"/withdraw", "withdraw", h.withdrawWorker)
+	registerScopedMethodFallback(mux, auth, logger, path, "POST, PATCH")
+	registerScopedMethodFallback(mux, auth, logger, path+"/release", "POST")
+	registerScopedMethodFallback(mux, auth, logger, path+"/withdraw", "POST")
 	return nil
 }

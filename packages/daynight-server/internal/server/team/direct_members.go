@@ -13,7 +13,7 @@ import (
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func RegisterDirectMemberRoutes(mux *http.ServeMux, members *teamservice.DirectMembers, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterDirectMemberRoutes(mux httpx.RouteRegistrar, members *teamservice.DirectMembers, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &teamHandler{addMember: members.AddMember, resolveMember: members.ResolveMember, addExistingMember: members.AddExistingMember, logger: logger}
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members", auth.Require(h.addDirectMember))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.addExistingTeamMember))
