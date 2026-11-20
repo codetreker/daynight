@@ -304,3 +304,69 @@ func TestScopedSearchRouteRegistrationAndAuthenticationBoundaries(t *testing.T) 
 		}
 	}
 }
+
+func TestScopedTaskReadAndSearchRoutesComposeInEitherOrder(t *testing.T) {
+	for _, searchFirst := range []bool{false, true} {
+		name := "read first"
+		if searchFirst {
+			name = "search first"
+		}
+		t.Run(name, func(t *testing.T) {
+			policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"task:read"}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := model.CredentialAuthorization{Principal: testPrincipal(), Profile: model.ScopedPATProfile, Policy: &policy}
+			db := readRouteStore{snapshot: readRouteSnapshot{tasks: readRouteTasks{task: testTask("Combined routes")}, projects: readRouteProjects{t: t}, credentials: readRouteCredentials{}}}
+			mux := http.NewServeMux()
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			searchCalls := 0
+			registerRead := func() error {
+				return taskhttp.ScopedReadRoutes(mux, taskservice.NewTasks(db), taskservice.NewObservations(db, nil), taskservice.NewTaskSync(db, nil, time.Second), readRouteAuth{a}, logger, time.Second)
+			}
+			registerSearch := func() error {
+				return taskhttp.ScopedTaskSearchRoutes(mux, func(ctx context.Context, authorization model.CredentialAuthorization, project string, input tasksearch.Request) (tasksearch.Page, error) {
+					searchCalls++
+					if ctx.Err() != nil || authorization != a || project != testProjectID || input.Query != "combined" {
+						t.Fatalf("search forwarding: %#v %q %#v", authorization, project, input)
+					}
+					return tasksearch.Page{ProjectID: project, Items: []tasksearch.Item{}}, nil
+				}, readRouteAuth{a}, logger)
+			}
+			registrations := []func() error{registerRead, registerSearch}
+			if searchFirst {
+				registrations[0], registrations[1] = registrations[1], registrations[0]
+			}
+			for _, register := range registrations {
+				if err := register(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, route := range []struct {
+				method, path, body string
+				status             int
+				allow              string
+			}{
+				{http.MethodPost, "/tasks/search", `{"query":"combined"}`, http.StatusOK, ""},
+				{http.MethodGet, "/tasks/" + testTaskID, "", http.StatusOK, ""},
+				{http.MethodGet, "/tasks?limit=1", "", http.StatusOK, ""},
+				{http.MethodGet, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
+				{http.MethodHead, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
+				{http.MethodPatch, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
+				{http.MethodDelete, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
+				{http.MethodPut, "/tasks/search", "", http.StatusMethodNotAllowed, "POST"},
+			} {
+				r := httptest.NewRequest(route.method, "/api/v1/projects/"+testProjectID+route.path, strings.NewReader(route.body))
+				r.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, r)
+				if w.Code != route.status || w.Header().Get("Allow") != route.allow {
+					t.Fatalf("%s %s: %d Allow=%q %s", route.method, route.path, w.Code, w.Header().Get("Allow"), w.Body)
+				}
+			}
+			if searchCalls != 1 {
+				t.Fatalf("search calls=%d", searchCalls)
+			}
+		})
+	}
+}

@@ -78,6 +78,10 @@ func ScopedReadRoutes(mux *http.ServeMux, tasks *service.Tasks, observations *se
 	} {
 		mux.HandleFunc("GET "+route.path, bind(route.run))
 		mux.HandleFunc(route.path, bind(func(_ *taskHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
+			if route.path == "/api/v1/projects/{projectId}/tasks/{taskId}" && r.PathValue("taskId") == "search" {
+				httpx.ResourceMethodNotAllowed(logger, "POST")(w, r, p)
+				return
+			}
 			httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")(w, r, p)
 		}))
 	}
@@ -111,8 +115,10 @@ func ScopedTaskSearchRoutes(mux *http.ServeMux, search ScopedSearchOperation, au
 	}
 	const path = "/api/v1/projects/{projectId}/tasks/search"
 	mux.HandleFunc("POST "+path, bind((*searchHandler).search))
-	mux.HandleFunc(path, bind(func(_ *searchHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
-		httpx.ResourceMethodNotAllowed(logger, "POST")(w, r, p)
-	}))
+	for _, method := range []string{"GET", "PATCH", "DELETE"} {
+		mux.HandleFunc(method+" "+path, bind(func(_ *searchHandler, w http.ResponseWriter, r *http.Request, p model.Principal) {
+			httpx.ResourceMethodNotAllowed(logger, "POST")(w, r, p)
+		}))
+	}
 	return nil
 }
