@@ -30,6 +30,8 @@ viewBox to set intrinsic SVG image dimensions. Event Modeling's XHTML labels
 remain in the static image; the application does not insert output SVG into the
 reading DOM or install its callbacks. Flowchart defaults retain Dagre, while the
 explicit stable `flowchart-elk` entry uses Mermaid's built-in ELK.
+The [shared Markdown design](../../../../docs/design/shared-markdown.md#mermaid-图表)
+also owns measured typography and resize behavior for the independent SVG image.
 
 ## Alternatives
 
@@ -70,8 +72,8 @@ types, third-party plugins and diagram interactions remain outside the scope;
 static images do not provide selectable SVG text. The renderer is not a network
 isolation mechanism.
 
-Parser DB structures, the Block lexer, sizing-work estimate and Gantt patch are
+Parser DB structures, the Block lexer, sizing-work estimate and Gantt and XY patches are
 tied to Mermaid 12.2.0. Upgrades must revalidate real parser data, Block layout
-and its work estimate, the patch's actual npm root
+and its work estimate, the patches' actual npm root
 entry and the bounded work and reset behavior. The type-specific policy and
 browser-visible samples make that maintenance cost explicit.

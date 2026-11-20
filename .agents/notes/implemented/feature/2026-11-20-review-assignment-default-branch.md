@@ -37,4 +37,4 @@ allows the existing owner to remain authoritative when eligibility returns.
 An unknown default branch delays first assignment until a successful valid
 observation. Branch and PR updates converge through normal synchronization and
 reconciliation; a stale scan cannot create an assignment after a conflicting
-observation commits. This decision does not add the Worker polling API.
+observation commits. The [Worker polling decision](2026-11-20-worker-review-polling.md) applies the same eligibility to existing assignments without changing their ownership.

@@ -15,7 +15,7 @@ describe('pinned Mermaid parser preflight', () => {
     'flowchart TD\nA["literal @{ text"] --> B',
     'flowchart TD\nA@{ shape: rect, label: "Modern metadata" } --> B',
   ])('preserves supported flowchart syntax without confusing labels and metadata: %s', async (source) => {
-    await expect(renderMermaidDiagram(source, new AbortController().signal)).resolves.toBe(svg);
+    await expect(renderMermaidDiagram(source, new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).resolves.toBe(svg);
     expect(render).toHaveBeenCalledOnce();
   });
 
@@ -24,21 +24,21 @@ describe('pinned Mermaid parser preflight', () => {
     String.raw`flowchart TD
 A@{ "im\u0067": "/held.svg", label: "Escaped key" } --> B`,
   ])('refuses parsed image nodes before entering the resource-loading renderer: %s', async (source) => {
-    await expect(renderMermaidDiagram(source, new AbortController().signal)).rejects.toMatchObject({ issue: 'image' });
+    await expect(renderMermaidDiagram(source, new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).rejects.toMatchObject({ issue: 'image' });
     expect(render).not.toHaveBeenCalled();
-    await expect(renderMermaidDiagram('flowchart LR\nCurrent --> Content', new AbortController().signal)).resolves.toBe(svg);
+    await expect(renderMermaidDiagram('flowchart LR\nCurrent --> Content', new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).resolves.toBe(svg);
     expect(render).toHaveBeenCalledOnce();
   });
 
   it('maps the SDK edge limit to a complexity error and continues with another chart', async () => {
     const source = `flowchart TD\n${Array.from({ length: 501 }, () => 'A --> B').join('\n')}`;
-    await expect(renderMermaidDiagram(source, new AbortController().signal)).rejects.toMatchObject({ issue: 'complexity', cause: expect.any(Error) });
+    await expect(renderMermaidDiagram(source, new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).rejects.toMatchObject({ issue: 'complexity', cause: expect.any(Error) });
     expect(render).not.toHaveBeenCalled();
-    await expect(renderMermaidDiagram('flowchart TD\nA --> B', new AbortController().signal)).resolves.toBe(svg);
+    await expect(renderMermaidDiagram('flowchart TD\nA --> B', new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).resolves.toBe(svg);
   });
 
   it('keeps the parser refusal of the internal imageSquare shape before rendering', async () => {
-    await expect(renderMermaidDiagram('flowchart TD\nA@{ shape: imageSquare } --> B', new AbortController().signal)).rejects.toThrow('Shape names should be lowercase');
+    await expect(renderMermaidDiagram('flowchart TD\nA@{ shape: imageSquare } --> B', new AbortController().signal, { xs: 12, sm: 14, lg: 18 })).rejects.toThrow('Shape names should be lowercase');
     expect(render).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,30 @@ type ReviewAssignment struct {
 	ReviewEnabled *bool
 }
 
+// ReviewPollSnapshot reads a Worker's participation and its eligible assigned
+// PRs from the same repeatable-read snapshot. The caller interprets the Worker's
+// configuration and supplies its selected Project IDs before pagination.
+type ReviewPollSnapshot interface {
+	ReviewPollWorker(context.Context, string, string) (*ReviewPollWorker, error)
+	ReviewPollCandidates(context.Context, string, string, []string, *ReviewPollKey, int) ([]ReviewPollCandidate, error)
+}
+
+type ReviewPollWorker struct {
+	ReviewEnabled        bool
+	DesiredConfiguration json.RawMessage
+}
+
+type ReviewPollKey struct {
+	ProjectID                string
+	RepositoryID, GitHubPRID int64
+}
+
+type ReviewPollCandidate struct {
+	ReviewPollKey
+	RepositoryFullName string
+	Number             int64
+}
+
 type ReviewWorkerKey struct{ UserID, WorkerID string }
 
 type ReviewWorker struct {

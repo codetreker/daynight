@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -32,15 +33,26 @@ func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
 type liveSessions interface{ DiscardBotSession(string) }
 
 type Deletions struct {
-	writer     store.SessionWriter
-	files      filestorage.Storage
-	live       liveSessions
-	operations deletionOperations
-	now        func() time.Time
+	writer        store.SessionWriter
+	files         filestorage.Storage
+	live          liveSessions
+	operations    deletionOperations
+	now           func() time.Time
+	authorization DefinitionAuthorizationSource
 }
 
 func NewDeletions(writer store.SessionWriter, files filestorage.Storage, live liveSessions) *Deletions {
 	return &Deletions{writer: writer, files: files, live: live, now: time.Now, operations: defaultDeletionOperations()}
+}
+
+// NewScopedDeletions enforces definition authorization within the deletion barrier.
+func NewScopedDeletions(writer store.SessionWriter, files filestorage.Storage, live liveSessions, authorization DefinitionAuthorizationSource) (*Deletions, error) {
+	if authorization == nil {
+		return nil, errors.New("definition authorization source is required")
+	}
+	s := NewDeletions(writer, files, live)
+	s.authorization = authorization
+	return s, nil
 }
 
 func deletionFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
@@ -105,9 +117,20 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 	var out model.Bot
 	var sessions []store.BotSession
 	completion, err := s.writer.WriteSession(ctx, func(scope store.SessionScope) error {
+		var authorization model.CredentialAuthorization
+		var authorizationErr error
+		if s.authorization != nil {
+			// Acquire the policy locks before the existing access credential lock.
+			authorization, authorizationErr = s.authorization.SessionWrite(ctx, scope, p)
+		}
 		bot, err := s.lockBot(ctx, scope, p, id)
 		if err != nil {
 			return err
+		}
+		if s.authorization != nil {
+			if err := requireDefinition(p, authorization, authorizationErr, scopepolicy.BotDelete, scopepolicy.BotRead); err != nil {
+				return err
+			}
 		}
 		replay, err := s.operations.request(bot, input)
 		if err != nil {
