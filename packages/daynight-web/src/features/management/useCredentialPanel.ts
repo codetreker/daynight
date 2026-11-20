@@ -10,13 +10,18 @@ export type CredentialPanel<T extends Credential> = {
   readonly loading: boolean;
   readonly pending: boolean;
   readonly error: unknown;
-  readonly read: (publish?: (items: readonly T[]) => void) => Promise<void>;
+  readonly read: (publish?: (items: readonly T[], raw: readonly T[]) => void) => Promise<void>;
   readonly write: (operation: (context: CredentialOperation) => Promise<void>, abandoned?: (dispatched: boolean) => void) => Promise<void>;
   readonly busy: () => boolean;
 };
 
-export const useCredentialPanel = <T extends Credential>(userId: string, transport: (signal: AbortSignal, userId: string, mismatch: () => void) => Promise<readonly T[]>, mismatch: () => void, initialRead = true): CredentialPanel<T> => {
-  const [items, setItems] = useState<readonly T[] | null>(null);
+export const useCredentialPanel = <T extends Credential>(userId: string, transport: (signal: AbortSignal, userId: string, mismatch: () => void) => Promise<readonly T[]>, mismatch: () => void, initialRead = true, merge: (previous: readonly T[] | null, incoming: readonly T[]) => readonly T[] = mergeCredentialUses): CredentialPanel<T> => {
+  const [items, setItemsState] = useState<readonly T[] | null>(null);
+  const itemsRef = useRef<readonly T[] | null>(null);
+  const setItems: Dispatch<SetStateAction<readonly T[] | null>> = next => {
+    const value = typeof next === "function" ? next(itemsRef.current) : next;
+    itemsRef.current = value; setItemsState(value);
+  };
   const [loading, setLoading] = useState(initialRead), [pending, setPending] = useState(false), [error, setError] = useState<unknown>(null);
   const lifetime = useRef<AbortController | null>(null);
   const reading = useRef<AbortController | null>(null), writing = useRef(false);
@@ -25,7 +30,7 @@ export const useCredentialPanel = <T extends Credential>(userId: string, transpo
   const callbacks = useRef({ transport, mismatch }); callbacks.current = { transport, mismatch };
   const queued = useRef<(() => void)[]>([]);
   const readGeneration = useRef(0);
-  const read = async (publish?: (result: readonly T[]) => void): Promise<void> => {
+  const read = async (publish?: (result: readonly T[], raw: readonly T[]) => void): Promise<void> => {
     const active = lifetime.current;
     if (active === null || active.signal.aborted) return;
     if (writing.current || reading.current !== null) {
@@ -43,7 +48,7 @@ export const useCredentialPanel = <T extends Credential>(userId: string, transpo
       const result = await callbacks.current.transport(signal, userId, callbacks.current.mismatch);
       await waitForAuthRequests(signal);
       if (!current()) return;
-      setItems(before => mergeCredentialUses(before, result)); publish?.(result);
+      const accepted = merge(itemsRef.current, result); setItems(accepted); publish?.(accepted, result);
     } catch (failure) {
       if (current() && !isAbortError(failure)) setError(failure);
     } finally {

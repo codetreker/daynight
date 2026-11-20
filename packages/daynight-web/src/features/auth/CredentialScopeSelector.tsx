@@ -27,6 +27,8 @@ const labels: Record<string, readonly [string, string]> = {
 };
 const textFor = (values: Record<string, readonly [string, string]>, key: string, locale: Locale) => values[key]?.[locale === 'zh-CN' ? 0 : 1];
 
+export const credentialScopeLabel = (id: string, locale: Locale): string | undefined => textFor(labels, id, locale);
+
 export const hasCredentialScopeLabels = (catalog: ScopeCatalog, locale: Locale): boolean => catalog.groups.every(group =>
   Boolean(textFor(groups, group.id, locale)) && group.scopeIds.every(id => Boolean(textFor(labels, id, locale))));
 

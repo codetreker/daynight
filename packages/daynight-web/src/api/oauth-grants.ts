@@ -17,7 +17,7 @@ export type OwnerGrant = {
   readonly status: "active" | "expired" | "revoked";
 };
 
-const parseGrant = (value: unknown): OwnerGrant => {
+export const parseGrant = (value: unknown): OwnerGrant => {
   const data = record(value);
   if (Object.keys(data).some((key) => !["description", "id", "clientName", "clientId", "resource", "scope", "createdAt", "expiresAt", "lastUsedAt", "revokedAt", "status"].includes(key))) return malformed();
   const status = data.status;

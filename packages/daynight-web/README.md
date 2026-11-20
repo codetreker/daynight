@@ -70,6 +70,13 @@ iframe and relative-resource behavior.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
+The independently mountable scoped credential management panels use the shared
+permission selector for PAT creation and PAT or MCP grant edits. They bind edits
+to the account, catalog and observed scope version, preserve drafts through
+conflicts, and require a current read after an unknown outcome. Scope, expiry and
+usage observations remain independent. Existing account-page assembly continues
+to use the legacy panels until scoped credentials are enabled.
+
 ## Webhook management and delivery diagnostics
 
 Open Webhooks in the authenticated sidebar to visit `/webhooks`. Its catalog is
