@@ -89,7 +89,7 @@ func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 	if err != nil || updated.RowsAffected() != 1 {
 		t.Fatalf("age registered Worker: updated=%v error=%v", updated, err)
 	}
-	detail := requestJSON[api.WorkerDetailResponse](t, f, http.MethodGet, "/api/v1/me/workers/"+workerID, nil, http.StatusOK)
+	detail := requestJSON[api.WorkerDetailResponse](t, f, http.MethodGet, "/api/v1/me/workers/"+workerID, nil, http.StatusOK, http.Header{"Daynight-Worker-Tool-Paths": {"2"}})
 	if detail.ObservedAt.Sub(detail.Worker.LastReportedAt) < 120*time.Second {
 		t.Fatalf("Worker report remains active: %+v", detail)
 	}
@@ -154,7 +154,7 @@ func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, de
 		if current.Revision != "1" || current.Scope != scopes[i] || current.ScopeID != ids[i] || !reflect.DeepEqual(current, read(f, path)) {
 			t.Fatalf("%s initial Reviewer save/read differs", path)
 		}
-		for _, body := range []string{strings.Repeat("a", 32768), strings.Repeat("界", 10922) + "ab"} {
+		for _, body := range []string{strings.Repeat("a", 32768), strings.Repeat("界", 10922) + "ab", strings.Repeat("\"", 32766) + "\n<"} {
 			current = put(f, path, f.userID, current.Revision, body, http.StatusOK)
 			if current.Text != body || !reflect.DeepEqual(current, read(f, path)) {
 				t.Fatalf("%s did not retain %d UTF-8 bytes", path, len(body))
@@ -223,11 +223,11 @@ func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, de
 				t.Fatalf("concurrent write: status=%d body=%s", result.status, result.body)
 			}
 		}
-		if wins != 1 || conflicts != 1 || success.Revision != "4" || (success.Text != "concurrent one" && success.Text != "concurrent two") || !reflect.DeepEqual(success, read(f, path)) {
+		if wins != 1 || conflicts != 1 || success.Revision != "5" || (success.Text != "concurrent one" && success.Text != "concurrent two") || !reflect.DeepEqual(success, read(f, path)) {
 			t.Fatalf("%s concurrent writes: wins=%d conflicts=%d saved=%+v", path, wins, conflicts, success)
 		}
 		cleared := put(f, path, f.userID, success.Revision, "", http.StatusOK)
-		if cleared.Text != "" || cleared.Revision != "5" || !reflect.DeepEqual(cleared, read(f, path)) {
+		if cleared.Text != "" || cleared.Revision != "6" || !reflect.DeepEqual(cleared, read(f, path)) {
 			t.Fatalf("%s clear did not persist: %+v", path, cleared)
 		}
 		development := read(f, developmentPaths[i])
@@ -268,7 +268,7 @@ func reviewerPromptFlow(t *testing.T, f *fixture, projectID, workerID string, de
 		if saved.Revision != "1" || saved.Text != "second account" || !reflect.DeepEqual(saved, read(&other, path)) {
 			t.Fatalf("second account %s: %+v", path, saved)
 		}
-		if owner := read(f, path); owner.Revision != "5" || owner.Text != "" {
+		if owner := read(f, path); owner.Revision != "6" || owner.Text != "" {
 			t.Fatalf("owner value changed: %+v", owner)
 		}
 	}
