@@ -253,3 +253,48 @@ func TestMCPCreateExplicitDefaultAssigneeNeedsOnlyTaskWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedTaskWritePublicRegistrations(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		register func(*Entry, *taskservice.Tasks) error
+		writes   []string
+		reads    []string
+	}{
+		{"task", func(e *Entry, tasks *taskservice.Tasks) error { return RegisterScopedTaskWriteTools(e, tasks, nil) }, []string{"task_create", "task_update", "task_set_status", "task_delete", "task_set_property", "task_remove_property"}, []string{"task_show", "task_properties"}},
+		{"goal dependencies", RegisterScopedGoalDependencyWriteTools, []string{"goal_dependencies_edit"}, []string{"goal_dependencies_show"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := taskservice.NewTasks(nil)
+			if err := tc.register(nil, service); err == nil {
+				t.Fatal("nil entry accepted")
+			}
+			fixture := newEntryFixture(t)
+			if err := tc.register(fixture.entry, service); err == nil {
+				t.Fatal("entry without scoped authentication accepted")
+			}
+			if err := fixture.entry.EnableScopedAuthentication(testScopedAuthenticator{policies: map[string]model.CredentialAuthorization{}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.register(fixture.entry, nil); err == nil {
+				t.Fatal("nil Tasks service accepted")
+			}
+			if err := tc.register(fixture.entry, service); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tc.writes {
+				if !fixture.entry.toolNames[name] || !fixture.entry.scopedTools[name] {
+					t.Errorf("write tool %s is not registered and classified", name)
+				}
+			}
+			for _, name := range tc.reads {
+				if !fixture.entry.toolNames[name] || fixture.entry.scopedTools[name] {
+					t.Errorf("read tool %s classification changed", name)
+				}
+			}
+			if err := tc.register(fixture.entry, service); err == nil {
+				t.Fatal("duplicate registration accepted")
+			}
+		})
+	}
+}
