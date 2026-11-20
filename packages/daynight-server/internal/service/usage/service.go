@@ -153,6 +153,9 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 		if p.UserID != session.OwnerID {
 			return "", core.Fault("resource_unavailable")
 		}
+		if err = recheckUsageScope(ctx, scope, p, now); err != nil {
+			return "", err
+		}
 		return p.UserID, nil
 	}
 	a, err := dao.ProjectAccess(ctx, p.UserID, *session.ProjectID, false)
@@ -168,6 +171,9 @@ func readPermission(ctx context.Context, scope store.UsageScope, p model.Princip
 	}
 	if admin && p.UserID != session.OwnerID && a.Role != model.ProjectAdmin {
 		return "", core.Fault("resource_unavailable")
+	}
+	if err = recheckUsageScope(ctx, scope, p, now); err != nil {
+		return "", err
 	}
 	epoch, err := dao.PermissionEpoch(ctx, p.UserID, *session.ProjectID)
 	if err != nil {

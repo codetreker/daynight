@@ -43,30 +43,40 @@ type handler struct {
 }
 
 func RegisterRoutes(mux *http.ServeMux, service *app.Service, auth Authentication, logger *slog.Logger) {
+	RegisterRoutesWithScopeObserver(mux, service, auth, logger, nil)
+}
+
+// RegisterRoutesWithScopeObserver exposes classifications of the routes actually installed.
+func RegisterRoutesWithScopeObserver(mux *http.ServeMux, service *app.Service, auth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
 	if service == nil {
 		return
 	}
-	registerRoutes(mux, service, auth, logger)
+	registerRoutesObserved(mux, service, auth, auth, logger, observe)
 }
 func registerRoutes(mux *http.ServeMux, service operations, auth Authentication, logger *slog.Logger) {
-	h := &handler{service, auth, logger}
-	mux.HandleFunc("GET /api/usage/v1/capabilities", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
-		h.write(w, r, http.StatusOK, service.Capabilities())
-	}))
-	mux.HandleFunc("POST /api/usage/v1/registrations", auth.Require(h.register))
-	mux.HandleFunc("GET /api/usage/v1/states/{stateId}", auth.Require(h.state))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/grant", auth.Require(h.rotate))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/revoke", auth.Require(h.revoke))
-	mux.HandleFunc("POST /api/usage/v1/states/{stateId}/batches", h.batch)
-	mux.HandleFunc("GET /api/usage/v1/states/{stateId}/sources", h.sources)
-	mux.HandleFunc("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/summary", auth.Require(h.taskSummary))
-	mux.HandleFunc("POST /api/projects/{projectId}/usage/v1/task-summaries", auth.Require(h.taskSummaries))
-	mux.HandleFunc("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/records", auth.Require(h.records))
-	mux.HandleFunc("GET /api/test-sessions/{sessionId}/usage/v1/summary", auth.Require(h.testSummary))
-	mux.HandleFunc("GET /api/test-sessions/{sessionId}/usage/v1/records", auth.Require(h.records))
-	mux.HandleFunc("GET /api/projects/{projectId}/usage/v1/aggregates/chain/{scopeId}", auth.Require(h.chain))
-	mux.HandleFunc("GET /api/projects/{projectId}/usage/v1/aggregates/goal/{scopeId}", auth.Require(h.goal))
+	registerRoutesObserved(mux, service, auth, auth, logger, nil)
 }
+func registerRoutesObserved(mux *http.ServeMux, service operations, auth, readAuth Authentication, logger *slog.Logger, observe func(ScopeRoute)) {
+	h := &handler{service, auth, logger}
+	routes := routeRegistry{mux, observe}
+	routes.handle("GET /api/usage/v1/capabilities", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		h.write(w, r, http.StatusOK, service.Capabilities())
+	}), routeCapability)
+	routes.handle("POST /api/usage/v1/registrations", auth.Require(h.register), routeProducer)
+	routes.handle("GET /api/usage/v1/states/{stateId}", auth.Require(h.state), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/grant", auth.Require(h.rotate), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/revoke", auth.Require(h.revoke), routeProducer)
+	routes.handle("POST /api/usage/v1/states/{stateId}/batches", h.batch, routeGrant)
+	routes.handle("GET /api/usage/v1/states/{stateId}/sources", h.sources, routeGrant)
+	routes.handle("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/summary", readAuth.Require(h.taskSummary), routeRead)
+	routes.handle("POST /api/projects/{projectId}/usage/v1/task-summaries", readAuth.Require(h.taskSummaries), routeRead)
+	routes.handle("GET /api/projects/{projectId}/tasks/{taskId}/usage/v1/records", readAuth.Require(h.records), routeRead)
+	routes.handle("GET /api/test-sessions/{sessionId}/usage/v1/summary", readAuth.Require(h.testSummary), routeRead)
+	routes.handle("GET /api/test-sessions/{sessionId}/usage/v1/records", readAuth.Require(h.records), routeRead)
+	routes.handle("GET /api/projects/{projectId}/usage/v1/aggregates/chain/{scopeId}", readAuth.Require(h.chain), routeRead)
+	routes.handle("GET /api/projects/{projectId}/usage/v1/aggregates/goal/{scopeId}", readAuth.Require(h.goal), routeRead)
+}
+
 func (h *handler) write(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if w.Header().Get("Cache-Control") == "" {

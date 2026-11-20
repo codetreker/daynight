@@ -48,3 +48,18 @@ type GitHubProjectAppStore interface {
 	ReadGitHubProjectApp(context.Context, string, func(GitHubProjectAppReadDAO) error) error
 	WriteGitHubProjectApp(context.Context, string, string, string, func(GitHubProjectAppWriteDAO) error) (Completion, error)
 }
+
+// GitHubProjectAppAccess contains only authority and version facts needed
+// before admitting access to a Project's GitHub connection.
+type GitHubProjectAppAccess struct {
+	Access                              model.ProjectAccess
+	TeamID                              string
+	OwnershipVersion, ConnectionVersion int64
+}
+
+// GitHubProjectAppAdmissionReader must be used within the same snapshot or
+// locked write scope as the subsequent Project/App projection.
+type GitHubProjectAppAdmissionReader interface {
+	ProjectAppAccess(context.Context, model.Principal) (GitHubProjectAppAccess, error)
+	ProjectAppVersion(context.Context, string, string, string) (int64, error)
+}

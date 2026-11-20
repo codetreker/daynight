@@ -10,6 +10,8 @@
 
 用户凭据与可选 Bot ID 组成 `Actor`。HTTP 严格检查 `X-Daynight-Bot-Id` 的规范 UUID 格式，core 在事务内核验归属与删除状态。协议预检查不代替数据库准入。业务模型不直接作为 HTTP DTO；响应显式选择字段，版本、代次和 episode 编码为十进制字符串，时间为 UTC，令牌及其摘要不进入公开输出。
 
+受限凭据的内部准入按助手任务读取、普通写入、运行控制、删除和 Inbox 管理分别判断。包含多种动作的请求检查全部所需权限；返回已有资源的完整响应还需要读取权限。任务 PATCH 的删除状态与 DELETE 使用相同的删除权限。事务内通过绑定当前事务的 `AuthorizationReader` 读取并复核凭据策略，缺少读取能力时拒绝受限凭据；既有身份、Bot 归属和 claim 检查仍然生效。Inbox 密钥只由原本授权成功且实际生成密钥的操作返回，入站专用令牌保持独立认证。现有生产装配继续使用原凭据路径，受限凭据启用时须接入权威策略读取和对应路由装配。准入方式的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-assistant-task-scope-admission.md)。
+
 应用通过 `Tasks.RegisterRules(application, validator)` 注册 `ValidateRules(old, new) (widens bool, err)` 能力。注册表拒绝空名称、空函数与重复注册。创建手册、提交提案、修改后决定与回退共用该边界；未注册应用只接受空规则。普通任务不拥有 Watchdog 的类别、动作或次数策略。
 
 ## 存储与事务

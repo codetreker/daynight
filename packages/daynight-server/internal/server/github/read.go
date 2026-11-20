@@ -38,19 +38,28 @@ type handler struct {
 
 // RegisterPullRequestRoutes mounts the shared PR reads independently of the connection protocol.
 func RegisterPullRequestRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerPullRequestRoutes(NewRouteRegistry(mux, nil), reader, auth, logger)
+}
+
+// RegisterPullRequestRoutesWithRegistry exposes the same registration facts to an assembler.
+func RegisterPullRequestRoutesWithRegistry(routes *RouteRegistry, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+	registerPullRequestRoutes(routes, reader, auth, logger)
+}
+
+func registerPullRequestRoutes(routes *RouteRegistry, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &handler{reader: reader, logger: logger}
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-repositories", auth.Require(h.repositories))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(h.reviewAssignment))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-authors", auth.Require(h.authors))
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-statistics", auth.Require(h.statistics))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-repositories", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-authors", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-statistics", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-repositories", auth.Require(h.repositories), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(h.reviewAssignment), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-authors", auth.Require(h.authors), routeProjectRead)
+	routes.handle("GET /api/v1/projects/{projectId}/pull-request-statistics", auth.Require(h.statistics), routeProjectRead)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-repositories", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-authors", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
+	routes.handle("/api/v1/projects/{projectId}/pull-request-statistics", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")), routeFallback)
 }
 func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, fn func(string) (any, error)) {
 	w.Header().Set("Cache-Control", "no-store")

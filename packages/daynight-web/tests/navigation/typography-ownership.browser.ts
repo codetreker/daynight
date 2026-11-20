@@ -96,6 +96,18 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await attachments.locator('.attachment-upload-disclosure > summary').click();
       await attachments.locator('input[type=file]').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent draft') });
       const input = attachments.locator('input[type=text]');
+      const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
+      expect(coarse).toBe(width === 320);
+      for (const root of [12, 16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        await font(page.locator('.attachment-section-heading h4'), root * 1.125);
+        await font(page.locator('.attachment-file-name'), root * 0.875);
+        await font(page.locator('.attachment-file-size'), root * 0.75);
+        await font(page.locator('.attachment-timestamps'), root * 0.75);
+        await font(page.locator('.attachment-text'), root * 0.875);
+        await font(input, coarse ? Math.max(root, 16) : root * 0.875);
+      }
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
       const draft = '保留草稿/long-draft-path.txt';
       await input.fill(draft); await input.focus();
       await input.evaluate((node: HTMLInputElement) => node.setSelectionRange(2, 8));

@@ -33,6 +33,10 @@ test('Goal attachment image recovers from a network failure without rereading th
   const images: string[] = [];
   let detailReads = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === `/api/v1/projects/${projectId}/tasks/${goalId}`) detailReads++; });
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${goalId}/goal-dependencies?*`, route => route.fulfill({
+    contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: stringifyWireJson({ goalId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null }),
+  }));
   await page.route('**/preview/images/goal.svg?size=small', route => {
     images.push(route.request().url());
     return images.length === 1 ? route.abort('failed') : route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#256a48"/></svg>' });
@@ -40,8 +44,9 @@ test('Goal attachment image recovers from a network failure without rereading th
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const description = page.locator('.goal-detail-description');
   await expect(description.getByRole('heading', { name: 'Goal image', exact: true })).toBeVisible();
-  const error = description.getByRole('alert');
+  const error = description.getByRole('alert', { name: 'Goal attachment', exact: true });
   await expect(error).toContainText('Unable to load the attachment image');
+  await expect(description.locator('.goal-dependencies .goal-dependency-empty')).toHaveCount(2);
   const before = detailReads;
   await error.getByRole('button', { name: 'Retry image', exact: true }).click();
   await expect(error).toHaveCount(0);
@@ -458,11 +463,19 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
   const check = async (presentation: string) => {
     const surface = page.locator('.goal-detail-surface');
-    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论'] : ['Description', 'Attachments', 'Discussion']);
+    await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论', '用量'] : ['Description', 'Attachments', 'Discussion', 'Usage']);
     await expect(surface.getByRole('tab').first()).toHaveAttribute('aria-selected', 'true');
     await expect(surface.locator('[data-goal-task-id], .goal-detail-overview')).toHaveCount(0);
     const aside = surface.getByRole('complementary', { name: zh ? 'Goal 信息' : 'Goal information' });
     await expect(aside).toBeVisible();
+    for (const root of [12, 16, 24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+      await expect(surface.locator('.task-detail-title')).toHaveCSS('font-size', `${root * 1.375}px`);
+      await expect(aside.locator('h3').first()).toHaveCSS('font-size', `${root * 1.125}px`);
+      await expect(aside).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(surface.locator('.goal-detail-description .markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     const count = (label: string) => aside.locator('dl > div').filter({ has: page.locator('dt', { hasText: new RegExp(`^${label}$`) }) }).locator('dd');
     await expect(count(zh ? '独立任务数' : 'Standalone tasks')).toHaveText(empty ? '0' : '1');
     await expect(count(zh ? '任务链数' : 'Task chains')).toHaveText(empty ? '0' : '1');
