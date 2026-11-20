@@ -275,6 +275,7 @@ for (const [width, height] of [[320, 640], [1360, 900]]) test(`Task Session pres
   await expect(page.locator('.session-receipt')).toHaveCount(1);
   await expect(page.getByText(message, { exact: true })).toHaveCount(1);
   await expect(composer).not.toContainText(message); await expect(input).toHaveValue('Retained draft');
+  await expect(send).toBeEnabled();
   expect(state.receiptPosts).toHaveLength(1);
   expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
   const after = await composer.evaluate(node => node.getBoundingClientRect().height);

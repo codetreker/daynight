@@ -15,10 +15,13 @@ const entries = [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-
 
 test.use({ hasTouch: true });
 
-type Mode = 'failed' | 'unknown' | 'long' | 'success';
+type Mode = 'failed' | 'unknown' | 'long' | 'success' | 'held_failed';
 async function install(page: Page, initial: Mode) {
-  const state = { mode: initial, posts: [] as string[], queries: [] as string[], resolve: false };
+  const responseGate = Promise.withResolvers<void>();
+  const state = { mode: initial, posts: [] as string[], queries: [] as string[], resolve: false, releaseResponse: responseGate.resolve };
+  let sendEvent: ((message: string) => void) | undefined;
   await page.routeWebSocket('**/api/v1/test-sessions/**', socket => {
+    sendEvent = message => socket.send(message);
     socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: owner, snapshot, cursor: 'zero' }));
   });
   await page.route('**/api/v1/**', async route => {
@@ -32,7 +35,13 @@ async function install(page: Page, initial: Mode) {
       const command = request.postDataJSON(); state.posts.push(command.operationId);
       const phase = state.mode === 'success' ? 'provider_accepted' : state.mode === 'unknown' ? 'unknown' : 'failed';
       const message = state.mode === 'long' ? longFailure : failure;
-      return send({ operation: { protocol: snapshot.protocol, ...sessionFence(snapshot), operationId: command.operationId, kind: command.kind, state: phase, providerResult: null, error: phase === 'failed' ? { code: 'provider_failed', message } : null }, operationUrl: `${root}/operations/${command.operationId}` }, 202);
+      const operation = { protocol: snapshot.protocol, ...sessionFence(snapshot), operationId: command.operationId, kind: command.kind, state: phase, providerResult: null, error: phase === 'failed' ? { code: 'provider_failed', message } : null };
+      if (state.mode === 'held_failed') {
+        if (!sendEvent) throw new Error('The session channel is not connected.');
+        sendEvent(JSON.stringify({ protocol: snapshot.protocol, type: 'event', cursor: 'one', event: { protocol: snapshot.protocol, ...sessionFence(snapshot), connectionEpoch: snapshot.connectionEpoch, historyEpoch: snapshot.historyEpoch, eventSeq: '1', kind: 'operation', payload: operation } }));
+        await responseGate.promise;
+      }
+      return send({ operation, operationUrl: `${root}/operations/${command.operationId}` }, 202);
     }
     if (path.startsWith(`${root}/operations/`)) {
       const id = path.slice(`${root}/operations/`.length); state.queries.push(id);
@@ -47,7 +56,7 @@ async function open(page: Page, locale: string) {
   await page.goto(`/test-sessions/${snapshot.sessionId}`);
   await expect(page.getByText('Readable conversation in the Test Session page.')).toBeVisible();
   const input = page.locator('.session-composer textarea');
-  await expect(input).toBeEnabled();
+  await expect(input).toBeEditable();
   return input;
 }
 async function submit(page: Page, input: ReturnType<Page['locator']>, text = 'Review the release draft.') {
@@ -59,10 +68,13 @@ for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[320, 640],
   test(`${locale} ${width}x${height}: one complete failed receipt retains the draft`, async ({ page }, info) => {
     await page.setViewportSize({ width: width!, height: height! });
     const state = await install(page, 'failed'), input = await open(page, locale);
+    await input.fill('Review the release draft.');
+    await expect(page.locator('.session-composer button[type=submit]')).toBeEnabled();
     const before = await page.locator('.session-composer').evaluate(node => node.getBoundingClientRect().height);
     await submit(page, input);
     await expect(page.locator('.session-receipt')).toHaveCount(1);
     await expect(page.getByText(failure, { exact: true })).toHaveCount(1);
+    await expect(page.locator('.session-composer button[type=submit]')).toBeEnabled();
     await expect(page.locator('.session-receipts[aria-live=polite]')).toHaveCount(1);
     await expect(page.locator('.session-composer [role=alert]')).toHaveCount(0);
     await expect(page.locator('.session-composer')).not.toContainText(failure);
@@ -79,6 +91,28 @@ for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[320, 640],
     if (width === 320) await page.screenshot({ path: info.outputPath(`receipt-${locale}.png`) });
   });
 }
+
+test('a failed event may precede the request completion without changing the settled composer height', async ({ page }, info) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const state = await install(page, 'held_failed'), input = await open(page, 'zh-CN');
+  const composer = page.locator('.session-composer'), footer = composer.locator('.session-composer-footer'), button = composer.locator('button[type="submit"]');
+  await input.fill('Review the release draft.'); await expect(button).toBeEnabled();
+  const before = await composer.evaluate(node => node.getBoundingClientRect().height);
+  try {
+    await submit(page, input);
+    await expect(page.locator('.session-receipt')).toContainText(failure);
+    await expect(button).toBeDisabled(); await expect(button).toContainText('Awaiting provider confirmation');
+    await expect(footer).toHaveAttribute('data-submit-wide', 'true');
+    const pending = await composer.evaluate(node => node.getBoundingClientRect().height);
+    expect(pending).toBeGreaterThan(before);
+    state.releaseResponse();
+    await expect(button).toBeEnabled(); await expect(footer).not.toHaveAttribute('data-submit-wide', 'true');
+    const settled = await composer.evaluate(node => node.getBoundingClientRect().height);
+    expect(settled).toBe(before);
+    await expect(input).toHaveValue('Review the release draft.'); expect(state.posts).toHaveLength(1);
+    await info.attach('pending-and-settled-geometry', { body: JSON.stringify({ before, pending, settled }), contentType: 'application/json' });
+  } finally { state.releaseResponse(); }
+});
 
 test('unknown original is checked without another send, preserving selection and unrelated failure', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
