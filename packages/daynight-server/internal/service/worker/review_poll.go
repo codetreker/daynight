@@ -5,6 +5,7 @@ import (
 	"fmt"
 	githubcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"net/url"
@@ -37,6 +38,9 @@ func (s *Workers) ReviewPullRequests(ctx context.Context, principal model.Princi
 	}
 	result := ReviewPullRequestPage{PullRequests: []ReviewPullRequest{}}
 	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		if err := s.readAdmission(ctx, scope, principal, scopepolicy.WorkerRead, scopepolicy.ProjectRead); err != nil {
+			return err
+		}
 		reader, ok := scope.(store.ReviewPollSnapshot)
 		if !ok {
 			return fmt.Errorf("review poll snapshot is unavailable")

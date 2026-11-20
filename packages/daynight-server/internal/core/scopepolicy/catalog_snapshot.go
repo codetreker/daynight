@@ -84,9 +84,19 @@ func (c CatalogSnapshot) Clone() CatalogSnapshot {
 }
 
 // ValidateSelection checks a new selection against this snapshot and returns a
-// normalized independent set. Saved unavailable entries must be handled by the
-// editing operation, which has the existing policy as additional input.
+// normalized independent set.
 func (c CatalogSnapshot) ValidateSelection(kind CredentialType, ids []ScopeID) ([]ScopeID, error) {
+	return c.validateSelection(kind, ids, nil)
+}
+
+// ValidateEditSelection permits a saved scope to remain selected when it is no
+// longer available, but does not permit adding a new unavailable scope. The
+// caller supplies the existing policy from the locked credential being edited.
+func (c CatalogSnapshot) ValidateEditSelection(kind CredentialType, selected, existing []ScopeID) ([]ScopeID, error) {
+	return c.validateSelection(kind, selected, existing)
+}
+
+func (c CatalogSnapshot) validateSelection(kind CredentialType, ids, existing []ScopeID) ([]ScopeID, error) {
 	if c.kind != kind || c.CatalogRevision == "" {
 		return nil, fmt.Errorf("catalog does not match credential type %q", kind)
 	}
@@ -98,11 +108,20 @@ func (c CatalogSnapshot) ValidateSelection(kind CredentialType, ids []ScopeID) (
 	if err != nil {
 		return nil, err
 	}
+	if len(existing) > 0 {
+		existing, err = Normalize(kind, existing)
+		if err != nil {
+			return nil, fmt.Errorf("invalid existing scopes: %w", err)
+		}
+	}
 	available := make(map[ScopeID]bool)
 	for _, group := range c.Groups {
 		for _, id := range group.ScopeIDs {
 			available[id] = true
 		}
+	}
+	for _, id := range existing {
+		available[id] = true
 	}
 	for _, id := range normalized {
 		if !available[id] {

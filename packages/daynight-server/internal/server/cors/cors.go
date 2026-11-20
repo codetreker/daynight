@@ -86,7 +86,7 @@ func userREST(path string, nativePaths []string) bool {
 	}
 	if suffix, ok := strings.CutPrefix(path, tokens+"/"); ok {
 		id, end, found := strings.Cut(suffix, "/")
-		if found && id != "" && end == "description" {
+		if found && id != "" && (end == "description" || end == "scopes") {
 			return false
 		}
 	}

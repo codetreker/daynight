@@ -6,6 +6,11 @@
 
 配置作为现有账号级 Worker 的独立子资源。HTTP 负责认证、能力选择和严格 JSON，core/worker 负责规范配置、当前项目准入与版本决策，service/worker 组织事务，store 在 Worker 行上保存目标及应用观测。配置分支不读取或锁定任务数据，不调用认领或恢复操作。
 
+显式 scoped 服务在原事务内分别核对报告、完整目标读取及实际目标变更权限。
+Bootstrap 与独立工具路径导入按锁内最终候选判定是否写目标；无变化导入不要求
+配置写权限。原生产装配保持原行为，权限与提交后提示词读取的完整边界见
+[凭据 Scope 内部合同](credential-scope-internal.md#worker-报告与检查准入)。
+
 ~~~mermaid
 flowchart LR
   E[云端编辑] --> T[目标 CAS]
