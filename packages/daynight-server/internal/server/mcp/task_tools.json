@@ -56,9 +56,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         },
         "status": {
           "type": "string",
@@ -278,9 +279,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         },
         "parentId": {
           "type": [
@@ -394,9 +396,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         }
       },
       "required": [
@@ -557,9 +560,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         }
       },
       "required": [
@@ -601,9 +605,10 @@
         "returnView": {
           "enum": [
             "summary",
-            "full"
+            "full",
+            "receipt"
           ],
-          "default": "summary"
+          "description": "Receipt returns only Task identity and version. If omitted, credentials without task:read receive a receipt; other callers receive a summary."
         }
       },
       "required": [

@@ -62,6 +62,29 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Task 写入准入
+
+Task 写入服务按解析后的字段合并所需操作，项目访问、原有角色、版本、
+依赖和 claim 规则继续生效。创建的默认值不增加权限；显式非默认负责人和
+平台使用 `task:assign`，依赖与父 Goal 使用 `task:dependencies`，普通状态
+和阻塞属性使用 `task:status`。标题、普通属性和 Task Tag 关联使用
+`task:write`，显式 `allowAgents` 使用 `agent:authorize`。删除使用
+`task:delete`，带 claim 的完成使用 `worker:complete`。组合缺少任何一项
+时不执行部分写入；Task Tag 关联不授予 Tag 目录修改权限。无 `task:read`
+时，错误保留原错误码和完成结果，但不返回已有依赖的 Task ID。
+
+显式 scoped REST 与 MCP 写入口将认证策略和响应选择传给同一服务准入。
+原完整 Task 或属性响应需要在写入前取得 `task:read`。REST 请求
+`Daynight-Return: receipt-v1` 时成功响应回显该 header，并仅返回
+`projectId`、`taskId` 和数值 `version`。MCP 的 `returnView: "receipt"`
+返回相同身份和十进制字符串版本及既有写入结果；省略视图且受限凭据缺少
+`task:read` 时选择该回执，显式 summary/full 需要读取权限。省略 MCP
+版本时的现有预读同样需要 `task:read`。服务在提交前检查实际 MCP 回执的
+响应容量。Goal 依赖编辑保留原最小回执。
+
+直接写入使用本次认证的策略快照；既有生产装配保持原行为，scoped 写入
+入口由启用阶段接入。决策及取舍见[Task 写入准入记录](../../.agents/notes/implemented/architecture/2026-11-20-task-write-scope-admission.md)。
+
 ## 账户与集成准入
 
 账户资料、Worker 与 Reviewer Prompt、用户可见用量及 GitHub 用户操作的
@@ -131,7 +154,7 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 ## 装配边界
 
-生产仍使用原有 Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
+生产仍使用原有 Task、Tag、Team、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用
 受限凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
 放行。PAT 与 MCP 已具备策略存储与复核能力；完整入口分类、历史回填和公开
 启用由相应实现接入。Tag 的直接操作使用调用方
