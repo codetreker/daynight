@@ -23,19 +23,26 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty' | 'interaction';
+type Content = 'short' | 'long' | 'empty' | 'interaction' | 'tall-form';
 async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content === 'interaction' } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content === 'interaction' || content === 'tall-form' } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : content === 'interaction' ? [{
+  const entries = content === 'empty' ? [] : content === 'tall-form' ? [{
+    entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
+    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
+      { fieldId: 'name', label: 'Workspace profile name', type: 'text', required: true, sensitive: false },
+      { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
+      { fieldId: 'profile', label: 'Workspace profile', type: 'multiselect', required: false, options: [{ id: 'standard', label: 'Standard' }, { id: 'development', label: 'Development configuration with validation and local diagnostics enabled' }] },
+    ] },
+  }] : content === 'interaction' ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
     interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
@@ -130,6 +137,70 @@ async function assertColumn(page: Page) {
 async function scrollbarMode(page: Page, mode: 'native' | 'classic' | 'stable') {
   if (mode === 'native') return;
   await page.addStyleTag({ content: `.session-timeline::-webkit-scrollbar { width: 17px; height: 17px; } .session-timeline { scrollbar-gutter: ${mode === 'stable' ? 'stable both-edges' : 'auto'}; }` });
+}
+
+for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-CN'] as const) {
+  test(`${entry} ${locale} locates a clipped tall form using the actual timeline`, async ({ browser }, info) => {
+    const evidence = [];
+    for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]] as const) {
+      const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width, height }, hasTouch: width < 400 });
+      try {
+        const page = await context.newPage();
+        const { observations } = await open(page, locale, 'waiting_input', entry, 'tall-form');
+        const timeline = page.locator('.session-timeline'), card = page.locator('.session-interaction');
+        const heading = card.locator('h4'), first = page.getByLabel('Workspace profile name', { exact: true });
+        const jump = page.locator('.session-pending-request');
+        if (entry === 'task' && width <= 375) {
+          await expect(jump).toContainText('↑');
+          const nav = await jump.evaluate(node => ({ button: node.getBoundingClientRect().toJSON(), shell: node.closest('.session-timeline-shell')!.getBoundingClientRect().toJSON() }));
+          expect(nav.button.top).toBeGreaterThanOrEqual(nav.shell.top);
+          expect(nav.button.bottom).toBeLessThanOrEqual(nav.shell.bottom);
+          await page.getByRole('button', { name: locale === 'en' ? 'Submit' : '提交', exact: true }).click({ timeout: 5000 });
+          await expect(page.getByRole('alert')).toBeVisible();
+          await jump.click(); await expect(card).toBeFocused();
+          await timeline.evaluate(node => { node.scrollTop += 45; node.dispatchEvent(new Event('scroll')); });
+          await expect(jump).toBeVisible(); await expect(page.locator('.session-latest')).toBeVisible();
+          await first.click({ position: { x: 10, y: 10 }, timeout: 5000 });
+          await first.fill('Embedded draft');
+          await page.locator('.session-fullscreen-toggle').click();
+          await expect(first).toHaveValue('Embedded draft');
+        }
+        const geometry = await card.evaluate(node => {
+          const box = node.closest('.session-timeline')!.getBoundingClientRect(), card = node.getBoundingClientRect(), title = node.querySelector('h4')!.getBoundingClientRect();
+          return { viewport: box.toJSON(), card: card.toJSON(), title: title.toJSON() };
+        });
+        const clipped = geometry.card.height > geometry.viewport.height - 24 && (geometry.title.top < geometry.viewport.top || geometry.title.bottom > geometry.viewport.bottom);
+        if (entry === 'test' && width <= 375) expect(clipped).toBe(true);
+        if (clipped) {
+          await expect(jump).toContainText('↑');
+          if (width === 320) await jump.tap(); else { await jump.focus(); await page.keyboard.press('Enter'); }
+          await expect(card).toBeFocused(); await expect(jump).toHaveCount(0);
+          const after = await heading.evaluate(node => ({ title: node.getBoundingClientRect().toJSON(), first: node.closest('.session-interaction')!.querySelector('input')!.getBoundingClientRect().toJSON(), viewport: node.closest('.session-timeline')!.getBoundingClientRect().toJSON() }));
+          expect(after.title.top).toBeGreaterThanOrEqual(after.viewport.top);
+          expect(after.title.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          expect(after.first.top).toBeGreaterThanOrEqual(after.viewport.top);
+          if (after.viewport.height >= after.first.bottom - after.title.top) expect(after.first.bottom).toBeLessThanOrEqual(after.viewport.bottom);
+          await first.fill('Retained profile');
+          await page.locator('.session-latest').click();
+          await expect(first).toHaveValue('Retained profile');
+          await expect(jump).toBeVisible();
+          await page.getByLabel('Workspace profile', { exact: true }).selectOption('standard');
+          await page.getByRole('button', { name: locale === 'en' ? 'Submit' : '提交', exact: true }).click();
+          await expect(page.getByRole('alert')).toBeVisible();
+        } else if (entry === 'task' && width <= 375) {
+          const visible = await first.evaluate(node => ({ input: node.getBoundingClientRect().toJSON(), viewport: node.closest('.session-timeline')!.getBoundingClientRect().toJSON() }));
+          expect(visible.input.top).toBeGreaterThanOrEqual(visible.viewport.top);
+          expect(visible.input.bottom).toBeLessThanOrEqual(visible.viewport.bottom);
+        } else {
+          expect(clipped).toBe(false);
+          await expect(jump).toHaveCount(0);
+        }
+        expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+        evidence.push({ width, height, clipped, ...geometry });
+      } finally { await context.close(); }
+    }
+    await info.attach('pending-form-geometry', { body: JSON.stringify(evidence), contentType: 'application/json' });
+  });
 }
 
 for (const entry of ['task', 'test', 'assistant'] as const) for (const content of ['short', 'long', 'empty'] as const) {
