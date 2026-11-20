@@ -3,6 +3,7 @@ package assistanttask
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,9 @@ func TestInboxReceiveForwardsRequestAndAnswersReceipt(t *testing.T) {
 			service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "application/json", IdempotencyKey: "key-1", Body: []byte(`{"a":1}`)}},
 		{"query token", receivePath + "?token=" + token, "text/plain", "hello",
 			nil, service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "text/plain", Body: []byte("hello")}},
+		{"spaced bearer", receivePath, "application/problem+json", `{}`,
+			map[string]string{"Authorization": "bearer   " + token},
+			service.ReceiveInput{InboxID: testID, Token: &token, MediaType: "application/problem+json", Body: []byte(`{}`)}},
 		{"no token", receivePath, "application/cloudevents+json", `{"id":"e"}`,
 			map[string]string{"Webhook-Id": "e"}, service.ReceiveInput{InboxID: testID, MediaType: "application/cloudevents+json", WebhookID: "e", Body: []byte(`{"id":"e"}`)}},
 	} {
@@ -114,6 +118,7 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 		{"basic scheme", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Basic " + receiveToken}, 400, "invalid_input"},
 		{"bare scheme", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer"}, 400, "invalid_input"},
 		{"empty bearer", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer "}, 400, "invalid_input"},
+		{"spaces only bearer", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer   "}, 400, "invalid_input"},
 		{"empty query", receivePath + "?token=", "application/json", `{}`, nil, 400, "invalid_input"},
 		{"empty idempotency key", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Idempotency-Key": ""}, 400, "invalid_input"},
 		{"empty webhook id", receivePath, "application/json", `{}`, map[string]string{"Authorization": "Bearer " + receiveToken, "Webhook-Id": ""}, 400, "invalid_input"},
@@ -121,6 +126,7 @@ func TestInboxReceiveRefusesInvalidRequestsBeforeTheService(t *testing.T) {
 		{"html", receivePath, "text/html", `x`, nil, 415, "unsupported_media_type"},
 		{"latin1 text", receivePath, "text/plain; charset=latin1", `x`, nil, 415, "unsupported_media_type"},
 		{"malformed media type", receivePath, "application/json; charset", `{}`, nil, 415, "unsupported_media_type"},
+		{"bare +json token", receivePath, "problem+json", `{}`, nil, 415, "unsupported_media_type"},
 		{"xml", receivePath, "application/xml", `<a/>`, nil, 415, "unsupported_media_type"},
 		{"NUL text", receivePath, "text/plain", "a\x00b", nil, 400, "invalid_input"},
 		{"invalid UTF-8 text", receivePath, "text/plain", "a\xffb", nil, 400, "invalid_input"},
@@ -243,6 +249,28 @@ func TestInboxReceiveMapsServiceResults(t *testing.T) {
 	}
 }
 
+func TestInboxReceiveWarnsUnidentifiedSendersAboutUnknownCommits(t *testing.T) {
+	h := receiveHandler(func(context.Context, service.ReceiveInput) (service.ReceiveResult, error) {
+		return service.ReceiveResult{}, &service.WriteError{Operation: "Receive", Outcome: store.TransactionUnknown, Cause: errors.New("lost")}
+	}, io.Discard)
+	for _, test := range []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{"idempotency key", map[string]string{"Idempotency-Key": "key-1"}, "retry with the same idempotency identity"},
+		{"webhook id", map[string]string{"Webhook-Id": "e"}, "retry with the same idempotency identity"},
+		{"no identity", nil, "a retry can record the event twice"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			w := receiveRequest(h, receivePath, "application/json", `{}`, test.headers)
+			if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != inboxRetryAfter || !strings.Contains(w.Body.String(), test.want) {
+				t.Fatalf("status=%d retry=%q body=%s", w.Code, w.Header().Get("Retry-After"), w.Body)
+			}
+		})
+	}
+}
+
 func TestInboxReceiveRateLimitsEachInbox(t *testing.T) {
 	calls := 0
 	h := receiveHandler(func(ctx context.Context, input service.ReceiveInput) (service.ReceiveResult, error) {
@@ -358,6 +386,61 @@ func TestInboxReceiveLogsNeverContainTheSenderRequestID(t *testing.T) {
 	w := receiveRequest(other, "/api/v1/tasks", "", "", map[string]string{"X-Request-ID": senderID})
 	if w.Header().Get("X-Request-ID") != senderID || !strings.Contains(logs.String(), "request completed") {
 		t.Fatalf("other routes keep the sender request ID: header=%q logs=%s", w.Header().Get("X-Request-ID"), logs.String())
+	}
+}
+
+// Every inbox request, including failure paths, writes exactly one record whose
+// fields are all in the inbox log allowlist.
+func TestInboxReceiveFailureLogsKeepTheAllowlist(t *testing.T) {
+	allowed := map[string]bool{"time": true, "level": true, "msg": true, "type": true, "component": true, "status": true, "bytes": true, "request_id": true, "inbox_id": true, "classification": true}
+	unknown := &service.WriteError{Operation: "Receive", Outcome: store.TransactionUnknown, Cause: errors.New("lost commit")}
+	for _, test := range []struct {
+		name   string
+		body   io.Reader
+		err    error
+		status int
+	}{
+		{"unknown commit", strings.NewReader(`{}`), unknown, http.StatusServiceUnavailable},
+		{"internal", strings.NewReader(`{}`), errors.New("database exploded"), http.StatusInternalServerError},
+		{"chunked oversized", strings.NewReader(strings.Repeat(" ", InboxBodyLimit+1)), nil, http.StatusRequestEntityTooLarge},
+		{"failed body read", io.MultiReader(strings.NewReader("{"), failingReader{}), nil, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := receiveHandler(func(ctx context.Context, input service.ReceiveInput) (service.ReceiveResult, error) {
+				if test.err != nil {
+					return service.ReceiveResult{}, test.err
+				}
+				return accepted(ctx, input)
+			}, &logs)
+			r := httptest.NewRequest(http.MethodPost, receivePath, test.body)
+			r.Header.Set("Content-Type", "application/json")
+			r.ContentLength = -1
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if test.status != 0 && w.Code != test.status || w.Code < 400 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+			if test.err == unknown && w.Header().Get("Retry-After") != inboxRetryAfter {
+				t.Fatalf("retry=%q", w.Header().Get("Retry-After"))
+			}
+			lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+			if len(lines) != 1 {
+				t.Fatalf("want one record, got %d: %s", len(lines), logs.String())
+			}
+			var record map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+				t.Fatal(err)
+			}
+			for key := range record {
+				if !allowed[key] {
+					t.Fatalf("field %q outside the allowlist: %s", key, lines[0])
+				}
+			}
+			if record["msg"] != "assistant task inbox request" || record["inbox_id"] != testID {
+				t.Fatalf("record=%s", lines[0])
+			}
+		})
 	}
 }
 
