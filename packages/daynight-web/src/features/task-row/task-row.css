@@ -28,9 +28,9 @@
 }
 
 .task-row .task-assignee-identity, .task-row .assignee-former,
+.task-row .task-ready, .task-row .graph-blocked-badge,
+.task-row-goal, .task-row-machine, .task-row-tag-state { font-size: var(--text-interface); }
 .task-row .task-platform, .task-row .task-agent-permission,
-.task-row .task-paused-badge, .task-row .root-status, .task-row .task-ready,
-.task-row .graph-blocked-badge, .task-row .project-session-control,
-.task-row .project-session-text, .task-row-goal, .task-row-machine, .task-row-tag-state { font-size: var(--text-interface); }
+.task-row.task-status-surface .task-row-status :is(.task-paused-badge, .root-status, .project-session-control, .project-session-text) { font-size: var(--text-metadata); }
 .task-row .task-duration, .task-row .completion-time-label { font-size: var(--text-metadata); }
 .task-row .task-duration { white-space: normal; }
