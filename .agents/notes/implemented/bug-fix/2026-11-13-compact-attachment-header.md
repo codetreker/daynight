@@ -8,7 +8,7 @@ The shared attachment preview header reserved a fixed width for short file infor
 
 ## Decision
 
-File information sizes to its content, can shrink and is capped at 240px on desktop. A single definition list provides shared label and value columns for both timestamps; responsive rules wrap groups or restore the shared columns beside actions in the smallest viewport. The [timestamp decision](../feature/2026-11-12-attachment-preview-timestamps.md) retains the metadata and formatting rationale.
+File information sizes to its content, can shrink and is capped at 240px on desktop. A single definition list provides shared label and value columns for both timestamps; responsive rules wrap groups or restore the shared columns beside actions in the smallest viewport. The [short-viewport accessibility decision](2026-11-20-attachment-preview-scroll.md) adjusts the smallest layout. The [timestamp decision](../feature/2026-11-12-attachment-preview-timestamps.md) retains the metadata and formatting rationale.
 
 ## Alternatives
 

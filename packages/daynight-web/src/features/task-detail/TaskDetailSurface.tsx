@@ -263,7 +263,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
             </button> : null}
           </div>
         </header>
-        <div className="task-detail-body">
+        <div className="task-detail-body" {...(selection.tab === 'attachments' ? { tabIndex: 0, role: 'region', 'aria-label': messages.inspection.attachments.detailScroll } : {})}>
           {status === 'loading' && (
             <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>
           )}

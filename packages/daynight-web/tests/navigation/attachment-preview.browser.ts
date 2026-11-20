@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { hasPaintedPdfMarker, readPdfPixels } from '../helpers/pdf-pixels';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -794,6 +795,219 @@ for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt'
     }
   });
 }
+
+// Text visibility is measured per character because a time can wrap and a
+// scrollable header may show only part of it at any one scroll position.
+async function visibleTimestampCharacters(header: Locator) {
+  return header.evaluate(element => [...element.querySelectorAll('.attachment-timestamps dt, .attachment-timestamps time')].map(node => {
+    const text = node.textContent ?? '';
+    const visible: number[] = [];
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    while (walker.nextNode()) {
+      const current = walker.currentNode as Text;
+      for (let i = 0; i < current.length; i++) {
+        if (/\s/.test(current.data[i]!)) { visible.push(offset + i); continue; }
+        const range = document.createRange(); range.setStart(current, i); range.setEnd(current, i + 1);
+        const rect = range.getBoundingClientRect();
+        let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+        for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect();
+          if (style.overflowX !== 'visible') { left = Math.max(left, bounds.left + ancestor.clientLeft); right = Math.min(right, bounds.left + ancestor.clientLeft + ancestor.clientWidth); }
+          if (style.overflowY !== 'visible') { top = Math.max(top, bounds.top + ancestor.clientTop); bottom = Math.min(bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight); }
+        }
+        if (rect.left >= left - 1 && rect.right <= right + 1 && rect.top >= top - 1 && rect.bottom <= bottom + 1) visible.push(offset + i);
+      }
+      offset += current.length;
+    }
+    return { text, visible };
+  }));
+}
+
+async function keyboardFocus(page: Page, target: Locator) {
+  await target.focus();
+  await expect(target).toBeFocused();
+  // A programmatically focusable element alone is not necessarily in tab order.
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await expect(target).toBeFocused();
+}
+
+async function fullyUnclipped(target: Locator) {
+  return target.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect();
+      if (style.overflowX !== 'visible') { left = Math.max(left, bounds.left + ancestor.clientLeft); right = Math.min(right, bounds.left + ancestor.clientLeft + ancestor.clientWidth); }
+      if (style.overflowY !== 'visible') { top = Math.max(top, bounds.top + ancestor.clientTop); bottom = Math.min(bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight); }
+    }
+    return { left: rect.left - left, top: rect.top - top, right: right - rect.right, bottom: bottom - rect.bottom };
+  });
+}
+
+for (const goal of [false, true]) for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt', longPath]) {
+  test(`compact ${goal ? 'Goal' : 'claimed Task'} exposes complete timestamps and reading by keyboard in ${locale}, ${path === longPath ? 'long' : 'short'} metadata`, async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 320, height: 240 });
+    const state = await install(page, false, !goal, undefined, goal);
+    state.files = state.files.map(file => file.path === longPath ? { ...file, contentType: `text/plain; ${'long-mime-'.repeat(30)}` } : file);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${path.split('/').map(encodeURIComponent).join('/')}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const surface = page.locator('.task-detail-page'), outer = surface.locator('.task-detail-body');
+    const header = surface.locator('.attachment-preview-header'), body = surface.locator('.attachment-preview-body:visible');
+    await expect(header.locator('.attachment-timestamps dt')).toHaveText(locale === 'en' ? ['Created', 'Last modified'] : ['创建时间', '最后修改时间']);
+    for (const value of await header.locator('.attachment-timestamps time').all()) await expect(value).toHaveAttribute('datetime', time);
+    await expect(body.locator('pre')).toHaveText(longText);
+
+    for (const rootSize of locale === 'en' && path === 'reading.txt' ? [12, 16, 24] : [24]) {
+      await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+      await expect(header.locator('.attachment-timestamps')).toHaveCSS('font-size', `${rootSize * 0.75}px`);
+      for (const fullscreen of [false, true]) {
+        if (fullscreen) await surface.locator('.task-detail-fullscreen-toggle').click();
+        await keyboardFocus(page, outer);
+        const outerDimensions = await outer.evaluate(element => ({ height: element.clientHeight, total: element.scrollHeight }));
+        if (outerDimensions.total > outerDimensions.height + 1) {
+          await page.keyboard.press('End');
+          await expect.poll(() => outer.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+          await page.waitForTimeout(250);
+        }
+        const seen = new Map<number, Set<number>>();
+        let contents: Awaited<ReturnType<typeof visibleTimestampCharacters>> = [];
+        await keyboardFocus(page, header);
+        await page.keyboard.press('Home');
+        await expect.poll(() => header.evaluate(element => element.scrollTop)).toBe(0);
+        await page.waitForTimeout(250);
+        for (let headerStep = 0; headerStep < 20; headerStep++) {
+          const position = await header.evaluate(element => ({ top: element.scrollTop, end: element.scrollHeight - element.clientHeight }));
+          await keyboardFocus(page, outer);
+          await page.keyboard.press('End');
+          await page.waitForTimeout(250);
+          for (let outerStep = 0; outerStep < 30; outerStep++) {
+            contents = await visibleTimestampCharacters(header);
+            contents.forEach((item, index) => {
+              const chars = seen.get(index) ?? new Set<number>();
+              item.visible.forEach(char => chars.add(char)); seen.set(index, chars);
+            });
+            if (contents.every((item, index) => seen.get(index)?.size === item.text.length)) break;
+            const top = await outer.evaluate(element => element.scrollTop);
+            if (top <= 1) break;
+            await page.keyboard.press('PageUp');
+            await expect.poll(() => outer.evaluate(element => element.scrollTop)).toBeLessThan(top);
+            await page.waitForTimeout(250);
+          }
+          if (contents.every((item, index) => seen.get(index)?.size === item.text.length)) break;
+          if (position.top >= position.end - 1) break;
+          await keyboardFocus(page, header);
+          await page.keyboard.press('PageDown');
+          await expect.poll(() => header.evaluate(element => element.scrollTop)).toBeGreaterThan(position.top);
+          await page.waitForTimeout(250);
+        }
+        expect(contents).toHaveLength(4);
+        contents.forEach((item, index) => expect(seen.get(index)?.size, `${item.text} at ${rootSize}px`).toBe(item.text.length));
+        const download = header.getByRole('link', { name: locale === 'en' ? 'Download' : '下载', exact: true });
+        const open = header.getByRole('link', { name: locale === 'en' ? 'Open in new tab' : '在新标签页打开' });
+        for (const action of [download, open]) {
+          await keyboardFocus(page, action);
+          expect(Object.values(await fullyUnclipped(action)).every(distance => distance >= -1)).toBe(true);
+          await expect(action).toHaveAttribute('href', /\S/);
+        }
+        await expect(download).toHaveAttribute('download', '');
+        await expect(open).toHaveAttribute('target', '_blank');
+        await keyboardFocus(page, body);
+        expect(await body.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
+        await page.keyboard.press('End');
+        await expect.poll(() => body.evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 1)).toBe(true);
+        if (fullscreen) await surface.locator('.task-detail-fullscreen-toggle').click();
+      }
+    }
+    if (locale === 'en' && path === 'reading.txt') {
+      await surface.getByRole('tab', { name: goal ? 'Description' : 'Overview', exact: true }).click();
+      const tab = surface.getByRole('tab', { name: 'Attachments', exact: true });
+      await tab.click();
+      await expect(tab).toBeFocused();
+      await expect(header.locator('h5')).toHaveAttribute('title', path);
+      await keyboardFocus(page, header);
+      await expect(body.locator('pre')).toHaveText(longText);
+    }
+    expect(state.writes).toEqual([]);
+  });
+}
+
+for (const path of ['interactive.html', 'brief.pdf']) for (const wide of [false, true]) {
+  test(`compact native ${path} actions remain reachable in ${wide ? 'a narrow container' : 'a short viewport'}`, async ({ page }) => {
+    await page.setViewportSize(wide ? { width: 1360, height: 390 } : { width: 320, height: 240 });
+    const state = await install(page, false, true);
+    await page.route(`**/attachments/files/${path}`, route => route.fulfill({ contentType: 'application/octet-stream', headers: { 'Content-Disposition': `attachment; filename="${path}"` }, body: 'fixture download' }));
+    await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${path}`);
+    await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
+    const surface = page.locator('.task-detail-page'), attachments = surface.locator('.task-attachments');
+    if (wide) await attachments.evaluate((element: HTMLElement) => { element.style.flex = 'none'; element.style.width = '320px'; });
+    const header = surface.locator('.attachment-preview-header');
+    const reload = header.getByRole('button', { name: 'Reload', exact: true });
+    const download = header.getByRole('link', { name: 'Download', exact: true });
+    const open = header.getByRole('link', { name: 'Open in new tab', exact: true });
+    await expect(surface.locator('iframe')).toBeAttached();
+    for (const action of [reload, download, open]) {
+      await keyboardFocus(page, action);
+      expect(Object.values(await fullyUnclipped(action)).every(distance => distance >= -1)).toBe(true);
+    }
+    const previous = state.requests.filter(request => request.path.endsWith(`/${path}`)).length;
+    await keyboardFocus(page, reload);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => state.requests.filter(request => request.path.endsWith(`/${path}`)).length).toBeGreaterThan(previous);
+    await keyboardFocus(page, download);
+    const [downloaded] = await Promise.all([page.waitForEvent('download'), page.keyboard.press('Enter')]);
+    expect(downloaded.suggestedFilename()).toBe(path);
+    await keyboardFocus(page, open);
+    const [popup] = await Promise.all([page.waitForEvent('popup'), page.keyboard.press('Enter')]);
+    await popup.close();
+    expect(state.writes).toEqual([]);
+  });
+}
+
+test('attachment timestamps and actions remain readable at actual 200% browser zoom', async ({ playwright }, info) => {
+  const temporary = fileURLToPath(new URL('../../../../.tmp/attachment-browser-zoom/', import.meta.url));
+  await mkdir(temporary, { recursive: true });
+  const profile = await mkdtemp(`${temporary}/profile-`);
+  try {
+    await mkdir(`${profile}/Default`);
+    await writeFile(`${profile}/Default/Preferences`, JSON.stringify({ partition: { default_zoom_level: { x: Math.log(2) / Math.log(1.2) } } }));
+    const executable = process.env.DAYNIGHT_BROWSER_EXECUTABLE;
+    const context = await playwright.chromium.launchPersistentContext(profile, {
+      channel: 'chromium', headless: true, viewport: null, args: ['--window-size=1280,900', '--force-device-scale-factor=1'],
+      ...(executable === undefined ? {} : { executablePath: executable }),
+    });
+    try {
+      const page = await context.newPage();
+      const state = await install(page, false, true);
+      await page.goto(`http://127.0.0.1:4202/projects/${projectId}/tasks/${taskId}/attachments/reading.txt`);
+      const zoom = await page.evaluate(() => ({ ratio: devicePixelRatio, width: innerWidth, cssZoom: getComputedStyle(document.documentElement).zoom, visualScale: visualViewport!.scale }));
+      expect(zoom.ratio).toBeCloseTo(2, 1);
+      expect(zoom.width).toBeLessThan(800);
+      expect(zoom.cssZoom).toBe('1'); expect(zoom.visualScale).toBe(1);
+      const header = page.locator('.attachment-preview-header');
+      await expect(header.locator('.attachment-timestamps')).toHaveCSS('font-size', '12px');
+      const items = header.locator('.attachment-timestamps dt, .attachment-timestamps time');
+      await expect(items).toHaveCount(4);
+      for (let index = 0; index < 4; index++) {
+        await items.nth(index).scrollIntoViewIfNeeded();
+        const item = (await visibleTimestampCharacters(header))[index]!;
+        expect(item.visible.length, item.text).toBe(item.text.length);
+      }
+      for (const action of [header.getByRole('link', { name: 'Download', exact: true }), header.getByRole('link', { name: 'Open in new tab', exact: true })]) {
+        await keyboardFocus(page, action);
+        expect(Object.values(await fullyUnclipped(action)).every(distance => distance >= -1)).toBe(true);
+      }
+      const body = page.locator('.attachment-preview-body:visible');
+      await keyboardFocus(page, body);
+      await page.keyboard.press('End');
+      await expect.poll(() => body.evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 1)).toBe(true);
+      expect(state.writes).toEqual([]);
+      await info.attach('attachment-browser-200-percent-zoom', { body: JSON.stringify(zoom), contentType: 'application/json' });
+    } finally { await context.close(); }
+  } finally { await rm(profile, { recursive: true, force: true }); }
+});
 
 async function openDialog(page: Page) {
   await page.goto(`/projects/${projectId}`);

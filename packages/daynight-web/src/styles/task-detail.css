@@ -101,6 +101,7 @@
 .task-detail-panel-overview { overflow: auto; overscroll-behavior: contain; }
 .task-detail-panel-usage { overflow: auto; overscroll-behavior: contain; padding: 25px 30px 30px; }
 .task-detail-panel-attachments { display: flex; overflow: hidden; padding: 24px 30px 30px; }
+.task-detail-body:focus-visible { outline: 3px solid var(--task-focus); outline-offset: -3px; }
 .task-detail-heading { padding: 14px 30px 0; flex: 0 1 auto; min-height: 0; min-width: 0; max-height: min(50%, max(32px, calc(100% - 120px))); overflow: auto; overscroll-behavior: contain; }
 .task-detail-heading-claimed:focus-visible { outline: 3px solid var(--task-focus); outline-offset: -3px; }
 .task-detail-title-row { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; }
@@ -251,10 +252,19 @@
 }
 
 @media (max-height: 500px) {
+  .task-detail-body:has(.task-detail-panel-attachments:not([hidden])) { overflow: auto; overscroll-behavior: contain; }
+  .goal-detail-surface .task-detail-body { overflow: auto; overscroll-behavior: contain; }
+  .goal-detail-surface .goal-detail-content { flex: 1 0 auto; }
+  .goal-detail-surface .task-detail-panels { flex: 1 0 6rem; }
+  .task-detail-body:has(.task-detail-panel-attachments:not([hidden])) .goal-detail-content { flex: 1 0 auto; }
+  .task-detail-panels:has(.task-detail-panel-attachments:not([hidden])) { flex: 1 0 auto; overflow: visible; }
+  .task-detail-panel-attachments:not([hidden]) { flex: 1 0 6rem; }
+  .task-detail-panel-attachments .task-attachments { min-height: 6rem; }
   .task-detail-header { padding: 5px 16px; }
   .task-detail-heading { padding: 8px 18px 0; }
   .task-detail-title-action {  padding: 5px 8px; }
-  .task-detail-title {  max-height: 2.9em; }
+  .task-detail-title { max-height: 2.9em; }
+  .task-detail-title[tabindex] { max-height: 1.45em; }
   .task-detail-badges { flex: none; }
   .task-detail-retained { margin: 0;  line-height: 1.5; }
   .task-detail-stale { margin: 0; padding: 4px 7px; }
@@ -265,7 +275,6 @@
   .task-detail-panel-attachments { padding: 9px 16px 10px; }
 
   .task-detail-fullscreen .task-detail-header { padding: 5px 12px; gap: 5px; flex-wrap: wrap; }
-  .task-detail-fullscreen .task-detail-title, .task-detail-has-claim .task-detail-title { max-height: 1.45em; }
   .task-detail-fullscreen .task-detail-header-actions { margin-left: auto; gap: 6px; }
   .task-detail-has-claim .task-detail-page-topbar { padding: 6px 12px; gap: 6px; }
   .task-detail-fullscreen .task-detail-heading { padding: 5px 12px 0; }
