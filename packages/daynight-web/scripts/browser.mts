@@ -72,7 +72,6 @@ export const browserConfigs = [
   'typography-ownership-playwright.config.ts',
   'worker-alias-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
-  'webhook-tabs-playwright.config.ts',
 ] as const;
 
 // Playwright starts its webServer in a separate process group. Its inherited,

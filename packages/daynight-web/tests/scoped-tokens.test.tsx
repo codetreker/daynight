@@ -122,6 +122,29 @@ describe('scoped PAT management', () => {
     expect(screen.getByRole('checkbox', { name: /Create tasks and edit basic details/ })).toBeChecked();
     expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' })).toBeDisabled();
   });
+  it('uses the reviewed version when the target changes before its editor is reopened', async () => {
+    const other = { ...token, id: '00000000-0000-4000-8000-000000000003', name: 'Other' };
+    const observed = { ...token, scopePolicy: { scopes: ['task:read'], scopeVersion: '2' } };
+    const newer = { ...token, scopePolicy: { scopes: ['task:write'], scopeVersion: '3' } };
+    const transport = fixture();
+    transport.list.mockResolvedValueOnce([token, other]).mockResolvedValueOnce([observed, other]).mockResolvedValue([newer]);
+    transport.scopes.mockImplementation(async (_id, _input, _signal, _mismatch, dispatch) => { dispatch?.(); throw new ApiError('network'); });
+    render(page(transport)); await openScope(); selectWrite(); saveScope();
+    await screen.findByRole('button', { name: 'Read current state' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read current state' }));
+    await screen.findByText(/Current permissions are shown and your draft is preserved/);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke token Other' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Revoke token' }));
+    await waitFor(() => expect(transport.list).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByText('Other')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit permissions' }));
+    await screen.findByRole('button', { name: 'I reviewed the permissions' });
+    fireEvent.click(screen.getByRole('button', { name: 'I reviewed the permissions' }));
+    saveScope();
+    await waitFor(() => expect(transport.scopes).toHaveBeenCalledTimes(2));
+    expect(transport.scopes.mock.calls[1]?.[1].expectedScopeVersion).toBe('2');
+  });
   it('preserves newly saved permissions when an expiry receipt contains old fields', async () => {
     const transport = fixture(); render(page(transport)); await openScope(); selectWrite(); saveScope();
     await screen.findByText('Permissions updated.');

@@ -162,12 +162,12 @@ const ScopedTokensContent = ({ user, onIdentityMismatch, transport = api, visibl
   };
   const saveScope = async (token: ScopedToken) => {
     if (panel.busy() || scopeRecovery !== null || catalog === null || !hasCredentialScopeLabels(catalog, locale) || scopeDraft.length === 0 || scopeDraft.some(id => !scopeOriginal.includes(id) && !catalog.groups.some(group => group.scopeIds.includes(id)))) return;
-    try { writeRecovery(user.id, "scope", JSON.stringify({ tokenId: token.id, version: token.scopePolicy.scopeVersion, original: scopeOriginal, selected: scopeDraft })); setStorageError(false); } catch { setStorageError(true); return; }
+    try { writeRecovery(user.id, "scope", JSON.stringify({ tokenId: token.id, version: scopeVersionFloor, original: scopeOriginal, selected: scopeDraft })); setStorageError(false); } catch { setStorageError(true); return; }
     const instance = revision.current;
     await panel.write(async context => {
       setDialogError(null);
       try {
-        const saved = await transport.scopes(token.id, { expectedUserId: user.id, expectedScopeVersion: token.scopePolicy.scopeVersion, catalogRevision: catalog.catalogRevision, scopes: scopeDraft }, context.signal, onIdentityMismatch, context.onDispatch);
+        const saved = await transport.scopes(token.id, { expectedUserId: user.id, expectedScopeVersion: scopeVersionFloor, catalogRevision: catalog.catalogRevision, scopes: scopeDraft }, context.signal, onIdentityMismatch, context.onDispatch);
         await waitForAuthRequests(context.signal); if (!context.current()) return;
         try { writeRecovery(user.id, "scope", null); } catch { setStorageError(true); setScopeRecovery({ tokenId: token.id, kind: "unknown" }); return; }
         panel.setItems(items => items?.map(item => item.id === saved.id && BigInt(saved.scopePolicy.scopeVersion) >= BigInt(item.scopePolicy.scopeVersion) ? { ...item, scopePolicy: saved.scopePolicy } : item) ?? null);
