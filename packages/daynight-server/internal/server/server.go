@@ -157,6 +157,10 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger, app.TaskHistory)
 	assistanttaskhttp.RegisterRoutes(mux, app.AssistantTasks, auth, logger)
+	if app.AssistantTaskInbox != nil {
+		// Public: the inbox token or a verified Daynight delivery is the credential.
+		assistanttaskhttp.RegisterInboxRoute(mux, app.AssistantTaskInbox, logger)
+	}
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	bothttp.RegisterRecoveryRoutes(mux, sessions, auth, relay, logger)
