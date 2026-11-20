@@ -1,4 +1,4 @@
-// Package prompt adapts personal Worker prompt resources to HTTP.
+// Package prompt adapts personal prompt resources to HTTP.
 package prompt
 
 import (
@@ -17,6 +17,8 @@ import (
 type prompts interface {
 	Get(context.Context, model.Principal, model.PromptScope, string) (model.PromptResource, error)
 	Put(context.Context, model.Principal, model.PromptScope, string, string, string, string) (model.PromptResource, error)
+	GetReviewer(context.Context, model.Principal, model.PromptScope, string) (model.PromptResource, error)
+	PutReviewer(context.Context, model.Principal, model.PromptScope, string, string, string, string) (model.PromptResource, error)
 }
 
 type handler struct {
@@ -42,6 +44,8 @@ type ScopedAuthentication interface {
 type ScopedPrompts interface {
 	GetAuthorized(context.Context, model.CredentialAuthorization, model.PromptScope, string) (model.PromptResource, error)
 	PutAuthorized(context.Context, model.CredentialAuthorization, model.PromptScope, string, string, string, string) (model.PromptResource, error)
+	GetReviewerAuthorized(context.Context, model.CredentialAuthorization, model.PromptScope, string) (model.PromptResource, error)
+	PutReviewerAuthorized(context.Context, model.CredentialAuthorization, model.PromptScope, string, string, string, string) (model.PromptResource, error)
 }
 
 // RegisterScopedRoutes installs policy-aware prompt routes. Authentication must
@@ -53,7 +57,7 @@ func RegisterScopedRoutes(mux *http.ServeMux, prompts ScopedPrompts, auth Scoped
 	newHandler(nil, logger).registerScopedRoutes(mux, auth, prompts, observe)
 }
 
-// RegisterRoutes exposes the three account-owned prompt resources.
+// RegisterRoutes exposes Worker and Reviewer prompt resources.
 func RegisterRoutes(mux *http.ServeMux, prompts prompts, auth authenticator, logger *slog.Logger) {
 	RegisterRoutesWithScopeObserver(mux, prompts, auth, logger, nil)
 }
@@ -68,22 +72,28 @@ func (h *handler) registerRoutes(mux *http.ServeMux, auth authenticator) {
 }
 
 func (h *handler) registerRoutesObserved(mux *http.ServeMux, auth authenticator, observe func(ScopeRoute)) {
-	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope) http.HandlerFunc {
+	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope, reviewer bool) http.HandlerFunc {
 		return auth.Require(func(w http.ResponseWriter, r *http.Request, principal model.Principal) {
-			h.resource(w, r, principal, scope)
+			h.resource(w, r, principal, scope, reviewer)
 		})
 	}, auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PUT")))
 }
 
 func (h *handler) registerScopedRoutes(mux *http.ServeMux, auth ScopedAuthentication, prompts ScopedPrompts, observe func(ScopeRoute)) {
 	fallback := httpx.ResourceMethodNotAllowed(h.logger, "GET, HEAD, PUT")
-	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope) http.HandlerFunc {
+	h.registerCommonRoutes(mux, observe, func(scope model.PromptScope, reviewer bool) http.HandlerFunc {
 		return auth.RequireScoped(func(w http.ResponseWriter, r *http.Request, authorization model.CredentialAuthorization) {
 			h.resourceWith(w, r, authorization.Principal, scope,
 				func(ctx context.Context, id string) (model.PromptResource, error) {
+					if reviewer {
+						return prompts.GetReviewerAuthorized(ctx, authorization, scope, id)
+					}
 					return prompts.GetAuthorized(ctx, authorization, scope, id)
 				},
 				func(ctx context.Context, id, expected, revision, text string) (model.PromptResource, error) {
+					if reviewer {
+						return prompts.PutReviewerAuthorized(ctx, authorization, scope, id, expected, revision, text)
+					}
 					return prompts.PutAuthorized(ctx, authorization, scope, id, expected, revision, text)
 				})
 		})
@@ -92,28 +102,38 @@ func (h *handler) registerScopedRoutes(mux *http.ServeMux, auth ScopedAuthentica
 	}))
 }
 
-func (h *handler) registerCommonRoutes(mux *http.ServeMux, observe func(ScopeRoute), resource func(model.PromptScope) http.HandlerFunc, fallback http.HandlerFunc) {
+func (h *handler) registerCommonRoutes(mux *http.ServeMux, observe func(ScopeRoute), resource func(model.PromptScope, bool) http.HandlerFunc, fallback http.HandlerFunc) {
 	routes := routeRegistry{mux: mux, observe: observe}
 	for _, route := range []struct {
-		path  string
-		scope model.PromptScope
+		path     string
+		scope    model.PromptScope
+		reviewer bool
 	}{
-		{"/api/v1/me/worker-prompt", model.PromptScopeUser},
-		{"/api/v1/me/projects/{projectId}/worker-prompt", model.PromptScopeProject},
-		{"/api/v1/me/workers/{workerId}/prompt", model.PromptScopeWorker},
+		{"/api/v1/me/worker-prompt", model.PromptScopeUser, false},
+		{"/api/v1/me/projects/{projectId}/worker-prompt", model.PromptScopeProject, false},
+		{"/api/v1/me/workers/{workerId}/prompt", model.PromptScopeWorker, false},
+		{"/api/v1/me/reviewer-prompt", model.PromptScopeUser, true},
+		{"/api/v1/me/projects/{projectId}/reviewer-prompt", model.PromptScopeProject, true},
+		{"/api/v1/me/workers/{workerId}/reviewer-prompt", model.PromptScopeWorker, true},
 	} {
-		routes.handle("GET "+route.path, resource(route.scope), routeRead)
-		routes.handle("PUT "+route.path, resource(route.scope), routeWrite)
+		routes.handle("GET "+route.path, resource(route.scope, route.reviewer), routeRead)
+		routes.handle("PUT "+route.path, resource(route.scope, route.reviewer), routeWrite)
 		routes.handle(route.path, fallback, routeFallback)
 	}
 }
 
-func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal model.Principal, scope model.PromptScope) {
+func (h *handler) resource(w http.ResponseWriter, r *http.Request, principal model.Principal, scope model.PromptScope, reviewer bool) {
 	h.resourceWith(w, r, principal, scope,
 		func(ctx context.Context, id string) (model.PromptResource, error) {
+			if reviewer {
+				return h.prompts.GetReviewer(ctx, principal, scope, id)
+			}
 			return h.prompts.Get(ctx, principal, scope, id)
 		},
 		func(ctx context.Context, id, expected, revision, text string) (model.PromptResource, error) {
+			if reviewer {
+				return h.prompts.PutReviewer(ctx, principal, scope, id, expected, revision, text)
+			}
 			return h.prompts.Put(ctx, principal, scope, id, expected, revision, text)
 		})
 }

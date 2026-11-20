@@ -22,8 +22,9 @@ func (a *scopedHTTPAuth) RequireScoped(next func(http.ResponseWriter, *http.Requ
 }
 
 type scopedHTTPPrompts struct {
-	gets, puts int
-	received   model.CredentialAuthorization
+	gets, puts                 int
+	reviewerGets, reviewerPuts int
+	received                   model.CredentialAuthorization
 }
 
 func (p *scopedHTTPPrompts) GetAuthorized(_ context.Context, auth model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
@@ -42,6 +43,15 @@ func (p *scopedHTTPPrompts) PutAuthorized(_ context.Context, auth model.Credenti
 	}
 	return model.PromptResource{Scope: scope, ScopeID: id, Revision: revision, Text: text}, nil
 }
+func (p *scopedHTTPPrompts) GetReviewerAuthorized(ctx context.Context, auth model.CredentialAuthorization, scope model.PromptScope, id string) (model.PromptResource, error) {
+	p.reviewerGets++
+	return p.GetAuthorized(ctx, auth, scope, id)
+}
+func (p *scopedHTTPPrompts) PutReviewerAuthorized(ctx context.Context, auth model.CredentialAuthorization, scope model.PromptScope, id, expected, revision, text string) (model.PromptResource, error) {
+	p.reviewerPuts++
+	return p.PutAuthorized(ctx, auth, scope, id, expected, revision, text)
+}
+
 func TestScopedPromptHTTPAssembly(t *testing.T) {
 	policy, err := scopepolicy.NewPolicy(scopepolicy.PAT, []scopepolicy.ScopeID{"prompt:read"}, 1)
 	if err != nil {
@@ -67,8 +77,20 @@ func TestScopedPromptHTTPAssembly(t *testing.T) {
 		t.Fatalf("PUT denial %d %v %s", w.Code, w.Header(), w.Body)
 	}
 	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/me/reviewer-prompt", nil))
+	if w.Code != 200 || p.reviewerGets != 1 {
+		t.Fatalf("reviewer GET %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("PUT", "/api/v1/me/reviewer-prompt", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(w, r)
+	if w.Code != 403 || w.Header().Get("Daynight-Scope-Status") != "insufficient_scope" || p.reviewerPuts != 1 {
+		t.Fatalf("reviewer PUT %d", w.Code)
+	}
+	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/me/worker-prompt", nil))
-	if w.Code != 405 || p.gets != 2 || p.puts != 1 {
+	if w.Code != 405 || p.gets != 3 || p.puts != 2 {
 		t.Fatalf("fallback %d", w.Code)
 	}
 }

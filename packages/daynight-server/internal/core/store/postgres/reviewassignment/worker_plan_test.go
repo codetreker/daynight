@@ -52,10 +52,12 @@ func TestReviewOpenPRsUsesBoundedAssignmentLookups(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	_, err = conn.Exec(ctx, `CREATE TABLE project_pull_requests(project_id uuid NOT NULL,repository_id bigint NOT NULL,number bigint NOT NULL,github_id bigint NOT NULL,state text NOT NULL,PRIMARY KEY(project_id,repository_id,number));
+	_, err = conn.Exec(ctx, `CREATE TABLE project_pull_requests(project_id uuid NOT NULL,repository_id bigint NOT NULL,number bigint NOT NULL,github_id bigint NOT NULL,state text NOT NULL,base_ref text NOT NULL,PRIMARY KEY(project_id,repository_id,number));
+ CREATE TABLE project_github(project_id uuid PRIMARY KEY,repository_id bigint,repository_default_branch text);
+ INSERT INTO project_github VALUES('00000000-0000-4000-8000-000000000001',30,'main');
  CREATE INDEX project_pull_requests_state_number ON project_pull_requests(project_id,repository_id,state,number DESC);
  CREATE TABLE project_pr_review_assignments(user_id uuid NOT NULL,project_id uuid NOT NULL,repository_id bigint NOT NULL,github_pr_id bigint NOT NULL,PRIMARY KEY(user_id,project_id,repository_id,github_pr_id));
- INSERT INTO project_pull_requests SELECT '00000000-0000-4000-8000-000000000001',30,g,g,CASE WHEN g%12=0 THEN 'open' ELSE 'closed' END FROM generate_series(1,1000) g;
+ INSERT INTO project_pull_requests SELECT '00000000-0000-4000-8000-000000000001',30,g,g,CASE WHEN g%12=0 THEN 'open' ELSE 'closed' END,'main' FROM generate_series(1,1000) g;
  INSERT INTO project_pr_review_assignments SELECT '00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001',30,g FROM generate_series(1,5000) g;
  ANALYZE project_pull_requests; ANALYZE project_pr_review_assignments; SET enable_seqscan=off`)
 	if err != nil {

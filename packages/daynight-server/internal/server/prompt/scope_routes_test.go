@@ -22,7 +22,7 @@ func TestPromptRegistrationReportsScopeClasses(t *testing.T) {
 		got[route.Pattern] = route
 	})
 	want := map[string]ScopeRoute{}
-	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", "/api/v1/me/workers/{workerId}/prompt"} {
+	for _, path := range []string{"/api/v1/me/worker-prompt", "/api/v1/me/projects/{projectId}/worker-prompt", "/api/v1/me/workers/{workerId}/prompt", "/api/v1/me/reviewer-prompt", "/api/v1/me/projects/{projectId}/reviewer-prompt", "/api/v1/me/workers/{workerId}/reviewer-prompt"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			pattern := method + " " + path
 			want[pattern] = ScopeRoute{Pattern: pattern, Operations: []scopepolicy.Operation{scopepolicy.PromptRead}}

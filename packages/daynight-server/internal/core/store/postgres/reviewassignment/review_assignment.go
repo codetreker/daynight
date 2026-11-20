@@ -110,7 +110,8 @@ const reviewOpenPRsBaseSQL = `SELECT p.number,p.github_id,p.state,(a.found IS NO
             SELECT 1 AS found FROM project_pr_review_assignments a
             WHERE a.user_id=$1 AND a.project_id=p.project_id AND a.repository_id=p.repository_id AND a.github_pr_id=p.github_id LIMIT 1
         ) a ON true
-        WHERE p.project_id=$2 AND p.repository_id=$3 AND p.state='open'`
+        WHERE p.project_id=$2 AND p.repository_id=$3 AND p.state='open'
+          AND p.base_ref=(SELECT repository_default_branch FROM project_github WHERE project_id=$2 AND repository_id=$3)`
 
 func reviewOpenPRsSQL(hasUpper, hasAfter bool) string {
 	query := reviewOpenPRsBaseSQL
@@ -157,16 +158,16 @@ func (s *DAO) ReviewOpenPRs(ctx context.Context, userID, projectID string, repos
 func (w *DAO) LockAuthorization(ctx context.Context, userID string) (model.ProjectAccess, error) {
 	return pg.LockProjectAuthorization(ctx, w.tx, userID, w.projectID)
 }
-func (w *DAO) LockConnection(ctx context.Context) (*int64, error) {
-	var id *int64
-	err := w.tx.QueryRow(ctx, `SELECT repository_id FROM project_github WHERE project_id=$1 FOR SHARE`, w.projectID).Scan(&id)
+func (w *DAO) LockConnection(ctx context.Context) (*store.ReviewConnection, error) {
+	var connection store.ReviewConnection
+	err := w.tx.QueryRow(ctx, `SELECT repository_id,repository_default_branch FROM project_github WHERE project_id=$1 FOR SHARE`, w.projectID).Scan(&connection.RepositoryID, &connection.DefaultBranch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, pg.QueryError("lock review connection", err)
 	}
-	return id, nil
+	return &connection, nil
 }
 func (w *DAO) LockWorker(ctx context.Context, userID, workerID string) (store.ReviewWorker, error) {
 	var v store.ReviewWorker
@@ -186,7 +187,7 @@ func (w *DAO) ObservedAt(ctx context.Context) (time.Time, error) {
 }
 func (w *DAO) PullRequest(ctx context.Context, repoID, number int64) (*store.ReviewPR, error) {
 	var p store.ReviewPR
-	err := w.tx.QueryRow(ctx, `SELECT number,github_id,state FROM project_pull_requests WHERE project_id=$1 AND repository_id=$2 AND number=$3`, w.projectID, repoID, number).Scan(&p.Number, &p.GitHubID, &p.State)
+	err := w.tx.QueryRow(ctx, `SELECT number,github_id,state,base_ref FROM project_pull_requests WHERE project_id=$1 AND repository_id=$2 AND number=$3 FOR SHARE`, w.projectID, repoID, number).Scan(&p.Number, &p.GitHubID, &p.State, &p.BaseRef)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

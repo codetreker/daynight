@@ -197,7 +197,7 @@ func (r *Reconciler) assign(ctx context.Context, candidate store.ReviewWorker, p
 		if err != nil {
 			return err
 		}
-		if currentRepo == nil || *currentRepo != repository {
+		if currentRepo == nil || currentRepo.RepositoryID == nil || *currentRepo.RepositoryID != repository || currentRepo.DefaultBranch == nil {
 			return nil
 		}
 		current, err := tx.LockWorker(ctx, candidate.UserID, candidate.WorkerID)
@@ -228,7 +228,7 @@ func (r *Reconciler) assign(ctx context.Context, candidate store.ReviewWorker, p
 		if err != nil {
 			return err
 		}
-		if latest == nil || latest.GitHubID != pr.GitHubID || latest.State != "open" {
+		if latest == nil || latest.GitHubID != pr.GitHubID || latest.State != "open" || latest.BaseRef != *currentRepo.DefaultBranch {
 			return nil
 		}
 		_, err = tx.Insert(ctx, candidate.UserID, repository, pr.GitHubID, candidate.WorkerID, now)
