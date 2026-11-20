@@ -124,9 +124,12 @@ describe('assistant task response contracts', () => {
     const scoped = { ...appendix(), scope, validation };
     expect(api.parseAssistantTaskAppendix(scoped, taskId)).toEqual(scoped);
     expect(api.parseAssistantTaskAppendix(appendix(), taskId)).not.toHaveProperty('scope');
+    // U+FEFF is not Unicode White_Space, so the server accepts it as a nonblank category; it must be kept verbatim.
+    const bom = { ...appendix(), scope: { ...scope, itemCategories: ['\uFEFF', ' build '] } };
+    expect(api.parseAssistantTaskAppendix(bom, taskId)).toEqual(bom);
     for (const value of [
       { ...appendix(), scope: { projectIds: [], eventTypes: [], itemCategories: [] } }, { ...appendix(), scope: { ...scope, projectIds: ['bad'] } },
-      { ...appendix(), scope: { ...scope, itemCategories: [' '] } }, { ...appendix(), scope: { eventTypes: ['report'] } }, { ...appendix(), scope: null },
+      { ...appendix(), scope: { ...scope, itemCategories: [' '] } }, { ...appendix(), scope: { ...scope, itemCategories: ['\u3000\u0085'] } }, { ...appendix(), scope: { eventTypes: ['report'] } }, { ...appendix(), scope: null },
       { ...appendix(), validation: { ...validation, successCount: '0' } }, { ...appendix(), validation: { ...validation, failureCount: 1 } }, { ...appendix(), validation: { ...validation, lastValidatedAt: null } },
       { ...appendix(), state: 'deleted', text: '', sourceRecords: [], scope }, { ...appendix(), state: 'deleted', text: '', sourceRecords: [], validation },
     ]) expect(() => api.parseAssistantTaskAppendix(value, taskId)).toThrow();

@@ -154,9 +154,12 @@ export const parseAssistantTaskManual = (value: unknown, taskId: string): Assist
   if ((result.source === 'revision') !== (result.proposalId !== null)) return malformed();
   return result;
 };
+// Scope entries are matched verbatim, so blankness follows the server's Unicode White_Space rule (Go strings.TrimSpace);
+// JavaScript trim() also strips U+FEFF and would reject a category the server accepts and stores.
+const scopeEntry = (value: unknown): string => { const result = text(value); return /[^\p{White_Space}]/u.test(result) ? result : malformed(); };
 const appendixScope = (value: unknown): AssistantTaskAppendixScope => {
   const data = fields(value, ['projectIds', 'eventTypes', 'itemCategories']);
-  const result = { projectIds: array(data.projectIds, uuid), eventTypes: array(data.eventTypes, value => text(value, true)), itemCategories: array(data.itemCategories, value => text(value, true)) };
+  const result = { projectIds: array(data.projectIds, uuid), eventTypes: array(data.eventTypes, scopeEntry), itemCategories: array(data.itemCategories, scopeEntry) };
   return result.projectIds.length + result.eventTypes.length + result.itemCategories.length === 0 ? malformed() : result;
 };
 const appendixValidation = (value: unknown): AssistantTaskAppendixValidation => {
