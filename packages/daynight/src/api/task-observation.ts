@@ -93,8 +93,8 @@ export const parseSessionAggregation = (value: unknown): SessionAggregation => {
   return { indicator: sessionIndicator(data.indicator), workingCount: count(data.workingCount), noticeCount: count(data.noticeCount), warningCount: count(data.warningCount), unknownCount: count(data.unknownCount), complete: bool(data.complete), observedAt: timestamp(data.observedAt) };
 };
 
-export const parseObservedTaskGraph = (value: unknown, projectId: string, taskId: string): ObservedTaskGraph => {
-  const graph = parseTaskGraph(value, projectId, taskId);
+export const parseObservedTaskGraph = (value: unknown, projectId: string, taskId: string, taskOnly = false): ObservedTaskGraph => {
+  const graph = parseTaskGraph(value, projectId, taskId, taskOnly);
   const data = record(value);
   const rawTasks = array(data.tasks, record);
   const hasObservation = Object.hasOwn(data, "sessionSummary") || Object.hasOwn(data, "partial") || rawTasks.some(task => Object.hasOwn(task, "session") || Object.hasOwn(task, "relation"));

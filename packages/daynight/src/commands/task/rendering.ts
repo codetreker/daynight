@@ -81,10 +81,12 @@ const renderGraphTask = (task: GraphTask | ObservedGraphTask, projectId: string)
 
 export const renderTaskGraph = (graph: TaskGraph | ObservedTaskGraph): string => [
   `Project: ${terminalText(graph.project.id)}`,
-  `Name: ${terminalText(graph.project.name)}`,
-  `Repository: ${terminalText(graph.project.repoUrl)}`,
-  `Created: ${terminalText(graph.project.createdAt)}`,
-  `Updated: ${terminalText(graph.project.updatedAt)}`,
+  ...("name" in graph.project ? [
+    `Name: ${terminalText(graph.project.name)}`,
+    `Repository: ${terminalText(graph.project.repoUrl)}`,
+    `Created: ${terminalText(graph.project.createdAt)}`,
+    `Updated: ${terminalText(graph.project.updatedAt)}`,
+  ] : []),
   "",
   "Summary:",
   `Total: ${graph.summary.total}`,

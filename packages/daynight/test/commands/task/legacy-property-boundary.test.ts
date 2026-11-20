@@ -23,12 +23,12 @@ const fixture = (fetch: typeof globalThis.fetch) => {
 const json = (body: unknown) => new Response(stringifyApiJson(body), { headers: { "content-type": "application/json" } });
 
 it("keeps malformed task JSON out of stdout at the CLI boundary", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(project)).mockResolvedValueOnce(new Response("{", { headers: { "content-type": "application/json" } }));
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(new Response("{", { headers: { "content-type": "application/json" } }));
   const f = fixture(fetch);
   expect(await f.run(["show", taskId, "--json"])).toBe(1);
   expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
   expect(f.context.stderr.mock.calls.map(([text]) => text).join("")).toContain("protocol");
-  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "GET"]);
+  expect(fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET"]);
 });
 
 it("forwards multiline property input byte for byte and prints the confirmed value", async () => {

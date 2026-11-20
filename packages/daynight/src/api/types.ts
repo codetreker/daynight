@@ -385,7 +385,7 @@ export type TaskGraphSummary = {
 /** A complete ordinary chain with direct external prerequisites, whose own dependency references may lie outside the returned tasks. */
 export type TaskGraph = {
   readonly observedAt: string;
-  readonly project: Project;
+  readonly project: Project | { readonly id: string };
   readonly summary: TaskGraphSummary;
   readonly tasks: readonly GraphTask[];
 };

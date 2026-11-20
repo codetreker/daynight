@@ -13,7 +13,7 @@ import { createTaskSessionClient } from "./task-session.js";
 import type { TaskSessionClient } from "./task-session.js";
 import { parseTaskWorkPage } from "./task-work.js";
 import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
-import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
+import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp, fields as receiptFields, id as receiptId, resourceVersion as receiptVersion } from "./validation.js";
 import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
 import { WORKER_CONFIGURATION_REPORT_BYTES, workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
 import { parseMonitoringReceipt } from "./worker-monitoring.js";
@@ -46,7 +46,7 @@ import type { ProjectRepositoryPreview, ProjectRepositoryReceipt } from "./types
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string; readonly taskReceipt?: true; readonly taskProjection?: true };
 export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
@@ -65,6 +65,7 @@ export class ApiError extends Error {
   readonly details?: ErrorDetails;
   readonly outcomeUnconfirmed: boolean;
   readonly confirmedRefusal: boolean;
+  readonly scopeStatus?: "insufficient_scope";
   readonly confirmedMutationId?: string;
 
   constructor(context: Context, phase: ApiPhase, options: {
@@ -73,6 +74,7 @@ export class ApiError extends Error {
     readonly serverError?: ServerError;
     readonly outcomeUnconfirmed?: boolean;
     readonly confirmedRefusal?: boolean;
+    readonly scopeStatus?: "insufficient_scope";
     readonly confirmedMutationId?: string;
     readonly responseRequestId?: string;
   }) {
@@ -97,6 +99,7 @@ export class ApiError extends Error {
     if (details !== undefined) this.details = details;
     this.outcomeUnconfirmed = options.outcomeUnconfirmed === true;
     this.confirmedRefusal = options.confirmedRefusal === true;
+    if (options.scopeStatus !== undefined) this.scopeStatus = options.scopeStatus;
     if (options.confirmedMutationId !== undefined) this.confirmedMutationId = options.confirmedMutationId;
   }
 }
@@ -229,6 +232,7 @@ export type ApiClient = TaskSessionClient & {
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput, options?: { readonly tagOnlyPreviousIds: readonly string[] }): Promise<Task>;
+  updateTaskReceipt(projectId: string, taskId: string, input: UpdateTaskInput): Promise<{ readonly projectId: string; readonly taskId: string; readonly version: bigint }>;
   deleteTask(projectId: string, taskId: string, input: DeleteTaskInput): Promise<void>;
   setTaskStatus(projectId: string, taskId: string, input: SetTaskStatusInput): Promise<Task>;
   claimWorkerTask(projectId: string, taskId: string, input: ClaimWorkerTaskInput): Promise<Task>;
@@ -349,7 +353,7 @@ export const createApiClient = (options: {
   const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
 
-  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly historyDirectoryHeader: string | null };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly historyDirectoryHeader: string | null; readonly taskReturnHeader: string | null; readonly taskProjectionHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
     | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
@@ -451,7 +455,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.taskReceipt === true ? { "Daynight-Return": "receipt-v1" } : {}), ...(context.taskProjection === true ? { "Daynight-Projection": "task-only-v1" } : {}), ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -530,7 +534,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), taskReturnHeader: response.headers.get("Daynight-Return"), taskProjectionHeader: response.headers.get("Daynight-Projection"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       if (invitationIdentityMismatch) jsonObjectSources(source);
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
@@ -548,7 +552,7 @@ export const createApiClient = (options: {
         if (context.workerArchiveSessions === true && status === 404 && principalId !== undefined) confirmArchive(responseContext.archiveSessionsHeader, principalId);
         if (context.workerControlMode === true && status === 404 && principalId !== undefined) workerControlMode.supported = responseContext.controlModeHeader === "1";
         const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
-        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
+        throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(status === 403 && serverError.code === "forbidden" && response.headers.get("Daynight-Scope-Status") === "insufficient_scope" ? { scopeStatus: "insufficient_scope" as const } : {}), ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
       if (secret !== undefined) {
@@ -1690,6 +1694,41 @@ export const createApiClient = (options: {
         ...(tagIds === undefined ? {} : { tagIds }),
       });
     },
+    updateTaskReceipt: (projectId, taskId, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      const assignedTo = taskAssignmentInput(input.assignedTo), parentId = taskParentInput(input.parentId);
+      const tagIds = input.tagIds === undefined ? undefined : normalizeTaskTagIds(input.tagIds);
+      const version = input.version;
+      taskVersion(version);
+      return exchange({ operation: "task.update", projectId: project, taskId: task, taskReceipt: true }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", { kind: "json", parse: (value, metadata) => {
+        let resultVersion: bigint;
+        if (metadata.taskReturnHeader === "receipt-v1") {
+          const receipt = receiptFields(value, ["projectId", "taskId", "version"]);
+          if (receiptId(receipt.projectId) !== project || receiptId(receipt.taskId) !== task) throw new ProtocolError("Task receipt does not match the requested resource.");
+          resultVersion = receiptVersion(receipt.version);
+        } else if (metadata.taskReturnHeader === null) {
+          const result = parseTask(value, project, task);
+          if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
+          if (parentId !== undefined && result.parentId !== parentId) throw new ProtocolError("Task does not confirm the requested parent.");
+          if (tagIds !== undefined) confirmTaskTagIds(result, tagIds);
+          resultVersion = result.version;
+        } else throw new ProtocolError("Unsupported Task receipt response.");
+        if (resultVersion !== version && resultVersion !== version + 1n) throw new ProtocolError("Task does not confirm the submitted version.");
+        return { projectId: project, taskId: task, version: resultVersion };
+      }, confirmMutation: result => result.taskId }, [200], { kind: "json", value: {
+        version,
+        ...(parentId === undefined ? {} : { parentId }),
+        ...(assignedTo === undefined ? {} : { assignedTo }),
+        ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
+        ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
+        ...(input.externalDependsOn === undefined ? {} : { externalDependsOn: input.externalDependsOn }),
+        ...(input.properties === undefined ? {} : { properties: input.properties }),
+        ...(tagIds === undefined ? {} : { tagIds }),
+      } }, true);
+    },
     deleteTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       taskVersion(input.version);
@@ -1732,16 +1771,23 @@ export const createApiClient = (options: {
     },
     getTaskGraph: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return request({ operation: "task.graph", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value) => parseTaskGraph(value, project, task));
+      return request({ operation: "task.graph", projectId: project, taskId: task, taskProjection: true }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value, metadata) => {
+        if (metadata.taskProjectionHeader !== null && metadata.taskProjectionHeader !== "task-only-v1") throw new ProtocolError();
+        return parseTaskGraph(value, project, task, metadata.taskProjectionHeader === "task-only-v1");
+      });
     },
     getObservedTaskGraph: async (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      const context = { operation: "task.graph", projectId: project, taskId: task };
+      const context = { operation: "task.graph", projectId: project, taskId: task, taskProjection: true as const };
       const path = `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`;
-      try { return await request(context, `${path}&include=session`, "GET", value => parseObservedTaskGraph(value, project, task)); }
+      const parse = (value: unknown, metadata: JsonResponseMetadata): ObservedTaskGraph => {
+        if (metadata.taskProjectionHeader !== null && metadata.taskProjectionHeader !== "task-only-v1") throw new ProtocolError();
+        return parseObservedTaskGraph(value, project, task, metadata.taskProjectionHeader === "task-only-v1");
+      };
+      try { return await request(context, `${path}&include=session`, "GET", parse); }
       catch (error) {
         if (!observationUnsupported(error)) throw error;
-        return request(context, path, "GET", value => parseObservedTaskGraph(value, project, task));
+        return request(context, path, "GET", parse);
       }
     },
   };

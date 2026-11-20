@@ -1016,7 +1016,16 @@ for empty sets. With `--json`, this mode returns a bare array of objects contain
 only `id`, `dependsOn` and `externalDependsOn`.
 
 Project-scoped operations accept `--project <project-id>`, which selects a project
-for one invocation without reading Git or local bindings. `task properties --schema`
+for one invocation without reading Git or local bindings. With an explicit Project,
+`task show`, `list` and `graph` read the Task endpoint directly; Graph requests
+a task-only Project projection and accepts a full Project from older services.
+An explicit Project and `--if-version` let `task update` send one PATCH without
+project or Task pre-reads. It prints only the Project ID, Task ID and resulting
+version, including when an older service returns a full Task. Missing versions
+still require a Task read. Each submitted field requires its own applicable scope;
+for example, title needs `task:write` and `allowAgents` needs `agent:authorize`.
+Other commands retain their existing pre-reads and authorization requirements.
+`task properties --schema`
 uses only the authenticated service and rejects project selection. Otherwise, the CLI reads the
 current worktree's effective `origin`, normalizes equivalent HTTPS/SSH/SCP
 addresses, and matches the configured server's projects. A missing match fails
@@ -1371,8 +1380,9 @@ Use `observedAt`, `lastSeenAt` and `freshUntil` to assess freshness. Ordinary
 lists retrieve all Task pages before printing, so their observations need not
 describe one instant and may already be stale. Refresh with the same query.
 An unavailable observation retains the Task with an explicit reason/error and
-unknown send eligibility. Such partial results print to stdout, report a
-diagnostic on stderr and exit 3; malformed responses, authorization and
+unknown send eligibility. When only `session:read` is missing, ordinary Task
+queries print a permission notice on stderr and succeed. Other partial results
+print to stdout, report a diagnostic on stderr and exit 3; malformed responses, authorization and
 transport failures exit 1. An old service yields `unsupported` and an upgrade
 instruction, with at most one plain Task traversal after an explicit
 negotiation refusal. `task ready`, `graph --depends-only`, write preflight and

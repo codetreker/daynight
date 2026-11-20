@@ -68,6 +68,7 @@ const fixture = (operation = createOperation()) => {
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),
     showGoalDependencies: async () => { throw new Error("Unused goal dependency API method"); }, editGoalDependencies: async () => { throw new Error("Unused goal dependency API method"); },
     listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), searchTasks: vi.fn<ApiClient["searchTasks"]>().mockResolvedValue([]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
+    updateTaskReceipt: vi.fn<ApiClient["updateTaskReceipt"]>().mockResolvedValue({ projectId, taskId, version: 2n }),
     deleteTask: vi.fn<ApiClient["deleteTask"]>().mockResolvedValue(),
     setTaskStatus: vi.fn<ApiClient["setTaskStatus"]>().mockResolvedValue(task),
     listTaskPage: async () => { throw new Error("Unused worker API method"); },
@@ -328,7 +329,8 @@ describe("task parameter boundaries", () => {
     f.context.workingDirectory.mockImplementation(() => { throw new Error("Explicit project must not read cwd"); });
     const base = command === "create" ? [command, "--title", "Title"] : (command === "show" || command === "graph") ? [command, taskId.toUpperCase()] : command === "update" ? [command, taskId.toUpperCase(), "--description="] : [command];
     await runTaskCommand([...base, "--project", projectId.toUpperCase()], f.context, f.dependencies);
-    expect(f.api.getProject).toHaveBeenCalledExactlyOnceWith(projectId);
+    if (["list", "show", "graph"].includes(command)) expect(f.api.getProject).not.toHaveBeenCalled();
+    else expect(f.api.getProject).toHaveBeenCalledExactlyOnceWith(projectId);
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
   });
 
@@ -345,7 +347,7 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["update", taskId, "--allow-agents", String(allowAgents), "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.getTask).not.toHaveBeenCalled();
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { allowAgents, version: 9_223_372_036_854_775_807n });
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { allowAgents, version: 9_223_372_036_854_775_807n });
   });
 
   it.each(["windows", "linux", "macos"] as const)("creates and updates an explicit %s platform requirement", async (requiredPlatform) => {
@@ -354,7 +356,7 @@ describe("task request contracts", () => {
     expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Platform task", assignedTo: accountId, requiredPlatform });
     await runTaskCommand(["update", taskId, `--required-platform=${requiredPlatform}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.getTask).not.toHaveBeenCalled();
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { requiredPlatform, version: 9_223_372_036_854_775_807n });
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { requiredPlatform, version: 9_223_372_036_854_775_807n });
   });
 
   it("clears the platform explicitly without touching permission or other task fields", async () => {
@@ -448,7 +450,7 @@ describe("task request contracts", () => {
     await runTaskCommand(["create", "--title", "Title", ...fields, "--project", projectId], f.context, f.dependencies);
     expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", assignedTo: accountId, dependsOn: [dependencyId], externalDependsOn });
     await runTaskCommand(["update", taskId, ...fields, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, dependsOn: [dependencyId], externalDependsOn });
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, dependsOn: [dependencyId], externalDependsOn });
     expect(f.api.getTask).not.toHaveBeenCalled();
   });
 
@@ -489,7 +491,31 @@ describe("task request contracts", () => {
     const f = fixture();
     await runTaskCommand(["update", taskId, "--description=", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.getTask).not.toHaveBeenCalled();
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { description: "", version: 9_223_372_036_854_775_807n });
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { description: "", version: 9_223_372_036_854_775_807n });
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task updated.\nProject: ${projectId}\nID: ${taskId}\nVersion: 2\n`);
+  });
+
+  it("preserves an explicit-version update refusal without a read or retry", async () => {
+    const f = fixture();
+    const failure = new Error("Permission denied");
+    f.api.updateTaskReceipt.mockRejectedValue(failure);
+    await expect(runTaskCommand(["update", taskId, "--title", "Changed", "--if-version", "1", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledOnce();
+    expect(f.api.updateTask).not.toHaveBeenCalled();
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("reports a confirmed update when HTTP response cleanup fails", async () => {
+    const f = fixture();
+    const failure = new ApiError({ operation: "task.update", projectId, taskId }, "protocol", { cause: new Error("release failed"), confirmedMutationId: taskId });
+    f.api.updateTaskReceipt.mockRejectedValue(failure);
+    await expect(runTaskCommand(["update", taskId, "--title", "Changed", "--if-version", "1", "--project", projectId], f.context, f.dependencies)).rejects.toMatchObject({ message: expect.stringContaining(`Task update was confirmed for Project ${projectId}, Task ${taskId}`), cause: failure });
+    expect(f.api.updateTaskReceipt).toHaveBeenCalledOnce();
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("replaces dependencies using a complete set, clear=%s", async (clear) => {
@@ -671,14 +697,12 @@ describe("task responsibility options", () => {
   it("sets and clears native assignment using exact versions without task reads", async () => {
     const f = fixture();
     f.api.createTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
-    f.api.updateTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
     await runTaskCommand(["create", "--title", "Assigned task", "--assigned-to", dependencyId.toUpperCase(), "--project", projectId], f.context, f.dependencies);
     expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Assigned task", assignedTo: dependencyId });
     await runTaskCommand(["update", taskId, "--assigned-to", dependencyId.toUpperCase(), "--title", "Updated", "--allow-agents", "true", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: dependencyId, title: "Updated", allowAgents: true, version: 9_223_372_036_854_775_807n });
-    f.api.updateTask.mockResolvedValue(task);
+    expect(f.api.updateTaskReceipt).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: dependencyId, title: "Updated", allowAgents: true, version: 9_223_372_036_854_775_807n });
     await runTaskCommand(["update", taskId, "--clear-assigned-to", "--if-version", "9007199254740993", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: null, version: 9_007_199_254_740_993n });
+    expect(f.api.updateTaskReceipt).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: null, version: 9_007_199_254_740_993n });
     expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getCurrentUser).not.toHaveBeenCalled();
   });
 

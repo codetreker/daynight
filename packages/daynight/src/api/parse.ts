@@ -384,9 +384,11 @@ const graphChainMembers = (byId: ReadonlyMap<string, GraphTask>, taskId: string)
   return members;
 };
 
-export const parseTaskGraph = (value: unknown, projectId: string, taskId: string): TaskGraph => {
+export const parseTaskGraph = (value: unknown, projectId: string, taskId: string, taskOnly = false): TaskGraph => {
   const data = record(value);
-  const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
+  const project = taskOnly ? { id: id(fields(data.project, ["id"]).id) } : parseProject(data.project, projectId);
+  if (project.id !== projectId) return malformed();
+  const parsed = { observedAt: timestamp(data.observedAt), project, summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
   if (byId.size !== parsed.tasks.length) return malformed();
   const members = graphChainMembers(byId, taskId);
