@@ -32,10 +32,11 @@ deleting a definition and its baseline entry cannot strand unmigrated consumers.
 Retired identifiers are tracked independently of font declarations, including
 CSS geometry and statically readable TypeScript strings and style operations.
 Mermaid's current configuration receives individual entries, so its surrounding
-files and configuration objects retain normal inspection. The workspace shell and
+files and configuration objects retain normal inspection. The workspace shell, public landing and setup pages, authentication styles and
 shared selection controls use the public sizes directly; the shared selection CSS
 owns touch text adjustments and sizes controls from their actual text instead of
-private font aliases. The zero-legacy mode refuses the bridge and all remaining baseline
+private font aliases. Management dialog fields and invitation secret text use the shared responsive
+touch adjustment, while ordinary account tokens retain their inherited size. The zero-legacy mode refuses the bridge and all remaining baseline
 uses, supplying the closing migration gate. The [Web guide](../../../../packages/daynight-web/README.md#typography-validation)
 owns commands and static-analysis limits.
 

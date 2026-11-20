@@ -10,7 +10,7 @@ type Gate = { promise: Promise<void>; release: () => void };
 const gate = (): Gate => { let release!: () => void; return { promise: new Promise<void>(resolve => { release = resolve; }), release: () => release() }; };
 
 const install = async (page: Page, locale: Locale) => {
-  const state = { fail: false, populated: false, role: 'admin' as 'admin' | 'member', hold: null as Gate | null, reads: [] as string[], writes: [] as string[] };
+  const state = { fail: false, populated: false, allowSecrets: false, role: 'admin' as 'admin' | 'member', hold: null as Gate | null, reads: [] as string[], writes: [] as string[] };
   const personal = { id: personalId, kind: 'personal', name: null };
   const membership = (id: string) => ({ teamId: id, userId, role: id === personalId ? 'admin' : state.role, version: 1, createdAt: time, updatedAt: time });
   const team = (id: string) => ({ ...(id === personalId ? personal : { id: teamId, kind: 'ordinary', name: 'Layout Team' }), version: 1, createdAt: time, updatedAt: time, membership: membership(id) });
@@ -18,7 +18,12 @@ const install = async (page: Page, locale: Locale) => {
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
-    if (request.method() !== 'GET') { state.writes.push(`${request.method()} ${path}`); return send({ error: { code: 'unexpected_write', message: 'Unexpected write', requestId: 'fixture' } }, 500); }
+    if (request.method() !== 'GET') {
+      state.writes.push(`${request.method()} ${path}`);
+      if (state.allowSecrets && request.method() === 'POST' && path === `/api/v1/teams/${teamId}/invitations`) return send({ id: '00000000-0000-4000-8000-000000000051', teamId, createdBy: userId, createdAt: time, expiresAt: '2099-10-27T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null, link: `${new URL(request.url()).origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` }, 201);
+      if (state.allowSecrets && request.method() === 'POST' && path === '/api/v1/me/tokens') return send({ id: '00000000-0000-4000-8000-000000000052', name: 'Device', createdAt: time, expiresAt: null, lastUsedAt: null, token: 'once-only-secret' }, 201);
+      return send({ error: { code: 'unexpected_write', message: 'Unexpected write', requestId: 'fixture' } }, 500);
+    }
     state.reads.push(path);
     if (path === '/api/v1/me') return send({ id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [team(teamId)], nextCursor: null });
@@ -186,3 +191,74 @@ for (const locale of ['en', 'zh-CN'] as const) test(`header actions preserve poi
   }
   expect(state.writes).toEqual([]);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const hasTouch of [false, true]) {
+  test(`shared credential and account text sizes follow their scope in ${locale} (touch=${hasTouch})`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+    const page = await context.newPage();
+    try {
+      const state = await install(page, locale);
+      state.allowSecrets = true;
+      const headers = await open(page, 'team', locale);
+      await headers.first().locator(':scope > button').click();
+      await page.getByRole('dialog').locator('.dialog-footer .primary').click();
+      const invitation = page.getByLabel(locale === 'en' ? 'One-time invitation link' : '一次性邀请链接');
+      await expect(invitation).toHaveValue(/#dnteam_/);
+      await expect(invitation).toHaveAttribute('readonly', '');
+      await expect(invitation).toHaveAttribute('data-touch-text', 'responsive');
+      for (const width of [320, 1000]) for (const size of [12, 24]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+        await expect(invitation).toHaveCSS('font-size', `${width <= 800 || hasTouch ? Math.max(size, 16) : size * .875}px`);
+      }
+      await page.getByRole('dialog').getByRole('button', { name: locale === 'en' ? 'I have saved it, close' : '我已保存，关闭' }).click();
+
+      const accountHeaders = await open(page, 'account', locale);
+      await accountHeaders.first().locator(':scope > button').click();
+      await page.getByLabel(locale === 'en' ? 'Token name' : '令牌名称').fill('Device');
+      await page.getByRole('dialog').locator('.dialog-footer .primary').click();
+      const token = page.getByLabel(locale === 'en' ? 'One-time access token' : '一次性访问令牌');
+      await expect(token).toHaveValue('once-only-secret');
+      await expect(token).toHaveAttribute('readonly', '');
+      await expect(token).not.toHaveAttribute('data-touch-text');
+      for (const width of [320, 1000]) for (const size of [12, 24]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+        await expect(token).toHaveCSS('font-size', `${size * .875}px`);
+      }
+      await page.getByRole('dialog').getByRole('button', { name: locale === 'en' ? 'I have saved it, close' : '我已保存，关闭' }).click();
+      await page.locator('.account-button').click();
+      const menu = page.getByRole('menu');
+      await expect(menu).toBeVisible();
+      for (const size of [12, 24]) {
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+        await expect(menu.locator('.account-menu-item').first()).toHaveCSS('font-size', `${size * .875}px`);
+      }
+      expect(state.writes).toEqual([`POST /api/v1/teams/${teamId}/invitations`, 'POST /api/v1/me/tokens']);
+    } finally { await context.close(); }
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const hasTouch of [false, true]) {
+  test(`Team name editing uses responsive input text in ${locale} (touch=${hasTouch})`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 320, height: 900 }, hasTouch });
+    const page = await context.newPage();
+    try {
+      const state = await install(page, locale);
+      await page.goto(`/teams/${teamId}/settings`);
+      await page.locator('.team-settings-name button').click();
+      const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Edit Team name' : '修改 Team 名称' });
+      const name = dialog.getByLabel(locale === 'en' ? 'Team name' : 'Team 名称');
+      await expect(name).toHaveValue('Layout Team');
+      await expect(name).not.toHaveAttribute('data-touch-text');
+      for (const width of [320, 1000]) for (const size of [12, 24]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.evaluate(value => { document.documentElement.style.fontSize = `${value}px`; }, size);
+        await expect(name).toHaveCSS('font-size', `${width <= 800 || hasTouch ? Math.max(size, 16) : size * .875}px`);
+      }
+      await name.fill('Changed Team');
+      await expect(name).toHaveValue('Changed Team');
+      expect(state.writes).toEqual([]);
+    } finally { await context.close(); }
+  });
+}
