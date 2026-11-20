@@ -40,6 +40,9 @@ closed without a recoverable explanation.
 acceptance inspectable, but normal background work would still insert rows and
 move the reading area. Existing automatic reconciliation does not need that UI.
 
+The [send receipt ownership decision](2026-11-20-session-send-receipt-ownership.md)
+assigns duplicate send feedback to its visible operation receipt.
+
 ## Consequences
 
 Successful operations and background checks leave the receipt area absent.
