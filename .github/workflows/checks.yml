@@ -22,6 +22,7 @@ jobs:
       server: ${{ steps.modules.outputs.server }}
       api: ${{ steps.modules.outputs.api }}
       web: ${{ steps.modules.outputs.web }}
+      mobile: ${{ steps.modules.outputs.mobile }}
       e2e: ${{ steps.modules.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -584,6 +585,37 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-mobile:
+    name: verify (mobile)
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.mobile == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPO_HOME: ${{ github.workspace }}/.tmp/expo
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - name: Install mobile dependencies
+        run: pnpm --filter @codetreker/daynight-mobile --fail-if-no-match install --frozen-lockfile
+      - name: Verify mobile types and Expo SDK dependency versions
+        run: |
+          pnpm --filter @codetreker/daynight-mobile --fail-if-no-match typecheck
+          pnpm --filter @codetreker/daynight-mobile --fail-if-no-match exec expo install --check
+      - name: Export iOS and Android application bundles
+        run: pnpm --filter @codetreker/daynight-mobile --fail-if-no-match bundle
+
   verify-e2e:
     name: verify (product E2E)
     needs: detect-changes
@@ -660,7 +692,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, prepare-runtime-package, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
+    needs: [detect-changes, verify, verify-installed, prepare-runtime-package, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-mobile, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -716,6 +748,11 @@ jobs:
         env:
           WEB_QUALITY_RESULT: ${{ needs.verify-web-quality.result }}
         run: test "$WEB_QUALITY_RESULT" = success
+      - name: Require selected mobile validation to succeed
+        if: ${{ needs.detect-changes.outputs.mobile == 'true' }}
+        env:
+          MOBILE_RESULT: ${{ needs.verify-mobile.result }}
+        run: test "$MOBILE_RESULT" = success
       - name: Require selected product E2E to succeed
         if: ${{ needs.detect-changes.outputs.e2e == 'true' }}
         env:

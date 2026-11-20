@@ -107,7 +107,7 @@ export function useMyTasksHistory(userId: string, active: boolean, scope: TaskCa
 }
 
 /** Project entries hold the complete reading position, while preferences remain user actions. */
-export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope, isDisplayedGoal: (witness: string) => boolean = () => false) {
+export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope, isDisplayedGoal: (witness: string) => boolean = () => false, isDisplayedChainUsage: (detailId: string | null) => boolean = () => false) {
   const location = useBrowserLocation();
   const navigation = browserNavigation();
   const fence = resourceFence(scope, projectId);
@@ -136,16 +136,21 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   const retired = location.entryId !== null && selected !== null && isRetiredResourceEntry(scope, projectId, location.entryId);
   const previous = retained.current;
   const witness = previous.selection.projectGraphWitness;
-  // Only the committed current entry may carry a displayed Goal across a content
-  // history replacement. Access retirement must win even if another event follows it.
-  const carry = retired && onPage && previous.onPage && location.entryId === previous.entryId &&
-    previous.accessRetirements === fence.accessRetirements && !scope.isInvalidated && !scope.hasIdentityMismatch && scope.userId === userId &&
-    previous.selection.section === 'tasks' && previous.selection.view === 'goals' && witness !== null &&
+  // A displayed reader may survive a content epoch change only on its current
+  // entry and identity. Access retirement always wins over a later epoch.
+  const canCarry = retired && onPage && previous.onPage && location.entryId === previous.entryId &&
+    previous.accessRetirements === fence.accessRetirements && !scope.isInvalidated && !scope.hasIdentityMismatch && scope.userId === userId;
+  const carryGoal = canCarry && previous.selection.section === 'tasks' && previous.selection.view === 'goals' && witness !== null &&
     selected?.section === 'tasks' && selected.view === 'goals' && selected.projectGraphWitness === witness && isDisplayedGoal(witness);
+  const detailId = previous.selection.detail?.id ?? null;
+  const carryUsage = canCarry && previous.selection.section === 'tasks' && previous.selection.view === 'chains' &&
+    previous.selection.projectGraphWitness === null && selected?.section === 'tasks' && selected.view === 'chains' &&
+    selected.projectGraphWitness === null && (selected.detail?.id ?? null) === detailId && isDisplayedChainUsage(detailId);
   if (retired) selected = null;
   const nativeBinding = typeof location.view === 'object' && location.view !== null ? nativeViews.current.get(location.view) : undefined;
   const nativeSelected = nativeBinding?.key === key && nativeBinding.fence === fence && nativeBinding.generation === generation ? selected : null;
-  const admitted = carry ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
+  const admitted = carryGoal ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
+    : carryUsage ? previous.selection
     : !onPage || location.entryId === null ? (previous.generation === generation ? nativeSelected ?? previous.selection : empty()) : selected ?? empty();
   const urlSection = onPage && route.kind === 'project' ? route.tab : null;
   const mismatch = urlSection !== null && admitted.section !== urlSection;
@@ -162,7 +167,7 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
     retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection, entryId: location.entryId, onPage };
     if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
     // setView intentionally does nothing for equal values, so bind that entry here.
-    if (carry && location.entryId !== null && readSelection?.detail === null) fence.entries.set(location.entryId, generation);
+    if ((carryUsage || carryGoal && readSelection?.detail === null) && location.entryId !== null) fence.entries.set(location.entryId, generation);
     if (!pendingGoal && location.entryId !== null && (selected === null || mismatch || urlSection === null)) {
       const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
       url.searchParams.set('tab', selection.section);
@@ -171,7 +176,7 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
         if (entryId !== null) fence.entries.set(entryId, generation);
       } });
     }
-  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry, mismatch, urlSection, pendingGoal]);
+  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carryGoal, carryUsage, mismatch, urlSection, pendingGoal]);
   const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment: boolean | 'chain' | 'goal' | 'goal-invalid' = false) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };

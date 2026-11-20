@@ -20,7 +20,9 @@ Task, Bot and project deletion consumers share account-scoped, Worker-ID-keyed
 observations from the alias endpoint. Personal task and deletion previews negotiate
 original claim identities separately, preserving strict legacy response shapes.
 Current aliases have display semantics; recorded machine fields retain historical
-execution semantics.
+execution semantics. In Simplified Chinese, shared task rows label a distinct
+current name as an executor alias, distinguishing it from the claim or recorded
+machine name while leaving the supplied name unchanged.
 The detail title and alias trigger share a wrapping row before metadata. The
 editor supplies its trigger through a header render callback while retaining one
 draft and both focus references; the form remains separate below metadata. This
