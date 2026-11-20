@@ -61,6 +61,48 @@ func TestAssistantTaskScopedCredentialAdmissionUsesTransactionPolicy(t *testing.
 	}
 }
 
+func TestAssistantTaskCredentialAuthorizationPreservesSessionAndRejectsUnsupportedCredential(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	user, session, _ := testutil.AuthRecords(t, database)
+	_, err := database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		authorization, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, session)
+		if err != nil {
+			return err
+		}
+		if authorization.Principal != session || authorization.Profile != model.SessionProfile || authorization.Policy != nil {
+			t.Fatalf("session profile changed: %+v", authorization)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := session
+	missing.CredentialID = queryID(41)
+	_, err = database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		_, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, missing)
+		return err
+	})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing credential was not refused: %v", err)
+	}
+	grant, _, _ := testutil.OAuthFamily(t, database, user.ID, time.Now().UTC())
+	oauth := model.Principal{Kind: model.OAuthCredential, UserID: user.ID}
+	if err := database.Pool.QueryRow(ctx, `SELECT id::text FROM oauth_access_tokens WHERE grant_id=$1`, grant.ID).Scan(&oauth.CredentialID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.WriteAssistantTask(ctx, func(scope store.AssistantTaskScope) error {
+		_, err := scope.AssistantTaskDAO().(assistantcore.AuthorizationReader).CredentialAuthorization(ctx, oauth)
+		return err
+	})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
+		t.Fatalf("Assistant Task accepted unsupported OAuth credential: %v", err)
+	}
+}
+
 func TestAssistantTaskMigrationOwnsTablesAndIndexes(t *testing.T) {
 	database := isolatedStore(t)
 	for _, table := range []string{"assistant_tasks", "assistant_task_manual_versions", "assistant_task_appendix", "assistant_task_proposals", "assistant_task_items", "assistant_task_records", "assistant_task_events", "assistant_task_inquiries", "assistant_task_claim_operations", "assistant_task_inboxes", "assistant_task_inbox_receipts"} {
