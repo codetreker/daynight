@@ -288,3 +288,39 @@ it('offers the acknowledgement of a missing receipt only after a fresh inbox sna
   expect(await screen.findByText(/Could not read the current result/)).toBeVisible();
   expect(screen.queryByRole('button', { name: 'I reviewed the current result' })).toBeNull();
 });
+
+it('lets the owner check and acknowledge a confirmed receipt while the inbox read fails', async () => {
+  const s = server(off); mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    const path = String(url);
+    if (options?.method === 'POST') { await original(url, options); throw new TypeError('network'); }
+    if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botError(500, 'internal');
+    if (path.startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`)) return botResponse(receipt('inbox_enable', on, String(s.writes[0]!.input.operationId)));
+    return original(url, options);
+  });
+  fireEvent.click(enable);
+  const check = await screen.findByRole('button', { name: 'Check current result' });
+  fireEvent(document, new Event('visibilitychange'));
+  expect(await screen.findByText('Could not load the inbox.')).toBeVisible();
+  expect(check).toBeEnabled();
+  fireEvent.click(check);
+  expect(await screen.findByText('The receipt confirms this request was applied.')).toBeVisible();
+  const reviewed = screen.getByRole('button', { name: 'I reviewed the current result' });
+  expect(reviewed).toBeEnabled();
+  fireEvent.click(reviewed);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check current result' })).toBeNull());
+  expect(screen.getByRole('button', { name: 'Enable inbox' })).toBeDisabled();
+});
+
+it('closes the confirmation when a rotation outcome is unknown so recovery happens beside the inbox', async () => {
+  server(on); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Rotate token' }));
+  const dialog = screen.getByRole('dialog', { name: 'Rotate inbox token' });
+  vi.mocked(fetch).mockImplementationOnce(async () => { throw new TypeError('network'); });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(screen.getByRole('button', { name: 'Check current result' })).toBeVisible();
+  expect(screen.getByText(assistantTaskInboxUrl(inboxId))).toBeVisible();
+});

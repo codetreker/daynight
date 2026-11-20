@@ -17,21 +17,25 @@ type ReceiptReader=(taskId:string,operationId:string,signal:AbortSignal,admissio
 /**
  * An original write and its unknown outcome remain observable across navigation; readReceipt reads the receipt store that owns the write's operation ID.
  * A receipt proves the write was applied, while a missing receipt (404) stays inconclusive. describeReceipt adds what a confirmed receipt cannot restore.
+ * enabled admits the owner to check and acknowledge an unknown outcome; writable additionally admits new writes. A fresh snapshot
+ * is required for new writes and for acknowledging an unknown outcome without a receipt, but a confirmed receipt is independent of
+ * the snapshot read, so a failing snapshot read never withholds checking or acknowledging it.
  */
-export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>,readReceipt:ReceiptReader=getAssistantTaskClaimOperation,describeReceipt?:(receipt:unknown)=>string|null){
+export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>,readReceipt:ReceiptReader=getAssistantTaskClaimOperation,describeReceipt?:(receipt:unknown)=>string|null,writable=true){
   const scope=useTaskCacheScope(),m=useAssistantTaskMessages(),state=stateFor(scope,key);
   const {busy,unknown}=useSyncExternalStore(state.subscribe,state.snapshot);
   const [error,setError]=useState<unknown>(null),[readError,setReadError]=useState<unknown>(null),[checked,setChecked]=useState<null|{readonly receipt:'confirmed'|'missing'|'none';readonly note:string|null;readonly read:boolean}>(null);
-  const live=useRef(true),current=useRef({scope,key,enabled,reload,readReceipt,describeReceipt});current.current={scope,key,enabled,reload,readReceipt,describeReceipt};
+  const live=useRef(true),current=useRef({scope,key,enabled,writable,reload,readReceipt,describeReceipt});current.current={scope,key,enabled,writable,reload,readReceipt,describeReceipt};
   useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
   useEffect(()=>{setError(null);setReadError(null);setChecked(null);},[scope,key,unknown]);
   const allowed=()=>live.current&&current.current.scope===scope&&current.current.key===key&&current.current.enabled&&!scope.isInvalidated&&!authRequestsPaused();
   const run=async(operation:(signal:AbortSignal)=>Promise<unknown>):Promise<boolean>=>{
-    if(!allowed()||state.snapshot().busy||state.snapshot().unknown)return false;
+    if(!allowed()||!current.current.writable||state.snapshot().busy||state.snapshot().unknown)return false;
     state.update({busy:true});setError(null);setReadError(null);setChecked(null);
     try{
       await scope.ready(scope.signal);if(!allowed())return false;
       await operation(scope.signal);
+      // The write was admitted while writable; a snapshot read failing during it does not undo the accepted change.
       if(!allowed())return false;
       // The write was accepted; a failed refresh is a read failure, not a rejected change.
       try{await current.current.reload(null);}catch(failure){if(allowed())setReadError(failure);}
@@ -63,6 +67,6 @@ export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pend
       if(allowed())setChecked({...observed,read:true});
     }catch(failure){if(allowed())setReadError(failure);}finally{state.update({busy:false});}
   };
-  const notice=unknown?<div className="notice error" role="alert"><p>{m.unknown}</p><button className="button" type="button" disabled={busy||!enabled} onClick={()=>void check()}>{m.check}</button>{checked?<><p>{checked.receipt==='confirmed'?checked.read?m.confirmed:m.confirmedOnly:checked.receipt==='missing'?`${m.missing} ${m.checked}`:m.checked}</p>{checked.note?<p>{checked.note}</p>:null}<button className="button" type="button" disabled={!enabled} onClick={()=>{state.update({unknown:null});setChecked(null);}}>{m.reviewed}</button></>:null}{readError?<p>{m.readError}</p>:null}</div>:error?<div className="notice error" role="alert">{error instanceof ApiError&&error.status===409?m.conflict:m.writeError}{error instanceof ApiError&&error.requestId?<code>{error.requestId}</code>:null}</div>:readError?<div className="notice error" role="alert">{m.readError}</div>:null;
-  return {run,busy,unknown,blocked:busy||unknown!==null||!enabled||scope.isInvalidated,notice};
+  const notice=unknown?<div className="notice error" role="alert"><p>{m.unknown}</p><button className="button" type="button" disabled={busy||!enabled} onClick={()=>void check()}>{m.check}</button>{checked?<><p>{checked.receipt==='confirmed'?checked.read?m.confirmed:m.confirmedOnly:checked.receipt==='missing'?`${m.missing} ${m.checked}`:m.checked}</p>{checked.note?<p>{checked.note}</p>:null}<button className="button" type="button" disabled={!enabled||(checked.receipt!=='confirmed'&&!writable)} onClick={()=>{state.update({unknown:null});setChecked(null);}}>{m.reviewed}</button></>:null}{readError?<p>{m.readError}</p>:null}</div>:error?<div className="notice error" role="alert">{error instanceof ApiError&&error.status===409?m.conflict:m.writeError}{error instanceof ApiError&&error.requestId?<code>{error.requestId}</code>:null}</div>:readError?<div className="notice error" role="alert">{m.readError}</div>:null;
+  return {run,busy,unknown,blocked:busy||unknown!==null||!enabled||!writable||scope.isInvalidated,notice};
 }

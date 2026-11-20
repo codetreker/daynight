@@ -73,7 +73,8 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const current = read.value !== null && read.value.version === task.version, refreshRead = read.refresh;
   useEffect(() => { if (read.value !== null && read.value.version !== task.version) refreshRead(); }, [read.value, task.version, refreshRead]);
   const reread = read.reread, reload = async () => { await Promise.all([reread(), onChanged()]); };
-  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation, receipt => (receipt as AssistantTaskInboxResult).operation.kind === 'inbox_disable' ? null : m.receiptToken);
+  // Freshness gates new writes only; the active owner can check and acknowledge a confirmed receipt while the inbox read fails.
+  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled, reload, getAssistantTaskInboxOperation, receipt => (receipt as AssistantTaskInboxResult).operation.kind === 'inbox_disable' ? null : m.receiptToken, !read.stale && !!read.value);
   // The issued token stays bound to the identity scope that received it and is never shown to another identity. It also keeps
   // the issuing inbox and rotation so an inbox read started after its write response that no longer shows that credential,
   // such as a disable, re-enable or rotation from another tab, retires it.
@@ -87,6 +88,9 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const inbox = read.value?.inbox ?? null, snapshotVersion = read.value?.version ?? task.version, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
   const blocked = disabled || mutation.blocked || !current, changed = dialog !== null && dialog.version !== task.version;
+  // An unknown outcome is recovered beside the inbox snapshot, which the modal confirmation would make inaccessible.
+  const unknownOutcome = mutation.unknown !== null;
+  useEffect(() => { if (unknownOutcome) setDialog(null); }, [unknownOutcome]);
   // Hiding the tab stops new writes, but a token from a completed request is unrecoverable elsewhere,
   // so it stays visible while this panel remains mounted for the same identity and task.
   // The token is published from inside the write, before the mutation's task detail reload, so a stalled reload cannot withhold it.
