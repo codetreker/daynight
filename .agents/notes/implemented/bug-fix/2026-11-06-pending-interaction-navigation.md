@@ -22,9 +22,11 @@ owns its relationship to response admission and local reading state.
 The timeline offers a localized request locator only for an offscreen,
 answerable card. It uses the rendered card's geometry and disabled controls so
 local response submission and completion do not wait for a provider snapshot
-to remove the locator. A partial view of a tall card is sufficient; otherwise
-forms larger than the timeline would retain an unusable locator indefinitely.
-Multiple pending requests use timeline order to select the first hidden card.
+to remove the locator. The initial decision treated a partial view of a tall
+card as sufficient to avoid an unusable persistent locator. The later
+[tall-card decision](2026-11-20-tall-pending-interaction-navigation.md)
+replaces that criterion with the heading's visibility. Multiple pending
+requests use timeline order to select the first card needing navigation.
 
 The button shares the bottom navigation area with Latest. Activating it moves
 the timeline to the card, pauses following, captures the new reading position

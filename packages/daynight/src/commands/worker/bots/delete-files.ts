@@ -76,6 +76,8 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   const paths = resolveConfigurationPaths(homeDirectory);
   const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
   const targets = [await capture(botStateDirectory(paths, record.botId), "directory", signal)];
+  const recoveryIdentity = await capture(path.join(resolveBotPaths(paths.stateDirectory, record.botId).directory, "recovery.json"), "file", signal);
+  if (!recoveryIdentity.completed) targets.push(recoveryIdentity);
   const codexRecovery = await capture(resolveBotPaths(paths.stateDirectory, record.botId).codexRecoveryDirectory, "directory", signal);
   if (!codexRecovery.completed) targets.push(codexRecovery);
   const claudeRecovery = await capture(resolveBotPaths(paths.stateDirectory, record.botId).claudeRecoveryDirectory, "directory", signal);

@@ -9,6 +9,9 @@ import { BotDetailsPanel } from '../src/features/bots/BotDetailsPanel';
 import { BotStatus } from '../src/features/bots/BotStatus';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_USER, botDefaults, botDefinition, botId, botWorkerDefaults } from './helpers/bots';
+import { botObservation } from './helpers/bot-observation';
+
+const observation = (n = 1, worker = 20) => ({ value: botObservation(n, { workerId: botId(worker), machine: { id: `machine-${worker}`, name: `Machine ${worker}` } }), stale: false, busy: false, error: null, refresh: vi.fn() });
 
 vi.mock('../src/api/worker-alias', async original => ({ ...await original<typeof aliases>(), getWorkerAlias: vi.fn() }));
 vi.mock('../src/api/bots', async original => ({ ...await original<typeof bots>(), getBotDefaults: vi.fn(), createBot: vi.fn() }));
@@ -53,21 +56,21 @@ it('uses the alias for automatic selection, explicit options and directory conte
 it('keeps Bot details and running status on the same alias and ignores a different Worker observation', async () => {
   const bot = botDefinition(), worker = botWorkerDefaults();
   const props = { id: 'details', stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
-  const view = renderWithLocale(<><BotDetailsPanel {...props} bot={bot} worker={worker} /><BotStatus bot={bot} worker={worker} stale={false} /></>, { locale: 'en', taskCache: { viewerId: BOT_USER } });
+  const view = renderWithLocale(<><BotDetailsPanel {...props} bot={bot} worker={worker} observation={observation()} /><BotStatus bot={bot} observation={observation()} /></>, { locale: 'en', taskCache: { viewerId: BOT_USER } });
   await waitFor(() => expect(screen.getAllByText('办公室 Windows · Machine 20')).toHaveLength(2));
   expect(aliases.getWorkerAlias).toHaveBeenCalledTimes(1);
-  view.rerender(<><BotDetailsPanel {...props} bot={bot} worker={botWorkerDefaults(21)} /><BotStatus bot={bot} worker={botWorkerDefaults(21)} stale={false} /></>);
+  view.rerender(<><BotDetailsPanel {...props} bot={bot} worker={botWorkerDefaults(21)} observation={observation()} /><BotStatus bot={bot} worker={botWorkerDefaults(21)} observation={observation()} /></>);
   expect(screen.queryByText(/Machine 21/)).toBeNull();
-  expect(screen.getByText(`办公室 Windows · ${bot.workerId}`)).toBeVisible();
+  expect(screen.getAllByText('办公室 Windows · Machine 20')).toHaveLength(2);
 });
 
 it('never shows the previous Bot alias when switching to another Worker with a delayed alias response', async () => {
   const pending = Promise.withResolvers<aliases.WorkerAlias>();
   vi.mocked(aliases.getWorkerAlias).mockImplementation(worker => worker === botId(20) ? pending.promise : Promise.resolve({ value: 'Laptop', version: '1' }));
   const first = botDefinition(), second = { ...botDefinition(2), workerId: botId(21) };
-  const view = renderWithLocale(<BotStatus bot={first} worker={botWorkerDefaults()} stale={false} />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
+  const view = renderWithLocale(<BotStatus bot={first} observation={observation()} />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
   await waitFor(() => expect(aliases.getWorkerAlias).toHaveBeenCalledTimes(1));
-  view.rerender(<BotStatus bot={second} worker={botWorkerDefaults(21)} stale={false} />);
+  view.rerender(<BotStatus bot={second} observation={observation(2, 21)} />);
   expect(await screen.findByText('Laptop · Machine 21')).toBeVisible();
   await act(async () => pending.resolve({ value: 'Old office', version: '1' }));
   expect(screen.getByText('Laptop · Machine 21')).toBeVisible();

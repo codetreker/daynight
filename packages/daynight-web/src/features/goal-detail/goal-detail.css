@@ -10,9 +10,9 @@
 .goal-detail-description { padding: 17.5px; overflow: auto; overscroll-behavior: contain; }
 .goal-detail-description-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; align-items: start; gap: 24.5px; min-width: 0; }
 .goal-detail-description-body { min-width: 0; overflow-wrap: anywhere; }
-.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 17.5px; color: var(--task-helper); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 17.5px; color: var(--task-helper); font-size: var(--text-interface); line-height: 1.6; overflow-wrap: anywhere; }
 .goal-information-section + .goal-information-section { margin-top: 21px; padding-top: 17.5px; border-top: 1px solid var(--line); }
-.goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: 13px; font-weight: 600; }
+.goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: var(--text-section-heading); font-weight: 600; }
 .goal-information dl { margin: 0; }
 .goal-information dl > div + div { margin-top: .65rem; }
 .goal-information dt { color: var(--task-helper); }

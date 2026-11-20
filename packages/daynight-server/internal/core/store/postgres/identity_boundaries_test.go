@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -146,9 +147,9 @@ func TestIdentityScopePersonalAndSessionFailuresRollbackAllWrites(t *testing.T) 
 
 func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, damage := range []string{"missing-owner", "wrong-role", "additional-member"} {
-		t.Run(damage, func(t *testing.T) {
-			s := isolatedStore(t)
+		if !t.Run(damage, func(t *testing.T) {
 			ctx := t.Context()
 			user, _, _ := testAuthRecords(t, s)
 			originalName := "Display name"
@@ -211,7 +212,10 @@ func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
 				}
 				return err
 			})
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 }
 

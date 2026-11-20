@@ -16,8 +16,11 @@ The [management design](../../../../docs/design/bot-management-web.md) owns the
 current composition. The assistant route fills its existing application workspace.
 A 256px list and the conversation share a stable container; below 676px of
 available width, CSS shows the list or the selected conversation. The list keeps
-search, creation, refresh and essential status, with full environment information
-in details. List and conversation scrolling stay bounded by the Session shell.
+search, creation, refresh and essential status. The
+[Web observation decision](2026-11-20-bot-web-observation.md) places current Bot
+status and last confirmed machine in the list, with full environment information
+and remedies in details. List and conversation scrolling stay bounded by the
+Session shell.
 
 The original presentation used an inline form with collapsed advanced settings
 to keep a name-first operation within the workspace. Its consumption of list
@@ -35,9 +38,10 @@ continues to separate retained presentation from request admission, and the
 The Bot host composes controls supplied by the original Session header and adds
 details and navigation. The shared view retains errors, approvals, receipts and
 input control. The title uses one-line ellipsis, with the full name available in
-details; status and error text can wrap. Details subscribes to the current cached
-Session for connection, startup, recovery and confirmed settings, without another
-client or a separate copy of selected state.
+details; status and error text can wrap. The list, title and details share the
+Bot observation for availability and location. Details also subscribes to the
+current cached Session for connection, startup, recovery and confirmed settings,
+without another client or a separate copy of selected state.
 
 Nonmodal details requires both a window of at least 1280px and a stable shared
 content width of at least 760px. Its 340px sidebar leaves at least 420px for the

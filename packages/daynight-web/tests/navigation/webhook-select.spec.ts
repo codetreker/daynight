@@ -98,3 +98,29 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(state.unexpected).toEqual([]);
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`detail tabs remain reachable with a larger browser font in ${locale}`, async ({ page }) => {
+    await install(page, locale);
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await page.goto('/webhooks?owner=personal');
+    await page.addStyleTag({ content: 'html { font-size: 32px; }' });
+    await page.getByRole('button', { name: 'Long receiver endpoint 0 for search and layout', exact: true }).click();
+    const tab = page.getByRole('tab', { name: locale === 'en' ? 'Deliveries' : '投递记录', exact: true });
+    await tab.scrollIntoViewIfNeeded();
+    await expect(tab).toBeVisible();
+    const visible = await tab.evaluate(element => {
+      const tab = element.getBoundingClientRect();
+      const panel = element.closest('.detail-panel')!.getBoundingClientRect();
+      return tab.left >= panel.left && tab.right <= panel.right && tab.top >= panel.top && tab.bottom <= panel.bottom;
+    });
+    expect(visible).toBe(true);
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await tab.focus();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('End');
+    await expect(tab).toBeFocused();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+  });
+}

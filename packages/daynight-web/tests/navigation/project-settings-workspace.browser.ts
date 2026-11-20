@@ -67,6 +67,71 @@ test('keeps the current settings link visible through resizing and language chan
   expect(writes).toEqual([]);
 });
 
+test('member section keeps the page hierarchy and invitation usable across widths', async ({ page }) => {
+  const writes = await install(page);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`${base}?tab=members`);
+  for (const locale of ['en', 'zh-CN'] as const) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const zh = locale === 'zh-CN';
+    const heading = page.locator('.members-page-heading');
+    const title = heading.getByRole('heading', { name: zh ? '项目成员' : 'Project members', level: 2 });
+    const invite = heading.getByRole('button', { name: zh ? '邀请成员' : 'Invite member' });
+    await expect(page.getByRole('heading', { name: 'Example project', level: 1 })).toHaveCount(1);
+    await expect(page.getByRole('heading', { name: zh ? /^成员 / : /^Members /, level: 3 })).toBeVisible();
+    await expect(invite).toBeEnabled();
+    for (const width of [320, 375, 390, 768, 1360]) {
+      await page.setViewportSize({ width, height: 640 });
+      const geometry = await heading.evaluate(element => {
+        const a = element.querySelector('h2')!.getBoundingClientRect(), b = element.querySelector('button')!.getBoundingClientRect();
+        return { height: element.getBoundingClientRect().height, separated: a.bottom <= b.top || b.bottom <= a.top || a.right <= b.left || b.right <= a.left, sameRow: a.top < b.bottom && b.top < a.bottom };
+      });
+      expect(geometry.separated).toBe(true);
+      if (width <= 390) expect(geometry.sameRow).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width === 320 && !zh) {
+        expect(geometry.height).toBeLessThanOrEqual(44);
+        const search = page.getByRole('searchbox', { name: 'Search and add members' });
+        expect(await search.evaluate(element => element.getBoundingClientRect().top + window.scrollY)).toBeLessThanOrEqual(547.5);
+      }
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await invite.focus(); await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(invite).toBeFocused();
+    await expect(title).toBeVisible();
+  }
+  expect(writes).toEqual([]);
+});
+
+test('legacy members entry keeps long names and roster scrolling local', async ({ page }) => {
+  const name = 'LongProjectName'.repeat(12);
+  await install(page, name); await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}/members`);
+  const title = page.getByRole('heading', { name, exact: true, level: 1 });
+  await expect(title).toBeVisible(); await expect(title).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'Project members', level: 2 })).toBeVisible();
+  expect(await title.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const table = page.locator('.grant-table'); await expect(table).toBeVisible();
+  expect(await table.evaluate(element => element.scrollWidth > element.clientWidth && element.querySelector('.grant-row.head')!.children.length === 5)).toBe(true);
+  await table.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  expect(await table.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('member loading failure can be retried without losing the section heading', async ({ page }) => {
+  await install(page); let failed = false;
+  await page.route(`**/api/v1/projects/${projectId}/members`, route => {
+    if (failed) return route.fallback();
+    failed = true;
+    return route.fulfill({ status: 503, body: JSON.stringify({ error: { code: 'unavailable', message: 'unavailable' } }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await page.setViewportSize({ width: 320, height: 640 }); await page.goto(`${base}?tab=members`);
+  await expect(page.getByRole('heading', { name: 'Project members', level: 2 })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('searchbox', { name: 'Search and add members' })).toBeVisible();
+});
+
 test('responds to container and link geometry without changing focus or the selected section', async ({ page }) => {
   await install(page); await page.setViewportSize({ width: 390, height: 720 });
   await page.goto(`${base}?tab=members`);
@@ -267,6 +332,15 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await joined.press('Escape'); await expect(input).toBeFocused(); await expect(popup).toHaveCount(0);
     await input.fill('Alice ');
     await expect(popup).toBeVisible();
+    if (width === 320) {
+      await page.evaluate(() => window.scrollBy(0, 100));
+      await expect.poll(() => popup.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const title = element.querySelector('.member-search-heading')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(title.left + title.width / 2, title.top + title.height / 2);
+        return box.height > 100 && hit !== null && element.contains(hit);
+      })).toBe(true);
+    }
     await page.getByRole('navigation', { name: chinese ? '项目设置分组' : 'Project settings sections' }).getByRole('link', { name: chinese ? '执行与提醒' : 'Execution & alerts' }).click();
     await expect(popup).toBeHidden();
   });

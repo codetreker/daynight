@@ -5,6 +5,7 @@ import type { TaskSummary } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { type CanvasLayout, type GraphDirection } from './layout';
 import { layoutGoalGraph, type GoalLayoutSize } from './goal-layout';
+import { scaleGraph, useGraphFontScale } from './graph-scale';
 import { projectGoal, goalTopologyKey } from './goal-projection';
 import { tracePrerequisites, type GraphIndex, type GraphProjection } from './model';
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
@@ -44,6 +45,7 @@ const boundsOf = (geometry: CanvasLayout) => {
 
 export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, onDirectionChange, directionIssue, onOpenTask, fullscreen }: Props) => {
   const { messages: { graph: m, workspace: { project } } } = useI18n();
+  const fontScale = useGraphFontScale();
   const [size, setSize] = useState({ width: 0, height: 0 });
   const latestSize = useRef<GoalLayoutSize | null>(null);
   const [request, setRequest] = useState<LayoutRequest | null>(null);
@@ -81,7 +83,7 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
     if (activeRequest === null) return { geometry: null, error: false };
     try {
       const started = performance.now();
-      const geometry = layoutGoalGraph(activeRequest.projection, activeRequest.size, activeRequest.direction);
+      const geometry = scaleGraph(layoutGoalGraph(activeRequest.projection, { width: activeRequest.size.width / fontScale, height: activeRequest.size.height / fontScale }, activeRequest.direction), fontScale);
       performance.clearMeasures('daynight:task-layout');
       performance.measure('daynight:task-layout', { start: started, end: performance.now(), detail: {
         scopeKind: 'goal', goalId, mainCount: projection.mainIds.size, externalCount: projection.externalIds.size, edgeCount: projection.edges.length, direction,
@@ -92,7 +94,7 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
       console.warn('Goal graph layout failed', { projectId, scopeKind: 'goal', resourceId: goalId, stage: 'layout', errorName, reason: cause instanceof Error ? 'layout_error' : 'non_error' });
       return { geometry: null, error: true };
     }
-  }, [activeRequest, projectId, goalId]);
+  }, [activeRequest, projectId, goalId, fontScale]);
   const geometry = result.geometry;
   const fallbackGeometry = geometry ?? emptyGeometry;
   const focusFallback = useCallback(() => resetButton.current ?? fullscreen?.buttonRef.current ?? null, [fullscreen]);
@@ -115,7 +117,9 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
     const { width, height } = activeRequest!.size;
     const fit = getViewportForBounds(bounds, width, height, 0.00000001, 1, padding);
     if (activeRequest!.mode === 'overview') return fit;
-    const zoom = Math.max(0.8, Math.min(1, fit.zoom));
+    const widestNode = Math.max(...geometry!.nodes.map(node => node.width));
+    const minimumZoom = Math.max(0.2, Math.min(0.8, (width - 40) / widestNode));
+    const zoom = Math.max(minimumZoom, Math.min(1, fit.zoom));
     return { zoom,
       x: bounds.width * zoom <= width ? (width - bounds.width * zoom) / 2 - bounds.x * zoom : 32 - bounds.x * zoom,
       y: bounds.height * zoom <= height ? (height - bounds.height * zoom) / 2 - bounds.y * zoom : 32 - bounds.y * zoom };

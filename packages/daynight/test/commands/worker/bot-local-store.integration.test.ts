@@ -109,7 +109,7 @@ describe("Bot dedicated storage", () => {
     expect(f.open().store.get(owner, id(3))?.botId).toBe(id(3));
   });
 
-  it("rejects service, account and Worker changes while preserving original records", () => {
+  it("rejects service and account changes and discovers original records under a rebuilt Worker", () => {
     const f = fixture(); f.store.observe(owner, definition(), 1); f.close();
     for (const changed of [{ ...owner, serverOrigin: "https://other.example" }, { ...owner, ownerUserId: id(90) }]) {
       const other = f.open(changed);
@@ -117,8 +117,48 @@ describe("Bot dedicated storage", () => {
       expect(() => other.store.get(changed, id(3))).toThrow(/another service or account/);
     }
     const rebuilt = { ...owner, workerId: id(91) }, otherWorker = f.open(rebuilt);
-    expect(() => otherWorker.store.list(rebuilt)).toThrow(/verified takeover/);
+    expect(otherWorker.store.list(rebuilt)).toMatchObject([{ owner, observed: definition() }]);
+    const original = otherWorker.store.get(rebuilt, id(3))!;
+    expect(original.owner).toEqual(owner);
+    otherWorker.assertLocked(original);
+    expect(() => otherWorker.store.observe(rebuilt, { ...definition(), workerId: rebuilt.workerId, resolvedConfiguration: { ...definition().resolvedConfiguration, workerId: rebuilt.workerId } }, 2)).toThrow(/original Worker/);
+    otherWorker.close();
     const reopened = f.open(); expect(reopened.store.get(owner, id(3))?.observed).toEqual(definition());
+  });
+
+  it("discovers a surviving Bot while a neighboring lock or damaged database is unavailable", () => {
+    const f = fixture();
+    const locked = f.store.observe(owner, definition(), 1);
+    const neighbor = { ...definition(), id: id(4), name: "Available assistant" };
+    f.store.observe(owner, neighbor, 1);
+    f.close();
+    const blocker = f.open(); blocker.store.get(owner, locked.botId);
+    const rebuilt = { ...owner, workerId: id(91) }, contender = f.open(rebuilt);
+    const result = contender.scan();
+    expect(result.records).toMatchObject([{ botId: neighbor.id, owner }]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatchObject({ botId: locked.botId, message: expect.stringMatching(/instance lock/) });
+    const damaged = resolveBotPaths(f.stateDirectory, id(5));
+    mkdirSync(damaged.directory, { recursive: true, mode: 0o700 }); writeFileSync(damaged.databaseFile, "damaged database");
+    const next = contender.scan();
+    expect(next.records.map(record => record.botId)).toEqual([neighbor.id]);
+    expect(next.errors.map(error => error.botId).sort()).toEqual([locked.botId, id(5)]);
+  });
+
+  it("keeps unknown launch evidence and its creation owner after public index loss and Worker replacement", () => {
+    const f = fixture(); f.store.observe(owner, definition(), 1);
+    f.store.prepare(owner, id(3), { homeDirectory: f.home, recoveryLimit: 2 });
+    const record = f.store.get(owner, id(3))!;
+    f.executions.prepare(record); f.executions.update(record, { launchSubmission: "unknown" });
+    f.close();
+    const rebuilt = { ...owner, workerId: id(91) }, replacement = f.open(rebuilt);
+    const recovered = replacement.scan().records[0]!;
+    expect(recovered).toEqual(record);
+    expect(replacement.executions.get(recovered)?.launchSubmission).toBe("unknown");
+    expect(recovered.intent).toEqual(record.intent);
+    expect(existsSync(f.legacyDatabaseFile)).toBe(false);
+    const competitor = f.open({ ...owner, workerId: id(92) });
+    expect(competitor.scan()).toMatchObject({ records: [], errors: [{ botId: record.botId }] });
   });
 
   it("commits recovery intent and execution evidence together in the Bot database", () => {

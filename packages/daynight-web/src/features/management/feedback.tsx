@@ -39,7 +39,7 @@ export const DateLabel = ({ value }: { readonly value: string }) => {
   return <time dateTime={value}>{format.dateTime(value)}</time>;
 };
 
-export const SecretDialog = ({ kind, secret, onClose, suspended = false }: { readonly kind: 'token' | 'invitation'; readonly secret: string; readonly onClose: () => void; readonly suspended?: boolean }) => {
+export const SecretDialog = ({ kind, secret, onClose, suspended = false, typography = false }: { readonly typography?: boolean; readonly kind: 'token' | 'invitation'; readonly secret: string; readonly onClose: () => void; readonly suspended?: boolean }) => {
   const { messages: { auth: { management: { secret: m, members } } } } = useI18n();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -58,7 +58,7 @@ export const SecretDialog = ({ kind, secret, onClose, suspended = false }: { rea
       value.current.focus(); value.current.select();
     }
   };
-  return <ManagementDialog title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
+  return <ManagementDialog className={typography ? "management-typography" : ""} title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
     {warning ? <><button className="button" type="button" onClick={() => setWarning(false)}>{m.returnSave}</button><button className="button primary" type="button" onClick={onClose}>{m.confirmClose}</button></>
       : <button className="button primary" type="button" onClick={onClose}>{m.savedClose}</button>}
   </>}>

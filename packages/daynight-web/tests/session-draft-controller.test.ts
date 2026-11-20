@@ -41,6 +41,39 @@ function fixture(lockManager: LockManager | null = locks()) {
 }
 
 describe('durable Session image coordination', () => {
+  it('retains the original recovery when settling fails and retries the same operation', async () => {
+    const f = fixture(null);
+    await f.store.importLegacy(identity, { text: 'Retained input', revision: '1', submission: null });
+    const controller = f.create(); await controller.sync(); await controller.send();
+    const original = f.commands[0]!;
+    const ref = controller.getSnapshot().recoveries[0]!.ref;
+    f.query.mockResolvedValue(f.operation(original, 'provider_accepted'));
+    const settle = vi.spyOn(f.store, 'settleSubmission').mockRejectedValueOnce(new Error('storage unavailable'));
+    await controller.checkStatus(ref);
+    expect(controller.getSnapshot().recoveries[0]).toMatchObject({ ref, error: 'image_draft_failed', canCheck: true });
+    expect((await f.store.readExisting(identity))?.submission?.operationId).toBe(original.operationId);
+    await controller.checkStatus(ref);
+    expect(controller.getSnapshot().recoveries).toEqual([]);
+    expect(settle).toHaveBeenCalledTimes(2);
+    expect(f.query.mock.calls.every(([, id]) => id === original.operationId)).toBe(true);
+    expect(f.commands).toHaveLength(1);
+  });
+
+  it('reports a concurrent recovery as busy rather than silently ignoring it', async () => {
+    const f = fixture(null);
+    await f.store.importLegacy(identity, { text: 'Retained input', revision: '1', submission: null });
+    const controller = f.create(); await controller.sync(); await controller.send();
+    const ref = controller.getSnapshot().recoveries[0]!.ref;
+    const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<SessionOperation>();
+    f.query.mockImplementation(async () => { entered.resolve(); return finish.promise; });
+    const first = controller.checkStatus(ref); await entered.promise;
+    await expect(controller.checkStatus({ ...ref, operationId: crypto.randomUUID() })).rejects.toThrow('image_check_in_progress');
+    await expect(controller.checkStatus()).resolves.toBeUndefined();
+    expect(controller.getSnapshot().error).toBeNull();
+    finish.resolve(f.operation(f.commands[0]!, 'provider_accepted')); await first;
+    expect(controller.getSnapshot().recoveries).toEqual([]);
+  });
+
   it.each(['before', 'during'] as const)('does not reauthorize cleared storage when account refresh stops %s reconciliation', async phase => {
     const f = fixture(null), other = new SessionDraftStore(); stores.push(other);
     await f.store.importLegacy(identity, { text: 'Original local draft', revision: 'original', submission: null });
