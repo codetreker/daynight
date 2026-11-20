@@ -9,7 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	teamcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -192,9 +191,7 @@ func registerInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 					return ToolResult{}, err
 				}
 				result, err := original(ctx, actor, in)
-				if errors.Is(err, scopepolicy.ErrInsufficientScope) && write {
-					result.WriteOutcome = "not_committed"
-				}
+				result = scopeRefusalResult(result, err, write)
 				return result, err
 			}
 		}

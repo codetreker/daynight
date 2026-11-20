@@ -161,8 +161,8 @@ func registerTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 				return ToolResult{}, err
 			}
 			result, err := teamTool(ctx, actor, name, a, teams, projects, identities, authorization)
-			if authorization != nil && errors.Is(err, scopepolicy.ErrInsufficientScope) && write {
-				result.WriteOutcome = "not_committed"
+			if authorization != nil {
+				result = scopeRefusalResult(result, err, write)
 			}
 			return result, err
 		}

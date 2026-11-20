@@ -13,6 +13,7 @@ import (
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -159,6 +160,139 @@ func TestScopedTeamProjectsRejectsBadAuthorizationWithoutListing(t *testing.T) {
 		t.Fatalf("authorization provider called %d times", providerCalls)
 	}
 	mocks.verify()
+}
+
+type scopedAppDeletionStore struct {
+	*httpTestStore
+	team       model.Team
+	completion store.TransactionOutcome
+	phase      string
+	cleanup    bool
+	calls      int
+}
+
+func (s *scopedAppDeletionStore) WriteGitHubTeamDeletion(ctx context.Context, id string, work func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
+	s.calls++
+	if id != s.team.ID {
+		s.t.Errorf("unexpected deletion Team %s", id)
+	}
+	err := work(scopedAppDeletionScope{t: s.t, team: s.team})
+	if !errors.Is(err, scopepolicy.ErrInsufficientScope) {
+		s.t.Errorf("expected scope refusal before mutation, got %v", err)
+	}
+	return store.Completion{Outcome: s.completion}, &store.TransactionError{Phase: s.phase, Outcome: s.completion, CleanupFailed: s.cleanup, Cause: err}
+}
+
+type scopedAppDeletionScope struct {
+	t    *testing.T
+	team model.Team
+}
+
+func (s scopedAppDeletionScope) TeamDAO() store.TeamWriteDAO {
+	return mcpOrgTeamWriter{t: s.t, TeamCall: func(_ context.Context, user string) (model.Team, error) {
+		if user != s.team.Membership.UserID {
+			s.t.Errorf("unexpected deletion actor %s", user)
+		}
+		return s.team, nil
+	}}
+}
+func (s scopedAppDeletionScope) GitHubDAO() store.GitHubTeamRetirementDAO {
+	return scopedAppRetirementDAO{}
+}
+func (s scopedAppDeletionScope) EligibilityDAO() store.WebhookEligibilityDAO {
+	s.t.Error("eligibility refresh after scope refusal")
+	return nil
+}
+
+type scopedAppRetirementDAO struct{ store.GitHubTeamRetirementDAO }
+
+func (scopedAppRetirementDAO) LockGrants(context.Context) ([]store.GitHubTeamRetirementGrant, error) {
+	return nil, nil
+}
+
+func TestScopedAppTeamDeletionReportsActualCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome store.TransactionOutcome
+		phase   string
+		cleanup bool
+		code    string
+		want    string
+	}{
+		{"rollback failed", store.TransactionUnknown, "cleanup", true, "internal_error", "unknown"},
+		{"unknown commit", store.TransactionUnknown, "commit", false, "internal_error", "unknown"},
+		{"confirmed commit", store.TransactionCommitted, "commit", false, "internal_error", "confirmed"},
+		{"confirmed refusal", store.TransactionNotCommitted, "operation", false, "insufficient_scope", "not_committed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actor, _ := (validTeamAuth{}).Authenticate(t.Context(), model.PATCredential, "alice")
+			team := mcpOrgTeam(t, unknownTeam, "Team", actor.UserID)
+			tx := &scopedAppDeletionStore{httpTestStore: newHTTPTestStore(t), team: team, completion: tc.outcome, phase: tc.phase, cleanup: tc.cleanup}
+			provider := func(_ context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+				return scopedPAT(t, p, "team:read"), nil
+			}
+			snapshot := func(ctx context.Context, _ store.SnapshotScope, p model.Principal) (model.CredentialAuthorization, error) {
+				return provider(ctx, p)
+			}
+			teams, err := teamservice.NewScopedAppTeams(tx, provider, snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mcpOrgRead(t, tx.httpTestStore, 1, nil, mcpOrgTeamReader{TeamCall: func(_ context.Context, user, id string) (model.Team, error) {
+				projectHTTPCheck(t, []string{user, id}, []string{actor.UserID, team.ID})
+				return team, nil
+			}})
+			mocks := newTeamToolMocks(t)
+			f := newEntryFixture(t)
+			f.entry.auth = validTeamAuth{}
+			if err := RegisterScopedTeamTools(f.entry, teams, mocks.projects, mocks.identities, provider); err != nil {
+				t.Fatal(err)
+			}
+			client := f.client(t, "2025-11-25", "alice")
+			scopedToolCall(t, client, "team_delete", map[string]any{"team": team.ID, "confirm": true}, tc.code, tc.want)
+			if tx.calls != 1 {
+				t.Fatalf("deletion calls = %d", tx.calls)
+			}
+		})
+	}
+}
+
+type failingScopedInvitationTeams struct {
+	unknownInvitationTeams
+	failure error
+}
+
+func (*failingScopedInvitationTeams) ScopeProtected() bool { return true }
+func (s *failingScopedInvitationTeams) AcceptInvitation(context.Context, model.Principal, string, string) (coreteam.TeamInvitationAcceptance, error) {
+	return coreteam.TeamInvitationAcceptance{}, s.failure
+}
+
+func TestScopedInvitationPreservesCompletionFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		err           error
+		code, outcome string
+	}{
+		{"refused", &model.Fault{Code: "insufficient_scope", Message: "denied", Cause: scopepolicy.ErrInsufficientScope}, "insufficient_scope", "not_committed"},
+		{"rollback failed", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: scopepolicy.ErrInsufficientScope}, "internal_error", "unknown"},
+		{"committed", &store.TransactionError{Phase: "commit", Outcome: store.TransactionCommitted, Cause: scopepolicy.ErrInsufficientScope}, "internal_error", "confirmed"},
+		{"database failure", errors.Join(&model.Fault{Code: "insufficient_scope", Message: "denied", Cause: scopepolicy.ErrInsufficientScope}, &store.Error{Phase: "operation", DatabaseFailure: true, Cause: errors.New("unavailable")}), "internal_error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			f.entry.auth = validTeamAuth{}
+			provider := func(_ context.Context, p model.Principal) (model.CredentialAuthorization, error) {
+				return scopedPAT(t, p, "team:read"), nil
+			}
+			identity := &teamIdentityMock{plan: &teamCallPlan{t: t}}
+			if err := RegisterScopedInvitationTools(f.entry, identity, &failingScopedInvitationTeams{failure: tc.err}, protectedInvitationProjects{}, "https://daynight.test", provider); err != nil {
+				t.Fatal(err)
+			}
+			client := f.client(t, "2025-11-25", "alice")
+			link := "https://daynight.test/team-invitations#dnteam_" + strings.Repeat("A", 43)
+			scopedToolCall(t, client, "invitation_accept", map[string]any{"link": link, "confirm": true}, tc.code, tc.outcome)
+		})
+	}
 }
 
 type protectedInvitationProjects struct{ unknownInvitationProjects }

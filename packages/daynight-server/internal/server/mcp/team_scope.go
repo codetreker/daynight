@@ -2,13 +2,29 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
+
+// A scope refusal is definite only when no transaction completion or cleanup
+// failure is present. The common wrapper otherwise reports completion facts.
+func scopeRefusalResult(result ToolResult, err error, write bool) ToolResult {
+	if write && result.WriteOutcome == "" && errors.Is(err, scopepolicy.ErrInsufficientScope) {
+		facts := operation.CompletionFacts(err)
+		fault, known := operation.KnownFault(err)
+		if facts.Outcome == "" && !facts.CleanupFailed && known && fault.Code == "insufficient_scope" && httpx.ErrorKind(err) == fault.Code {
+			result.WriteOutcome = "not_committed"
+		}
+	}
+	return result
+}
 
 func scopeProtected(service any) bool {
 	protected, ok := service.(interface{ ScopeProtected() bool })
