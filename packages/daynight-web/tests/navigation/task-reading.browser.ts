@@ -1142,12 +1142,16 @@ test('narrow task tabs preserve reading state across dialog, fullscreen and shor
   const bar = dialog.locator('.ordinary-task-tabs-wrap [role=tablist]');
   await expect(bar.getByRole('tab')).toHaveCount(6);
   await expect(dialog.getByRole('button', { name: 'Dismiss notification' })).toHaveCount(2);
-  for (const dismiss of await dialog.getByRole('button', { name: 'Dismiss notification' }).all()) await dismiss.click();
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
+  await dialog.getByRole('button', { name: 'Dismiss notification' }).first().click();
   await bar.evaluate(element => { element.scrollLeft = 0; });
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
   const barBox = (await bar.boundingBox())!;
-  await cdp.send('Input.synthesizeScrollGesture', { x: barBox.x + barBox.width - 30, y: barBox.y + barBox.height / 2, xDistance: -180, yDistance: 0, gestureSourceType: 'touch' });
+  const x = barBox.x + barBox.width - 35, y = barBox.y + barBox.height / 2;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  for (let distance = 20; distance <= 160; distance += 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x - distance, y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await expect.poll(() => bar.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   await expect(bar.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await cdp.detach();
