@@ -192,10 +192,14 @@ describe("owned command birth handshake", () => {
 
   it("refuses spawning when reservation persistence fails", async () => {
     const operation = createOperation();
+    let resourceId: string | undefined;
     try {
-      await expect(withOwnedCommandLifecycle(async () => { throw new Error("reservation write failed"); }, () => runOwnedCommand(command("process.exit(99)"), operation))).rejects.toThrow("reservation write failed");
-      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
-    } finally { operation.dispose(); }
+      await expect(withOwnedCommandLifecycle(async event => { resourceId = event.resourceId; throw new Error("reservation write failed"); }, () => runOwnedCommand(command("process.exit(99)"), operation))).rejects.toMatchObject({ cause: { message: "reservation write failed" } });
+      expect(retainedOwnedCommandBoundaries()).toEqual([{ resourceId, proof: null }]);
+    } finally {
+      operation.dispose();
+      if (resourceId !== undefined) await reconcileOwnedCommandBoundary(resourceId, async () => {}, Date.now() + 1000);
+    }
   });
 
   it("retains the original boundary when stop persistence fails and reconciles without replay", async () => {

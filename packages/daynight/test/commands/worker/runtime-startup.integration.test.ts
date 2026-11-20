@@ -5,7 +5,7 @@ import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import * as botReconciliation from "../../../src/commands/worker/bots/reconcilia
 import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
 import * as webStores from "../../../src/commands/worker/backends/web-store.js";
 import * as monitoringObservers from "../../../src/commands/worker/monitoring/observer.js";
+import * as workerDiagnostics from "../../../src/commands/worker/diagnostics.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -246,6 +247,111 @@ describe("worker cloud-first startup", () => {
       expect(stop).toHaveBeenCalledOnce();
     } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); }
   }, 20_000);
+
+  it.each([false, true])("reports historical diagnostic output failure after releasing the original root (rebuild: %s)", async rebuild => {
+    const f = await fixture(), failure = new Error("Foreground diagnostic output failed.");
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/diagnostics.js")>("../../../src/commands/worker/diagnostics.js");
+    const sinks: Awaited<ReturnType<typeof actual.createWorkerDiagnostics>>[] = [];
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockImplementation(async options => {
+      const sink = await actual.createWorkerDiagnostics(options); sinks.push(sink); return sink;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    let outputFailed = false;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { controls.push(value); }, log: message => {
+      if (!outputFailed && message.includes("Controlled foreground failure.")) { outputFailed = true; throw failure; }
+    } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      sinks[0]!.emit({ kind: "foreground-failure", message: "Controlled foreground failure." });
+      const original = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      const lockText = await readFile(f.paths.lockFile, "utf8");
+      expect(outputFailed).toBe(true); expect(sinks[0]!.isClosed()).toBe(false);
+      if (rebuild) {
+        expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+        controls[0]!.rebuild();
+        await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledTimes(2));
+        expect(controls[1]!.generation).toBe("2");
+        expect(sinks[0]!.isClosed()).toBe(true);
+        expect((mocks.coordinator.mock.calls[1]![0] as WorkerCoordinatorOptions).signal).not.toBe(original.signal);
+        expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockText);
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      }
+      cancellation.abort(); await expect(running).rejects.toBe(failure);
+      expect(sinks.every(sink => sink.isClosed())).toBe(true);
+      expect(() => original.store.listTasks()).toThrow();
+      const released = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(released).not.toBeNull(); await released!.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); creating.mockRestore(); }
+  });
+
+  it("retains the root through the diagnostic close deadline until its original file handle joins", async () => {
+    const f = await fixture(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/diagnostics.js")>("../../../src/commands/worker/diagnostics.js");
+    let sink: Awaited<ReturnType<typeof actual.createWorkerDiagnostics>> | undefined;
+    let handleClosed = false, close: ReturnType<typeof vi.spyOn> | undefined;
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockImplementation(async options => {
+      sink = await actual.createWorkerDiagnostics({ ...options, files: {
+        ensureDirectory: async directory => { await mkdir(directory, { recursive: true }); },
+        createSegment: async filename => { await writeFile(filename, "", { flag: "wx" }); },
+        appendRecord: async (filename, line) => {
+          const handle = await open(filename, "a");
+          const held = line.includes('"kind":"held-close"');
+          try {
+            if (held) { entered.resolve(); await release.promise; }
+            await handle.writeFile(line);
+          }
+          finally { await handle.close(); if (held) handleClosed = true; }
+        },
+      } });
+      close = vi.spyOn(sink, "close"); return sink;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      handleClosed = false;
+      sink!.emit({ kind: "held-close", message: "Hold the original diagnostic append." });
+      await entered.promise;
+      expect((await control!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      control!.rebuild();
+      await expect(running).rejects.toThrow("owner stop deadline elapsed");
+      expect(sink!.isClosed()).toBe(false); expect(handleClosed).toBe(false);
+      expect(close).toHaveBeenCalledOnce();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      release.resolve();
+      let released: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>>;
+      await vi.waitFor(async () => { released = await tryAcquireWorkerInstanceLock(f.paths); expect(released).not.toBeNull(); });
+      await released!.release();
+      expect(sink!.isClosed()).toBe(true); expect(handleClosed).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); creating.mockRestore(); }
+  }, 20_000);
+
+  it("retains management handles when a rejected diagnostic close has no completed closure receipt", async () => {
+    const f = await fixture(), failure = new Error("Diagnostic writer closure remains unknown.");
+    const close = vi.fn(async () => { throw failure; });
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockResolvedValue({
+      emit: mocks.emit, flush: async () => {}, close, isClosed: () => false, filename: "unconfirmed.jsonl",
+    });
+    const locks = await import("../../../src/commands/worker/instance-lock.js"), acquire = locks.acquireWorkerInstanceLock;
+    let originalLock: Awaited<ReturnType<typeof acquire>> | undefined;
+    const acquiring = vi.spyOn(locks, "acquireWorkerInstanceLock").mockImplementation(async paths => originalLock = await acquire(paths));
+    const { cancellation, running } = start(f);
+    let store: WorkerStore | undefined;
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      store = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store;
+      cancellation.abort(); await expect(running).rejects.toBe(failure);
+      expect(close).toHaveBeenCalledOnce(); expect(store.listTasks()).toEqual([]);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      cancellation.abort(); await Promise.allSettled([running]);
+      // The synthetic owner has no close proof; only this fixture releases its
+      // captured handles, after asserting that production retained them.
+      store?.close(); await originalLock?.release(); creating.mockRestore(); acquiring.mockRestore();
+    }
+  });
 
   it("reconciles the original non-Git command through management control before rebuilding", async () => {
     const f = await fixture(), marker = path.join(f.homeDirectory, "command-runs");

@@ -44,6 +44,9 @@ than active resource claims. Once closure is confirmed, an accepted rebuild may
 start the next generation without rethrowing those historical failures. Ordinary
 exit still reports them, and unjoined management cleanup remains a separate
 barrier to replacement.
+Diagnostic closure records actual writer completion, sink closure and listener
+removal independently of historical foreground-log errors. Those errors remain
+ordinary-exit diagnostics; only an unconfirmed close retains management ownership.
 Assistant application ownership includes detached guarded actions after the factory
 returns. Bot preparation owns probe cleanup and aliases even before a launch is
 submitted; failed cleanup retains the host stores and locks. The Reviewer host
@@ -78,6 +81,11 @@ write cannot discard the only handles capable of closing the original child. Dur
 bind the original Worker identity and generation, and monotonic sequence numbers
 prevent late writes from replacing newer facts. Re-observation must finish a
 failed directory persistence barrier before acknowledging existing terminal bytes.
+Before the first prepared write, the original producer also retains its no-spawn
+responsibility. A failed or pending write cannot discard that evidence: recovery
+joins the original write and completes the same resource's terminal persistence
+without dispatch. This in-process evidence does not authorize clearing recovered
+null-proof records after the producer has been lost.
 
 The [Worker design](../../../../docs/design/daynight-worker.md#管理根与执行作用域)
 owns interfaces, budgets and the owner inventory. The

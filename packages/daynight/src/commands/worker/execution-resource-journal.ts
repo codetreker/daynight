@@ -55,6 +55,7 @@ export const openExecutionResourceJournal = async (options: { directory: string;
   const directory = path.resolve(options.directory), identity = identityValue(options.identity);
   const flushDirectory = options.syncDirectory ?? syncDirectory;
   const records = new Map<string, ExecutionResourceRecord>(), failures = new Map<string, unknown>();
+  const admitted = new Map<string, string>();
   const pending = new Set<Promise<void>>();
   let tail = Promise.resolve();
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -93,6 +94,11 @@ export const openExecutionResourceJournal = async (options: { directory: string;
     if (!generationValue(generation)) throw new TypeError("Execution resource generation must be a positive int64 string.");
     return input => {
       const event = eventValue(structuredClone(input));
+      // Keep this journal's original admission even if its first atomic write
+      // fails before a file exists. A global live owner cannot select a journal.
+      const originalGeneration = records.get(event.resourceId)?.generation ?? admitted.get(event.resourceId);
+      if (originalGeneration !== undefined && originalGeneration !== generation) return Promise.reject(new Error("Execution resource generation conflicts with its original reservation."));
+      admitted.set(event.resourceId, generation);
       const work = tail.then(async () => {
         let previous: ExecutionResourceRecord | undefined;
         try { previous = await readRecord(file(event.resourceId)); records.set(event.resourceId, previous); }
@@ -160,13 +166,16 @@ export const openExecutionResourceJournal = async (options: { directory: string;
       // rejection prevent observing the retained process and output owners.
       const observed = await withinExecutionDeadline(read(), settings.deadline);
       const live = new Map(retainedOwnedCommandBoundaries().map(entry => [entry.resourceId, entry]));
-      const results = await Promise.allSettled(observed.filter(record => record.generation === settings.generation).map(async original => {
-        const retained = live.get(original.event.resourceId);
+      const resources = new Map(observed.map(record => [record.event.resourceId, record.generation]));
+      for (const [resourceId, generation] of admitted) if (!resources.has(resourceId)) resources.set(resourceId, generation);
+      const results = await Promise.allSettled([...resources].filter(([, generation]) => generation === settings.generation).map(async ([resourceId, generation]) => {
+        const original = observed.find(record => record.event.resourceId === resourceId);
+        const retained = live.get(resourceId);
         if (retained !== undefined) {
-          if (original.event.proof !== null && !same(original.event.proof, retained.proof)) throw new Error("Retained execution resource conflicts with its saved birth identity.");
-          await reconcileOwnedCommandBoundary(original.event.resourceId, sink(original.generation), settings.deadline);
-        } else if (original.event.stage !== "stopped" || failures.has(original.event.resourceId)) {
-          await withinExecutionDeadline(reconcile(original.event.resourceId, settings), settings.deadline);
+          if (original !== undefined && original.event.proof !== null && !same(original.event.proof, retained.proof)) throw new Error("Retained execution resource conflicts with its saved birth identity.");
+          await reconcileOwnedCommandBoundary(resourceId, sink(generation), settings.deadline);
+        } else if (original === undefined || original.event.stage !== "stopped" || failures.has(resourceId)) {
+          await withinExecutionDeadline(reconcile(resourceId, settings), settings.deadline);
         }
       }));
       const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);

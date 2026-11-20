@@ -1,23 +1,181 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import * as childProcesses from "node:child_process";
+import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import * as files from "../../../src/platform/files.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
 import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
-import { retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { OwnedCommandAdmissionError, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+
+vi.mock("node:child_process", { spy: true });
 
 const roots: string[] = [];
 const identity = { serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" };
-const fixture = async () => {
+const fixture = async (syncDirectory?: (directory: string) => Promise<void>) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/execution-resource-reconciliation");
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(path.join(parent, "case-")); roots.push(directory);
   const journalDirectory = path.join(directory, "journal");
-  const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity });
+  const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity, ...(syncDirectory === undefined ? {} : { syncDirectory }) });
   return { directory, journalDirectory, journal };
 };
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+
+it.each(["before-rename", "after-rename"])("retains no-spawn responsibility when prepared persistence fails %s", async fault => {
+  let rejectSave = false;
+  const { directory, journalDirectory, journal } = await fixture(async () => { if (fault === "after-rename" && rejectSave) throw new Error("directory sync failed"); });
+  const replace = files.replaceFileAtomically;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (fault === "before-rename" && rejectSave && path.dirname(file) === journalDirectory) throw new Error("reservation rename failed");
+    return replace(file, text, ...rest);
+  });
+  const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
+  const operation = createOperation(), marker = path.join(directory, "executed");
+  rejectSave = true;
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`], environment: process.env }, operation, journal.sink("3")).catch(error => error);
+  try {
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError" });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
+    const original = retainedOwnedCommandBoundaries()[0]!;
+    expect(original).toEqual({ resourceId: expect.any(String), proof: null });
+    expect((await journal.read()).map(record => record.event.stage)).toEqual(fault === "before-rename" ? [] : ["prepared"]);
+    await expect(journal.reconcileRetained({ generation: "3", deadline: Date.now() + 1000 })).rejects.toThrow("remain unconfirmed");
+    rejectSave = false;
+    await expect(journal.reconcileRetained({ generation: "4", deadline: Date.now() + 1000 })).rejects.toThrow("remain unconfirmed");
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    await journal.reconcileRetained({ generation: "3", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    expect((await journal.read())[0]).toMatchObject({ generation: "3", event: { resourceId: original.resourceId, stage: "stopped", proof: null } });
+    const reopened = await openExecutionResourceJournal({ directory: journalDirectory, identity });
+    await reopened.assertClosed();
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
+  } finally {
+    rejectSave = false; operation.dispose();
+    await journal.reconcileRetained({ generation: "3", deadline: Date.now() + 1000 });
+  }
+});
+
+it.each(["cancelled", "spawn-rejected"])("recovers the original no-spawn terminal save after %s", async reason => {
+  const { directory, journalDirectory, journal } = await fixture();
+  const controller = new AbortController(), operation = createOperation({ signal: controller.signal });
+  const replace = files.replaceFileAtomically;
+  let rejectSave = true;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (rejectSave && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage !== "prepared") throw new Error("terminal save failed");
+    return replace(file, text, ...rest);
+  });
+  const sink = journal.sink("5"), cancellation = new Error("cancelled before spawn");
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.exit(99)"], environment: process.env,
+    ...(reason === "spawn-rejected" ? { cwd: process.platform === "win32" ? path.join(directory, "missing") : `${directory}\0invalid` } : {}),
+  }, operation, async event => { await sink(event); if (reason === "cancelled" && event.stage === "prepared") controller.abort(cancellation); }).catch(error => error);
+  try {
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError" });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    if (reason === "cancelled") expect(failure.cause).toMatchObject({ kind: "cancelled", cause: cancellation });
+    expect((await journal.read())[0]!.event).toMatchObject({ stage: "prepared", proof: null });
+    rejectSave = false;
+    await journal.reconcileRetained({ generation: "5", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    await journal.assertClosed();
+    await (await openExecutionResourceJournal({ directory: journalDirectory, identity })).assertClosed();
+  } finally { rejectSave = false; operation.dispose(); await journal.reconcileRetained({ generation: "5", deadline: Date.now() + 1000 }); }
+});
+
+it("joins pending original prepared and terminal writes before retiring a no-spawn owner", async () => {
+  const { journal } = await fixture(), operation = createOperation();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const terminalEntered = Promise.withResolvers<void>(), terminalRelease = Promise.withResolvers<void>();
+  const replace = files.replaceFileAtomically;
+  let delayTerminal = true, terminalWrites = 0;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (JSON.parse(String(text)).event.stage === "stopped") {
+      terminalWrites++; if (delayTerminal) { terminalEntered.resolve(); await terminalRelease.promise; }
+    }
+    return replace(file, text, ...rest);
+  });
+  const sink = journal.sink("8");
+  const running = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.exit(99)"], environment: process.env }, operation, async event => {
+    await sink(event); entered.resolve(); await release.promise; throw new Error("prepared acknowledgement failed");
+  }).catch(error => error);
+  try {
+    await entered.promise;
+    await expect(journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })).rejects.toThrow();
+    expect(terminalWrites).toBe(0);
+    release.resolve();
+    const failure = await running;
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    const first = journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 });
+    await terminalEntered.promise;
+    await expect(first).rejects.toThrow();
+    await expect(journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })).rejects.toThrow();
+    expect(terminalWrites).toBe(1);
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    delayTerminal = false; terminalRelease.resolve();
+    await journal.reconcileRetained({ generation: "8", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    await journal.assertClosed();
+  } finally {
+    release.resolve(); terminalRelease.resolve(); delayTerminal = false;
+    await running; operation.dispose(); await journal.reconcileRetained({ generation: "8", deadline: Date.now() + 1000 });
+  }
+});
+
+it("accepts only an explicit pre-write rejection as absent reservation responsibility", async () => {
+  const operation = createOperation(), cancellation = new Error("admission already closed");
+  const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
+  try {
+    await expect(runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, async () => { throw new OwnedCommandAdmissionError(cancellation); })).rejects.toBe(cancellation);
+    expect(retainedOwnedCommandBoundaries()).toEqual([]);
+    expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
+  } finally { operation.dispose(); }
+});
+
+it("does not treat a mixed failure containing an admission rejection as proof of no reservation", async () => {
+  const { journal } = await fixture(), operation = createOperation(), sink = journal.sink("9");
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, async event => {
+    await sink(event);
+    throw new AggregateError([new OwnedCommandAdmissionError(new Error("other admission rejected")), new Error("reservation write outcome unknown")]);
+  }).catch(error => error);
+  try {
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    await expect(journal.assertClosed()).rejects.toThrow();
+    await journal.reconcileRetained({ generation: "9", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+  } finally { operation.dispose(); await journal.reconcileRetained({ generation: "9", deadline: Date.now() + 1000 }); }
+});
+
+it("retains the original prepared writer after its producer's save observation expires", async () => {
+  const { journalDirectory, journal } = await fixture(), operation = createOperation({ limits: { totalMs: 20_000, requestMs: 20_000 } });
+  const replace = files.replaceFileAtomically, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let first = true, writes = 0;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (path.dirname(file) === journalDirectory) {
+      writes++;
+      if (first) { first = false; entered.resolve(); await release.promise; }
+    }
+    return replace(file, text, ...rest);
+  });
+  const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
+  const running = runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, journal.sink("10")).catch(error => error);
+  try {
+    await entered.promise;
+    const failure = await running;
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError", cause: { message: "Owned command responsibility save exceeded its deadline." } });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    await expect(journal.reconcileRetained({ generation: "10", deadline: Date.now() + 50 })).rejects.toThrow();
+    expect(writes).toBe(1);
+    expect(journal.snapshot().pending).toBe(1);
+    release.resolve();
+    await journal.reconcileRetained({ generation: "10", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    await journal.assertClosed();
+    expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
+  } finally { release.resolve(); await running; operation.dispose(); await journal.reconcileRetained({ generation: "10", deadline: Date.now() + 1000 }); }
+}, 20_000);
 
 it("reconciles a non-Git command's failed stop save in its original journal and generation without replay", async () => {
   const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");

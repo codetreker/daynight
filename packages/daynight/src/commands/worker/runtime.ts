@@ -75,7 +75,7 @@ import type { ActiveToolSelection } from "./tool-selection.js";
 import { createNativeSelectionVerifier } from "./native-selection.js";
 import { createExecutionScopeManager, withinExecutionDeadline, type ExecutionScope, type OwnerStopResult } from "./execution-scope.js";
 import { openExecutionResourceJournal, type ExecutionResourceIdentity } from "./execution-resource-journal.js";
-import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries } from "./owned-command-lifecycle.js";
+import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries, OwnedCommandAdmissionError } from "./owned-command-lifecycle.js";
 
 const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
   emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
@@ -301,7 +301,12 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
       await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
       const scope = scopes.create();
       await withOwnedCommandLifecycle(async event => {
-        if (event.stage === "prepared") scope.signal.throwIfAborted();
+        if (event.stage === "prepared") {
+          try {
+            scope.signal.throwIfAborted();
+            if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
+          } catch (error) { throw new OwnedCommandAdmissionError(error); }
+        }
         if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
         try { await root.journal.sink(scope.generation)(event); }
         catch (error) { scope.closeAdmission(error); throw error; }
@@ -1176,7 +1181,13 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       }
       observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
       try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
-      try { await diagnostics?.close(); } catch (error) { managementFailures.push(error); }
+      try { await diagnostics?.close(); }
+      catch (error) {
+        // Historical output errors survive a joined close. Only the original
+        // sink can confirm that its writes and stderr listeners are released.
+        const destination = diagnostics?.isClosed?.() === true ? failures : managementFailures;
+        if (!destination.includes(error)) destination.push(error);
+      }
       failures.push(...configurationDiagnostics?.errors() ?? []);
       root.managementClosed = managementFailures.length === 0;
     };

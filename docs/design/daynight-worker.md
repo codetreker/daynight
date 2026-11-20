@@ -46,6 +46,8 @@ flowchart TB
 
 reporter 的 `stop()` 已结束只证明其上报循环已 join，不替代它报告的原生命令清理证明。缓存的清理错误随原资源的确认结果重新核对；有原确认凭据且全部清理责任已闭合时，该错误作为历史诊断保留。缺少凭据、混合未确认原因或仍未 join 的写入继续阻止释放管理存储和锁。
 
+诊断关闭独立记录实际资源是否闭合。原写入已 join、sink 已关闭且监听器已移除后，历史前台日志回调错误仍在普通退出时报告，但不阻止已接受的重建或原锁释放。仅关闭 Promise 拒绝不能证明仍有 writer；仅设置关闭意图或等待超时也不能证明闭合。
+
 `owned-command-lifecycle.ts` 为 Worker 内的短命命令和 `repository/git-owned.ts` 提供共同的受控 launcher。命令先等待 `prepared` 持久事件。POSIX launcher 在独立 PGID 中等待私有 IPC；Windows 父进程用 `CREATE_SUSPENDED` 创建子进程，分配原 Job、取得出生证明并保存 `bound` 后才恢复主线程。launcher 随后通过私有通道报告身份，父进程独立核验，在同一次同步检查中复核取消后才放行用户命令。受信 launcher 不继承命令的 Node 启动 hooks。流式输入、输出与消费 writer 全部结束后才能确认资源闭合。父连接丢失、取消、证明不匹配或保存失败均不能放行。Windows 父进程持有原 Job lease，停止使用整 Job 成员证明；POSIX 检查原进程出生身份及整组为空。
 
 POSIX launcher 在子命令结果返回后仍作为原 PGID 的存活身份保留，收到 `SIGTERM` 不先退出。父进程取得结果即可进入停止流程：组内只剩 launcher 时立即结束温和等待，否则等待后代退出后再升级 `SIGKILL`；每次发送组信号前仍核验原进程出生身份。这样既能处理拒绝 `SIGTERM` 的命令，也能处理主命令已退出且不再持有输出流的后代，而普通命令不承担固定两秒等待。已核对自身 PGID 的 launcher 在父 IPC 断开时清理自己的整组，不能只退出并留下无法归属的后代。
@@ -55,6 +57,8 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 正常 Worker 路径通过 `withOwnedCommandLifecycle` 注入 `execution-resources/` 私有持久库存。每资源 JSON 绑定服务、账号、Worker、代际和单调事件序号，以文件同步、原子替换及目录屏障保存 `prepared/bound/stopped/unknown`。旧事件不能覆盖新事实，迟到 unknown 不能撤销已证明的停止；替换已成功但目录屏障失败时，核对原事实并补完屏障后才能确认保存。重启后缺少原出生证明或 Windows lease 的责任保持未知，不能只因 PID 不存在清空库存。原 claim、worktree、HEAD/index、Session、journal 和未知业务操作仍由各自原记录拥有；停止不执行 stash、commit、reset 或删除现场。
 
 管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
+
+首次 `prepared` 保存前即保留原生产者的未启动责任。保存失败或原写入尚未完成时，管理侧只 join 同一写入，并凭原生产者确认未启动的事实补完原持久记录和终态保存，不重新派发命令。该凭据仅属于原进程内的具体资源和代际；重启后任意 `proof: null` 记录仍不能据此推断没有进程。
 
 Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁和未完成关闭责任。原生命令核对成功后，宿主仍须核对同一次 Reviewer 执行的全部停止原因并实际完成关闭；只有原清理证明覆盖全部原因时才可解除阻塞。普通异常、宿主 Promise 已结束或错误中包含一个已确认的命令，均不足以证明 Reviewer 资源已释放。
 

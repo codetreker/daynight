@@ -18,13 +18,23 @@ export type OwnedCommandLifecycleEvent = {
 };
 /** Commits each event before resolving; rejection must preserve its original reservation. */
 export type OwnedCommandLifecycleSink = (event: OwnedCommandLifecycleEvent) => Promise<void>;
+/** The sink rejected admission before starting any reservation write. */
+export class OwnedCommandAdmissionError extends Error {
+  constructor(cause: unknown) { super("Owned command admission was rejected before reservation.", { cause }); }
+}
 const boundedSave = async (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
   try { await Promise.race([Promise.resolve().then(() => sink(event)), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Owned command responsibility save exceeded its deadline.")), Math.max(1, Math.min(10_000, deadline === undefined ? 10_000 : deadline - Date.now()))); })]); }
   finally { clearTimeout(timer); }
 };
 const context = new AsyncLocalStorage<OwnedCommandLifecycleSink>();
-const retained = new Map<string, { proof: ProcessProof | null; lease: ControllerJobLease | undefined; sequence: number; closeHandles?: () => void; joinOutput?: () => Promise<void> }>();
+type RetainedCommand = {
+  proof: ProcessProof | null; lease: ControllerJobLease | undefined; sequence: number;
+  neverSpawned: boolean; joinSave: () => Promise<void>;
+  save: (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number) => Promise<void>;
+  closeHandles?: () => void; joinOutput?: () => Promise<void>;
+};
+const retained = new Map<string, RetainedCommand>();
 const reconciliations = new Map<string, Promise<void>>();
 const producers = new Map<string, Promise<void>>();
 /** Live responsibility is retained independently of an Error object's reachability. */
@@ -49,13 +59,23 @@ const reconcileBoundary = async (resourceId: string, sink: OwnedCommandLifecycle
     if (!retained.has(resourceId)) return;
   }
   const original = retained.get(resourceId);
-  if (original === undefined || original.proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
+  if (original === undefined) throw new Error("Original owned command boundary evidence is unavailable.");
+  // A timed-out observation did not cancel the original filesystem write.
+  // No later terminal save may overtake it or discard its live responsibility.
+  await withinExecutionDeadline(original.joinSave(), deadline);
   const { proof, lease } = original;
-  if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
-  if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
+  if (original.neverSpawned) {
+    // Only the original producer can prove that spawn was never attempted.
+    // Its first save may have failed before rename, leaving no reservation yet.
+    await original.save(sink, { resourceId, sequence: 1, stage: "prepared", proof: null }, deadline);
+  } else {
+    if (proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
+    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
+    if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
+  }
   if (original.joinOutput !== undefined) await withinExecutionDeadline(original.joinOutput(), deadline);
   original.sequence++;
-  await boundedSave(sink, { resourceId, sequence: original.sequence, stage: "stopped", proof }, deadline);
+  await original.save(sink, { resourceId, sequence: original.sequence, stage: "stopped", proof }, deadline);
   original.closeHandles?.();
   if (lease !== undefined) releaseControllerJobLease(lease);
   retained.delete(resourceId);
@@ -79,15 +99,35 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   const budget = (maximum: number): number => Math.max(1, Math.ceil(Math.min(maximum, operation.remainingMs())));
   let sequence = 0;
   let proof: ProcessProof | null = null, lease: ControllerJobLease | undefined;
+  let saves = Promise.resolve();
+  const save: RetainedCommand["save"] = (target, value, deadline) => {
+    const pending = saves.then(() => target(value));
+    saves = pending.catch(() => undefined);
+    return boundedSave(() => pending, value, deadline);
+  };
+  let neverSpawned = true;
+  const cleanupFailure = (errors: unknown[], cause: unknown): OwnedCommandCleanupError => {
+    const error = new OwnedCommandCleanupError(errors, cause);
+    registerOwnedCommandCleanupConfirmation(error, () => !retained.has(resourceId));
+    return error;
+  };
   const event = (stage: OwnedCommandLifecycleEvent["stage"]) => {
     sequence++;
     const original = retained.get(resourceId); if (original !== undefined) original.sequence = sequence;
-    return boundedSave(sink, { resourceId, sequence, stage, proof });
+    return save(sink, { resourceId, sequence, stage, proof });
   };
-  await event("prepared");
-  retained.set(resourceId, { proof, lease, sequence });
+  retained.set(resourceId, { proof, lease, sequence, neverSpawned, save, joinSave: () => saves });
+  try { await event("prepared"); }
+  catch (error) {
+    if (error instanceof OwnedCommandAdmissionError) { retained.delete(resourceId); throw error.cause; }
+    throw cleanupFailure([error], error);
+  }
   try { operation.check(); }
-  catch (error) { await event("stopped"); retained.delete(resourceId); throw error; }
+  catch (error) {
+    try { await event("stopped"); retained.delete(resourceId); }
+    catch (saveError) { throw cleanupFailure([error, saveError], error); }
+    throw error;
+  }
   const helper = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../../../dist/commands/worker/owned-command-helper.js" : "./owned-command-helper.js", import.meta.url));
   // Command-specific Node startup hooks must not execute inside the trusted
   // launcher before its boundary has been committed.
@@ -96,6 +136,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   let suspended: Awaited<ReturnType<typeof createSuspendedNodeChild>> | undefined;
   let child: ReturnType<typeof spawn> | NonNullable<typeof suspended>["child"];
   try {
+    neverSpawned = false;
+    retained.get(resourceId)!.neverSpawned = false;
     suspended = process.platform === "win32" ? await createSuspendedNodeChild({
     source: `process.argv = [process.execPath, ${JSON.stringify(helper)}, ${JSON.stringify(resourceId)}]; import(${JSON.stringify(pathToFileURL(helper).href)}).catch(() => process.exit(1));`,
     args: [], environment: launcherEnvironment, ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
@@ -106,6 +148,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     // A synchronous spawn rejection or a failed CreateProcessW created no
     // process. Other guardian construction failures retain unknown ownership.
     if (process.platform !== "win32" || error instanceof Error && "stage" in error && error.stage === "create") {
+      neverSpawned = true;
+      retained.get(resourceId)!.neverSpawned = true;
       try { await event("stopped"); retained.delete(resourceId); }
       catch (saveError) { errors.push(saveError); }
       if (errors.length === 1) throw error;
@@ -116,7 +160,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     throw cleanup;
   }
   let joinOutput: (() => Promise<void>) | undefined;
-  const remember = () => retained.set(resourceId, { proof, lease, sequence, ...(joinOutput === undefined ? {} : { joinOutput }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
+  const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
   let closed = false, dispatchClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
   const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
