@@ -21,14 +21,22 @@ func tokenResponseV2(token model.PersonalAccessToken) tokenViewV2 {
 	return tokenViewV2{PersonalAccessToken: tokenResponse(token), Description: token.Description}
 }
 
-func (h *Authentication) registerCredentialRoutes(routes accountRouteRegistry) {
+func (h *Authentication) registerCredentialRoutes(routes accountRouteRegistry, scoped ScopedPATOperations) {
 	require := h.RequireCredentialSession
-	routes.handle("GET /api/v2/me/tokens", require(h.listTokensV2), accountBrowser, false)
-	routes.handle("POST /api/v2/me/tokens", require(h.createTokenV2), accountBrowser, false)
+	list, create := h.listTokensV2, h.createTokenV2
+	if scoped != nil {
+		list, create = h.listScopedTokens(scoped), h.createScopedToken(scoped)
+	}
+	routes.handle("GET /api/v2/me/tokens", require(list), accountBrowser, false)
+	routes.handle("POST /api/v2/me/tokens", require(create), accountBrowser, false)
 	routes.handle("HEAD /api/v2/me/tokens", require(httpx.ResourceMethodNotAllowed(h.logger, "GET, POST")), accountBrowserFallback, false)
 	routes.handle("/api/v2/me/tokens", require(httpx.ResourceMethodNotAllowed(h.logger, "GET, POST")), accountBrowserFallback, false)
 	routes.handle("PATCH /api/v2/me/tokens/{tokenId}/description", require(h.updateTokenDescription), accountBrowser, false)
 	routes.handle("/api/v2/me/tokens/{tokenId}/description", require(httpx.ResourceMethodNotAllowed(h.logger, "PATCH")), accountBrowserFallback, false)
+	if scoped != nil {
+		routes.handle("PATCH /api/v2/me/tokens/{tokenId}/scopes", require(h.updateScopedToken(scoped)), accountBrowser, false)
+		routes.handle("/api/v2/me/tokens/{tokenId}/scopes", require(httpx.ResourceMethodNotAllowed(h.logger, "PATCH")), accountBrowserFallback, false)
+	}
 }
 
 func (h *Authentication) listTokensV2(w http.ResponseWriter, r *http.Request, p model.Principal) {

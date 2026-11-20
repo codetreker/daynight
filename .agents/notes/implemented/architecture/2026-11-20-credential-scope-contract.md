@@ -30,6 +30,14 @@ policy while fixed API grants have no policy. OAuth authorization records can
 retain an explicit approved selection without changing the existing approval or
 code-exchange entry points.
 
+Opt-in account management exposes complete PAT and OAuth grant rows with their
+scope policies, and creates manual PATs with the CLI catalog. Scope edits bind
+the browser account, catalog revision and observed scope version. They retain or
+remove previously issued unavailable IDs but cannot add unavailable IDs. The
+target row and browser session are rechecked in the transaction; expiration and
+usage writes remain independent of scope fields. Fixed OAuth profiles have no
+editable business policy. The existing production assembly remains unchanged.
+
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
 registrations declare operation classifications for scoped assembly, including

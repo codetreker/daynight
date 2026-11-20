@@ -9,6 +9,18 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/configvalue"
 )
 
+func TestScopedCredentialPathsReservedForCallbacks(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/api/v2/me/tokens/id/scopes", "/api/v3/oauth/grants/id/scopes"} {
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			t.Fatalf("callback overlaps credential route %s", path)
+		}
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path+"/extra"); err != nil {
+			t.Fatalf("distinct callback %s: %v", path, err)
+		}
+	}
+}
+
 func TestAuthSettingsOriginsAndCallbacks(t *testing.T) {
 	for _, tc := range []struct {
 		name, origin, callback, field string
