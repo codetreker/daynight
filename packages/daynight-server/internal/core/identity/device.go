@@ -204,10 +204,7 @@ func (s *Identity) RedeemDevice(ctx context.Context, dao store.IdentityDAO, clie
 	if err := ValidateDeviceRedemption(clientID, grantType, code, deviceName); err != nil {
 		return MintedPAT{}, err
 	}
-	now = now.Truncate(time.Microsecond)
-	result := MintedPAT{Secret: secret.Random("dnpat_")}
-	name := []rune(deviceName)
-	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI (" + string(name[:min(len(name), 85)]) + ")", TokenHash: secret.Hash(result.Secret), CreatedAt: now}
+	result := newDevicePAT(deviceName, now)
 	outcome, err := s.RedeemGrant(ctx, dao, secret.Hash(code), result.Credential)
 	if err != nil {
 		return MintedPAT{}, err
@@ -216,6 +213,12 @@ func (s *Identity) RedeemDevice(ctx context.Context, dao store.IdentityDAO, clie
 		return MintedPAT{}, &DeviceGrantError{Code: outcome}
 	}
 	return result, nil
+}
+func newDevicePAT(deviceName string, now time.Time) MintedPAT {
+	result := MintedPAT{Secret: secret.Random("dnpat_")}
+	name := []rune(deviceName)
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI (" + string(name[:min(len(name), 85)]) + ")", TokenHash: secret.Hash(result.Secret), CreatedAt: now.Truncate(time.Microsecond)}
+	return result
 }
 func (s *Identity) RedeemGrant(ctx context.Context, dao store.IdentityDAO, hash []byte, credential model.PersonalAccessToken) (string, error) {
 	d, err := dao.LockDeviceByHash(ctx, hash)

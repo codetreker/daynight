@@ -58,7 +58,7 @@ export type ThreadControllerOptions = {
   readonly api?: { readonly list: typeof getThreadPage; readonly post: typeof postThreadMessage };
 };
 type ConfirmedPost = { readonly message: ThreadMessage; readonly draftRevision: number; readonly replyRevision: number; readonly replyTo: string | null; readonly navigationCurrent: () => boolean };
-type PostOperation = { readonly controller: AbortController; dispatched: boolean };
+type PostOperation = { readonly controller: AbortController; readonly historyGeneration: number; dispatched: boolean };
 type Publication = { readonly controller: AbortController; readonly confirmed: ConfirmedPost };
 
 export class ThreadController {
@@ -74,6 +74,8 @@ export class ThreadController {
   // POST echoes do not extend the fetched history range; its next boundary must still expose interleaved messages.
   private windowIds = new Set<string>();
   private windowRevision = 0;
+  private historyGeneration = 0;
+  private historyBlocked = false;
   private cursor: Pick<ThreadMessage, 'id' | 'createdAt'> | null = null;
   private initialized = false;
   private forwardHasMoreAfter = false;
@@ -132,7 +134,7 @@ export class ThreadController {
   snapshot = (): ThreadView => this.view;
   getMessage = (id: string): ThreadMessage | null => this.visible.get(id) ?? this.incoming.get(id) ?? this.references.get(id) ?? null;
   private paused = (): boolean => this.admissionBlocked || authRequestsPaused();
-  private readable = (): boolean => !this.retired && this.active && this.documentVisible && !this.paused();
+  private readable = (): boolean => !this.retired && !this.historyBlocked && this.active && this.documentVisible && !this.paused();
   private live = (): void => { if (this.retired || this.lifetime.signal.aborted || this.options.lifetime.aborted) aborted(); };
   private makeView = (): ThreadView => ({
     visible: ordered(this.visible.values()), incomingCount: [...this.incoming.keys()].filter(id => !this.visible.has(id)).length, consumedAfterId: this.cursor?.id ?? null,
@@ -296,6 +298,25 @@ export class ThreadController {
   setDraft = (draft: string): void => { if (this.retired || draft === this.draft) return; this.draft = draft; this.draftRevision++; this.emit(); };
   setReply = (id: string | null): void => { if (this.retired || id === this.replyTo) return; this.replyTo = id; this.replyRevision++; const item = id === null ? null : this.getMessage(id); if (item !== null) this.cacheReference(item); this.emit(); };
   closeDetails = (): void => { if (this.detailsId === null) return; this.detailsId = null; this.emit(); };
+  resetHistory = (): void => {
+    if (this.retired) return;
+    this.historyBlocked = true; this.historyGeneration++; this.cancelReads(); this.cancelPublication();
+    if (this.postOperation !== null && !this.postOperation.dispatched) this.postOperation.controller.abort();
+    this.confirmed = null;
+    if (this.postOperation === null) this.reserved = false;
+    this.visible.clear(); this.incoming.clear(); this.references.clear(); this.windowIds.clear(); this.windowRevision++;
+    this.cursor = null; this.initialized = false; this.forwardHasMoreAfter = false;
+    this.following = true; this.readingAnchor = null; this.latestReceipt = null;
+    this.hasMoreBefore = false; this.hasMoreAfter = false; this.catchupPaused = false;
+    this.replyTo = null; this.replyRevision++; this.detailsId = null;
+    this.readError = null; this.historyError = null; this.referenceError = null;
+    this.emit();
+  };
+  admitHistory = (): void => {
+    if (this.retired || !this.historyBlocked) return;
+    this.historyBlocked = false; this.emit();
+    if (this.readable()) void this.refresh();
+  };
   refresh = (): Promise<void> => {
     if (!this.readable()) return Promise.resolve();
     if (this.forwardTask !== null) return this.forwardTask;
@@ -438,7 +459,7 @@ export class ThreadController {
     this.applyVisible(reserved, this.rangeMessages()); this.reserved = true; this.postError = null; this.postOutcome = 'waiting_auth'; this.remoteOutcome = 'not_sent';
     const input: PostThreadInput = this.replyTo === null ? { body: this.draft } : { body: this.draft, replyTo: this.replyTo };
     const captured = { draftRevision: this.draftRevision, replyRevision: this.replyRevision, replyTo: this.replyTo, navigationCurrent: this.options.captureNavigation?.() ?? (() => true) };
-    const operation: PostOperation = { controller: new AbortController(), dispatched: false }; this.postOperation = operation;
+    const operation: PostOperation = { controller: new AbortController(), historyGeneration: this.historyGeneration, dispatched: false }; this.postOperation = operation;
     const task = this.runPost(operation, input, captured); this.postTask = task; this.emit(); return task;
   };
   private runPost = async (operation: PostOperation, input: PostThreadInput, captured: Omit<ConfirmedPost, 'message'>): Promise<void> => {
@@ -450,10 +471,10 @@ export class ThreadController {
         assertCurrent: current,
         onPrincipalMismatch: () => { current(); if (this.paused()) aborted(); this.options.principalMismatch(); this.retire(); },
         onDispatch: () => { current(); operation.dispatched = true; this.postOutcome = 'sending'; this.remoteOutcome = 'dispatched'; this.emit(); },
-        onConfirmed: (message: ThreadMessage) => { current(); this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); },
+        onConfirmed: (message: ThreadMessage) => { current(); if (operation.historyGeneration === this.historyGeneration) this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); },
       });
       current();
-      if (this.confirmed === null) { this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); }
+      if (this.confirmed === null) { if (operation.historyGeneration === this.historyGeneration) this.confirmed = { message, ...captured }; this.remoteOutcome = 'confirmed'; this.postOutcome = 'confirmed'; this.emit(); }
     } catch (error) {
       if (!this.retired && this.postOperation === operation && this.remoteOutcome !== 'confirmed') {
         const outcome = error instanceof ThreadPostError ? error.outcome : this.remoteOutcome === 'dispatched' ? 'unknown' : 'not_sent';

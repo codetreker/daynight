@@ -14,7 +14,7 @@ const index = buildGraphIndex(completeContextGraph);
 const Host = () => {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  return <TaskExecutionClockProvider projectId={completeContextGraph.project.id} snapshot={null}><button ref={trigger} onClick={() => setOpen(true)}>Open graph</button>{open && <TaskChainDialog
+  return <TaskExecutionClockProvider projectId={completeContextGraph.project.id} snapshot={null}><button ref={trigger} onClick={() => setOpen(true)}>Open graph</button>{open && <TaskChainDialog usageMode="shown"
     projectId={completeContextGraph.project.id} index={index} rootId={rootId} onOpenTask={() => {}}
     onClose={() => setOpen(false)} onRestoreFocus={() => trigger.current?.focus()} />}</TaskExecutionClockProvider>;
 };

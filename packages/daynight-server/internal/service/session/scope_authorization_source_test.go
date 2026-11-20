@@ -57,10 +57,10 @@ type policySessionScope struct {
 	oauth   store.OAuthScopeDAO
 }
 
-func (s policySessionScope) SessionDAO() store.SessionDAO             { return s.session }
-func (s policySessionScope) PATScopeDAO() store.PATScopeDAO           { return s.pat }
-func (s policySessionScope) PATManagementDAO() store.PATManagementDAO { return s.clock }
-func (s policySessionScope) OAuthScopeDAO() store.OAuthScopeDAO       { return s.oauth }
+func (s policySessionScope) SessionDAO() store.SessionDAO                    { return s.session }
+func (s policySessionScope) SessionPATScopeDAO() store.PATScopeDAO           { return s.pat }
+func (s policySessionScope) SessionPATManagementDAO() store.PATManagementDAO { return s.clock }
+func (s policySessionScope) SessionOAuthScopeDAO() store.OAuthScopeDAO       { return s.oauth }
 
 type policySnapshot struct {
 	store.SnapshotScope

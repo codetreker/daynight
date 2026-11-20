@@ -143,7 +143,7 @@ export const GoalTaskGraph = ({ projectId, index, goalId, direction, onDirection
       fullscreen={fullscreen} enterFullscreenLabel={m.enterFullscreen} exitFullscreenLabel={m.exitFullscreen}
       resetButton={resetButton} onReset={fit} resetLabel={m.goalFit}
       notice={directionIssue === undefined ? undefined : m.orientationIssue[directionIssue]} />
-    <UsageProjectProvider projectId={projectId}><TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={inspection} onClearInspection={clearInspection}
+    <UsageProjectProvider projectId={projectId} graphUsage={true}><TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={inspection} onClearInspection={clearInspection}
           viewportFactory={viewportFactory} framingKey={`${goalId}:${direction}`} framingRevision={framingRevision} onFramingReset={onFramingReset}
           minZoom={minZoom} maxZoom={1.8} fitViewOptions={fitViewOptions} framingReady={geometry !== null} onSizeChange={onSizeChange} onFitView={fit}
           emptyState={!hasTasks ? <div className="graph-error">{m.goalEmpty}</div> : undefined}

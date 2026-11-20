@@ -206,3 +206,28 @@ func TestScopedSessionOperationRequiresReadSources(t *testing.T) {
 		t.Fatalf("missing scoped authentication returned receipt: %#v", result)
 	}
 }
+
+func TestScopedSessionCommandModuleRejectsUnprotectedService(t *testing.T) {
+	f := newEntryFixture(t)
+	engine := core.NewEngine(nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := engine.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	current := func(context.Context, store.SessionScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected credential read")
+		return model.CredentialAuthorization{}, nil
+	}
+	snapshot := func(context.Context, store.SnapshotScope, model.CredentialAuthorization) (model.CredentialAuthorization, error) {
+		t.Error("unexpected snapshot read")
+		return model.CredentialAuthorization{}, nil
+	}
+	for _, svc := range []*ss.Service{nil, ss.New(nil, engine)} {
+		if err := RegisterSessionTools(f.entry, ScopedSessionCommandSendModule(svc, current, snapshot)); err == nil {
+			t.Fatal("unprotected command service accepted")
+		}
+	}
+}

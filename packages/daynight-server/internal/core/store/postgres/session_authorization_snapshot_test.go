@@ -62,21 +62,21 @@ func TestSessionCredentialPolicySharesSnapshotAndTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessionDAOTransaction(t, db, func(s store.SessionScope) error {
-		scoped, ok := s.(store.ScopedSessionAuthorizationScope)
+		scoped, ok := s.(store.SessionCredentialScope)
 		if !ok {
 			return fmt.Errorf("Session transaction lacks policy DAOs")
 		}
-		token, err := scoped.PATScopeDAO().ReadLockedPATScope(ctx, owner.UserID, id)
+		token, err := scoped.SessionPATScopeDAO().ReadLockedPATScope(ctx, owner.UserID, id)
 		if err != nil {
 			return err
 		}
 		if token.ScopePolicy == nil || token.ScopePolicy.Version() != 2 {
 			return fmt.Errorf("locked policy: %+v", token.ScopePolicy)
 		}
-		if _, err = scoped.PATManagementDAO().FreshPATTime(ctx, now); err != nil {
+		if _, err = scoped.SessionPATManagementDAO().FreshPATTime(ctx, now); err != nil {
 			return err
 		}
-		if scoped.OAuthScopeDAO() == nil {
+		if scoped.SessionOAuthScopeDAO() == nil {
 			return fmt.Errorf("OAuth DAO unavailable")
 		}
 		return nil

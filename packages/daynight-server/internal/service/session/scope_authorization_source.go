@@ -41,7 +41,7 @@ func (s *SessionAuthorizationSource) SessionWrite(ctx context.Context, tx store.
 		}
 		return original, nil
 	}
-	scoped, ok := tx.(store.ScopedSessionAuthorizationScope)
+	scoped, ok := tx.(store.SessionCredentialScope)
 	if !ok {
 		return model.CredentialAuthorization{}, errors.New("Session authorization policy DAOs are unavailable")
 	}
@@ -49,14 +49,14 @@ func (s *SessionAuthorizationSource) SessionWrite(ctx context.Context, tx store.
 	var err error
 	switch original.Profile {
 	case model.ScopedPATProfile:
-		current, err = identity.NewIdentity("").LockPATAuthorization(ctx, scoped.PATScopeDAO(), scoped.PATManagementDAO(), original.Principal, now)
+		current, err = identity.NewIdentity("").LockPATAuthorization(ctx, scoped.SessionPATScopeDAO(), scoped.SessionPATManagementDAO(), original.Principal, now)
 	case model.ScopedMCPProfile, model.OAuthAPIProfile:
 		resource := s.origin + "/mcp"
 		if original.Profile == model.OAuthAPIProfile {
 			resource = s.origin + "/api/v1"
 		}
 		var access oauth.AccessPolicy
-		access, err = oauth.LockAccessPolicy(ctx, scoped.OAuthScopeDAO(), original.Principal, resource, now)
+		access, err = oauth.LockAccessPolicy(ctx, scoped.SessionOAuthScopeDAO(), original.Principal, resource, now)
 		current = access.Authorization
 	default:
 		return model.CredentialAuthorization{}, errors.New("unsupported Session authorization profile")

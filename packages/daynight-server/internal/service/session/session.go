@@ -14,10 +14,20 @@ import (
 type Service struct {
 	*sessioncore.Execution
 	*botruntime.Recovery
-	engine       *sessioncore.Engine
-	writer       store.SessionWriter
-	historyOps   historyScopeOperations
-	beginBrowser func() (browserOperation, error)
+	engine                 *sessioncore.Engine
+	writer                 store.SessionWriter
+	historyOps             historyScopeOperations
+	beginBrowser           func() (browserOperation, error)
+	scopedCommandExecution *sessioncore.Execution
+}
+
+// ScopedCommandExecution returns the execution whose command admission was
+// installed at construction. Its admission cannot be replaced or removed.
+func (s *Service) ScopedCommandExecution() *sessioncore.Execution {
+	if s == nil {
+		return nil
+	}
+	return s.scopedCommandExecution
 }
 
 func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {

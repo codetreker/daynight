@@ -21,6 +21,11 @@ the existing production assembly remains unchanged. The
 [internal contract](../../../../docs/design/credential-scope-internal.md#session-读取与订阅准入)
 describes the affected reads and assembly boundary.
 
+When MCP also enables scoped commands, its combined entry retains the execution
+whose transaction-bound command admission was installed. That admission cannot
+be replaced or removed, and replacing the service's execution field does not
+change the instance used by the registered tools.
+
 ## Alternatives
 
 **Check only at connection or request authentication.** A subscription or a

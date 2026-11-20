@@ -45,16 +45,28 @@ func (in sessionOperationInput) refs() map[string]any {
 // SessionSendModule publishes ordinary Task sends and original-operation reads.
 // A caller owns its operation ID and recovery. No adapter retries a submission.
 func SessionSendModule(service sessionSendOperations) SessionToolModule {
-	return sessionSendModule(service, nil, nil, false)
+	return sessionSendModule(service, nil, nil, false, false)
 }
 
 // ScopedSessionSendModule enables scoped operation receipt reads. Sending
 // remains unclassified until its separate command admission is installed.
 func ScopedSessionSendModule(service sessionSendOperations, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) SessionToolModule {
-	return sessionSendModule(service, current, snapshot, true)
+	return sessionSendModule(service, current, snapshot, true, false)
 }
 
-func sessionSendModule(service sessionSendOperations, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization, scoped bool) SessionToolModule {
+// ScopedSessionCommandSendModule enables both tools only for a Session service
+// constructed with transaction-bound command admission.
+func ScopedSessionCommandSendModule(service *ss.Service, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization) SessionToolModule {
+	return func(entry *Entry) error {
+		execution := service.ScopedCommandExecution()
+		if execution == nil {
+			return errors.New("scoped Session command service is required")
+		}
+		return sessionSendModule(execution, current, snapshot, true, true)(entry)
+	}
+}
+
+func sessionSendModule(service sessionSendOperations, current ss.SessionReadAuthorization, snapshot ss.SessionSnapshotAuthorization, scoped bool, scopedSend bool) SessionToolModule {
 	return func(entry *Entry) error {
 		if service == nil {
 			return fmt.Errorf("MCP Session send tools require a service")
@@ -97,7 +109,7 @@ func sessionSendModule(service sessionSendOperations, current ss.SessionReadAuth
 			if err != nil {
 				return err
 			}
-			if current != nil && tool.Name == "task_session_operation" {
+			if current != nil && (tool.Name == "task_session_operation" || scopedSend && tool.Name == "task_session_send") {
 				if entry.scopedTools == nil {
 					entry.scopedTools = make(map[string]bool)
 				}

@@ -401,6 +401,15 @@ func (tx *DAO) RedactDeletedBot(ctx context.Context, botID string) error {
 	return nil
 }
 
+func (tx *DAO) SessionOperationExists(ctx context.Context, session, id string) (bool, error) {
+	var exists bool
+	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND operation_id=$2)`, session, id).Scan(&exists)
+	if err != nil {
+		return false, pginternal.QueryError("check session operation existence", err)
+	}
+	return exists, nil
+}
+
 func (tx *DAO) SessionOperation(ctx context.Context, session, id string) (store.SessionOperation, error) {
 	o := store.SessionOperation{SessionID: session, OperationID: id}
 	var command, receipt []byte
