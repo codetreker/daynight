@@ -318,13 +318,19 @@ test('menu refresh exposes a failure and retry restores the graph', async ({ pag
   await page.setViewportSize({ width: 320, height: 640 });
   await page.goto(`/projects/${projectId}`);
   await expect(page.getByRole('button', { name: 'Project actions', exact: true })).toBeVisible();
+  const snapshot = page.locator('.snapshot-time time');
+  await expect(snapshot).toBeVisible();
+  const receivedAt = await snapshot.getAttribute('datetime');
   state.graphMode = 'error';
   await page.getByRole('button', { name: 'Project actions', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('graph-failure');
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText('graph-failure');
+  await expect(alert).toContainText('Showing the last successfully loaded data.');
+  await expect(snapshot).toHaveAttribute('datetime', receivedAt!);
   state.graphMode = 'normal';
-  await page.getByRole('button', { name: 'Retry', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await alert.getByRole('button', { name: 'Retry refresh', exact: true }).click();
+  await expect(alert).toHaveCount(0);
   expect(state.writes).toEqual([]);
 });
 
