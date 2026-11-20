@@ -1,5 +1,6 @@
 import { expectTextContrast, roleColors } from './color-roles';
 import { expectCopyButtonSkin } from './copy-button-assertions';
+import { expectGraphCardBadges } from './graph-card-badges';
 import type { TaskDetail } from '../../src/api/types';
 import { usageMetricKeys } from '../../src/api/usage';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
@@ -841,6 +842,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await expect(external.locator('.task-node-owner')).toContainText('A very long external owner');
     await expect(external.locator('.task-external-label')).toBeVisible();
     await expect(external.locator('.task-paused-badge, .task-agent-permission, .task-platform, .task-stuck-label')).toHaveCount(4);
+    await expectGraphCardBadges(external);
     const geometry = await external.evaluate(element => {
       const card = element as HTMLElement, box = card.getBoundingClientRect();
       const title = card.querySelector<HTMLElement>('.task-node-title')!;

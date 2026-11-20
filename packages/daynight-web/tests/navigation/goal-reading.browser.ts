@@ -1,6 +1,8 @@
 import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
 import { expectCopyButtonSkin } from './copy-button-assertions';
+import { expectGraphCardBadges } from './graph-card-badges';
+import { usageMetricKeys } from '../../src/api/usage';
 import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
@@ -330,6 +332,12 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [otherTask2Id] }),
       detailFixture(projectId, otherTask2Id, { title: 'Hidden ancestor', dependsOn: [outsideId] }),
       detailFixture(projectId, outsideId, { title: 'Hidden root' })];
+    currentGraph = graphFixture(details);
+  }, addComplexExternalGoalTask: (title: string) => {
+    details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], blockedBy: [otherTaskId], ready: false },
+      detailFixture(projectId, otherGoalId, { type: 'goal', title: 'A very long external owner name that should truncate', ready: false }),
+      detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title, status: 'in_progress', ready: false, startedAt: '2026-10-22T08:00:00Z',
+        allowAgents: true, requiredPlatform: 'linux', properties: { paused: true, pullRequests: [] } })];
     currentGraph = graphFixture(details);
   }, addTwoExternalTasks: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
@@ -3090,6 +3098,51 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await page.keyboard.press('Escape');
   await expect(nested).toHaveCount(0);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const rootSize of [16, 32]) {
+  test(`Goal graph fits complex external card at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
+    const title = locale === 'en' ? 'A task title long enough to occupy two lines in this card' : '这是一个用于验证依赖图卡片双行标题显示和完整布局的任务';
+    const fixture = await install(page, locale); fixture.addComplexExternalGoalTask(title);
+    await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ json: { protocol: 'daynight.usage.v1' }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.route('**/api/projects/*/usage/v1/task-summaries', route => {
+      const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
+      const summary = {
+        metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: key === 'totalTokens' ? '9007199254740993' : null, contributingRecords: key === 'totalTokens' ? '1' : '0', unknownRecords: '0' }])),
+        scope: 'registered_web_executions', completeness: 'partial', reasonCodes: [],
+        coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+        measurementRecords: '1', lastMeasuredAt: null, observedAt: time, etag: 'external-usage',
+      };
+      return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, rootSize);
+    await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+    await page.getByRole('tab', { name: /^Goal/ }).click();
+    await page.locator(`#project-goal-graph-${goalId}`).click();
+    const graph = page.locator(`#task-graph-${goalId}`);
+    const external = graph.locator(`.react-flow__node[data-id="${otherTaskId}"] .task-node`);
+    await expect(external.locator('.task-node-usage')).toBeVisible();
+    await expect(external.locator('.task-node-owner')).toContainText('A very long external owner');
+    await expect(external.locator('.task-external-label')).toBeVisible();
+    await expect(external.locator('.task-node-expansions')).toHaveCount(0);
+    await expectGraphCardBadges(external);
+    const geometry = await external.evaluate(element => {
+      const card = element as HTMLElement, box = card.getBoundingClientRect();
+      const title = card.querySelector<HTMLElement>('.task-node-title')!;
+      const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
+      const parts = ['.task-node-meta', '.task-node-title', '.task-node-usage', '.task-node-bottom > *', '.task-node-details']
+        .flatMap(selector => [...card.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+      const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+      return { width: card.offsetWidth, height: card.offsetHeight, twoLines: title.offsetHeight > lineHeight * 1.5 && title.scrollHeight <= title.clientHeight + 1,
+        inside: parts.every(part => part.left >= box.left - 1 && part.right <= box.right + 1 && part.top >= box.top - 1 && part.bottom <= box.bottom + 1),
+        separate: parts.every((part, index) => parts.slice(index + 1).every(other => separate(part, other))) };
+    });
+    expect(geometry).toEqual({ width: 320 * rootSize / 16, height: 144 * rootSize / 16, twoLines: true, inside: true, separate: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
 
 for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const rootSize of [16, 32]) test(`Goal compact graph frames independent tasks at ${width}px, ${rootSize}px root in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
