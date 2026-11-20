@@ -383,6 +383,8 @@ func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls i
 	want.PreserveArchiveSessions = true
 	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
 	want.PreserveSudoCleanup = !present
+	_, present = body["value"].(map[string]any)["enableWindowsProcessCleanup"]
+	want.PreserveWindowsProcessCleanup = !present
 	_, present = body["value"].(map[string]any)["taskTagFilter"]
 	want.PreserveTaskTagFilter = !present
 	revision := body["revision"].(string)

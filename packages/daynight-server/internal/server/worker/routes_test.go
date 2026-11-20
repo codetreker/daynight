@@ -133,6 +133,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 		value := capacityDecode[model.WorkerConfiguration](t, config)
 		value.PreserveArchiveSessions = true
 		value.PreserveSudoCleanup = true
+		value.PreserveWindowsProcessCleanup = true
 		value.PreserveTaskTagFilter = true
 		return f.request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": "1", "value": config}),
 			&workerRouteCall{name: "PutConfiguration", args: []any{id, "1", value}, result: result, err: refusal})
