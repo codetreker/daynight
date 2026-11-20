@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/jackc/pgx/v5"
 )
 
 var _ store.GrantLifecycleDAO = (*DAO)(nil)
@@ -48,7 +50,7 @@ func (d *DAO) RotateRefresh(ctx context.Context, r store.OAuthRotation) error {
 	return pg.AuthQueryError("insert OAuth rotated refresh", err)
 }
 func (d *DAO) OwnerGrants(ctx context.Context, user string) ([]store.OAuthGrant, error) {
-	rows, err := d.tx.Query(ctx, `SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at FROM oauth_grants WHERE user_id=$1 ORDER BY created_at DESC,id DESC`, user)
+	rows, err := d.tx.Query(ctx, `SELECT id::text,user_id::text,client_id,client_snapshot,resource,scope,created_at,expires_at,revoked_at,last_used_at,description FROM oauth_grants WHERE user_id=$1 ORDER BY created_at DESC,id DESC`, user)
 	if err != nil {
 		return nil, pg.AuthQueryError("list OAuth grants", err)
 	}
@@ -56,12 +58,31 @@ func (d *DAO) OwnerGrants(ctx context.Context, user string) ([]store.OAuthGrant,
 	grants := make([]store.OAuthGrant, 0)
 	for rows.Next() {
 		var g store.OAuthGrant
-		if err := rows.Scan(&g.ID, &g.UserID, &g.ClientID, &g.ClientSnapshot, &g.Resource, &g.Scope, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.UserID, &g.ClientID, &g.ClientSnapshot, &g.Resource, &g.Scope, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt, &g.Description); err != nil {
 			return nil, pg.AuthQueryError("scan OAuth grants", err)
 		}
 		grants = append(grants, g)
 	}
 	return grants, pg.AuthQueryError("list OAuth grants", rows.Err())
+}
+
+func (d *DAO) UpdateOwnerGrantDescription(ctx context.Context, user, id string, expected, description *string) (bool, error) {
+	var returnedID string
+	var returnedDescription *string
+	err := d.tx.QueryRow(ctx, `UPDATE oauth_grants SET description=$4 WHERE id=$1 AND user_id=$2 AND description IS NOT DISTINCT FROM $3 RETURNING id::text,description`, id, user, expected, description).Scan(&returnedID, &returnedDescription)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, pg.AuthQueryError("update OAuth grant description", err)
+	}
+	return true, nil
+}
+
+func (d *DAO) OwnerGrantExists(ctx context.Context, user, id string) (bool, error) {
+	var exists bool
+	err := d.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM oauth_grants WHERE id=$1 AND user_id=$2)`, id, user).Scan(&exists)
+	return exists, pg.AuthQueryError("check OAuth grant owner", err)
 }
 
 // Each statement consumes only the remaining batch allowance. Access and refresh

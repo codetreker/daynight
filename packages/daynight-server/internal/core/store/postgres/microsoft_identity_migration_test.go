@@ -40,6 +40,10 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("migration changed account credentials or ownership")
 	}
+	var tokenDescriptionNull bool
+	if err := pool.QueryRow(ctx, `SELECT description IS NULL FROM personal_access_tokens WHERE id=$1`, queryID(31)).Scan(&tokenDescriptionNull); err != nil || !tokenDescriptionNull {
+		t.Fatalf("historical token description is not null: %v", err)
+	}
 	var repositoryVersion int64
 	if err := pool.QueryRow(ctx, `SELECT repository_version FROM projects WHERE id=$1`, queryID(20)).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
 		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
@@ -170,7 +174,7 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
  'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash' ORDER BY id) FROM sessions t),
- 'tokens',(SELECT jsonb_agg(to_jsonb(t)-'last_used_at' ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
+ 'tokens',(SELECT jsonb_agg(to_jsonb(t)-'last_used_at'-'description' ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
 		t.Fatal(err)
 	}
 	return result
