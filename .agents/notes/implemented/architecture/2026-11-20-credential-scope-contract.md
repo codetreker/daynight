@@ -36,4 +36,6 @@ CLI and MCP defaults use the applicable available entries; Team defaults to read
 and MCP excludes Worker execution. Agent authorization is a separate group.
 Saved snapshots remain unchanged as the catalog grows. The policy does not grant
 resource membership, override profile bindings, or enforce public operations by
-itself. Persistence, production admission and issuance remain independent work.
+itself. The [Tag admission mechanism](2026-11-20-tag-scope-admission.md) consumes
+the policy through opt-in service and transport entry points. Persistence,
+production activation and issuance remain independent work.
