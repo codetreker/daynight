@@ -9,7 +9,7 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { TaskConfirmation } from "../task-detail/TaskConfirmation";
 import { promptMessages } from "../worker-prompts/messages";
 import { useWorkerPrompt } from "../worker-prompts/useWorkerPrompt";
-import { WorkerPromptEditor } from "../worker-prompts/WorkerPromptEditor";
+import { WorkerPromptEditor, type PromptPurpose } from "../worker-prompts/WorkerPromptEditor";
 import { Identity } from "./feedback";
 import { TokensPanel } from "./TokensPanel";
 import { OwnerGrantsPanel } from "./OwnerGrantsPanel";
@@ -64,10 +64,12 @@ const AccountContent = ({ user, onSignOut, onIdentityMismatch, active = true, on
   };
   const [tokensOpened, setTokensOpened] = useState(false);
   const [tokensRetained, setTokensRetained] = useState(false), [grantsRetained, setGrantsRetained] = useState(false);
-  const prompt = useWorkerPrompt({ scope: 'user' }, { readEnabled: active });
-  const navigation = usePromptNavigation({ scope: 'user' }, prompt, { visible: active && tab === 'prompt', onContinueEditing: () => browserNavigation().navigate(accountUrl('prompt'), true) });
+  const [purpose, setPurpose] = useState<PromptPurpose>('worker');
+  const prompt = useWorkerPrompt({ scope: 'user' }, { readEnabled: active && purpose === 'worker' });
+  const reviewer = useWorkerPrompt({ scope: 'user', purpose: 'reviewer' }, { readEnabled: active && purpose === 'reviewer' });
+  const navigation = usePromptNavigation({ scope: 'user' }, { dirty: (!prompt.unavailable && prompt.dirty) || (!reviewer.unavailable && reviewer.dirty), unavailable: prompt.unavailable && reviewer.unavailable, abandon: () => { prompt.abandon(); reviewer.abandon(); } }, { visible: active && tab === 'prompt', onContinueEditing: () => { if (purpose === 'worker' && !prompt.dirty && reviewer.dirty) setPurpose('reviewer'); if (purpose === 'reviewer' && !reviewer.dirty && prompt.dirty) setPurpose('worker'); browserNavigation().navigate(accountUrl('prompt'), true); } });
   useLayoutEffect(() => { if (tab === "tokens") setTokensOpened(true); }, [tab]);
-  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain || tokensRetained || grantsRetained); }, [onRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain, tokensRetained, grantsRetained]);
+  useLayoutEffect(() => { onRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain || reviewer.pending || reviewer.confirmed || reviewer.uncertain || tokensRetained || grantsRetained); }, [onRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain, reviewer.pending, reviewer.confirmed, reviewer.uncertain, tokensRetained, grantsRetained]);
   return <div ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div>
     {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "账户设置页签无效，请选择一个页签。" : "Invalid account settings tab. Choose a tab to continue."}</div>}
@@ -78,7 +80,7 @@ const AccountContent = ({ user, onSignOut, onIdentityMismatch, active = true, on
     </nav><div className="settings-main" hidden={historyError} inert={historyError}>
       <div hidden={tab !== "profile"} inert={tab !== "profile"}><section className="panel"><div className="panel-body"><div className="profile-info"><Identity user={user} /></div><dl className="info-list"><dt>{m.loginMethod}</dt><dd>{m.viaUniAuth}</dd><dt>{m.profileSource}</dt><dd>{m.profileSourceDescription}</dd></dl></div></section><section className="panel"><div className="panel-heading"><div><h2>{m.sessionTitle}</h2><p>{m.sessionDescription}</p></div><button className="button" type="button" onClick={onSignOut}>{m.signOut}</button></div></section></div>
       {(tokensOpened || tab === "tokens") && <div hidden={tab !== "tokens"} inert={tab !== "tokens"}><CredentialClockProvider visible={active && !historyError && tab === "tokens"}><TokensPanel onRetentionChange={setTokensRetained} user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /><OwnerGrantsPanel onRetentionChange={setGrantsRetained} user={user} onIdentityMismatch={onIdentityMismatch} visible={active && !historyError && tab === "tokens"} /></CredentialClockProvider></div>}
-      <div hidden={tab !== "prompt"} inert={tab !== "prompt"}><WorkerPromptEditor state={prompt} scope="user" /></div>
+      <div hidden={tab !== "prompt"} inert={tab !== "prompt"}><WorkerPromptEditor state={purpose === 'worker' ? prompt : reviewer} scope="user" purpose={purpose} onPurposeChange={setPurpose} /></div>
     </div></div>
     {navigation.confirmation}
   </div>;
