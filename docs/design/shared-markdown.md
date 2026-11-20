@@ -4,7 +4,7 @@
 
 ## 模块与资源
 
-`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，场景通过 `--markdown-*` 参数保留间距、颜色和字重差异，字号使用公共语义角色；描述卡片、消息气泡及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
+`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，场景通过 `--markdown-*` 参数保留间距、颜色和字重差异。正文、标题、代码、表格及 Daynight 控制的 Mermaid 字号遵循[公共字号标准](../spec/web-typography.md)；描述卡片、消息气泡及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
 
 调用者提供 document 资源模式：`paused`、`resolveUrl(sourceUrl)`、可选 `onLinkClick(sourceUrl, event)` 与 `renderImage({sourceUrl, url, alt, title})`。`sourceUrl` 是解析器 URI normalize 后、业务转换前的值；转换结果再经过 `defaultUrlTransform`，拒绝结果不能由来源地址恢复为图片加载地址。每次处理使用 WeakMap 将原 HAST 节点与来源关联，避免从预览地址反推附件路径。公共层不读取业务数据、权限或凭据。
 

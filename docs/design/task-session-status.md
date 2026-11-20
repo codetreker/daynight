@@ -68,7 +68,7 @@
 
 ## 视觉与可访问性
 
-配色接入必须遵循[UI 语义角色](../ui-design.md#semantic-color-roles)：working 使用 activity，notice 与 warning 使用 attention，精确色值仅由该文档拥有。观察协议保持不变，明确失败反馈仍由独立 error 角色表达。Task 的生命周期、Session 活动和 runtime 在线健康分别显示，在线绿色连接点不能替代 working 注记。
+Session 状态消费[共享语义配色](web-visual-tokens.md#任务状态与交互色)：working 使用 activity，notice 与 warning 使用 attention，明确失败反馈使用 error。观察协议不因配色改变。Task 生命周期、Session 活动和 runtime 在线健康分别显示，绿色在线连接点不能替代 working 注记。
 
 链与 Goal 汇总的进行中状态保持无背景和边框的正文。汇总角标使用 Georgia 斜体，回退 Times New Roman/serif，字号 8.5px、行高 12px、字距 0.03em；没有背景、边框、图标或动画。固定状态区域预留右侧余量，绝对定位角标，显隐和词长变化不改变标题、状态坐标或行高。Goal 各生命周期状态的状态区域均定位角标；状态文字及背景仍由 Goal 自身决定。
 
