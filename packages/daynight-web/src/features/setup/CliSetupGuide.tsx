@@ -21,8 +21,9 @@ export const CliSetupGuide = (copyProps: SetupCopyProps) => {
     <ol className="panel setup-steps" aria-label={m.stepsLabel}>
       {steps.map((step, index) => <li className="setup-step" key={step.id}>
         <span className="setup-step-number" aria-hidden="true">{index + 1}</span>
+        <h3>{step.title}</h3>
         <div className="setup-step-content">
-          <h3>{step.title}</h3><p>{step.description}</p>
+          <p>{step.description}</p>
           {step.id === "start" && <p className="setup-request-label">{m.agentRequest}</p>}
           <SetupCommand text={step.command} title={step.title} {...copyProps} />
           {"note" in step && <p className="setup-guide-tip">{step.note}</p>}
