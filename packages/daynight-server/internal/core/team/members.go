@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -50,6 +51,9 @@ func MembersPage(ctx context.Context, dao store.TeamReader, p model.Principal, i
 	if err := teamAccess(ctx, dao, p, id); err != nil {
 		return MemberPage{}, err
 	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
+		return MemberPage{}, err
+	}
 	result, err := dao.TeamMembersPage(ctx, id, page)
 	if err != nil {
 		return MemberPage{}, err
@@ -76,6 +80,9 @@ func teamAccess(ctx context.Context, dao store.TeamReader, p model.Principal, id
 
 func Member(ctx context.Context, dao store.TeamReader, p model.Principal, id, userID string) (model.TeamMember, error) {
 	if err := teamAccess(ctx, dao, p, id); err != nil {
+		return model.TeamMember{}, err
+	}
+	if err := checkScope(ctx, p, scopepolicy.TeamRead); err != nil {
 		return model.TeamMember{}, err
 	}
 	member, err := dao.InvitationTeamMember(ctx, id, userID)
@@ -108,6 +115,17 @@ func ValidateMemberChange(p model.Principal, id, userID string, input ChangeTeam
 func ChangeMember(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, target string, input ChangeTeamMember, remove bool) (TeamMemberResult, error) {
 	t, err := dao.Team(ctx, p.UserID)
 	if err != nil {
+		return TeamMemberResult{}, err
+	}
+	operation := scopepolicy.TeamMembers
+	if remove && target == p.UserID {
+		operation = scopepolicy.TeamLeave
+	}
+	operations := []scopepolicy.Operation{operation}
+	if !remove {
+		operations = append(operations, scopepolicy.TeamRead)
+	}
+	if err := checkScope(ctx, p, operations...); err != nil {
 		return TeamMemberResult{}, err
 	}
 	if t.Kind == "personal" {

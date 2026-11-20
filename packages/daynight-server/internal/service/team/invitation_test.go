@@ -1,12 +1,14 @@
 package team
 
 import (
+	"context"
 	"errors"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func invitationInspectPlan(inspect bool) []string {
@@ -25,6 +27,39 @@ func invitationAcceptPlan(refresh bool) []string {
 }
 func fixtureAcceptance() core.TeamInvitationAcceptance {
 	return core.TeamInvitationAcceptance{Team: fixtureTeam().TeamRef, Membership: fixtureMember().Membership, Joined: true, Consumed: true}
+}
+
+func TestInvitationReceiptUsesBoundTransactionAndSuppressesFailures(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "refused"}[fail], func(t *testing.T) {
+			f := newTeamFixture(t, invitationAcceptPlan(!fail)...)
+			f.bindAccept(fixtureInvitation(), core.TeamInvitationAcceptance{}, nil)
+			want := core.TeamInvitationReceipt{TeamID: f.id, Joined: true, Consumed: true}
+			refusal := fixtureFault("insufficient_scope")
+			f.service.core.acceptInvitationReceipt = func(ctx context.Context, dao store.TeamWriteDAO, p model.Principal, secret string, clock func() time.Time) (core.TeamInvitationReceipt, error) {
+				f.writeCall("accept", ctx, dao, p)
+				if secret != f.secret {
+					t.Error("receipt secret changed")
+				}
+				f.clock(clock)
+				if fail {
+					return core.TeamInvitationReceipt{}, refusal
+				}
+				return want, nil
+			}
+			if !fail {
+				f.bindRefresh(store.WebhookEligibilityFilter{TeamID: f.id, UserID: f.p.UserID}, nil)
+			}
+			got, err := f.service.AcceptInvitationReceipt(f.ctx, f.p, f.secret, f.expected)
+			if fail {
+				if err != refusal || got != (core.TeamInvitationReceipt{}) {
+					t.Fatalf("receipt=%+v err=%v", got, err)
+				}
+			} else if err != nil || got != want {
+				t.Fatalf("receipt=%+v err=%v", got, err)
+			}
+		})
+	}
 }
 
 func TestTeamInvitationLifecycle(t *testing.T) {

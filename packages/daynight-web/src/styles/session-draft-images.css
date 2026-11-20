@@ -13,7 +13,7 @@
 .session-draft-recovery-content summary { overflow-wrap: anywhere; white-space: pre-wrap; }
 .session-draft-attachments .button, .session-add-images { min-height: 44px; min-width: 44px; }
 .session-draft-attachments .session-error { margin: 3.5px 0; }
-.session-draft-saving, .session-draft-disabled { display: block; font-size: var(--text-interface); }
+.session-draft-saving, .session-draft-disabled { display: block; font-size: var(--text-sm); }
 .session-composer[data-image-drop=true] .session-composer-surface { outline: 2px solid currentColor; outline-offset: -2px; }
 .session-image-drop-hint { padding: 4.2px; }
 .session-add-images { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; }

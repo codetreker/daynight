@@ -24,6 +24,7 @@ func NewAppTeams(db interface {
 }
 
 func (s *AppTeams) Delete(ctx context.Context, p model.Principal, id string, input core.ChangeTeam) error {
+	ctx = s.admission.context(ctx)
 	id, err := core.ValidateChange(p, id, input)
 	if err != nil {
 		return err

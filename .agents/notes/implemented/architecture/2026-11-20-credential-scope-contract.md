@@ -31,6 +31,19 @@ recheck credentials in a transaction also require a current scoped policy at tha
 boundary. GitHub operations resumed after external proof obtain current authority
 for the original credential before returning a result or continuing a write.
 
+Team operations apply that contract at their business admission points, after
+visibility checks and before protected output or mutation. Existing role checks
+remain mandatory without exposing role-dependent results to a credential that
+lacks the required scope.
+
+The scoped service constructors require explicit credential authorization
+providers; operations with an existing transaction-bound credential recheck use
+the current authorization from that same transaction or snapshot. The existing
+production constructors retain their original profile until scoped assembly is
+enabled. Team invitation acceptance has its own permission and does not require
+project reading. Its minimal service receipt needs only acceptance permission;
+the existing full response also requires permission to read the invitation.
+
 Bot definition services accept an explicitly supplied authorization source for
 snapshot reads and transaction-bound writes. Definition reads, writes and
 deletion use their respective operations, alongside the existing credential and

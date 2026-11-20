@@ -234,6 +234,29 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 	assertHTTPError(t, w, 500, "internal_error")
 }
 
+func TestScopeRefusalPreservesHTTPEnvelopeAndSuppressesUncertainResults(t *testing.T) {
+	fault := &model.Fault{Code: "insufficient_scope", Message: "Credential scope is insufficient."}
+	for _, tc := range []struct {
+		name         string
+		err          error
+		status       int
+		code, header string
+	}{
+		{"refusal", fault, http.StatusForbidden, "forbidden", "insufficient_scope"},
+		{"not committed", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, http.StatusForbidden, "forbidden", "insufficient_scope"},
+		{"unknown commit", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}, http.StatusInternalServerError, "internal_error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			WriteError(w, httptest.NewRequest("PATCH", "/", nil), quietLogger(), "team", "change", tc.err)
+			assertHTTPError(t, w, tc.status, tc.code)
+			if got := w.Header().Get("Daynight-Scope-Status"); got != tc.header {
+				t.Fatalf("scope status = %q, want %q", got, tc.header)
+			}
+		})
+	}
+}
+
 type shortWriter struct {
 	*httptest.ResponseRecorder
 	err error

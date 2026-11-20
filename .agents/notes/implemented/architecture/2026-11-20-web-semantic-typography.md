@@ -31,8 +31,12 @@ Their marked text fields use the shared responsive adjustment to preserve a 16 C
 px minimum on narrow or coarse-pointer displays while responding to larger browser
 font preferences. Other touch fields, including Step title and Markdown editors
 on coarse pointers, use the transitional `--text-touch-field` size.
-Terminal recordings use a shared `--text-terminal` base, multiplied by their
-independent zoom scale; reading-role changes do not affect terminal output.
+Terminal recordings directly select `sm`, multiplied by their independent,
+unitless zoom scale; changing `base` does not affect terminal output. The
+[Session and Bot typography decision](2026-11-20-session-bot-typography.md)
+replaces the original `--text-terminal` selection, whose transitional bridge
+retains its `xs` mapping. Session inputs use the shared coarse-pointer text
+adjustment, while Bot creation and directory fields use its responsive mode.
 
 The original role-based choices assign business states, errors, controls, tool
 paths and code to interface; IDs, times, versions and secondary counts to metadata.

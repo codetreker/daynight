@@ -476,7 +476,7 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     if (!attachments || !imageEditable || files.length === 0) return;
     void attachments.addFiles(files, value).catch(cause => setError(imageMessages.issue(cause instanceof Error ? cause.message : '')));
   };
-  const input = <textarea readOnly={!canInteract || imageReadOnly} aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onPaste={event => {
+  const input = <textarea data-touch-text="coarse" readOnly={!canInteract || imageReadOnly} aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onPaste={event => {
       const files = Array.from(event.clipboardData.files);
       if (!files.length || !attachments || !imageEditable) return;
       if (composing.current) { setError(imageMessages.composing); return; }
