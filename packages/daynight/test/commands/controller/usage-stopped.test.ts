@@ -66,7 +66,7 @@ test.each([false, true])("replays original grants after native stop without shar
 
 test("rejects changed execution identity before network or acknowledgement", async () => {
   const f = await fixture(), request = vi.fn<typeof fetch>();
-  await expect(replayStoppedControllerUsage({ ...f, ticket: { ...f.ticket, claimId: randomUUID() }, serverToken: "parent", request })).rejects.toThrow();
+  await expect(replayStoppedControllerUsage({ ...f, ticket: { ...f.ticket, sessionId: randomUUID() }, serverToken: "parent", request })).rejects.toThrow();
   expect(request).not.toHaveBeenCalled(); expect(countStoppedControllerUsage(f)).toBe(1);
 });
 
@@ -127,7 +127,7 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
     let failed!: () => void;
     const rejected = new Promise<void>(resolve => { failed = resolve; });
     const emit = vi.fn<Parameters<typeof createWebArchiveMaintenance>[0]["emit"]>(event => { if (event.kind === "cleanup-error") failed(); });
-    const maintenance = createWebArchiveMaintenance({ homeDirectory: f.home, serverUrl: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, signal: signal.signal, store: worker, webStore, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit });
+    const maintenance = createWebArchiveMaintenance({ homeDirectory: f.home, serverUrl: f.ticket.serverOrigin, workerId: f.ticket.workerId!, userId: f.ticket.userId!, signal: signal.signal, store: worker, webStore, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit });
     try {
       await maintenance.discardLocal(() => true, false, signal.signal);
       await rejected;
