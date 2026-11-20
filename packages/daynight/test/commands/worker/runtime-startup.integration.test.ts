@@ -25,6 +25,9 @@ import * as directoryBrowsing from "../../../src/commands/worker/read-only/direc
 import * as webStores from "../../../src/commands/worker/backends/web-store.js";
 import * as monitoringObservers from "../../../src/commands/worker/monitoring/observer.js";
 import * as workerDiagnostics from "../../../src/commands/worker/diagnostics.js";
+import * as reconcileWake from "../../../src/commands/worker/reconcile-wake.js";
+import { createNativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
+import { BotCliProbeCleanupError, createBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -285,7 +288,17 @@ describe("worker cloud-first startup", () => {
   });
 
   it("retains the root through the diagnostic close deadline until its original file handle joins", async () => {
-    const f = await fixture(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const f = await fixture(), release = Promise.withResolvers<void>();
+    const createWake = reconcileWake.createReconcileWake;
+    let polling = false, appending = false;
+    const waking = vi.spyOn(reconcileWake, "createReconcileWake").mockImplementation(() => {
+      const wake = createWake();
+      return { ...wake, waitAfter: async (revision, _delayMs, signal) => {
+        const waiting = wake.waitAfter(revision, 60_000, signal);
+        if (revision === wake.snapshot() && !signal.aborted) polling = true;
+        try { await waiting; } finally { polling = false; }
+      } };
+    });
     const actual = await vi.importActual<typeof import("../../../src/commands/worker/diagnostics.js")>("../../../src/commands/worker/diagnostics.js");
     let sink: Awaited<ReturnType<typeof actual.createWorkerDiagnostics>> | undefined;
     let handleClosed = false, close: ReturnType<typeof vi.spyOn> | undefined;
@@ -297,7 +310,7 @@ describe("worker cloud-first startup", () => {
           const handle = await open(filename, "a");
           const held = line.includes('"kind":"held-close"');
           try {
-            if (held) { entered.resolve(); await release.promise; }
+            if (held) { appending = true; await release.promise; }
             await handle.writeFile(line);
           }
           finally { await handle.close(); if (held) handleClosed = true; }
@@ -307,13 +320,19 @@ describe("worker cloud-first startup", () => {
     });
     let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
     const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    let joined = false;
+    void running.then(() => { joined = true; }, () => { joined = true; });
     try {
-      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      // The held append must belong to management close, after the running
+      // loop's ordinary flush has joined and its real poll wait has started.
+      await vi.waitFor(() => expect(polling).toBe(true));
       handleClosed = false;
       sink!.emit({ kind: "held-close", message: "Hold the original diagnostic append." });
-      await entered.promise;
-      expect((await control!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      const stopping = control!.stop();
+      await vi.waitFor(() => expect(appending).toBe(true));
+      expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
       control!.rebuild();
+      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 15_000 });
       await expect(running).rejects.toThrow("owner stop deadline elapsed");
       expect(sink!.isClosed()).toBe(false); expect(handleClosed).toBe(false);
       expect(close).toHaveBeenCalledOnce();
@@ -325,7 +344,16 @@ describe("worker cloud-first startup", () => {
       await released!.release();
       expect(sink!.isClosed()).toBe(true); expect(handleClosed).toBe(true);
       expect(close).toHaveBeenCalledOnce();
-    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); creating.mockRestore(); }
+    } finally {
+      release.resolve(); cancellation.abort();
+      try {
+        await vi.waitFor(() => expect(joined).toBe(true), { timeout: 5000 });
+        await Promise.allSettled([running]);
+        const closingSink = sink;
+        if (closingSink !== undefined) await vi.waitFor(() => expect(closingSink.isClosed()).toBe(true), { timeout: 5000 });
+      }
+      finally { creating.mockRestore(); waking.mockRestore(); }
+    }
   }, 20_000);
 
   it("retains management handles when a rejected diagnostic close has no completed closure receipt", async () => {
@@ -403,6 +431,59 @@ describe("worker cloud-first startup", () => {
       try { await expect(running).rejects.toMatchObject({ name: "OwnedCommandCleanupError" }); } finally { saving.mockRestore(); reviewerClosure.mockRestore(); }
     }
   }, 30_000);
+
+  it("reconciles a probe's original prepared reservation after scope admission closes", async () => {
+    const f = await fixture(), verifier = createNativeSelectionVerifier();
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let failPrepared = true, originalFailure: unknown, originalSink: OwnedCommandLifecycleSink | undefined;
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "prepared" && failPrepared) throw new Error("Original probe reservation could not be saved.");
+      await replace(file, text, ...rest);
+    });
+    const reviewerClosure = vi.spyOn(reviewerHost, "reconcileReviewerHostFailure").mockImplementation(async () => {
+      // This fixture's reviewer owns the real selection verifier only.
+      await verifier.close();
+    });
+    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
+      originalSink = currentOwnedCommandLifecycle();
+      const operation = createOperation({ signal });
+      try {
+        await verifier.verify({ native: { agent: "codex", model: "model", args: [] }, cwd: f.homeDirectory, environment: process.env }, operation);
+      } catch (error) { originalFailure = error; throw error; }
+      finally { operation.dispose(); }
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: value => { controls.push(value); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().resources.find(entry => entry.resourceId === "reviewer")?.result?.stop).toBe("unknown"));
+      const [probe] = retainedBotCliProbes();
+      expect(probe).toMatchObject({ pid: null, process: null, targetStarted: false });
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      failPrepared = false;
+      await controls[0]!.reconcile();
+      if (!controls[0]!.snapshot().stopped) await controls[0]!.reconcile();
+      expect(controls[0]!.snapshot().stopped).toBe(true);
+      expect(retainedBotCliProbes()).toEqual([]);
+      const saved = await Promise.all((await readdir(directory)).filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ generation: "1", event: { resourceId: probe!.launchId, stage: "stopped", proof: null } });
+      const refused = createOperation();
+      try {
+        const error = await withOwnedCommandLifecycle(originalSink!, () => createBotCliProbe({ cwd: f.homeDirectory, environment: process.env }, refused)).catch(error => error);
+        expect(error).toBeInstanceOf(Error); expect(error).not.toBeInstanceOf(BotCliProbeCleanupError);
+        expect(retainedBotCliProbes()).toEqual([]);
+      } finally { refused.dispose(); }
+      controls[0]!.rebuild();
+      await vi.waitFor(() => expect(controls).toHaveLength(2));
+      expect(controls[1]!.generation).toBe("2");
+    } finally {
+      failPrepared = false; cancellation.abort();
+      try { await expect(running).rejects.toBe(originalFailure); }
+      finally { await verifier.close(); saving.mockRestore(); reviewerClosure.mockRestore(); }
+    }
+  });
 
   it("retains a pending startup constructor and cleans its late result before rebuilding", async () => {
     const f = await fixture();

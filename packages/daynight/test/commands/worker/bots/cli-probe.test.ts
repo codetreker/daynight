@@ -9,7 +9,7 @@ import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lea
 import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
 import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retainedBotCliProbes, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
-import { withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../../src/commands/worker/owned-command-lifecycle.js";
+import { OwnedCommandAdmissionError, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../../src/commands/worker/owned-command-lifecycle.js";
 import { openExecutionResourceJournal } from "../../../../src/commands/worker/execution-resource-journal.js";
 import { captureSynchronousDeadline } from "../../../helpers/synchronous-deadline.js";
 import { withProbeGrace, type ExecHook } from "./cli-probe-clock.fixtures.js";
@@ -117,6 +117,30 @@ afterEach(async () => {
 });
 
 describe("owned Bot CLI capability probes", () => {
+  it("retains a committed preparation when only a later retry is refused admission", async () => {
+    const journal = await journalFixture(), sink = journal.sink("1");
+    const events: OwnedCommandLifecycleEvent[] = [];
+    let first = true, recover = false, failure: BotCliProbeCleanupError | undefined;
+    try {
+      failure = await withOwnedCommandLifecycle(async event => {
+        events.push(event);
+        if (recover) return sink(event);
+        if (first) { first = false; await sink(event); throw new Error("Prepared receipt committed before acknowledgement failed."); }
+        throw new OwnedCommandAdmissionError(new Error("Later scope admission is closed."));
+      }, fixture).then(() => { throw new Error("Expected retained preparation failure."); }, error => error);
+      expect(failure).toBeInstanceOf(BotCliProbeCleanupError);
+      expect(failure!.ownership).toMatchObject({ pid: null, process: null, targetStarted: false });
+      expect(retainedBotCliProbes()).toContainEqual(failure!.ownership);
+      expect(events.every(event => event.stage === "prepared")).toBe(true);
+      expect((await journal.read())[0]!.event.stage).toBe("prepared");
+      await expect(journal.assertClosed()).rejects.toThrow("unconfirmed boundaries");
+      recover = true;
+      await failure!.retryCleanup(); await journal.assertClosed();
+      expect((await journal.read())[0]!.event).toMatchObject({ resourceId: failure!.ownership.launchId, stage: "stopped", proof: null });
+      expect(retainedBotCliProbes()).not.toContainEqual(failure!.ownership);
+    } finally { recover = true; await failure?.retryCleanup(); }
+  });
+
   it("commits preparation and birth before releasing the reusable probe", async () => {
     const journal = await journalFixture(), sink = journal.sink("1"), events: OwnedCommandLifecycleEvent[] = [];
     const preparing = Promise.withResolvers<void>(), bind = Promise.withResolvers<void>();

@@ -86,6 +86,19 @@ responsibility. A failed or pending write cannot discard that evidence: recovery
 joins the original write and completes the same resource's terminal persistence
 without dispatch. This in-process evidence does not authorize clearing recovered
 null-proof records after the producer has been lost.
+Original resource closure also settles dependent Git handles when inventory
+reconciliation finishes first. Consumers subscribe to the original closure
+receipt rather than interpreting a missing inventory entry as proof. An
+asynchronous spawn failure retains no-process evidence only when the original
+child never started and its close event and output writers have joined.
+The receipt also waits for original handle and Job lease release. A never-resumed
+Windows child can use its original native termination and handle-close evidence;
+a runnable POSIX launcher with missing birth proof cannot use direct-child closure
+because its proof helper may already have descendants.
+Closing admission still permits an already admitted resource to retry its original
+prepared write under the same journal checks. A probe's first explicit pre-write
+rejection creates no reservation; later rejections cannot erase an earlier
+uncertain or pending write.
 
 The [Worker design](../../../../docs/design/daynight-worker.md#管理根与执行作用域)
 owns interfaces, budgets and the owner inventory. The

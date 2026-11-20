@@ -300,12 +300,16 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
     do {
       await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
       const scope = scopes.create();
+      const admittedResources = new Set<string>();
       await withOwnedCommandLifecycle(async event => {
-        if (event.stage === "prepared") {
+        if (event.stage === "prepared" && !admittedResources.has(event.resourceId)) {
           try {
             scope.signal.throwIfAborted();
             if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
           } catch (error) { throw new OwnedCommandAdmissionError(error); }
+          // Re-observing this reservation must remain possible after a failed
+          // save closes admission; the journal still checks its original fence.
+          admittedResources.add(event.resourceId);
         }
         if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
         try { await root.journal.sink(scope.generation)(event); }

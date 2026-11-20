@@ -5,7 +5,7 @@ import type { Operation } from "../../../api/operation.js";
 import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import { createWindowsBotJobLease, WindowsBotJobError, WindowsBotJobSetupError, type WindowsBotJobLease } from "./windows-job-lease.js";
 import type { OwnedCommandResult } from "../owned-command.js";
-import { currentOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../owned-command-lifecycle.js";
+import { currentOwnedCommandLifecycle, OwnedCommandAdmissionError, type OwnedCommandLifecycleEvent } from "../owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../execution-scope.js";
 import { createSuspendedNodeChild, type GatedNodeChild } from "../suspended-node-child.js";
 import { botCliProbeChildSource } from "./cli-probe-child.js";
@@ -68,7 +68,8 @@ export const createBotCliProbe = async (
   let terminalFailure: Error | undefined;
   const sink = currentOwnedCommandLifecycle();
   let sequence = 0;
-  const saves: { event: OwnedCommandLifecycleEvent; work?: Promise<void> }[] = [];
+  let rejectedPreparation: OwnedCommandAdmissionError | undefined;
+  const saves: { event: OwnedCommandLifecycleEvent; attempted?: true; work?: Promise<void> }[] = [];
   const save = async (stage: OwnedCommandLifecycleEvent["stage"]): Promise<void> => {
     if (sink === undefined) return;
     saves.push({ event: { resourceId: launchId, sequence: ++sequence, stage, proof } });
@@ -76,10 +77,17 @@ export const createBotCliProbe = async (
     while (saves.length) {
       const entry = saves[0]!;
       if (entry.work === undefined) {
+        const firstAttempt = entry.attempted !== true;
+        entry.attempted = true;
         const work = Promise.resolve().then(() => sink(entry.event));
         entry.work = work;
         // A timed-out save is still owned. Only a settled refusal can be retried.
-        void work.catch(() => { if (entry.work === work) delete entry.work; });
+        void work.catch(error => {
+          // A later admission refusal cannot erase an earlier write's unknown
+          // outcome. Only the first attempt can prove no reservation existed.
+          if (firstAttempt && entry.event.stage === "prepared" && error instanceof OwnedCommandAdmissionError) rejectedPreparation = error;
+          if (entry.work === work) delete entry.work;
+        });
       }
       await withinExecutionDeadline(entry.work, deadline);
       saves.shift();
@@ -111,6 +119,12 @@ export const createBotCliProbe = async (
   };
   const stop = async (): Promise<void> => {
     if (stopped) return;
+    const retireRejectedPreparation = (): boolean => {
+      if (rejectedPreparation === undefined || child !== undefined) return false;
+      saves.length = 0; stopped = true; nativeStopped = true; retained.delete(launchId);
+      return true;
+    };
+    if (retireRejectedPreparation()) return;
     const deadline = Date.now() + 60_000;
     let stage = "stop-owned-scope";
     try {
@@ -142,6 +156,7 @@ export const createBotCliProbe = async (
       stopped = true;
       retained.delete(launchId);
     } catch (error) {
+      if (retireRejectedPreparation()) return;
       try { await save("unknown"); } catch { /* The original save and cleanup remain strongly owned for reconciliation. */ }
       throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) });
     }
@@ -227,6 +242,7 @@ export const createBotCliProbe = async (
     if (error instanceof WindowsBotJobSetupError) { windowsJob = error.lease; jobObjectName = windowsJob.name; }
     await close();
     operation.check();
+    if (rejectedPreparation !== undefined && error === rejectedPreparation) throw rejectedPreparation.cause;
     throw error;
   }
 };

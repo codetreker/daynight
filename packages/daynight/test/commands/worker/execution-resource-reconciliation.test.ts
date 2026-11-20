@@ -1,13 +1,16 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as childProcesses from "node:child_process";
 import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
+import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
+import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import * as files from "../../../src/platform/files.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
 import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
-import { OwnedCommandAdmissionError, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { OwnedCommandAdmissionError, ownedCommandClosure, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
 
 vi.mock("node:child_process", { spy: true });
 
@@ -22,6 +25,120 @@ const fixture = async (syncDirectory?: (directory: string) => Promise<void>) => 
   return { directory, journalDirectory, journal };
 };
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+
+it.each(["inventory-only", "stop-first", "inventory-first"])("joins original Git cleanup after %s closure without replay", async order => {
+  const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
+  const script = path.join(directory, "git-once.cjs");
+  await writeFile(script, `require('node:fs').appendFileSync(${JSON.stringify(marker)},'once\\n');`);
+  const quote = (value: string) => `'${value.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
+  const replace = files.replaceFileAtomically;
+  let rejectStop = true;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("Git stop save failed");
+    return replace(file, text, ...rest);
+  });
+  const operation = createOperation({ limits: { totalMs: 20_000, requestMs: 20_000 } });
+  const handle = withOwnedCommandLifecycle(journal.sink("11"), () => startOwnedRepositoryGit(directory, ["-c", `alias.once=!${quote(process.execPath)} ${quote(script)}`, "once"], operation));
+  try {
+    const outcome = await handle.outcome;
+    expect(outcome.kind).toBe("cleanup-pending");
+    await expect(withinExecutionDeadline(handle.joined, Date.now() + 50)).rejects.toThrow();
+    const original = (await journal.read())[0]!.event;
+    rejectStop = false;
+    if (order === "stop-first") handle.requestStop();
+    await journal.reconcileRetained({ generation: "11", deadline: Date.now() + 10_000 });
+    if (order === "inventory-first") handle.requestStop();
+    await expect(withinExecutionDeadline(handle.joined, Date.now() + 1000)).resolves.toEqual({ kind: "local-closed", cleanupErrors: [] });
+    expect((await journal.read())[0]!.event).toMatchObject({ resourceId: original.resourceId, stage: "stopped", proof: original.proof });
+    expect(await handle.outcome).toBe(outcome);
+    expect(await readFile(marker, "utf8")).toBe("once\n");
+  } finally {
+    rejectStop = false; operation.dispose();
+    await journal.reconcileRetained({ generation: "11", deadline: Date.now() + 10_000 });
+    handle.requestStop(); await withinExecutionDeadline(handle.joined, Date.now() + 1000);
+  }
+}, 30_000);
+
+it.skipIf(process.platform === "win32")("retains positive failed-spawn closure when an asynchronous ENOENT loses its first terminal save", async () => {
+  const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const children: ReturnType<typeof actual.spawn>[] = [], observations: string[] = [];
+  vi.spyOn(childProcesses, "spawn").mockImplementation((...args: Parameters<typeof actual.spawn>) => {
+    const child = Reflect.apply(actual.spawn, undefined, args) as ReturnType<typeof actual.spawn>;
+    children.push(child);
+    child.once("spawn", () => observations.push("spawn"));
+    child.once("error", error => observations.push("code" in error ? String(error.code) : "error"));
+    child.once("close", () => observations.push("close"));
+    return child;
+  });
+  const replace = files.replaceFileAtomically;
+  let rejectStop = true;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("failed-spawn stop save failed");
+    return replace(file, text, ...rest);
+  });
+  const operation = createOperation();
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`], environment: process.env, cwd: path.join(directory, "missing") }, operation, journal.sink("12")).catch(error => error);
+  try {
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError" });
+    expect(observations).toEqual(["ENOENT", "close"]);
+    expect(children).toHaveLength(1); expect(children[0]!.pid).toBeUndefined();
+    expect(children[0]!.stdout!.closed).toBe(true); expect(children[0]!.stderr!.closed).toBe(true);
+    expect((await journal.read())[0]!.event).toMatchObject({ stage: "unknown", proof: null });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    rejectStop = false;
+    await journal.reconcileRetained({ generation: "12", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    expect(children).toHaveLength(1);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    await (await openExecutionResourceJournal({ directory: journalDirectory, identity })).assertClosed();
+  } finally { rejectStop = false; operation.dispose(); await journal.reconcileRetained({ generation: "12", deadline: Date.now() + 1000 }); }
+});
+
+it.skipIf(process.platform !== "win32")("retains the original Job until a release rejected before native close is retried", async () => {
+  const { journal } = await fixture(), operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+  const release = windowsJobs.releaseControllerJobLease;
+  const releasing = vi.spyOn(windowsJobs, "releaseControllerJobLease").mockImplementationOnce(() => { throw new Error("release rejected before native close"); }).mockImplementation(release);
+  let closure: Promise<void> | undefined;
+  const sink = journal.sink("13");
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.stdout.write('done')"], environment: process.env }, operation, async event => {
+    if (event.stage === "prepared") closure = ownedCommandClosure(event.resourceId);
+    await sink(event);
+  }).catch(error => error);
+  try {
+    expect(failure).toMatchObject({ name: "OwnedCommandCleanupError" });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    expect((await journal.read())[0]!.event.stage).toBe("stopped");
+    await expect(withinExecutionDeadline(closure!, Date.now() + 50)).rejects.toThrow();
+    await journal.reconcileRetained({ generation: "13", deadline: Date.now() + 15_000 });
+    await closure;
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    expect(releasing).toHaveBeenCalledTimes(2);
+    expect(releasing.mock.calls[1]![0]).toBe(releasing.mock.calls[0]![0]);
+  } finally { operation.dispose(); await journal.reconcileRetained({ generation: "13", deadline: Date.now() + 15_000 }); }
+}, 45_000);
+
+it.skipIf(process.platform !== "win32")("recovers a never-resumed Windows child with saved birth proof after Job acquisition and stop-save failures", async () => {
+  const { journalDirectory, journal } = await fixture(), operation = createOperation({ limits: { totalMs: 30_000, requestMs: 30_000 } });
+  vi.spyOn(windowsJobs, "createControllerJobLease").mockRejectedValueOnce(new Error("Job acquisition rejected"));
+  const replace = files.replaceFileAtomically;
+  let rejectStop = true;
+  vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+    if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("unstarted child stop save failed");
+    return replace(file, text, ...rest);
+  });
+  const failure = await runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.exit(99)"], environment: process.env }, operation, journal.sink("14")).catch(error => error);
+  try {
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
+    const original = (await journal.read())[0]!.event;
+    expect(original).toMatchObject({ stage: "unknown", proof: { pid: expect.any(Number) } });
+    rejectStop = false;
+    await journal.reconcileRetained({ generation: "14", deadline: Date.now() + 1000 });
+    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+    expect((await journal.read())[0]!.event).toMatchObject({ stage: "stopped", proof: original.proof });
+    await journal.assertClosed();
+  } finally { rejectStop = false; operation.dispose(); await journal.reconcileRetained({ generation: "14", deadline: Date.now() + 1000 }); }
+}, 45_000);
 
 it.each(["before-rename", "after-rename"])("retains no-spawn responsibility when prepared persistence fails %s", async fault => {
   let rejectSave = false;

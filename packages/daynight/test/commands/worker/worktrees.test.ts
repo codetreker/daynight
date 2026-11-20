@@ -13,6 +13,10 @@ import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/m
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
+import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
+import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as files from "../../../src/platform/files.js";
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -1899,6 +1903,47 @@ exec "$@"
       expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
     } finally { release.resolve(); await preparation; await adapter.dispose(); }
   });
+
+  it("unblocks the original mutation and manager disposal when inventory confirms its Git closure", async () => {
+    const f = await fixture(), journalDirectory = path.join(f.root, "journal");
+    const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity: {
+      serverOrigin: "https://daynight.example", userId: ids.taskId, workerId: ids.workerId,
+    } });
+    const replace = files.replaceFileAtomically;
+    let rejectStop = true, fetches = 0;
+    const replacement = vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("original Git stop save failed");
+      return replace(file, text, ...rest);
+    });
+    const reported = Promise.withResolvers<void>(), settled = vi.fn();
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("fetch")) return startOwnedRepositoryGit(cwd, args, op, options);
+        fetches++;
+        return withOwnedCommandLifecycle(journal.sink("1"), () => startOwnedRepositoryGit(cwd, args, op, options));
+      },
+      reportPending: () => reported.resolve(), reportSettled: settled,
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).catch(error => error);
+    try {
+      await Promise.race([reported.promise, preparation.then(error => { throw error; })]);
+      await expect(withinExecutionDeadline(preparation, Date.now() + 50)).rejects.toThrow();
+      const closing = adapter.dispose();
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      expect(await withinExecutionDeadline(preparation, Date.now() + 1000)).toMatchObject({ code: "repository_git_cleanup_pending" });
+      await withinExecutionDeadline(closing, Date.now() + 1000);
+      expect(settled).toHaveBeenCalledOnce(); expect(fetches).toBe(1);
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+      await journal.assertClosed();
+    } finally {
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      await withinExecutionDeadline(preparation, Date.now() + 1000);
+      await withinExecutionDeadline(adapter.dispose(), Date.now() + 1000);
+      replacement.mockRestore();
+    }
+  }, 30_000);
 
   it("joins pending mutations and retains command, cleanup and reporting errors on disposal", async () => {
     const f = await fixture();

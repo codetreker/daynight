@@ -5,8 +5,8 @@ import type { Operation } from "../api/operation.js";
 import { cleanupMs, diagnostic, gitArgs, gitEnvironment, gitTimeout, maxOutputBytes, RepositoryGitError } from "./git-policy.js";
 import type { RepositoryGitOptions, RepositoryGitResult } from "./git-policy.js";
 import { createOperation } from "../api/operation.js";
-import { currentOwnedCommandLifecycle, reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleSink } from "../commands/worker/owned-command-lifecycle.js";
-import { OwnedCommandError } from "../commands/worker/owned-command.js";
+import { currentOwnedCommandLifecycle, ownedCommandClosure, reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, type OwnedCommandLifecycleSink } from "../commands/worker/owned-command-lifecycle.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandError } from "../commands/worker/owned-command.js";
 
 export class RepositoryGitCleanupPendingError extends AggregateError {
   readonly code = "repository_git_cleanup_pending";
@@ -35,7 +35,15 @@ const startLifecycleRepositoryGit = (cwd: string, args: readonly string[], opera
   let settled = false, reconciling = false;
   const finish = () => { if (!settled) { settled = true; resolveJoined({ kind: "local-closed", cleanupErrors: [] }); } };
   const outcome: Promise<GitOwnedOutcome> = runLifecycleOwnedCommand({ file: "git", args: gitArgs(args), cwd, environment: gitEnvironment(options.environment) }, scoped,
-    async event => { resourceId = event.resourceId; await sink(event); }, { maximumOutputBytes: maxOutputBytes * 2, maximumStreamBytes: maxOutputBytes, timeoutMs: gitTimeout(operation, options.timeoutMs), ...(options.allowExitOne === undefined ? {} : { allowExitOne: options.allowExitOne }) }).then(result => {
+    async event => {
+      resourceId = event.resourceId;
+      if (event.stage === "prepared") {
+        // Inventory owns the same closure and may finish it independently of
+        // requestStop. Join the original producer before releasing Git callers.
+        void ownedCommandClosure(resourceId).then(async () => { await outcome; finish(); });
+      }
+      await sink(event);
+    }, { maximumOutputBytes: maxOutputBytes * 2, maximumStreamBytes: maxOutputBytes, timeoutMs: gitTimeout(operation, options.timeoutMs), ...(options.allowExitOne === undefined ? {} : { allowExitOne: options.allowExitOne }) }).then(result => {
       finish(); return { kind: "success", result: { ...result, stderr: diagnostic(result.stderr) } } as GitOwnedOutcome;
     }, (cause: unknown) => {
       const error = cause instanceof OwnedCommandError ? new RepositoryGitError("Repository Git command failed", cause.exitCode, cause.signal, diagnostic(cause.stderr), { cause }) : cause;
@@ -44,13 +52,20 @@ const startLifecycleRepositoryGit = (cwd: string, args: readonly string[], opera
     }).finally(() => scoped.dispose());
   return { outcome, joined, requestStop: () => {
     stop.abort(new Error("Repository Git stop requested."));
-    if (settled || reconciling || resourceId === undefined || !retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === resourceId)) return;
+    if (settled || reconciling) return;
     reconciling = true;
-    void outcome.then(async () => {
-      if (settled || resourceId === undefined) return;
-      try { await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 10_000); finish(); }
+    void outcome.then(async result => {
+      // Inventory can close this exact command before its Git owner retries.
+      // Only its original cleanup receipt can confirm that completed closure.
+      const confirmed = () => result.kind === "cleanup-pending" && hasOwnedCommandCleanupFailure(result.error) && !hasUnconfirmedOwnedCommandCleanup(result.error);
+      try {
+        if (settled || resourceId === undefined) return;
+        if (confirmed()) { finish(); return; }
+        await reconcileOwnedCommandBoundary(resourceId, sink, Date.now() + 10_000);
+        if (confirmed()) finish();
+      }
       catch { /* The original reservation remains unknown and joined remains pending. */ }
-      finally { reconciling = false; }
+      finally { if (confirmed()) finish(); reconciling = false; }
     });
   } };
 };

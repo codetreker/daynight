@@ -23,7 +23,49 @@ const command = (source: string) => ({ file: process.execPath, args: ["--input-t
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
-  it("joins the created launcher when reading the dispatch budget observes cancellation", async () => {
+  it.skipIf(process.platform === "win32").each(["birth-probe-failed", "budget-cancelled"])("retains unknown POSIX boundary responsibility after %s and a runnable launcher closes", async mode => {
+    const directory = await root();
+    // Isolate the intentionally unresolved receipt in its owning test process.
+    // An empty PATH makes the real launcher's ps fail without creating a helper;
+    // this fixture can finish while the production owner correctly stays unknown.
+    const source = `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const spawn = cp.spawn, children = [];
+      cp.spawn = (...args) => {
+        const child = spawn(...args), observed = { pid: child.pid, spawned: false, closed: false };
+        children.push(observed);
+        child.once('spawn', () => { observed.spawned = true; });
+        child.once('close', () => { observed.closed = true; });
+        return child;
+      };
+      syncBuiltinESMExports();
+      const lifecycle = await import(${JSON.stringify(new URL("../../../dist/commands/worker/owned-command-lifecycle.js", import.meta.url).href)});
+      const { createOperation } = await import(${JSON.stringify(new URL("../../../dist/api/operation.js", import.meta.url).href)});
+      const cancellation = new AbortController();
+      const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 5000, requestMs: 5000 } }), events = [];
+      if (${JSON.stringify(mode)} === 'budget-cancelled') {
+        const remaining = operation.remainingMs;
+        operation.remainingMs = () => { cancellation.abort(new Error('cancel before dispatch budget')); return remaining(); };
+      }
+      const failure = await lifecycle.runLifecycleOwnedCommand({ file: process.execPath, args: [], environment: process.env }, operation, async event => { events.push(event); }).catch(error => error);
+      let rejected = false;
+      try { await lifecycle.reconcileOwnedCommandBoundary(events[0].resourceId, async event => { events.push(event); }, Date.now() + 1000); } catch { rejected = true; }
+      operation.dispose();
+      process.stdout.write(JSON.stringify({ children, events, failure: failure.name, rejected, retained: lifecycle.retainedOwnedCommandBoundaries() }));
+    `;
+    const output = await new Promise<string>((resolve, reject) => childProcesses.execFile(process.execPath, ["--input-type=module", "--eval", source], {
+      cwd: directory, env: { ...process.env, PATH: directory }, timeout: 10_000, maxBuffer: 1024 * 1024,
+    }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
+    const result = JSON.parse(output);
+    expect(result.children).toEqual([{ pid: expect.any(Number), spawned: true, closed: true }]);
+    expect(result.events.map((event: OwnedCommandLifecycleEvent) => event.stage)).toEqual(["prepared", "unknown"]);
+    expect(result.failure).toBe("OwnedCommandCleanupError");
+    expect(result.rejected).toBe(true);
+    expect(result.retained).toEqual([{ resourceId: result.events[0].resourceId, proof: null }]);
+  }, 15_000);
+
+  it.skipIf(process.platform !== "win32")("joins the never-resumed Windows launcher when reading the dispatch budget observes cancellation", async () => {
     const cancellation = new AbortController();
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
     const remaining = operation.remainingMs;
