@@ -20,13 +20,15 @@ fixed profiles. Model and store contracts carry policy or approved scope values
 without changing the existing product assembly. PAT storage supports explicit
 policies with an independent version and rejects absent or malformed policies
 on scoped reads. The preparation migration leaves historical and legacy-writer
-rows unscoped until the coordinated backfill and cutover. Device records reserve
-the approved selection without changing the existing redemption flow. OAuth
-stores an MCP policy and its independent version on the grant; access and
-refresh credentials retain their original family identity. Scoped reads reject
-missing or malformed MCP policy while fixed API grants have no policy. OAuth
-authorization records can retain an explicit approved selection without changing
-the existing approval or code-exchange entry points.
+rows unscoped until the coordinated backfill and cutover. The opt-in device flow
+records the approved selection with the decision and uses that exact selection
+when redemption creates the PAT. Device decisions and redemptions check expiry
+using database time after locking the device record. OAuth stores an MCP policy
+and its independent version on the grant; access and refresh credentials retain
+their original family identity. Scoped reads reject missing or malformed MCP
+policy while fixed API grants have no policy. OAuth authorization records can
+retain an explicit approved selection without changing the existing approval or
+code-exchange entry points.
 
 Account, prompt, user-visible usage and GitHub admission paths apply the shared
 guard alongside their existing resource and profile checks. Their route
@@ -92,5 +94,6 @@ authorization source must read current authority at each supplied boundary and
 preserve the principal; it cannot substitute a stale request snapshot for an
 existing transactional recheck. The current production assembly retains the
 existing credential paths; scoped assembly requires authenticated policy
-snapshots and transaction-bound policy readers. Device issuance integration,
-historical backfill and production activation remain independent work.
+snapshots and transaction-bound policy readers. Historical backfill and
+production activation remain independent work; the original production device
+assembly remains in place until cutover.
