@@ -2582,19 +2582,46 @@ geometry or system-menu behavior.
 
 The [Web typography specification](../../docs/spec/web-typography.md) owns the
 allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
-`scripts/typography-policy.test.mts` checks valid and invalid stylesheet and inline
-font declarations, location diagnostics, source enumeration and the production
-tree. The harness also runs `scripts/typography-policy.mts` against every CSS,
-TS and TSX file under `src/`. Run that scan independently with
-`pnpm --filter @codetreker/daynight-web test:typography-policy`. The checker must
-reject fixed sizes, numeric fallbacks, unauthorized aliases, and local overrides,
-including declarations superseded by later rules. Verification must cover statically
-recognizable inline declarations, constants, JSX, DOM style assignments,
-`setProperty`, `cssText`, `setAttribute`, and renderer size configuration. Dynamic
-values at recognized declarations must be traceable to approved selections or
-shared rendering adjustments. Static analysis cannot evaluate arbitrary runtime
-code. Browser checks cover actual font sizes, resizing, reflow, clipping, and
-interaction continuity.
+`src/styles/typography.css` owns the six numeric scale values. Its fixed transitional
+role mappings preserve unmigrated consumers, including the terminal's `xs` base
+and the touch-field `max(var(--text-base), 16px)` minimum.
+
+The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
+TSX file under `src/`, including unreferenced sources. Run the scan independently:
+
+```bash
+pnpm --filter @codetreker/daynight-web test:typography-policy
+```
+
+Strict rules accept the six shared sizes and inheritance, reject fixed sizes,
+fallbacks, unauthorized aliases, local overrides and invalid font shorthands,
+and inspect declarations even when later rules supersede them. Shared rendering
+adjustments are restricted to their owning stylesheet. CSS AST inspection tracks
+retired identifiers in every declaration, including geometry. TypeScript AST
+inspection covers statically recognizable constants, strings, JSX, DOM style
+assignments, `setProperty`, `cssText`, `setAttribute` and renderer configuration.
+
+`scripts/typography-policy-baseline.json` grants temporary permission to exact
+legacy occurrences by path, diagnostic category, normalized value, syntax context
+and count, with a module owner for each entry. Selection aliases and the existing
+Mermaid font setting receive individual entries. Unrecorded uses, increased
+counts and stale entries fail. A module migration must remove or reduce its own
+entries in the same change; review baseline diffs to ensure they only shrink.
+The production check never regenerates or expands the baseline. Formatting and
+line-number changes do not change occurrence identity.
+
+The closing migration gate is:
+
+```bash
+pnpm --filter @codetreker/daynight-web exec node scripts/typography-policy.mts --zero-legacy
+```
+
+It refuses remaining transitional definitions and legacy references without
+consulting the baseline. After consumers migrate, remove the bridges, baseline
+and transitional matching code together. The [migration decision](../../.agents/notes/implemented/architecture/2026-11-20-web-typography-migration-policy.md)
+records why these permissions are bounded. Static analysis cannot execute arbitrary
+runtime code; browser checks remain responsible for actual font sizes, renderer
+output, resizing, reflow, clipping and interaction continuity.
 The `typography-ownership-playwright.config.ts` configuration exercises remaining
 shared notices, task controls, attachment metadata and Bot creation against the
 production shell, with controlled API responses. It checks English and Chinese,
