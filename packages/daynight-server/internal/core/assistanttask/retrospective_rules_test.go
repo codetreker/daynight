@@ -135,7 +135,7 @@ func TestEventPullSkipsRetrospectivesThatAreNoLongerDue(t *testing.T) {
 			if name == "no-outcome" {
 				d.latestOutcomeAt = func(context.Context, string, string) (*time.Time, error) { return nil, nil }
 			}
-			if err := New().maintain(context.Background(), d, userActor(), taskID, botID, true); err != nil {
+			if err := New().maintain(context.Background(), d, userActor(), taskID, botID, true, false); err != nil {
 				t.Fatal(err)
 			}
 			if len(*events) != 0 || len(*marks) != 0 {
@@ -184,7 +184,7 @@ func TestEventPullLocksInquiryAndRetrospectiveTasksOnceInIDOrder(t *testing.T) {
 		outcomes = append(outcomes, id)
 		return nil, nil
 	}
-	if err := New().maintain(context.Background(), d, userActor(), "", botID, true); err != nil {
+	if err := New().maintain(context.Background(), d, userActor(), "", botID, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(locks, []string{first, second}) || !reflect.DeepEqual(outcomes, []string{second, first}) {
@@ -227,7 +227,7 @@ func TestPeriodicRetrospectiveFailuresStopThePull(t *testing.T) {
 					return false, nil
 				}
 			}
-			err := New().maintain(context.Background(), d, userActor(), taskID, botID, true)
+			err := New().maintain(context.Background(), d, userActor(), taskID, botID, true, false)
 			switch stage {
 			case "event-identity":
 				requireCode(t, err, "operation_conflict")

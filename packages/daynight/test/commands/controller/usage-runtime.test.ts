@@ -11,14 +11,14 @@ const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { try { for (const close of cleanups.splice(0).reverse()) await close(); } finally { vi.useRealTimers(); } });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
 
-const fixture = async (verified = true, provider: "copilot" | "codex" = "copilot") => {
-  const profile = provider === "copilot" ? capability : { ...capability, profileId: "codex-snapshot-unaccountable-v1", qualification: "unsupported", measurementPlane: "none", revisionAuthority: "none", completion: "unsupported", recovery: "unsupported" };
+const fixture = async (verified = true, provider: "copilot" | "codex" | "claude" = "copilot") => {
+  const profile = provider === "copilot" ? capability : provider === "claude" ? { ...capability, profileId: "claude-message-input-0.3.247-v1", measurementPlane: "root_message_input", recovery: "native_history_partial", subagents: "unknown" } : { ...capability, profileId: "codex-snapshot-unaccountable-v1", qualification: "unsupported", measurementPlane: "none", revisionAuthority: "none", completion: "unsupported", recovery: "unsupported" };
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const db = new Database(":memory:"); cleanups.push(() => { db.close(); });
   db.exec(readFileSync(new URL("../../../src/commands/controller/sqlite/journal/014-usage.sql", import.meta.url), "utf8"));
   const store = openUsageStore(db, { read: action => db.transaction(action).deferred(), write: action => db.transaction(action).immediate() });
   const identity = { sessionId: randomUUID(), executionGeneration: "1", controllerInstanceId: randomUUID() };
-  const native = { nativeSessionId: randomUUID(), providerVersion: provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0" };
+  const native = { nativeSessionId: randomUUID(), providerVersion: provider === "copilot" ? "1.0.11/1.0.105" : provider === "claude" ? "0.3.247/2.1.247/anthropic" : "0.169.0" };
   const calls: string[] = [], batches: UsagePayload[][] = [];
   let holdBatch = false, release: (() => void) | null = null;
   const json = (response: ServerResponse, body: unknown, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
@@ -106,4 +106,18 @@ test("Codex reports unsupported coverage without converting snapshots to measure
   const events = f.batches.flat();
   expect(events.some(event => event.seal === true && event.collectionState === "unsupported")).toBe(true);
   expect(events.every(event => event.kind === "execution_state")).toBe(true);
+});
+
+test("Claude durable ingress keeps known cache facts when native input precision is unavailable", async () => {
+  const f = await fixture(true, "claude");
+  const event = { type: "assistant", parent_tool_use_id: null, message: { id: "msg_fixed", stop_reason: "end_turn", model: "claude-fixture", usage: { input_tokens: Number.MAX_SAFE_INTEGER + 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 } } };
+  f.runtime.observe({ ...f.native, event }); f.runtime.observe({ ...f.native, event });
+  const state = f.store.states()[0]!, measurements = f.store.pending(state.stateId).filter(item => item.payload.kind === "measurement");
+  expect(state.provider).toBe("claude"); expect(measurements).toHaveLength(1);
+  expect(measurements[0]!.payload).toMatchObject({ sourceKey: "claude-message-input-v1:msg_fixed", metrics: { inputTokens: null, outputTokens: null, cacheReadTokens: "20", cacheWriteTokens: "30", totalTokens: null }, reasonCodes: expect.arrayContaining(["native_integer_unrepresentable"]) });
+  expect(f.store.getState(state.stateId).reasons).toContain("native_integer_unrepresentable");
+  await f.advance(); await vi.waitFor(() => expect(f.store.pending(state.stateId).some(item => item.payload.kind === "execution_state")).toBe(true));
+  await f.runtime.close();
+  expect(f.batches.flat().filter(item => item.kind === "measurement")).toHaveLength(1);
+  expect(f.batches.flat().find(item => item.seal === true)).toMatchObject({ collectionState: "partial", reasonCodes: expect.arrayContaining(["native_integer_unrepresentable", "subagent_scope_unknown"]) });
 });

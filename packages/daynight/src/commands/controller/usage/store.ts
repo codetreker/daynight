@@ -79,9 +79,17 @@ export const openUsageStore = (db: Database.Database, context: { read<T>(action:
     clearRegistrationAttempted: id => context.write(() => { const value = state(id); value.registrationAttempted = false; save(value); }),
     markGrantAttempted: id => context.write(() => { const value = state(id); value.grantRequestAttempted = true; save(value); }),
     clearGrantAttempted: id => context.write(() => { const value = state(id); value.grantRequestAttempted = false; save(value); }),
-    pending: (id, limit = 100, kind) => context.read(() => {
+    pending: (id, limit = 100, kind, eligible) => context.read(() => {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid usage batch size.");
-      return (db.prepare("SELECT event_id AS eventId,state_id AS stateId,body_hash AS bodyHash,payload,byte_length AS byteLength FROM usage_outbox WHERE state_id=? AND quarantined=0 AND (? IS NULL OR json_extract(payload,'$.kind')=?) ORDER BY local_sequence LIMIT ?").all(id, kind ?? null, kind ?? null, limit) as (Omit<UsageQueuedEvent, "payload"> & { payload: string })[]).map(row => ({ ...row, payload: JSON.parse(row.payload) as UsagePayload }));
+      const selected: UsageQueuedEvent[] = [];
+      const rows = db.prepare("SELECT event_id AS eventId,state_id AS stateId,body_hash AS bodyHash,payload,byte_length AS byteLength FROM usage_outbox WHERE state_id=? AND quarantined=0 AND (? IS NULL OR json_extract(payload,'$.kind')=?) ORDER BY local_sequence").iterate(id, kind ?? null, kind ?? null) as Iterable<Omit<UsageQueuedEvent, "payload"> & { payload: string }>;
+      for (const row of rows) {
+        const event = { ...row, payload: JSON.parse(row.payload) as UsagePayload };
+        if (eligible && !eligible(event)) continue;
+        selected.push(event);
+        if (selected.length === limit) break;
+      }
+      return selected;
     }),
     enqueueMeasurement: (id, body) => context.write(() => {
       const value = state(id);

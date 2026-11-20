@@ -9,7 +9,7 @@ import type { NativeImageFile, NativeInput, ProviderOptions } from "./types.js";
 
 type Wire = Record<string, unknown>;
 const object = (value: unknown): Wire => value && typeof value === "object" && !Array.isArray(value) ? value as Wire : {};
-export type ClaudeRuntimeProfile = { sdkVersion: string; cliVersion: string; executable: string; backend: "anthropic" | "bedrock" | "vertex" | "unknown" };
+export type ClaudeRuntimeProfile = { sdkVersion: string; cliVersion: string; executable: string; backend: "anthropic" | "bedrock" | "vertex" | "unknown"; backendPending?: true };
 type Media = { readonly mediaType: string; readonly byteLength: string; readonly sha256: string; retain(): NativeImageFile };
 const mediaValues = new WeakMap<object, Media>(), recordMedia = new WeakMap<object, (() => void)[]>();
 export const claudeLiveImage = (value: unknown): Media | null => value && typeof value === "object" ? mediaValues.get(value) ?? null : null;
