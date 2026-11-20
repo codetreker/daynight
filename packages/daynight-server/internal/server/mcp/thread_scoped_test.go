@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -41,8 +42,25 @@ func TestScopedThreadMCPWriteOnlyReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ops := &scopedThreadTestOps{t: t}
-	if err := RegisterScopedThreadTools(f.entry, ops); err != nil {
+	var inventory []ThreadScopeTool
+	if err := RegisterScopedThreadTools(f.entry, ops, func(tool ThreadScopeTool) { inventory = append(inventory, tool) }); err != nil {
 		t.Fatal(err)
+	}
+	want := []ThreadScopeTool{
+		{Name: "task_thread_read", Operations: []scopepolicy.Operation{scopepolicy.ThreadRead}},
+		{Name: "task_thread_post", Operations: []scopepolicy.Operation{scopepolicy.ThreadPost}, FullResponseOperations: []scopepolicy.Operation{scopepolicy.ThreadRead}},
+	}
+	if !reflect.DeepEqual(inventory, want) {
+		t.Fatalf("classification: %+v", inventory)
+	}
+	for _, tool := range inventory {
+		if !f.entry.toolNames[tool.Name] || !f.entry.scopedTools[tool.Name] {
+			t.Fatalf("unregistered classification: %+v", tool)
+		}
+	}
+	var failedInventory []ThreadScopeTool
+	if err := RegisterScopedThreadTools(f.entry, ops, func(tool ThreadScopeTool) { failedInventory = append(failedInventory, tool) }); err == nil || len(failedInventory) != 0 {
+		t.Fatalf("duplicate registration: %v %+v", err, failedInventory)
 	}
 	client := &structClient{t: t, client: f.client(t, "2026-07-28", "post")}
 	v := client.call("task_thread_post", map[string]any{"projectId": testProjectID, "taskId": testTargetID, "body": "new"}, false)

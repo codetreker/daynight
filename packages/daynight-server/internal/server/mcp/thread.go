@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -81,9 +82,17 @@ func RegisterThreadTools(e *Entry, threads threadOperations) error {
 	return RegisterTypedTool(e, byName["task_thread_post"], BudgetControl, h.post, "projectId", "taskId", "body", "replyTo", "claimId")
 }
 
+// ThreadScopeTool classifies required operations and the additional operation
+// needed to return the complete message rather than the minimal receipt.
+type ThreadScopeTool struct {
+	Name                   string
+	Operations             []scopepolicy.Operation
+	FullResponseOperations []scopepolicy.Operation
+}
+
 // RegisterScopedThreadTools keeps discovery unchanged and forwards the request's
 // authenticated policy to the shared Thread business operations.
-func RegisterScopedThreadTools(e *Entry, threads ScopedThreadOperations) error {
+func RegisterScopedThreadTools(e *Entry, threads ScopedThreadOperations, observe ...func(ThreadScopeTool)) error {
 	if e == nil || threads == nil {
 		return fmt.Errorf("thread tool dependencies are required")
 	}
@@ -94,6 +103,9 @@ func RegisterScopedThreadTools(e *Entry, threads ScopedThreadOperations) error {
 	byName := make(map[string]*sdk.Tool, len(tools))
 	for _, tool := range tools {
 		byName[tool.Name] = tool
+		if e.toolNames[tool.Name] {
+			return fmt.Errorf("duplicate MCP tool %q", tool.Name)
+		}
 	}
 	if err := registerTypedReadTool(e, byName["task_thread_read"], BudgetControl, func(ctx context.Context, actor RequestActor, in threadReadInput) (ToolResult, error) {
 		a, err := TagAuthorizationFromActor(ctx, actor)
@@ -123,6 +135,10 @@ func RegisterScopedThreadTools(e *Entry, threads ScopedThreadOperations) error {
 	}
 	e.scopedTools["task_thread_read"] = true
 	e.scopedTools["task_thread_post"] = true
+	if len(observe) > 0 && observe[0] != nil {
+		observe[0](ThreadScopeTool{Name: byName["task_thread_read"].Name, Operations: []scopepolicy.Operation{scopepolicy.ThreadRead}})
+		observe[0](ThreadScopeTool{Name: byName["task_thread_post"].Name, Operations: []scopepolicy.Operation{scopepolicy.ThreadPost}, FullResponseOperations: []scopepolicy.Operation{scopepolicy.ThreadRead}})
+	}
 	return nil
 }
 
