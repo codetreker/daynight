@@ -1571,3 +1571,74 @@ test('keyboard focus takes priority over another hovered card and restores it on
   await focused.locator('.task-node-details').focus(); await expect(focused.locator('.task-node-details')).toBeFocused();
   await expect(hint).toContainText('42');
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`Task information uses two sizes in dialog, fullscreen and page at ${width}px in ${locale}`, async ({ page }) => {
+    const longTitle = 'Long dependent task 关联任务 '.repeat(5);
+    const tag = { id: '00000000-0000-4000-8000-000000000091', name: 'Information tag' };
+    const task = detailFixture(projectId, taskId, { version: 5n, title: 'Information task', description: 'Task description', tags: [tag], dependsOn: [standaloneId], blockedBy: [standaloneId], ready: false,
+      properties: { pullRequests: Array.from({ length: 101 }, (_, index) => ({ title: `Pull request ${index + 1}`, url: `https://example.com/${index + 1}` })) } });
+    const predecessor = detailFixture(projectId, standaloneId, { version: 5n, title: longTitle });
+    const successor = detailFixture(projectId, successorId, { version: 5n, title: longTitle, dependsOn: [taskId], blockedBy: [taskId], ready: false });
+    await install(page, false, false, 'unused', [predecessor, task, successor]);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    await page.locator(`#task-chain-graph-${standaloneId}`).click();
+    await page.locator(`.react-flow__node[data-id="${taskId}"] .task-node-details`).click();
+    const check = async (surface: Locator) => {
+      const aside = surface.locator('.task-detail-aside');
+      await expect(aside).toBeVisible();
+      for (const root of [16, 24]) {
+        await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+        for (const heading of await aside.locator('.task-detail-section > h4').all()) await expect(heading).toHaveCSS('font-size', `${root * 0.875}px`);
+        for (const selector of ['.task-detail-description', '.task-tag', '.task-tags-summary .button', '.task-detail-pr-title', '.task-detail-pr-url', '.task-detail-pr-label', '.task-detail-pr-value', '.task-detail-pr-external', '.task-detail-pr-range', '.task-detail-pr-page-label', '.task-detail-pr-page-controls .button', '.task-detail-pr-page-select select', '.task-detail-relation', '.task-detail-relation-kind', '.task-detail-metadata dt', '.task-detail-metadata time']) {
+          await expect(aside.locator(selector).first()).toHaveCSS('font-size', `${root * 0.75}px`);
+        }
+        await expect(surface.locator('.task-detail-main > section > h4')).toHaveCSS('font-size', `${root * 0.875}px`);
+        await expect(surface.locator('.task-detail-main .markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
+        expect(await surface.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+      await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      const pagination = aside.locator('.task-detail-pr-page-controls');
+      await expect(pagination.locator('button').first()).toBeDisabled();
+      await pagination.locator('button').last().click();
+      await expect(aside.locator('.task-detail-pr-title')).toHaveText('Pull request 101');
+      await expect(pagination.locator('button').last()).toBeDisabled();
+      await pagination.locator('select').selectOption('0');
+      await expect(aside.locator('.task-detail-pr-title').first()).toHaveText('Pull request 1');
+    };
+    const dialog = page.locator('.task-detail-dialog');
+    await check(dialog);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await check(dialog);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    await check(page.locator('.task-detail-page'));
+  });
+}
+
+test('Task tag editor keeps content sizes and touch input minimums', async ({ page }) => {
+  await install(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const aside = page.locator('.task-detail-aside');
+  const edit = aside.getByRole('button', { name: 'Edit tags' });
+  await edit.click();
+  const picker = aside.locator('.tag-picker');
+  for (const root of [12, 16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(picker.locator('label').first()).toHaveCSS('font-size', `${root * 0.75}px`);
+    await expect(aside.locator('.tag-picker-actions .button').last()).toHaveCSS('font-size', `${root * 0.75}px`);
+    for (const selector of ['input[type=search]', '.tag-picker-create input', '.tag-color-custom input[type=text]']) {
+      await expect(picker.locator(selector)).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  }
+  await picker.locator('input[type=search]').fill('search');
+  await page.keyboard.press('Escape');
+  await expect(edit).toBeFocused();
+  await expect(picker).toHaveCount(0);
+});

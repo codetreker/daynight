@@ -172,6 +172,8 @@
 
 .task-detail-columns { display: grid; grid-template-columns: minmax(0, 1fr) 265px; gap: 30px; padding: 25px 30px 30px; }
 .task-detail-main, .task-detail-aside { min-width: 0; }
+.task-detail-aside { font-size: var(--text-xs); }
+.task-detail-aside :is(.task-detail-description, .task-goal-link, .task-detail-relation, .task-detail-relation-kind, .task-detail-pr-title, .task-detail-pr-url, .task-detail-pr-label, .task-detail-pr-external, .task-tag, .task-tag-color-feedback, .button) { font-size: inherit; }
 .task-detail-section { border-top: 1px solid #edf0f4; padding-top: 18px; margin: 21px 0 0; }
 .task-detail-section:first-child { margin-top: 0; }
 .task-detail-description-section { border-top: 0; padding-top: 0; }
@@ -218,7 +220,7 @@
 .task-detail-pr-pagination { margin: 0 0 13px; }
 .task-detail-pr-range { font-size: var(--text-xs); color: var(--task-helper); line-height: 1.8; margin: 0 0 8px; }
 .task-detail-pr-page-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.task-detail-pr-page-controls .button { font-size: var(--text-sm); padding: 6px 9px; }
+.task-detail-pr-page-controls .button { padding: 6px 9px; }
 .task-detail-pr-page-label { font-size: var(--text-xs); color: var(--task-helper); }
 .task-detail-pr-page-select { max-width: 110px; flex: 1; }
 .task-detail-section > h4:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 3px; }

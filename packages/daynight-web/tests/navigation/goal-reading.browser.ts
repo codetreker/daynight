@@ -458,6 +458,12 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const fixture = await install(page, locale);
   if (empty) fixture.emptyGoal();
+  await page.route(`**/api/v1/projects/${projectId}/tasks/${goalId}/goal-dependencies?*`, route => route.fulfill({
+    contentType: 'application/json', headers: { 'Daynight-User-ID': TEST_VIEWER_ID },
+    body: stringifyWireJson({ goalId, canEdit: false, completionBlocked: !empty,
+      prerequisites: empty ? [] : [{ target: { projectId, projectName: 'Client', goalId: otherGoalId, title: 'Long prerequisite Goal '.repeat(5), status: 'todo', kind: 'internal' } }],
+      successors: [], nextCursor: null }),
+  }));
   const zh = locale === 'zh-CN';
   const writes: string[] = [];
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
@@ -471,8 +477,15 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     for (const root of [12, 16, 24]) {
       await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
       await expect(surface.locator('.task-detail-title')).toHaveCSS('font-size', `${root * 1.375}px`);
-      await expect(aside.locator('h3').first()).toHaveCSS('font-size', `${root * 1.125}px`);
-      await expect(aside).toHaveCSS('font-size', `${root * 0.875}px`);
+      for (const heading of await aside.locator('.goal-information-section > h3').all()) await expect(heading).toHaveCSS('font-size', `${root * 0.875}px`);
+      await expect(aside).toHaveCSS('font-size', `${root * 0.75}px`);
+      for (const selector of ['.goal-dependencies h4', '.goal-dependency-empty', '.goal-information-general dt', '.goal-information-general dd', '.goal-information-general time', '.goal-information-counts dt', '.goal-information-counts dd', '.goal-information-progress', '.task-tags-summary .button']) {
+        const elements = aside.locator(selector);
+        await expect(elements.first()).toHaveCSS('font-size', `${root * 0.75}px`);
+      }
+      if (!empty) for (const selector of ['.goal-dependencies li', '.goal-dependencies a', '.goal-dependency-context', '.goal-dependency-status', '.goal-dependency-blocked']) {
+        await expect(aside.locator(selector).first()).toHaveCSS('font-size', `${root * 0.75}px`);
+      }
       await expect(surface.locator('.goal-detail-description .markdown-content')).toHaveCSS('font-size', `${root * 0.875}px`);
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
@@ -517,6 +530,7 @@ test('Goal statistics distinguish loading and failures from empty data and retai
   const aside = page.getByRole('complementary', { name: 'Goal information' });
   await expect(aside).toBeVisible();
   await expect(aside.getByRole('status')).toBeVisible();
+  await expect(aside.getByRole('status')).toHaveCSS('font-size', '12px');
   await expect(aside.getByText('Total tasks', { exact: true })).toHaveCount(0);
   await copyGoalId(page, 'en');
   await expect.poll(fixture.syncHeld).toBe(true);
@@ -525,12 +539,14 @@ test('Goal statistics distinguish loading and failures from empty data and retai
   const original = await aside.elementHandle();
   fixture.failNextSync();
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect(aside.getByRole('alert')).toBeVisible();
+  await expect(aside.locator('.goal-information-error')).toBeVisible();
+  await expect(aside.locator('.goal-information-error')).toHaveCSS('font-size', '12px');
+  await expect(aside.getByRole('button', { name: 'Retry refresh' })).toHaveCSS('font-size', '12px');
   await copyGoalId(page, 'en');
   await expect(aside.locator('dt').filter({ hasText: /^Total tasks$/ }).locator('..').locator('dd')).toHaveText('3');
   expect(await aside.evaluate((element, previous) => element === previous, original)).toBe(true);
   await aside.getByRole('button', { name: 'Retry refresh' }).click();
-  await expect(aside.getByRole('alert')).toHaveCount(0);
+  await expect(aside.locator('.goal-information-error')).toHaveCount(0);
 });
 
 test('Goal copy failure stays in its notification host and keyboard retry writes the full ID', async ({ page }, testInfo) => {
@@ -4098,4 +4114,28 @@ test('Goal graph account refresh notice stays reachable on a narrow screen', asy
     return noticeBox.left >= header.left && noticeBox.right <= header.right && element.scrollWidth <= element.clientWidth;
   });
   expect(fits).toBe(true);
+});
+
+test('Goal tag editor keeps content sizes and touch input minimums', async ({ page }) => {
+  await install(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const aside = page.locator('.goal-information');
+  const edit = aside.getByRole('button', { name: 'Edit tags' });
+  await edit.click();
+  const picker = aside.locator('.tag-picker');
+  for (const root of [12, 16, 24]) {
+    await page.evaluate(size => { document.documentElement.style.fontSize = `${size}px`; }, root);
+    await expect(picker.locator('label').first()).toHaveCSS('font-size', `${root * 0.75}px`);
+    await expect(aside.locator('.tag-picker-actions .button').last()).toHaveCSS('font-size', `${root * 0.75}px`);
+    for (const selector of ['input[type=search]', '.tag-picker-create input', '.tag-color-custom input[type=text]']) {
+      await expect(picker.locator(selector)).toHaveCSS('font-size', `${Math.max(root, 16)}px`);
+    }
+  }
+  await picker.locator('input[type=search]').fill('search');
+  await page.keyboard.press('Escape');
+  await expect(edit).toBeFocused();
+  await expect(picker).toHaveCount(0);
 });
