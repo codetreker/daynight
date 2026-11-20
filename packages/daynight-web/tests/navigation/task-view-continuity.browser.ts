@@ -13,15 +13,17 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
-  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const projectGate = Promise.withResolvers<void>();
+  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], revoked: false, graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, projectMode: 'normal' as 'normal' | 'pending', releaseProject: projectGate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
+    if (state.revoked && (path === `/api/v1/projects/${targetProject}` || path === `/api/v1/projects/${targetProject}/access` || path === `/api/v1/projects/${targetProject}/task-sync`)) return send({ error: { code: 'not_found', message: 'Access removed', requestId: 'revoked' } }, 404);
     if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
-    if (path === `/api/v1/projects/${targetProject}`) return send(graph.project);
+    if (path === `/api/v1/projects/${targetProject}`) { if (state.projectMode === 'pending') await projectGate.promise; return send(graph.project); }
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: state.viewer, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${targetProject}/access`) return send(directAccessFixture(targetProject, state.viewer));
@@ -51,6 +53,121 @@ const select = async (page: Page, name: string) => {
   await page.keyboard.press('Enter');
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
+
+test.describe('project settings navigation', () => {
+  test.use({ hasTouch: true });
+  for (const input of ['touch', 'keyboard', 'pointer'] as const) test(`opens the settings link with ${input}`, async ({ page }) => {
+    await install(page, [row(10, 'Task')]);
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+    await expect(settings).toBeVisible();
+    if (input === 'touch') await settings.tap();
+    else if (input === 'keyboard') { await settings.focus(); await page.keyboard.press('Enter'); }
+    else await settings.click();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+  });
+});
+
+test('reserves the narrow settings position while the project loads', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.projectMode = 'pending';
+  await page.setViewportSize({ width: 320, height: 640 });
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    const placeholder = page.locator('.project-title-actions-placeholder .project-header-secondary');
+    await expect(placeholder).toHaveCount(1);
+    const before = await placeholder.boundingBox();
+    expect(before?.width).toBe(44); expect(before?.height).toBe(44);
+    state.projectMode = 'normal'; state.releaseProject();
+    const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+    await expect(settings).toBeVisible();
+    const after = await settings.boundingBox();
+    expect(after?.width).toBe(before?.width); expect(after?.height).toBe(before?.height);
+  } finally { state.releaseProject(); }
+});
+
+test('withdraws the narrow settings entrance when project access is lost', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/projects/${projectId}?tab=tasks`);
+  const settings = page.getByRole('link', { name: 'Project settings', exact: true });
+  await expect(settings).toBeVisible();
+  state.revoked = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(settings).toBeHidden();
+  expect(state.writes).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`project heading actions fit narrow containers and preserve interactions in ${locale}`, async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.setViewportSize({ width: 320, height: 640 });
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const labels = locale === 'en' ? { settings: 'Project settings', refresh: 'Refresh', refreshing: 'Refreshing…', task: 'New Task', goal: 'New Goal' } : { settings: '项目设置', refresh: '刷新', refreshing: '正在刷新…', task: '新建 Task', goal: '新建 Goal' };
+    const settings = page.getByRole('link', { name: labels.settings, exact: true });
+    const refresh = page.getByRole('button', { name: labels.refresh, exact: true });
+    const task = page.getByRole('button', { name: labels.task, exact: true });
+    const goal = page.getByRole('button', { name: labels.goal, exact: true });
+    await expect(settings).toHaveAttribute('href', `/projects/${projectId}/settings`);
+    await expect(task).toBeEnabled();
+    expect(await settings.evaluate(link => {
+      let prevented = true;
+      const observe = (event: Event) => { prevented = event.defaultPrevented; event.preventDefault(); };
+      document.addEventListener('click', observe, { once: true });
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      return prevented;
+    })).toBe(false);
+    for (const width of [320, 375, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      const boxes = await Promise.all([settings, refresh, task, goal].map(item => item.boundingBox()));
+      expect(boxes.every(box => box !== null && box.height === 44)).toBe(true);
+      expect(boxes.map(box => Math.round(box!.y))).toEqual(Array(4).fill(Math.round(boxes[0]!.y)));
+      expect(await page.locator('.project-title-actions').evaluate(el => Math.round(el.getBoundingClientRect().height))).toBe(44);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await settings.focus();
+    await expect(settings.locator('.project-header-action-tooltip')).toBeVisible();
+    await refresh.hover(); await expect(refresh.locator('.project-header-action-tooltip')).toBeVisible();
+    for (const button of [task, goal]) {
+      await button.focus(); await page.keyboard.press('Enter');
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape'); await expect(button).toBeFocused();
+    }
+    const before = await refresh.boundingBox();
+    state.graphMode = 'pending'; await refresh.click();
+    const busy = page.getByRole('button', { name: labels.refreshing, exact: true });
+    await expect(busy).toBeDisabled(); await expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(await busy.boundingBox()).toEqual(before);
+    state.graphMode = 'normal'; state.releaseGraph(); await expect(refresh).toBeEnabled();
+    for (const [width, compact] of [[420, true], [421, false]] as const) {
+      await page.locator('.project-heading-container').evaluate((el, value) => { (el as HTMLElement).style.width = `${value}px`; }, width);
+      await expect(settings.locator('.project-header-action-icon')).toHaveCSS('display', compact ? 'block' : 'none');
+      if (compact) expect((await settings.boundingBox())!.y).toBeGreaterThanOrEqual((await page.locator('.project-title-line').boundingBox())!.y + (await page.locator('.project-title-line').boundingBox())!.height);
+    }
+    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = '230px'; });
+    const narrow = await Promise.all([settings, task, goal].map(item => item.boundingBox()));
+    expect(narrow[1]!.y).toBeGreaterThan(narrow[0]!.y);
+    expect(narrow[1]!.y).toBe(narrow[2]!.y);
+    await page.locator('.project-heading-container').evaluate(el => { (el as HTMLElement).style.width = ''; });
+    for (const width of [768, 1360]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(settings.locator('.project-header-action-label')).toBeVisible();
+      await expect(refresh.locator('.project-header-action-label')).toBeVisible();
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.locator('.project-heading h1').evaluate(el => { el.textContent = 'A very long project name '.repeat(5); });
+    await page.locator('.project-repository-value').evaluate(el => { el.textContent = 'https://example.com/' + 'long-repository-name-'.repeat(10); });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
+    expect(await page.locator('.project-heading').evaluate(el => {
+      const bounds = el.getBoundingClientRect();
+      return [...el.querySelectorAll<HTMLElement>('.project-title-line, .project-title-actions, .project-creation-actions, .project-creation-actions button')].every(item => item.getBoundingClientRect().right <= bounds.right + 1);
+    })).toBe(true);
+    expect(state.writes).toEqual([]);
+  } finally { state.releaseGraph(); }
+});
 
 for (const locale of ['en', 'zh-CN'] as const) {
   test(`project task category labels preserve word boundaries at narrow widths in ${locale}`, async ({ page }) => {
@@ -206,10 +323,9 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
     await expect(page.getByText('https://github.com/example/project', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
     const overview = page.getByRole('tab', { name: 'Overview', exact: true });
     const tasks = page.getByRole('tab', { name: 'Task list', exact: true });
-    await expect(page.getByRole('tab')).toHaveCount(4);
+    await expect(page.locator('.project-section-tabs [role="tab"]')).toHaveCount(5);
     await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
     await tasks.click();
     await expect(tasks).toHaveAttribute('aria-selected', 'true');

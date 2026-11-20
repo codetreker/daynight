@@ -24,6 +24,7 @@ import type { OverviewTaskTarget } from "./overview-progress";
 import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
+import { ProjectSettingsActionContent } from "./ProjectHeaderActions";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { focusProjectList, focusVisible, type ProjectListOrigin } from "./project-list-focus";
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from "./project-graph-target";
@@ -765,7 +766,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
       </div>
-      <div className="page-heading project-heading">
+      <div className="project-heading-container"><div className="page-heading project-heading">
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
@@ -777,8 +778,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             </div>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
-      </div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button project-header-secondary"><ProjectSettingsActionContent label={auth.projectSettings} /></span></span>}<button className="button project-header-secondary" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing} aria-busy={graph.refreshing} aria-label={graph.refreshing ? m.refreshing : projects.refresh} title={graph.refreshing ? m.refreshing : projects.refresh}><svg className={`project-header-action-icon${graph.refreshing ? " project-header-refreshing" : ""}`} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="project-header-action-label">{graph.refreshing ? m.refreshing : projects.refresh}</span><span className="project-header-action-tooltip" aria-hidden="true">{graph.refreshing ? m.refreshing : projects.refresh}</span></button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
+      </div></div>
       {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} />}
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
         <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>
