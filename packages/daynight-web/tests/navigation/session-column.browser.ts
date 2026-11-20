@@ -203,6 +203,29 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
   });
 }
 
+test('a located form retains values through a real response command', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 640 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    const fixture = await open(page, 'en', 'waiting_input', 'test', 'tall-form');
+    await page.locator('.session-pending-request').tap();
+    await page.getByLabel('Workspace profile name', { exact: true }).fill('Retained profile');
+    await page.getByLabel('Destination region', { exact: true }).selectOption('eu');
+    await page.getByLabel('Workspace profile', { exact: true }).selectOption('standard');
+    expect(fixture.observations.writes).toEqual([]);
+    await page.getByRole('button', { name: 'Submit', exact: true }).click();
+    const command = await fixture.settingUpdate;
+    expect(command.kind).toBe('interaction_response');
+    if (command.kind !== 'interaction_response') throw new Error('Expected an interaction response');
+    expect(command.payload.response).toEqual({ kind: 'form', values: [
+      { fieldId: 'name', value: 'Retained profile' }, { fieldId: 'region', value: 'eu' }, { fieldId: 'profile', value: ['standard'] },
+    ] });
+    fixture.confirmSetting();
+    await expect(page.locator('.session-pending-request')).toHaveCount(0);
+    expect(fixture.observations.pageErrors).toEqual([]);
+  } finally { await context.close(); }
+});
+
 for (const entry of ['task', 'test', 'assistant'] as const) for (const content of ['short', 'long', 'empty'] as const) {
   test(`${entry} ${content} aligns the production reading and input columns`, async ({ page }, info) => {
     await page.setViewportSize({ width: 1920, height: 1080 });
