@@ -1381,6 +1381,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`graph reading hint follows 
 });
 
 test('touch activates the existing graph body once and exposes the complete reading', async ({ browser, baseURL }) => {
+  if (baseURL === undefined) throw new Error('Browser fixture requires a base URL');
   const context = await browser.newContext({ baseURL, viewport: { width: 320, height: 844 }, hasTouch: true, isMobile: true });
   try {
     const page = await context.newPage();
@@ -1419,7 +1420,8 @@ test('a focused graph body receives a reading that appears or returns after with
     calls++;
     if (mode === 'denied') return route.fulfill({ status: 403, json: { error: { code: 'forbidden', requestId: 'denied' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
     const { taskIds } = route.request().postDataJSON() as { taskIds: string[] };
-    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary: rowUsageSummary(mode) })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const summary = rowUsageSummary(mode);
+    return route.fulfill({ json: { items: taskIds.map(id => ({ taskId: id, summary })) }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
   });
   await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
   await page.goto(`/projects/${projectId}`); await page.locator('#project-section-tab-tasks').click();
