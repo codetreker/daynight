@@ -101,8 +101,8 @@ HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影�
 
 生产仍使用原有 Tag、Bot、账户、Prompt、用量和 GitHub 装配，尚未启用受限
 凭据签发或这些 scoped 入口。scoped 入口只接受显式授权事实，不以缺失 policy
-放行。凭据持久化、认证时读取最新策略、完整入口分类、迁移和公开启用由相应
-实现接入；Tag 的直接操作使用调用方已认证的策略快照，scoped Bot 授权事实
-来源由启用阶段接入事务绑定的权威读取。
+放行。PAT 已具备策略存储与复核能力；MCP 持久化、认证时读取最新策略、
+完整入口分类、历史回填和公开启用由相应实现接入。Tag 的直接操作使用调用方
+已认证的策略快照，scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。

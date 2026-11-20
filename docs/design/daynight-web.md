@@ -190,9 +190,9 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 
 个人 Prompt 的[容器布局规格](../spec/worker-prompt-layout.md)要求三个入口按实际内容空间切换排版。已确定的布局方案以共享编辑器外层 `.worker-prompt` 为名为 `worker-prompt` 的 inline-size 查询容器，由宿主分配宽度，内部 `.worker-prompt-layout` 消费尺寸查询。实际内容宽度不超过620px时，编辑区和说明区按 DOM 顺序单列排列；超过620px时沿用编辑区与说明区的双列分配。容器必须位于被切换的 grid 外层，使查询宽度来自宿主而不依赖该 grid 的列布局。尺寸变化只调整 CSS 排版，保持编辑节点、焦点、选区和草稿，不引入 JavaScript 宽度监听或改变保存流程。取舍见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-prompt-container-layout.md)，实现是否满足约定由规格中的真实几何与交互标准判定。
 
-`features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
+`features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标，分别持有开发 Worker 和 Reviewer 控制器；用途属于资源 key，切换只启用所选用途的读取，草稿、版本和写入回执仍由原控制器持有。Reviewer 使用独立路由及 32 KiB 原始 UTF-8 正文限制；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
 
-状态独立保存最高版本资源、草稿基线、原文、编辑代次和提交快照。GET 按版本单调接纳，PUT 只提交冻结的账号、版本和正文；继续输入不被回执覆盖。冲突保留草稿并要求明确处理最新版本。已发送请求结果未知时保留快照，以 GET 核对当前事实，不重放写入。同账户身份准入暂停保留节点及草稿，确认失权或当前根 owner 失效身份时撤销旧资源和请求。身份错配后若 owner 保留页面，终止旧操作等待并仅记录已确认、明确拒绝或未知结果，不安装回执或重放写入；已确认结果提示刷新后继续。导航聚合 Worker 两份草稿，并在待定、已确认待呈现或未知写入期间保留对应页面 owner；放弃草稿不会撤销已发送写入。[编辑决策](../../.agents/notes/implemented/architecture/2026-11-09-web-personal-prompt-editor.md)记录取舍。
+状态独立保存最高版本资源、草稿基线、原文、编辑代次和提交快照。GET 按版本单调接纳，PUT 只提交冻结的账号、版本和正文；继续输入不被回执覆盖。冲突保留草稿并要求明确处理最新版本。已发送请求结果未知时保留快照，以 GET 核对当前事实，不重放写入。同账户身份准入暂停保留节点及草稿，确认失权或当前根 owner 失效身份时撤销旧资源和请求。身份错配后若 owner 保留页面，终止旧操作等待并仅记录已确认、明确拒绝或未知结果，不安装回执或重放写入；已确认结果提示刷新后继续。导航聚合两个用途的提示词草稿以及 Worker 运行配置草稿，并在待定、已确认待呈现或未知写入期间保留对应页面 owner；放弃草稿不会撤销已发送写入。[编辑决策](../../.agents/notes/implemented/architecture/2026-11-09-web-personal-prompt-editor.md)记录取舍。
 
 ### Team 管理与共享项目列表
 

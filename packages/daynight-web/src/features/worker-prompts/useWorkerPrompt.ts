@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../api/client';
-import { getWorkerPrompt, isPromptText, PROMPT_REQUEST_BYTES, promptSubmissionBytes, saveWorkerPrompt, type PromptResource, type PromptTarget } from '../../api/worker-prompts';
+import { getWorkerPrompt, isPromptText, PROMPT_REQUEST_BYTES, promptSubmissionBytes, promptTextTooLarge, saveWorkerPrompt, type PromptResource, type PromptTarget } from '../../api/worker-prompts';
 import { useProjectAccessSession } from '../projects/ProjectAccess';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { isRetryableTaskCacheLifecycleChange } from '../task-cache/project-cache';
@@ -9,6 +9,21 @@ import { freezeSubmission, initialPromptState, promptDirty, promptReducer, type 
 type OwnedState = { readonly owner: object; readonly key: string; readonly state: PromptState; readonly unavailable: boolean };
 type Actions = { edit: (text: string) => void; refresh: () => void; save: () => Promise<void>; discard: () => void; abandon: () => void; useLatest: () => void; keepDraft: () => void; setEnabled: (value: boolean) => void };
 const emptyActions: Actions = { edit: () => {}, refresh: () => {}, save: async () => {}, discard: () => {}, abandon: () => {}, useLatest: () => {}, keepDraft: () => {}, setEnabled: () => {} };
+
+// Both purposes belong to the same registered Worker. A verified resource
+// denial retires every mounted editor for that identity and Worker together.
+const workerDenials = new WeakMap<object, Map<string, Set<() => void>>>();
+const subscribeWorkerDenial = (owner: object, workerId: string, listener: () => void): (() => void) => {
+  let workers = workerDenials.get(owner);
+  if (!workers) { workers = new Map(); workerDenials.set(owner, workers); }
+  let listeners = workers.get(workerId);
+  if (!listeners) { listeners = new Set(); workers.set(workerId, listeners); }
+  listeners.add(listener);
+  return () => { listeners.delete(listener); if (listeners.size === 0) workers.delete(workerId); };
+};
+const denyWorker = (owner: object, workerId: string) => {
+  for (const listener of workerDenials.get(owner)?.get(workerId) ?? []) listener();
+};
 
 const abortable = <T,>(work: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
   const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
@@ -19,8 +34,9 @@ const abortable = <T,>(work: Promise<T>, signal: AbortSignal): Promise<T> => new
 
 export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly readEnabled: boolean }) => {
   const scope = useTaskCacheScope();
-  const key = input.scope === 'user' ? 'user' : input.scope === 'project' ? `project:${input.projectId}` : `worker:${input.workerId}`;
-  const target = useMemo((): PromptTarget => input.scope === 'user' ? { scope: 'user' } : input.scope === 'project' ? { scope: 'project', projectId: input.projectId } : { scope: 'worker', workerId: input.workerId }, [key]);
+  const purpose = input.purpose ?? 'worker';
+  const key = `${purpose}:${input.scope === 'user' ? 'user' : input.scope === 'project' ? `project:${input.projectId}` : `worker:${input.workerId}`}`;
+  const target = useMemo((): PromptTarget => input.scope === 'user' ? { scope: 'user', purpose } : input.scope === 'project' ? { scope: 'project', projectId: input.projectId, purpose } : { scope: 'worker', workerId: input.workerId, purpose }, [key]);
   const access = useProjectAccessSession(target.scope === 'project' ? target.projectId : '');
   const initial = (): OwnedState => ({ owner: scope, key, state: initialPromptState(), unavailable: false });
   const [owned, setOwned] = useState<OwnedState>(initial);
@@ -95,7 +111,10 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
             try { await abortable(scope.ready(signal), signal); }
             catch (error) { if (isRetryableTaskCacheLifecycleChange(error) && !signal.aborted) continue; throw error; }
             if (authRequestsPaused()) continue;
-            if (alive() && !signal.aborted && !scope.hasIdentityMismatch && denial === controller && stillDenied()) clear();
+            if (alive() && !signal.aborted && !scope.hasIdentityMismatch && denial === controller && stillDenied()) {
+              if (kind === 'resource' && target.scope === 'worker') denyWorker(scope, target.workerId);
+              else clear();
+            }
             return;
           }
         } catch { /* The owning scope or denial was retired. */ }
@@ -172,7 +191,7 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
     const saveNow = async () => {
       if (!alive() || scope.hasIdentityMismatch || !enabled || !visible || authRequestsPaused() || denial !== null || get().unavailable) return;
       const state = get().state, submission = freezeSubmission(state, scope.userId, ++sequence);
-      if (submission === null || !promptDirty(state) || !isPromptText(submission.text) || promptSubmissionBytes({ expectedUserId: submission.expectedUserId, revision: submission.revision, text: submission.text }) > PROMPT_REQUEST_BYTES) return;
+      if (submission === null || !promptDirty(state) || !isPromptText(submission.text) || promptTextTooLarge(target, submission.text) || promptSubmissionBytes({ expectedUserId: submission.expectedUserId, revision: submission.revision, text: submission.text }) > PROMPT_REQUEST_BYTES) return;
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       writeDispatched = false;
@@ -223,6 +242,7 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
     const visibility = () => { const next = document.visibilityState !== 'hidden'; if (next === visible) return; visible = next; stopReads(); if (visible) startReads(); };
     const focus = () => { if (visible && enabled) void readNow(true); };
     const invalidate = () => { stopReads(); write?.abort(); publication?.abort(); publication = null; denial?.abort(); denial = null; store(initial()); };
+    const unsubscribeWorker = target.scope === 'worker' ? subscribeWorkerDenial(scope, target.workerId, clear) : undefined;
     const unsubscribe = access?.subscribe(() => {
       if (access.snapshot().status === 'unavailable') clearWhenAdmitted(() => access.snapshot().status !== 'ready', 'access');
       else if (access.snapshot().status === 'ready' && denialKind === 'access') { denial?.abort(); denial = null; denialKind = null; }
@@ -237,13 +257,13 @@ export const useWorkerPrompt = (input: PromptTarget, { readEnabled }: { readonly
       } else dispatch({ type: 'abandon' });
     }, useLatest: () => dispatch({ type: 'useLatest' }), keepDraft: () => dispatch({ type: 'keepDraft' }) };
     document.addEventListener('visibilitychange', visibility); window.addEventListener('focus', focus); scope.signal.addEventListener('abort', invalidate, { once: true }); startReads();
-    return () => { active = false; stopReads(); write?.abort(); publication?.abort(); publication = null; denial?.abort(); denial = null; unsubscribe?.(); unsubscribePause(); document.removeEventListener('visibilitychange', visibility); window.removeEventListener('focus', focus); scope.signal.removeEventListener('abort', invalidate); actions.current = emptyActions; };
+    return () => { active = false; stopReads(); write?.abort(); publication?.abort(); publication = null; denial?.abort(); denial = null; unsubscribeWorker?.(); unsubscribe?.(); unsubscribePause(); document.removeEventListener('visibilitychange', visibility); window.removeEventListener('focus', focus); scope.signal.removeEventListener('abort', invalidate); actions.current = emptyActions; };
   }, [scope, key, target, access]);
   useLayoutEffect(() => { actions.current.setEnabled(readEnabled); }, [scope, key, readEnabled]);
   const state = owned.owner === scope && owned.key === key && !scope.isInvalidated ? owned.state : initialPromptState();
   const unavailable = owned.owner === scope && owned.key === key && owned.unavailable;
   const submission = state.baseline === null ? null : { expectedUserId: scope.userId, revision: state.baseline.revision, text: state.draft };
-  const invalid = !isPromptText(state.draft), tooLarge = submission !== null && promptSubmissionBytes(submission) > PROMPT_REQUEST_BYTES;
+  const invalid = !isPromptText(state.draft), tooLarge = promptTextTooLarge(target, state.draft) || submission !== null && promptSubmissionBytes(submission) > PROMPT_REQUEST_BYTES;
   return { ...state, loading: state.resource === null && state.read !== 'error' && !unavailable, unavailable, dirty: promptDirty(state), pending: state.write === 'pending', confirmed: state.write === 'confirmed', uncertain: state.write === 'unknown', invalid, tooLarge, readEnabled, edit, refresh, save, discard, abandon, useLatest, keepDraft };
 };
 export type WorkerPromptController = ReturnType<typeof useWorkerPrompt>;
