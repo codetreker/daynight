@@ -37,7 +37,7 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
   const entries = content === 'empty' ? [] : content.startsWith('interaction') ? [{
     entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
-    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
+    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: archived ? 'expired' : 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
       { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
       { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: content === 'interaction' ? Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) : (locale === 'en' ? ['Standard', 'Development configuration with validation and local diagnostics enabled', 'path/with/a/very/long/unbroken/segment/abcdefghijklmnopqrstuvwxyz0123456789', 'Validation profile alpha', 'Validation profile beta', 'Read-only preview'] : ['标准配置', '使用包含验证及本地诊断的标准开发配置', '路径/包含很长的连续片段/abcdefghijklmnopqrstuvwxyz0123456789', '验证配置甲', '验证配置乙', '只读预览']).slice(0, content === 'interaction-two' ? 2 : 6).map((label, index) => ({ id: `feature-${index}`, label })) },
       { fieldId: 'enabled', label: 'Enabled flag', type: 'boolean', required: true },
@@ -534,10 +534,10 @@ test('form loading and failed response preserve the selected choices', async ({ 
 
 test('archived form requests remain readable without response controls', async ({ page }) => {
   const fixture = await open(page, 'en', 'archived', 'test', 'interaction-two');
-  await expect(page.locator('.session-multiselect-choice')).toHaveCount(2);
-  await expect(page.getByRole('checkbox', { name: 'Standard' })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: /Development configuration/ })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Submit' })).toBeDisabled();
+  await expect(page.locator('.session-multiselect-choice')).toHaveCount(0);
+  await page.getByText('Show request').click();
+  await expect(page.getByRole('region', { name: 'Request content' })).toContainText('Enabled features');
+  await expect(page.getByRole('button', { name: 'Submit' })).toHaveCount(0);
   expect(fixture.observations.writes).toEqual([]);
 });
 
