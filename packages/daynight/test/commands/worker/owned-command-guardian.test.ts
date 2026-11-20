@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
@@ -116,12 +117,17 @@ describe.skipIf(process.platform === "win32")("POSIX owned command guardian", ()
     }
   }, 20_000);
 
-  it("cleans its original group if the owner disconnects after the command has exited", async () => {
+  it.each(["native", "undefined-success-callback"] as const)("cleans its original group after owner disconnect with %s IPC", async transport => {
     const directory = await root(), ready = path.join(directory, "leaf");
     const leaf = `import {writeFileSync} from 'node:fs';process.on('SIGTERM',()=>{});writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000);`;
     const source = `import {spawn} from 'node:child_process';const child=spawn(process.execPath,['--input-type=module','--eval',${JSON.stringify(leaf)}],{stdio:'ignore'});child.unref();`;
     const helper = path.resolve(import.meta.dirname, "../../../dist/commands/worker/owned-command-helper.js");
-    const child = spawn(process.execPath, [helper, randomUUID()], { detached: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    const launchId = randomUUID();
+    // The Windows pipe bridge forwards Writable's optional success error value.
+    // Adapt only that callback value while retaining the real helper and IPC.
+    const shim = `const send=process.send.bind(process);process.send=(message,callback)=>send(message,error=>callback?.(error??undefined));process.argv=[process.execPath,${JSON.stringify(helper)},${JSON.stringify(launchId)}];import(${JSON.stringify(pathToFileURL(helper).href)});`;
+    const args = transport === "native" ? [helper, launchId] : ["--eval", shim];
+    const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     child.stdout!.resume();
     // Join each resource explicitly: manual parent-side IPC disconnection can
     // omit ChildProcess's aggregate close event even after all handles close.

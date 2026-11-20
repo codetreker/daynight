@@ -19,7 +19,7 @@ process.once("disconnect", abandon);
 process.once("error", abandon);
 if (process.platform !== "win32") process.on("SIGTERM", () => {});
 const send = (message: object) => {
-  try { process.send?.(message, error => { if (error !== null) abandon(); }); }
+  try { process.send?.(message, error => { if (error != null) abandon(); }); }
   catch { abandon(); }
 };
 try {
