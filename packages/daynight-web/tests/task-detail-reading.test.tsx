@@ -116,7 +116,7 @@ describe('task description reading', () => {
     expect(other).not.toHaveAttribute('open');
   });
 
-  it('does not treat the controlled route update after an upload as an external reveal', async () => {
+  it('reveals and focuses a successful upload through its controlled route update', async () => {
     const items: Attachment[] = [];
     const api = { ...fixture(), list: vi.fn(async () => ({ items: [...items], nextCursor: null })), put: vi.fn(async (_project: string, _task: string, path: string) => { const item = file(path); items.push(item); return item; }) };
     const Content = () => {
@@ -130,9 +130,9 @@ describe('task description reading', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '目标相对路径' }), { target: { value: 'docs/design/new.md' } });
     fireEvent.click(screen.getByRole('button', { name: '上传文件' }));
     await screen.findByRole('heading', { name: 'Preview docs/design/new.md' });
-    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
-    expect(screen.getByText('new.md', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /^new\.md/ })).toHaveFocus();
   });
 
   it('renders Markdown structure, root images, original raw HTML and the existing URL policy', async () => {

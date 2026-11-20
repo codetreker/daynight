@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { hasPaintedPdfMarker, readPdfPixels } from '../helpers/pdf-pixels';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
@@ -30,6 +31,241 @@ const files = [
   { path: 'icon.svg', contentType: 'image/svg+xml', sizeBytes: svg.length, createdAt: time, updatedAt: time },
   { path: longPath, contentType: 'text/plain', sizeBytes: 4, createdAt: time, updatedAt: time },
 ];
+
+const uploadLabels = {
+  en: { back: 'Back to files', path: 'Target relative path', submit: 'Upload file', overview: 'Overview', attachments: 'Attachments', invalid: 'Enter a valid relative path.' },
+  'zh-CN': { back: '返回文件', path: '目标相对路径', submit: '上传文件', overview: '概览', attachments: '附件', invalid: '请输入有效的相对路径。' },
+} as const;
+
+const uploadGeometry = (attachments: Locator) => attachments.evaluate(element => {
+  const split = element.querySelector<HTMLElement>('.attachment-split')!;
+  const form = element.querySelector<HTMLElement>('.attachment-upload')!;
+  const input = form.querySelector<HTMLInputElement>('input[type=text]')!;
+  const submit = form.querySelector<HTMLButtonElement>('button[type=submit]')!;
+  const bounds = split.getBoundingClientRect();
+  return {
+    split: { width: split.clientWidth, left: bounds.left, right: bounds.right },
+    input: { width: input.getBoundingClientRect().width, font: getComputedStyle(input).fontSize },
+    form: { width: form.clientWidth, scrollWidth: form.scrollWidth },
+    submit: { left: submit.getBoundingClientRect().left, right: submit.getBoundingClientRect().right },
+    filename: form.querySelector('.attachment-upload-filename')?.textContent,
+    documentFits: document.documentElement.scrollWidth <= innerWidth,
+  };
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 320, height: 640 }, { width: 375, height: 667 }, { width: 390, height: 844 }]) {
+  test(`attachment upload fills narrow container at ${viewport.width}px in ${locale}`, async ({ browser }) => {
+    const context = await browser.newContext({ viewport, hasTouch: true });
+    const page = await context.newPage();
+    try {
+      const state = await install(page);
+      if (viewport.width === 320) state.files = [];
+      await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const attachments = page.locator('.task-attachments');
+      const split = attachments.locator('.attachment-split');
+      const labels = uploadLabels[locale];
+      await attachments.locator('.attachment-upload-disclosure summary').tap();
+      await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+      await expect(attachments.locator('.attachment-sidebar-browser')).toHaveAttribute('inert', '');
+      await expect(attachments.locator('.attachment-preview-pane')).toHaveAttribute('inert', '');
+      const back = attachments.getByRole('button', { name: labels.back, exact: true });
+      const input = attachments.locator('input[type=file]');
+      await expect(input).toBeFocused();
+      const name = viewport.width === 390 ? `${'release-checklist-'.repeat(8)}final.md` : 'release-checklist.md';
+      await input.setInputFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from('# Release checklist') });
+      const chosen = await input.evaluateHandle((element: HTMLInputElement) => element.files![0]!);
+      const originalInput = await input.elementHandle();
+      const path = attachments.getByRole('textbox', { name: labels.path });
+      await path.fill('docs/release/checklist.md');
+      await expect(attachments.locator('.attachment-upload-filename')).toContainText(name);
+      const geometry = await uploadGeometry(attachments);
+      if (viewport.width === 320) expect(geometry.input.width).toBeGreaterThanOrEqual(250);
+      expect(geometry.input.font).toBe('16px');
+      expect(geometry.form.scrollWidth).toBeLessThanOrEqual(geometry.form.width + 1);
+      expect(geometry.submit.right).toBeLessThanOrEqual(geometry.split.right);
+      expect(geometry.documentFits).toBe(true);
+      const submit = attachments.getByRole('button', { name: labels.submit, exact: true });
+      await submit.scrollIntoViewIfNeeded();
+      await expect(submit).toBeInViewport({ ratio: 1 });
+      await path.fill('../invalid.md');
+      await submit.click();
+      await expect(path).toHaveAttribute('aria-invalid', 'true');
+      expect(state.writes).toEqual([]);
+      await path.fill(`docs/${'release-directory/'.repeat(20)}checklist.md`);
+      await path.press('Home');
+      expect(await path.evaluate((element: HTMLInputElement) => element.selectionStart)).toBe(0);
+      await path.press('End');
+      expect(await path.evaluate((element: HTMLInputElement) => element.selectionStart)).toBe((await path.inputValue()).length);
+      await back.click();
+      await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+      await expect(attachments.locator('.attachment-upload-disclosure summary')).toBeFocused();
+      await attachments.locator('.attachment-upload-disclosure summary').press('Enter');
+      await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+      expect(await originalInput!.evaluate(element => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
+      expect(await input.evaluate((element: HTMLInputElement, file) => element.files![0] === file, chosen)).toBe(true);
+      await path.fill('docs/release/checklist.md');
+      await path.press('Escape');
+      await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+      await attachments.locator('.attachment-upload-disclosure summary').click();
+      await expect(path).toHaveValue('docs/release/checklist.md');
+      await back.click();
+      await page.getByRole('tab', { name: labels.overview, exact: true }).click();
+      await page.getByRole('tab', { name: labels.attachments, exact: true }).click();
+      await attachments.locator('.attachment-upload-disclosure summary').click();
+      await expect(path).toHaveValue('docs/release/checklist.md');
+      expect(await input.evaluate((element: HTMLInputElement, file) => element.files![0] === file, chosen)).toBe(true);
+      await path.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: test.info().outputPath(`upload-${locale}-${viewport.width}.png`) });
+      await writeFile(test.info().outputPath('upload-geometry.json'), JSON.stringify({ locale, viewport, geometry }, null, 2));
+      expect(state.writes).toEqual([]);
+      await chosen.dispose(); await originalInput!.dispose();
+    } finally { await context.close(); }
+  });
+}
+
+test('attachment upload retains native input and browser state across its actual 559/560px boundary', async ({ page }) => {
+  const state = await install(page);
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/reading.txt`);
+  const attachments = page.locator('.task-attachments');
+  const split = attachments.locator('.attachment-split');
+  const body = attachments.locator('.attachment-preview-body').filter({ has: page.locator('pre') });
+  await expect(body.locator('pre')).toHaveText(longText);
+  await body.evaluate(element => { element.scrollTop = 350; });
+  const scroll = await body.evaluate(element => element.scrollTop);
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  const input = attachments.locator('input[type=file]');
+  await input.setInputFiles({ name: 'boundary.md', mimeType: 'text/markdown', buffer: Buffer.from('# Boundary') });
+  const chosen = await input.evaluateHandle((element: HTMLInputElement) => element.files![0]!);
+  const path = attachments.getByRole('textbox', { name: 'Target relative path' });
+  await path.fill('drafts/boundary.md');
+  await path.focus();
+  for (const width of [559, 560, 559, 768]) {
+    await split.evaluate((element: HTMLElement, width) => { element.style.flex = 'none'; element.style.width = `${width + 2}px`; }, width);
+    await expect.poll(() => split.evaluate(element => element.clientWidth)).toBe(width);
+    if (width < 560) await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+    else await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+    await expect(path).toBeFocused();
+    await expect(path).toHaveValue('drafts/boundary.md');
+    expect(await input.evaluate((element: HTMLInputElement, file) => element.files![0] === file, chosen)).toBe(true);
+  }
+  for (const browserControl of [attachments.getByRole('button', { name: /^reading\.txt/ }), attachments.getByRole('link', { name: 'Download', exact: true })]) {
+    await split.evaluate((element: HTMLElement) => { element.style.width = '770px'; });
+    await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+    await browserControl.focus();
+    await split.evaluate((element: HTMLElement) => { element.style.width = '561px'; });
+    await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+    await expect(input).toBeFocused();
+  }
+  await split.evaluate((element: HTMLElement) => { element.style.width = '561px'; });
+  await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+  await attachments.getByRole('button', { name: 'Back to files', exact: true }).focus();
+  await split.evaluate((element: HTMLElement) => { element.style.width = '562px'; });
+  await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+  await expect(input).toBeFocused();
+  await page.setViewportSize({ width: 768, height: 900 });
+  await split.evaluate((element: HTMLElement) => { element.style.removeProperty('flex'); element.style.removeProperty('width'); });
+  await path.press('Escape');
+  await expect(attachments.locator('.attachment-upload-disclosure')).not.toHaveAttribute('open');
+  await expect(attachments.locator('.attachment-preview-header h5')).toHaveText('reading.txt');
+  expect(await body.evaluate(element => element.scrollTop)).toBe(scroll);
+  expect(state.writes).toEqual([]);
+  await chosen.dispose();
+});
+
+for (const goal of [false, true]) {
+  test(`attachment upload keeps failed and pending drafts then selects submitted content for ${goal ? 'Goal' : 'Task'}`, async ({ page }) => {
+    const state = await install(page, false, false, undefined, goal);
+    await page.setViewportSize({ width: 375, height: 667 });
+    const destination = 'docs/release/checklist.md';
+    const payload = '# Uploaded checklist\n\nReady to release.';
+    const requests: { method: string; path: string; body: string | null; contentType: string | undefined }[] = [];
+    const pending = Promise.withResolvers<void>();
+    let attempt = 0;
+    await page.route(`**/attachments/files/${destination}`, async route => {
+      if (route.request().method() === 'GET') return route.fulfill({ contentType: 'text/markdown', body: payload, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      const request = route.request();
+      requests.push({ method: request.method(), path: new URL(request.url()).pathname, body: request.postData(), contentType: request.headers()['content-type'] });
+      if (++attempt === 1) return route.fulfill({ status: 500, contentType: 'application/json', body: stringifyWireJson({ error: { code: 'storage_failed', message: 'Fixture upload failure', requestId: 'upload-fixture' } }), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      await pending.promise;
+      const uploaded = { path: destination, contentType: 'text/markdown', sizeBytes: Buffer.byteLength(payload), createdAt: time, updatedAt: time };
+      state.files.push(uploaded);
+      return route.fulfill({ status: 201, contentType: 'application/json', body: stringifyWireJson(uploaded), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    try {
+      await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+      const attachments = page.locator('.task-attachments');
+      await attachments.locator('.attachment-upload-disclosure summary').click();
+      const input = attachments.locator('input[type=file]');
+      await input.setInputFiles({ name: 'release-checklist.md', mimeType: 'text/markdown', buffer: Buffer.from(payload) });
+      const chosen = await input.evaluateHandle((element: HTMLInputElement) => element.files![0]!);
+      const path = attachments.getByRole('textbox', { name: 'Target relative path' });
+      await path.fill(destination);
+      await attachments.getByRole('button', { name: 'Upload file', exact: true }).click();
+      await expect(attachments.locator('.attachment-upload').getByRole('alert')).toContainText('upload-fixture');
+      await expect(path).toHaveValue(destination);
+      expect(await input.evaluate((element: HTMLInputElement, file) => element.files![0] === file, chosen)).toBe(true);
+      await attachments.getByRole('button', { name: 'Upload file', exact: true }).click();
+      await expect(attachments.getByRole('button', { name: 'Uploading…', exact: true })).toBeDisabled();
+      await expect(path).toBeDisabled();
+      await expect(input).toBeDisabled();
+      await attachments.getByRole('button', { name: 'Back to files', exact: true }).click();
+      await attachments.locator('.attachment-upload-disclosure summary').click();
+      await expect(path).toHaveValue(destination);
+      await expect(attachments.getByRole('button', { name: 'Uploading…', exact: true })).toBeDisabled();
+      await attachments.getByRole('button', { name: 'Back to files', exact: true }).focus();
+      await page.setViewportSize({ width: 1360, height: 900 });
+      await expect(attachments.locator('.attachment-split')).not.toHaveClass(/attachment-upload-fullscreen/);
+      await expect(attachments.locator('.attachment-upload-disclosure summary')).toBeFocused();
+      await page.setViewportSize({ width: 375, height: 667 });
+      await expect(attachments.getByRole('button', { name: 'Back to files', exact: true })).toBeFocused();
+      pending.resolve();
+      await expect(attachments.locator('.attachment-split')).not.toHaveClass(/attachment-upload-fullscreen/);
+      const uploaded = attachments.locator('.attachment-file').filter({ hasText: 'checklist.md' });
+      await expect(uploaded).toBeFocused();
+      await expect(attachments.locator('.attachment-preview-header h5')).toHaveText(destination);
+      await expect(attachments.locator('.attachment-markdown')).toContainText('Ready to release.');
+      expect(requests).toEqual([1, 2].map(() => ({ method: 'PUT', path: `${root}/attachments/files/${destination}`, body: payload, contentType: 'text/markdown' })));
+      await attachments.locator('.attachment-upload-disclosure summary').click();
+      await expect(path).toHaveValue('');
+      expect(await input.evaluate((element: HTMLInputElement) => element.files!.length)).toBe(0);
+      await chosen.dispose();
+    } finally { pending.resolve(); }
+  });
+}
+
+test('attachment upload Escape preserves its dialog and fullscreen draft', async ({ page }) => {
+  await install(page);
+  await page.setViewportSize({ width: 1360, height: 900 });
+  const { dialog, attachments } = await openDialog(page);
+  const split = attachments.locator('.attachment-split');
+  await split.evaluate((element: HTMLElement) => { element.style.flex = 'none'; element.style.width = '502px'; });
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await expect(split).toHaveClass(/attachment-upload-fullscreen/);
+  const input = attachments.locator('input[type=file]');
+  await input.setInputFiles({ name: 'dialog.md', mimeType: 'text/markdown', buffer: Buffer.from('Dialog draft') });
+  const path = attachments.getByRole('textbox', { name: 'Target relative path' });
+  await path.fill('drafts/dialog.md');
+  await path.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(attachments.locator('.attachment-upload-disclosure summary')).toBeFocused();
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await dialog.locator('.task-detail-fullscreen-toggle').click();
+  await expect(dialog).toHaveClass(/task-detail-fullscreen/);
+  await expect(path).toHaveValue('drafts/dialog.md');
+  expect(await input.evaluate((element: HTMLInputElement) => element.files![0]!.name)).toBe('dialog.md');
+  await dialog.locator('.task-detail-fullscreen-toggle').press('Escape');
+  await expect(dialog).toHaveClass(/task-detail-fullscreen/);
+  await expect(dialog).toBeVisible();
+  await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+  await expect(attachments.locator('.attachment-upload-disclosure summary')).toBeFocused();
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await expect(path).toHaveValue('drafts/dialog.md');
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(split).not.toHaveClass(/attachment-upload-fullscreen/);
+});
 
 async function install(page: Page, linked = false, claimed = false, description?: string, goal = false) {
   const worker = { claimId: successorId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
