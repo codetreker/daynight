@@ -28,17 +28,31 @@ rechecks failed owners without repeating completed cleanup or replaying business
 operations. A timed-out stop attempt remains owned until it settles; subsequent
 reconciliation joins that attempt instead of launching concurrent cleanup. Failed
 observation promises are not permanent resource facts.
+Management reconciliation joins command producers and their event writes before
+re-observing retained native boundaries, output writers and durable closure.
+A settled producer's historical cleanup error cannot skip this reconciliation.
+It uses the original resource generation and never reruns the command; missing
+proof or a required lease still retains unknown responsibility.
 A Task producer that ignores cancellation cannot hold its native stop request
 behind the business mutation queue. Independent stop verifies the original
 launch identity and boundary without changing cleanup state or releasing leases;
 the producer still prevents storage closure and scope reconstruction.
 Management-controlled stopped and blocked scopes retain reporting and the
 original lock; closed scopes report cached telemetry without spawning probes.
+Historical initialization and joined archive failures remain diagnostics rather
+than active resource claims. Once closure is confirmed, an accepted rebuild may
+start the next generation without rethrowing those historical failures. Ordinary
+exit still reports them, and unjoined management cleanup remains a separate
+barrier to replacement.
 Assistant application ownership includes detached guarded actions after the factory
 returns. Bot preparation owns probe cleanup and aliases even before a launch is
 submitted; failed cleanup retains the host stores and locks. The Reviewer host
 also belongs to the scope; its Git, GitHub and Copilot phases share the launcher
 and join streamed output writers before recording resource closure.
+The Reviewer retains its original close operation when command cleanup cannot
+be confirmed. Reconciliation must prove every retained stop cause and complete
+that close operation before releasing its lock; a settled host Promise or one
+confirmed cause in a mixed failure cannot establish closure.
 
 A controlled Node launcher establishes and reports its native boundary before
 receiving permission to execute a command. POSIX uses a private IPC gate in the

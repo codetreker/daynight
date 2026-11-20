@@ -9,10 +9,16 @@ import { createCopilotRunner } from "../../../src/commands/review/adapters/copil
 import { createGitManager } from "../../../src/commands/review/adapters/worktrees.js";
 import { createGitHubClient } from "../../../src/commands/review/adapters/github.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
-import { acquireInstanceLock, runForegroundReview } from "../../../src/commands/review/runtime.js";
+import { acquireInstanceLock, hasRetainedWorkerReviewFailure, isConfirmedWorkerReviewFailure, reconcileWorkerReviewFailure, runForegroundReview } from "../../../src/commands/review/runtime.js";
 import { openStore } from "../../../src/commands/review/store.js";
 import { prepareReviewSkill } from "../../../src/commands/review/skill.js";
 import type { RuntimeDependencies } from "../../../src/commands/review/runtime.js";
+import { createOperation } from "../../../src/api/operation.js";
+import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
+import { runLifecycleOwnedCommand } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { hasUnconfirmedOwnedCommandCleanup } from "../../../src/commands/worker/owned-command.js";
+import * as files from "../../../src/platform/files.js";
+import type { AssignmentSource } from "../../../src/commands/review/assignment.js";
 
 const packageDirectory = fileURLToPath(new URL("../../../", import.meta.url));
 let directory: string;
@@ -28,8 +34,111 @@ const input = (name: string) => {
   const paths = resolveReviewPaths(path.join(directory, name));
   return { paths, configuration: parseConfiguration("review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths) };
 };
+const source: AssignmentSource = { snapshot: () => ({ kind: "disabled" }), subscribe: () => () => {}, capturePrompt: async () => { throw new Error("No review is assigned."); } };
 
 describe("foreground runtime ownership", () => {
+  it("releases the original Worker Reviewer lock only after its command output and stop save reconcile", async () => {
+    const { configuration, paths } = input("worker-native-reconcile");
+    const journal = await openExecutionResourceJournal({ directory: path.join(paths.stateDirectory, "journal"), identity: {
+      serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002",
+    } });
+    const originalReplace = files.replaceFileAtomically;
+    let rejectStop = true, commandFailure: unknown;
+    const replace = vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === path.join(paths.stateDirectory, "journal") && JSON.parse(String(text)).event.stage === "stopped" && rejectStop) throw new Error("original stop save unavailable");
+      return originalReplace(file, text, ...rest);
+    });
+    const marker = path.join(paths.stateDirectory, "command-count");
+    const deps = dependencies(async () => {
+      const operation = createOperation({ limits: { totalMs: 20_000, requestMs: 20_000 } });
+      try {
+        commandFailure = await runLifecycleOwnedCommand({ file: process.execPath,
+          args: ["--input-type=module", "--eval", `import {appendFileSync} from 'node:fs';appendFileSync(${JSON.stringify(marker)},'once\\n');process.stdout.write('closed output');`], environment: process.env }, operation, journal.sink("1")).catch(error => error);
+      } finally { operation.dispose(); }
+      // The production coordinator exposes the same live original receipt after
+      // its interrupted attempt and all writers have joined.
+      return { get safeToReleaseLock() { return !hasUnconfirmedOwnedCommandCleanup(commandFailure); } };
+    });
+    let failure: unknown;
+    try {
+      failure = await runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, log: () => {} }).catch(error => error);
+      expect(commandFailure).toMatchObject({ name: "OwnedCommandCleanupError" });
+      expect(hasRetainedWorkerReviewFailure(failure)).toBe(true);
+      await expect(acquireInstanceLock(paths.lockFile)).rejects.toThrow("Cannot acquire instance lock");
+      await expect(reconcileWorkerReviewFailure(failure)).rejects.toThrow("processes remain unconfirmed");
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      await Promise.all([reconcileWorkerReviewFailure(failure), reconcileWorkerReviewFailure(failure)]);
+      expect(hasRetainedWorkerReviewFailure(failure)).toBe(false);
+      await expect(readFile(paths.lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(marker, "utf8")).toBe("once\n");
+      await reconcileWorkerReviewFailure(failure);
+    } finally {
+      rejectStop = false; replace.mockRestore();
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      if (hasRetainedWorkerReviewFailure(failure)) await reconcileWorkerReviewFailure(failure);
+    }
+  }, 30_000);
+
+  it("confirms a joined Worker startup failure without hiding the original error", async () => {
+    const { configuration, paths } = input("worker-startup-failure");
+    const failure = new Error("Worker Reviewer skill unavailable");
+    const deps = dependencies(async () => ({ safeToReleaseLock: true }));
+    deps.prepareSkill = async () => { throw failure; };
+    const result = await runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, log: () => {} }).catch(error => error);
+    expect(result).toMatchObject({ cause: failure });
+    await reconcileWorkerReviewFailure(result);
+    await expect(readFile(paths.lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("confirms the original startup cancellation only after releasing its acquired lock", async () => {
+    const { configuration, paths } = input("worker-cancelled-startup"), controller = new AbortController();
+    const reason = new Error("original scope stopped");
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const deps = dependencies(async () => ({ safeToReleaseLock: true }));
+    deps.prepareSkill = async (...args) => {
+      const skill = await prepareReviewSkill(...args);
+      entered.resolve(); await release.promise; return skill;
+    };
+    const running = runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, signal: controller.signal, log: () => {} }).catch(error => error);
+    try {
+      await entered.promise;
+      await expect(acquireInstanceLock(paths.lockFile)).rejects.toThrow("Cannot acquire instance lock");
+      controller.abort(reason); release.resolve();
+      const receipt = await running;
+      expect(receipt).toMatchObject({ cause: reason });
+      expect(isConfirmedWorkerReviewFailure(receipt)).toBe(true);
+      expect(isConfirmedWorkerReviewFailure(reason)).toBe(false);
+      await expect(readFile(paths.lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { controller.abort(reason); release.resolve(); await running; }
+  });
+
+  it("retains the original store and lock until a failed close actually succeeds", async () => {
+    const { configuration, paths } = input("worker-close-retry");
+    const failure = new Error("SQLite close failed"), deps = dependencies(async () => ({ safeToReleaseLock: true }));
+    const earlier = input("worker-shared-cause"), startup = dependencies(async () => ({ safeToReleaseLock: true }));
+    startup.prepareSkill = async () => { throw failure; };
+    const earlierFailure = await runForegroundReview(earlier.configuration, earlier.paths, { packageDirectory, dependencies: startup, source, log: () => {} }).catch(error => error);
+    await reconcileWorkerReviewFailure(earlierFailure);
+    let close: ReturnType<typeof vi.spyOn> | undefined;
+    let result: unknown;
+    deps.openStore = (...args) => {
+      const store = openStore(...args), original = store.close;
+      close = vi.spyOn(store, "close").mockImplementationOnce(() => { throw failure; }).mockImplementation(original);
+      return store;
+    };
+    try {
+      result = await runForegroundReview(configuration, paths, { packageDirectory, dependencies: deps, source, log: () => {} }).catch(error => error);
+      expect(result).toMatchObject({ cause: failure });
+      expect(result).not.toBe(earlierFailure);
+      expect(hasRetainedWorkerReviewFailure(result)).toBe(true);
+      await expect(acquireInstanceLock(paths.lockFile)).rejects.toThrow("Cannot acquire instance lock");
+      await reconcileWorkerReviewFailure(result);
+      expect(close).toHaveBeenCalledTimes(2);
+      await expect(readFile(paths.lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { if (hasRetainedWorkerReviewFailure(result)) await reconcileWorkerReviewFailure(result); close?.mockRestore(); }
+  });
+
   it("stays running until its signal stops admission and releases only its own lock after coordinator shutdown", async () => {
     const { configuration, paths } = input("normal");
     const controller = new AbortController();

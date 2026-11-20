@@ -29,7 +29,7 @@ flowchart TB
 
 `runtime.ts` 的管理根持有 Worker 实例锁、身份和主 SQLite 连接。`ExecutionScope` 持有一轮执行的独立 signal、配置应用、coordinator、Bot/assistant、Reviewer、探测、Git 和 Controller 责任。正常启动通过 `createExecutionScopeManager().create()` 建立作用域，正常退出也调用同一个 `stop()`；重建不会复用已取消的 runtime、signal 或配置管理器。管理根在同一进程内保留原实例锁和主数据库，重新读取的服务、账号或 Worker 身份不匹配时拒绝重建。
 
-`onExecutionScope` 在首次异步初始化前提供管理调用者的控制句柄。启动构造有独立 owner；取消等待不丢弃原 Promise，迟到返回的配置、存储和其他资源仍由原作用域清理，未 join 前不能确认停止或重建。控制句柄中，`stop()` 关闭全部准入并取消执行，`snapshot()` 返回逐 owner 原身份及停止事实，`reconcile()` 只重新核对未闭合 owner，`rebuild()` 仅在全部 owner 停止和保存已确认后请求建立下一代。成功 owner 不重复执行清理；超时后仍在执行的停止请求由原 owner 保留，重新核对只等待同一次请求，不并发启动第二次清理。已结束的失败请求允许再次核对原资源，失败的有界观察不能永久缓存为资源仍活动的事实。普通命令没有管理调用者时，在有界停止后返回实际错误。带管理调用者时，受阻作用域继续保留控制句柄、实例锁及管理 reporter；已闭门时 reporter 只消费缓存观测，不执行配置准备或原生探测。
+`onExecutionScope` 在首次异步初始化前提供管理调用者的控制句柄。启动构造有独立 owner；取消等待不丢弃原 Promise，迟到返回的配置、存储和其他资源仍由原作用域清理，未 join 前不能确认停止或重建。控制句柄中，`stop()` 关闭全部准入并取消执行，`snapshot()` 返回逐 owner 原身份及停止事实，`reconcile()` 只重新核对未闭合 owner，`rebuild()` 仅在全部 owner 停止和保存已确认后请求建立下一代。成功 owner 不重复执行清理；超时后仍在执行的停止请求由原 owner 保留，重新核对只等待同一次请求，不并发启动第二次清理。已结束的失败请求允许再次核对原资源，失败的有界观察不能永久缓存为资源仍活动的事实。初始化、命令及已 join 的归档错误保留为历史诊断；资源闭合后已接受的显式重建不因这些历史错误终止管理根。普通退出仍报告实际错误，尚未 join 的清理或管理写入不能被历史错误分类隐藏。带管理调用者时，受阻作用域继续保留控制句柄、实例锁及管理 reporter；已闭门时 reporter 只消费缓存观测，不执行配置准备或原生探测。
 
 | Owner | 资源与闭合条件 |
 |---|---|
@@ -51,6 +51,10 @@ POSIX launcher 在子命令结果返回后仍作为原 PGID 的存活身份保�
 Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待出生证明保存；Windows 的 Job 和进程句柄在恢复主线程前显式移交给原执行 owner。父进程只在保存成功后放行 Controller 主程序。出生保存前的清理若失败，原 backend 保留同一进程句柄和清理闭包，后续 shutdown/close 只核对原边界；没有出生证明仍保持 unknown，不能推断未启动。记录 PID 的退出不足以释放 Web 执行容量。
 
 正常 Worker 路径通过 `withOwnedCommandLifecycle` 注入 `execution-resources/` 私有持久库存。每资源 JSON 绑定服务、账号、Worker、代际和单调事件序号，以文件同步、原子替换及目录屏障保存 `prepared/bound/stopped/unknown`。旧事件不能覆盖新事实，迟到 unknown 不能撤销已证明的停止；替换已成功但目录屏障失败时，核对原事实并补完屏障后才能确认保存。重启后缺少原出生证明或 Windows lease 的责任保持未知，不能只因 PID 不存在清空库存。原 claim、worktree、HEAD/index、Session、journal 和未知业务操作仍由各自原记录拥有；停止不执行 stash、commit、reset 或删除现场。
+
+管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
+
+Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁和未完成关闭责任。原生命令核对成功后，宿主仍须核对同一次 Reviewer 执行的全部停止原因并实际完成关闭；只有原清理证明覆盖全部原因时才可解除阻塞。普通异常、宿主 Promise 已结束或错误中包含一个已确认的命令，均不足以证明 Reviewer 资源已释放。
 
 执行作用域和资源事件接口提供本机机制。持久停用意图、云端准入、Controller 最终 dispatch 围栏及显式恢复授权由生命周期集成层负责；单独建立或重建作用域不声明完整 Worker 停用能力。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
 

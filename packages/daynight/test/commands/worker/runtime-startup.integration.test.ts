@@ -15,6 +15,11 @@ import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
+import * as workerIdentity from "../../../src/commands/worker/identity.js";
+import * as atomicFiles from "../../../src/platform/files.js";
+import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import { currentOwnedCommandLifecycle, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import * as reviewerHost from "../../../src/commands/worker/reviewer-host.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
 import * as webStores from "../../../src/commands/worker/backends/web-store.js";
@@ -37,7 +42,7 @@ type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), reviewer: vi.fn<(options: { signal: AbortSignal }) => Promise<void>>(), reviewerStopped: vi.fn(), nextUUID: null as (() => string) | null }));
 // The startup fixture controls Task dependencies; the independent reviewer host has its own tests.
-vi.mock("../../../src/commands/worker/reviewer-host.js", () => ({ runReviewerHost: mocks.reviewer }));
+vi.mock("../../../src/commands/worker/reviewer-host.js", async original => ({ ...await original<object>(), runReviewerHost: mocks.reviewer }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
@@ -177,6 +182,122 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("rebuilds after a joined initialization failure while retaining the lock and the original exit error", async () => {
+    const f = await fixture(), failure = new Error("Worker identity read was temporarily unavailable.");
+    let originalSignal: AbortSignal | undefined, originalLock: string | undefined;
+    const identity = vi.spyOn(workerIdentity, "ensureWorkerIdentity").mockImplementationOnce(async (paths, signal) => {
+      originalSignal = signal;
+      originalLock = await readFile(resolveWorkerPaths(f.homeDirectory).lockFile, "utf8");
+      throw failure;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().stopped).toBe(true));
+      expect(originalSignal?.aborted).toBe(true);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
+      const next = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(controls[1]!.generation).toBe("2");
+      expect(next.signal).not.toBe(originalSignal);
+      expect(next.signal!.aborted).toBe(false);
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      cancellation.abort();
+      try { await expect(running).rejects.toBe(failure); } finally { identity.mockRestore(); }
+    }
+    const released = await tryAcquireWorkerInstanceLock(f.paths);
+    expect(released).not.toBeNull(); await released!.release();
+  });
+
+  it("reports an initialization failure on ordinary exit after releasing its original lock", async () => {
+    const f = await fixture(), failure = new Error("Worker identity read failed.");
+    const identity = vi.spyOn(workerIdentity, "ensureWorkerIdentity").mockImplementationOnce(async () => {
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      throw failure;
+    });
+    try { await expect(runWorker(f)).rejects.toBe(failure); } finally { identity.mockRestore(); }
+    const released = await tryAcquireWorkerInstanceLock(f.paths);
+    expect(released).not.toBeNull(); await released!.release();
+  });
+
+  it("retains the management lock after a close deadline until the original reporter joins", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const stop = vi.fn(async () => { entered.resolve(); await release.promise; });
+    mocks.reporter.mockImplementation(() => ({ ...reporter(), stop }));
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      controls[0]!.rebuild(); await entered.promise;
+      await expect(running).rejects.toThrow("owner stop deadline elapsed");
+      expect(controls).toHaveLength(1);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(stop).toHaveBeenCalledOnce();
+      release.resolve();
+      let released: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>>;
+      await vi.waitFor(async () => { released = await tryAcquireWorkerInstanceLock(f.paths); expect(released).not.toBeNull(); });
+      await released!.release();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); }
+  }, 20_000);
+
+  it("reconciles the original non-Git command through management control before rebuilding", async () => {
+    const f = await fixture(), marker = path.join(f.homeDirectory, "command-runs");
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let rejectStop = true;
+    let originalSink: OwnedCommandLifecycleSink | undefined;
+    const reviewerClosure = vi.spyOn(reviewerHost, "reconcileReviewerHostFailure").mockImplementation(async error => {
+      // This fixture owns only its real command; production Reviewer closure
+      // separately proves its coordinator, database and instance lock.
+      if (hasUnconfirmedOwnedCommandCleanup(error)) throw error;
+    });
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "stopped" && rejectStop) throw new Error("Original command stop receipt could not be saved.");
+      return replace(file, text, ...rest);
+    });
+    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
+      originalSink = currentOwnedCommandLifecycle();
+      const operation = createOperation({ signal, limits: { totalMs: 20_000, requestMs: 20_000 } });
+      try {
+        await runOwnedCommand({ file: process.execPath, args: ["--input-type=module", "--eval", `import {appendFileSync} from 'node:fs';appendFileSync(${JSON.stringify(marker)},'once\\n');`], environment: process.env }, operation);
+      } finally { operation.dispose(); }
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().resources.find(entry => entry.resourceId === "native-inventory")?.result?.stop).toBe("unknown"), { timeout: 10_000 });
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      const refused = createOperation();
+      try {
+        await expect(withOwnedCommandLifecycle(originalSink!, () => runOwnedCommand({ file: process.execPath,
+          args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(marker)},'unexpected');`], environment: process.env }, refused))).rejects.toThrow();
+      } finally { refused.dispose(); }
+      rejectStop = false;
+      await controls[0]!.reconcile();
+      // A sibling owner may have observed its old rejection before the native
+      // owner confirmed the same boundary during the first reconciliation.
+      if (!controls[0]!.snapshot().stopped) await controls[0]!.reconcile();
+      expect(controls[0]!.snapshot().stopped).toBe(true);
+      const saved = await Promise.all((await readdir(directory)).filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ generation: "1", identity: { serverOrigin: origin, workerId }, event: { stage: "stopped" } });
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.reviewer).toHaveBeenCalledTimes(2); });
+      expect(await readFile(marker, "utf8")).toBe("once\n");
+    } finally {
+      rejectStop = false; cancellation.abort();
+      try { await expect(running).rejects.toMatchObject({ name: "OwnedCommandCleanupError" }); } finally { saving.mockRestore(); reviewerClosure.mockRestore(); }
+    }
+  }, 30_000);
+
   it("retains a pending startup constructor and cleans its late result before rebuilding", async () => {
     const f = await fixture();
     const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();

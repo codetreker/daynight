@@ -1,4 +1,4 @@
-import { runReviewerHost } from "./reviewer-host.js";
+import { reconcileReviewerHostFailure, runReviewerHost } from "./reviewer-host.js";
 import { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 import { replayStoppedControllerUsage } from "../controller/usage/stopped.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
@@ -47,7 +47,7 @@ import { createWorkerConfigurationDiagnostics } from "./configuration-diagnostic
 import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
-import { hasUnconfirmedOwnedCommandCleanup } from "./owned-command.js";
+import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
@@ -281,16 +281,20 @@ type WorkerRunOptions = {
 };
 type WorkerManagementRoot = {
   cancellation: ReturnType<typeof runtimeCancellation>;
+  previousScopeFailures: unknown[];
+  managementClosed: boolean;
+  managementClosing?: Promise<void>;
   lock?: Awaited<ReturnType<typeof acquireWorkerInstanceLock>>;
   store?: ReturnType<typeof openWorkerStore>;
   identity?: ExecutionResourceIdentity;
   journal?: Awaited<ReturnType<typeof openExecutionResourceJournal>>;
 };
+const retainedManagementRoots = new Set<WorkerManagementRoot>();
 
 export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   if (options.signal?.aborted) return;
   const cancellation = runtimeCancellation(options.signal);
-  const root: WorkerManagementRoot = { cancellation };
+  const root: WorkerManagementRoot = { cancellation, previousScopeFailures: [], managementClosed: true };
   const scopes = createExecutionScopeManager(cancellation.controller.signal);
   try {
     do {
@@ -308,7 +312,18 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   } finally {
     try {
       if (scopes.current()?.snapshot().stopped === true) {
-        try { root.store?.close(); } finally { await root.lock?.release(); }
+        const release = async (): Promise<void> => {
+          try { root.store?.close(); await root.lock?.release(); retainedManagementRoots.delete(root); }
+          catch (error) { retainedManagementRoots.add(root); throw error; }
+        };
+        if (root.managementClosed) await release();
+        else {
+          // The observation deadline cannot release the lock beneath an old
+          // management writer. Only its original successful close can do so.
+          retainedManagementRoots.add(root);
+          void root.managementClosing?.then(async () => { if (root.managementClosed) await release(); })
+            .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
+        }
       }
     } finally { cancellation.dispose(); }
   }
@@ -358,6 +373,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
   const failures: unknown[] = [];
+  const managementFailures: unknown[] = [];
   const executionFailure = (error: unknown): void => {
     try { diagnostics?.emit({ kind: "reconciliation-error", message: "Worker execution stopped after an owner failure; original resources remain for reconciliation.", error }); }
     catch (failure) { failures.push(failure); }
@@ -388,9 +404,18 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     });
   };
   const rebuilding = new Promise<void>(resolve => { requestRebuild = resolve; });
+  const resolvedCommandCleanup = (error: unknown): boolean => error instanceof OwnedCommandCleanupError
+    ? !hasUnconfirmedOwnedCommandCleanup(error)
+    : error instanceof AggregateError && error.errors.length > 0 && error.errors.every(resolvedCommandCleanup)
+      && (error.cause === undefined || resolvedCommandCleanup(error.cause));
+  const unresolvedProducerFailures = (errors: readonly unknown[]): unknown[] => errors.filter(error => {
+    if (!resolvedCommandCleanup(error)) return true;
+    if (!failures.includes(error)) failures.push(error);
+    return false;
+  });
   const join = async (jobs: readonly (Promise<unknown> | undefined)[]): Promise<void> => {
     const results = await Promise.allSettled(jobs);
-    throwFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+    throwFailures(unresolvedProducerFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : [])));
   };
   let probeStop: Promise<void> | undefined;
   const stopProbes = (): Promise<void> => {
@@ -411,7 +436,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let reportDrain: Promise<void> | undefined;
   const drainReport = (): Promise<void> => {
     if (!managementSignal.aborted) return Promise.resolve();
-    return reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { failures.push(error); });
+    return reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { managementFailures.push(error); });
   };
   let taskStop: Promise<void> | undefined;
   const stopTasks = (deadline: number): Promise<void> => {
@@ -424,11 +449,24 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     return work;
   };
   let configurationStop: Promise<void> | undefined;
-  const stopConfiguration = (): Promise<void> => configurationStop ??= (async () => {
-    await drainReport();
-    await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
-    promptSource?.close();
-  })();
+  const stopConfiguration = (): Promise<void> => {
+    if (configurationStop !== undefined) return configurationStop;
+    const work = (async () => {
+      await drainReport();
+      await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
+      promptSource?.close();
+    })();
+    configurationStop = work;
+    void work.catch(() => { if (configurationStop === work) configurationStop = undefined; });
+    return work;
+  };
+  const stopReviewer = async (): Promise<void> => {
+    try { await reviewerRun; }
+    catch (error) {
+      await reconcileReviewerHostFailure(error);
+      if (!failures.includes(error)) failures.push(error);
+    }
+  };
   registerOwner({ resourceId: "configuration", ownerKind: "configuration",
     closeAdmission: () => { configuration?.beginDrain(); readOnly?.close(); modelDiscovery?.close(); directoryBrowser.close(); },
     snapshot: () => ({ directory: directoryBrowser.snapshot(), mappings: localMappingJobs.size }), stop: stopConfiguration });
@@ -440,16 +478,14 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
   registerOwner({ resourceId: "reviewer", ownerKind: "assistant",
     snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
-    stop: async () => { await reviewerRun; } });
+    stop: stopReviewer });
   registerOwner({ resourceId: "probes", ownerKind: "probe",
     stop: stopProbes });
   registerOwner({ resourceId: "repository", ownerKind: "repository", stop: async () => { await drainReport(); await stopRepository(); } });
-  registerOwner({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async () => {
-    // Producer owners cancel concurrently; drain their final resource events before observing closure.
-    await drainReport();
-    await join([stopRepository(), stopProbes(), reviewerRun]);
-    await root.journal?.drain();
-    await root.journal?.assertClosed();
+  registerOwner({ resourceId: "native-inventory", ownerKind: "repository", snapshot: () => root.journal?.snapshot(), stop: async ({ deadline }) => {
+    // The journal joins each admitted command and its original writes. Broader
+    // producer lifetimes retain their own owners and cannot block this recovery.
+    await root.journal?.reconcileRetained({ generation: scope.generation, deadline });
     if (retainedOwnedCommandBoundaries().length) throw new Error("Original native command boundaries remain unconfirmed.");
   } });
   let archiveStop: Promise<void> | undefined;
@@ -1125,15 +1161,25 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     }
     const finishManagement = async (): Promise<void> => {
       await joinStartup();
-      try { await withinExecutionDeadline(reportDrain ?? reporter?.stop() ?? Promise.resolve(), Date.now() + 10_000); } catch (error) { failures.push(error); }
+      try { await (reportDrain ?? reporter?.stop()); } catch (error) { managementFailures.push(error); }
       observeMonitoring(m => { if (scope.snapshot().stopped) { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); } });
       try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
-      try { await diagnostics?.close(); } catch (error) { failures.push(error); }
+      try { await diagnostics?.close(); } catch (error) { managementFailures.push(error); }
       failures.push(...configurationDiagnostics?.errors() ?? []);
+      root.managementClosed = managementFailures.length === 0;
     };
-    try { await withinExecutionDeadline(finishManagement(), Date.now() + 10_000); } catch (error) { failures.push(error); }
+    root.managementClosed = false;
+    root.managementClosing = finishManagement();
+    try { await withinExecutionDeadline(root.managementClosing, Date.now() + 10_000); } catch (error) { failures.push(error); }
   }
-  throwFailures([...failures, ...ownerResults.flatMap(result => result.error === undefined ? [] : [result.error])]);
+  const currentFailures = [...failures, ...ownerResults.flatMap(result => result.error === undefined ? [] : [result.error])];
+  if (rebuildRequested && !managementSignal.aborted && scope.snapshot().stopped && root.managementClosed) {
+    // A confirmed stop permits the requested new generation. Preserve earlier
+    // execution errors for ordinary exit without treating them as live owners.
+    root.previousScopeFailures.push(...currentFailures);
+    return;
+  }
+  throwFailures([...root.previousScopeFailures, ...currentFailures, ...managementFailures]);
 };
 
 export const runWorkerControl = async (options: {

@@ -2,7 +2,8 @@ import { access } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { configurationDefaults } from "../review/config.js";
 import { resolveWorkerReviewPaths } from "../review/paths.js";
-import { runWorkerReview } from "../review/runtime.js";
+import { hasRetainedWorkerReviewFailure, isConfirmedWorkerReviewFailure, runWorkerReview } from "../review/runtime.js";
+export { reconcileWorkerReviewFailure as reconcileReviewerHostFailure } from "../review/runtime.js";
 import { createReviewerSource } from "./reviewer-source.js";
 import { OperationError } from "../../api/operation.js";
 import type { WorkerEvent } from "./execution.js";
@@ -18,6 +19,7 @@ export const runReviewerHost = async (options: {
   let failed = false;
   let retained = false;
   let runtimeFailure: unknown;
+  const retainedFailures = new Set<unknown>();
   const start = (): void => {
     if (runtime !== undefined) return;
     const job = runWorkerReview(paths, { packageDirectory: options.packageDirectory, signal: options.signal, source: source.source,
@@ -29,8 +31,10 @@ export const runReviewerHost = async (options: {
           ...(event.error === undefined ? {} : { error: event.error }) });
       } });
     runtime = job.then(() => { runtimeFailure = undefined; }).catch(error => {
-      if (options.signal.aborted && (error === options.signal.reason || error instanceof OperationError && error.kind === "cancelled" && error.cause === options.signal.reason)) return;
+      const cause = error instanceof Error && isConfirmedWorkerReviewFailure(error) ? error.cause : error;
+      if (options.signal.aborted && (cause === options.signal.reason || cause instanceof OperationError && cause.kind === "cancelled" && cause.cause === options.signal.reason)) return;
       runtimeFailure = error;
+      if (hasRetainedWorkerReviewFailure(error)) retainedFailures.add(error);
       options.emit({ kind: "reviewer-error", component: "reviewer", phase: "runtime", message: options.signal.aborted ? "Reviewer shutdown failed." : "Reviewer runtime failed; retry is scheduled.", error });
     }).finally(() => { runtime = undefined; });
   };
@@ -54,5 +58,8 @@ export const runReviewerHost = async (options: {
     try { await (options.wait === undefined ? delay(configurationDefaults.pollIntervalMs, undefined, { signal: options.signal }) : options.wait(configurationDefaults.pollIntervalMs, options.signal)); } catch { if (!options.signal.aborted) throw new Error("Reviewer polling wait failed."); }
   }
   await runtime;
-  if (runtimeFailure !== undefined) throw runtimeFailure;
+  const failures = [...retainedFailures].filter(hasRetainedWorkerReviewFailure);
+  if (runtimeFailure !== undefined && !failures.includes(runtimeFailure)) failures.push(runtimeFailure);
+  if (failures.length > 1) throw new AggregateError(failures, "Original Reviewer resources remain owned after shutdown.");
+  if (failures.length === 1) throw failures[0];
 };

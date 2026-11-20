@@ -18,13 +18,15 @@ export type OwnedCommandLifecycleEvent = {
 };
 /** Commits each event before resolving; rejection must preserve its original reservation. */
 export type OwnedCommandLifecycleSink = (event: OwnedCommandLifecycleEvent) => Promise<void>;
-const boundedSave = async (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent): Promise<void> => {
+const boundedSave = async (sink: OwnedCommandLifecycleSink, event: OwnedCommandLifecycleEvent, deadline?: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
-  try { await Promise.race([Promise.resolve().then(() => sink(event)), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Owned command responsibility save exceeded its deadline.")), 10_000); })]); }
+  try { await Promise.race([Promise.resolve().then(() => sink(event)), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Owned command responsibility save exceeded its deadline.")), Math.max(1, Math.min(10_000, deadline === undefined ? 10_000 : deadline - Date.now()))); })]); }
   finally { clearTimeout(timer); }
 };
 const context = new AsyncLocalStorage<OwnedCommandLifecycleSink>();
 const retained = new Map<string, { proof: ProcessProof | null; lease: ControllerJobLease | undefined; sequence: number; closeHandles?: () => void; joinOutput?: () => Promise<void> }>();
+const reconciliations = new Map<string, Promise<void>>();
+const producers = new Map<string, Promise<void>>();
 /** Live responsibility is retained independently of an Error object's reachability. */
 export const retainedOwnedCommandBoundaries = (): readonly { resourceId: string; proof: ProcessProof | null }[] => [...retained].map(([resourceId, value]) => ({ resourceId, proof: value.proof }));
 export const withOwnedCommandLifecycle = <T>(sink: OwnedCommandLifecycleSink, action: () => T): T => context.run(sink, action);
@@ -32,6 +34,20 @@ export const currentOwnedCommandLifecycle = (): OwnedCommandLifecycleSink | unde
 
 /** Re-observes the retained original boundary; it never repeats the command. */
 export const reconcileOwnedCommandBoundary = async (resourceId: string, sink: OwnedCommandLifecycleSink, deadline: number): Promise<void> => {
+  const pending = reconciliations.get(resourceId);
+  if (pending !== undefined) return withinExecutionDeadline(pending, deadline);
+  const work = reconcileBoundary(resourceId, sink, deadline);
+  reconciliations.set(resourceId, work);
+  const clear = () => { if (reconciliations.get(resourceId) === work) reconciliations.delete(resourceId); };
+  void work.then(clear, clear);
+  return work;
+};
+const reconcileBoundary = async (resourceId: string, sink: OwnedCommandLifecycleSink, deadline: number): Promise<void> => {
+  const producer = producers.get(resourceId);
+  if (producer !== undefined) {
+    await withinExecutionDeadline(producer, deadline);
+    if (!retained.has(resourceId)) return;
+  }
   const original = retained.get(resourceId);
   if (original === undefined || original.proof === null) throw new Error("Original owned command boundary evidence is unavailable.");
   const { proof, lease } = original;
@@ -39,18 +55,28 @@ export const reconcileOwnedCommandBoundary = async (resourceId: string, sink: Ow
   if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Original owned command boundary remains occupied.");
   if (original.joinOutput !== undefined) await withinExecutionDeadline(original.joinOutput(), deadline);
   original.sequence++;
-  await boundedSave(sink, { resourceId, sequence: original.sequence, stage: "stopped", proof });
+  await boundedSave(sink, { resourceId, sequence: original.sequence, stage: "stopped", proof }, deadline);
   original.closeHandles?.();
   if (lease !== undefined) releaseControllerJobLease(lease);
   retained.delete(resourceId);
 };
 
 /** Uses the same retained process-boundary proofs as Controllers. */
-export const runLifecycleOwnedCommand = async (command: OwnedCommand, operation: Operation, sink: OwnedCommandLifecycleSink, options: { cleanupWithinDeadline?: boolean; maximumOutputBytes?: number; maximumStreamBytes?: number; timeoutMs?: number; allowExitOne?: boolean; allowAnyExitCode?: boolean; stdin?: string; captureOutput?: boolean; onStdout?: (chunk: Buffer) => Promise<void>; onStderr?: (chunk: Buffer) => Promise<void> } = {}): Promise<OwnedCommandResult & { exitCode: number }> => {
+type OwnedCommandOptions = { cleanupWithinDeadline?: boolean; maximumOutputBytes?: number; maximumStreamBytes?: number; timeoutMs?: number; allowExitOne?: boolean; allowAnyExitCode?: boolean; stdin?: string; captureOutput?: boolean; onStdout?: (chunk: Buffer) => Promise<void>; onStderr?: (chunk: Buffer) => Promise<void> };
+export const runLifecycleOwnedCommand = (command: OwnedCommand, operation: Operation, sink: OwnedCommandLifecycleSink, options: OwnedCommandOptions = {}): Promise<OwnedCommandResult & { exitCode: number }> => {
+  const resourceId = randomUUID();
+  const work = runCommand(command, operation, sink, options, resourceId);
+  // A rejected producer can still have saved unknown responsibility. Join its
+  // actual completion before management or Git re-observes that same resource.
+  const joined = work.then(() => undefined, () => undefined);
+  producers.set(resourceId, joined);
+  void joined.then(() => { if (producers.get(resourceId) === joined) producers.delete(resourceId); });
+  return work;
+};
+const runCommand = async (command: OwnedCommand, operation: Operation, sink: OwnedCommandLifecycleSink, options: OwnedCommandOptions, resourceId: string): Promise<OwnedCommandResult & { exitCode: number }> => {
   operation.check();
   const cleanupDeadline = options.cleanupWithinDeadline === true ? Date.now() + operation.remainingMs() : undefined;
   const budget = (maximum: number): number => Math.max(1, Math.ceil(Math.min(maximum, operation.remainingMs())));
-  const resourceId = randomUUID();
   let sequence = 0;
   let proof: ProcessProof | null = null, lease: ControllerJobLease | undefined;
   const event = (stage: OwnedCommandLifecycleEvent["stage"]) => {

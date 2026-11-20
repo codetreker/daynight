@@ -96,6 +96,7 @@ describe("execution resource responsibility journal", () => {
     const options = await fixture(), journal = await openExecutionResourceJournal(options);
     await journal.sink("1")(prepared());
     await expect(journal.reconcile(id(3), { deadline: Date.now() + 1000 })).rejects.toThrow("birth evidence is unavailable");
+    await expect(journal.reconcileRetained({ generation: "1", deadline: Date.now() + 1000 })).rejects.toThrow("remain unconfirmed");
     expect(journal.snapshot().records[0]!.event).toEqual(prepared());
   });
 
@@ -111,10 +112,12 @@ describe("execution resource responsibility journal", () => {
       child.kill(); await closed;
       const reopened = await openExecutionResourceJournal(options);
       if (process.platform === "win32") {
-        await expect(reopened.reconcile(id(3), { deadline: Date.now() + 15000 })).rejects.toThrow("lease is unavailable");
+        await expect(reopened.reconcileRetained({ generation: "1", deadline: Date.now() + 15000 })).rejects.toMatchObject({
+          errors: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("lease is unavailable") })]),
+        });
         await expect(reopened.assertClosed()).rejects.toThrow("unconfirmed boundaries");
       } else {
-        await reopened.reconcile(id(3), { deadline: Date.now() + 5000 });
+        await reopened.reconcileRetained({ generation: "1", deadline: Date.now() + 5000 });
         await reopened.assertClosed();
         expect(reopened.snapshot().records[0]!.event).toMatchObject({ stage: "stopped", proof, sequence: 3 });
       }

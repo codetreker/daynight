@@ -9,6 +9,7 @@ import { createGitManager, GitCommandError } from "../../../src/commands/review/
 import { executeCommand, GitHubApiError } from "../../../src/commands/review/adapters/github.js";
 import type { GitHubClient } from "../../../src/commands/review/adapters/github.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
+import { OwnedCommandCleanupError, registerOwnedCommandCleanupConfirmation } from "../../../src/commands/worker/owned-command.js";
 
 import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
 
@@ -749,6 +750,25 @@ describe("foreground review coordination", () => {
     expect(f.launched).toHaveLength(1);
     run.abort.abort();
     await expect(run.completion).resolves.toEqual({ safeToReleaseLock: false });
+  });
+
+  it.each(["owned", "mixed", "incomplete-output"])("rechecks original owned cleanup after joining with %s uncertainty", async mode => {
+    const f = fixture(); f.update(1);
+    let closed = false;
+    const cleanup = new OwnedCommandCleanupError([new Error("stop save failed")], undefined);
+    registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
+    const failure = mode === "mixed" ? new AggregateError([cleanup, new Error("unconfirmed independent process")], "Mixed ownership failure") : cleanup;
+    const original = f.runner.run;
+    const run = f.start({ runner: { run: async (...args) => ({ ...await original(...args), completed: false,
+      directProcessClosed: false, captureComplete: mode !== "incomplete-output", processExclusionFailure: failure, errors: [failure] }) } });
+    await waitFor(() => f.store.listReviews(f.pr())[0]?.status === "interrupted", "retained native cleanup");
+    run.abort.abort();
+    const result = await run.completion;
+    expect(result.safeToReleaseLock).toBe(false);
+    closed = true;
+    expect(result.safeToReleaseLock).toBe(mode === "owned");
+    expect(f.launched).toHaveLength(1);
+    expect(f.store.listReviews(f.pr())[0]?.status).toBe("interrupted");
   });
 
   it("recovers old execution only after explicit proof and uses one advancing-clock recovery timestamp", async () => {

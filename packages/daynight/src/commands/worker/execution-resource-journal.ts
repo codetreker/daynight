@@ -4,7 +4,8 @@ import { replaceFileAtomically } from "../../platform/files.js";
 import { isProcessBirth } from "../controller/linux-process-proof.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "../controller/process-proof.js";
 import type { ControllerJobLease } from "../controller/windows-job.js";
-import type { OwnedCommandLifecycleEvent, OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
+import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, type OwnedCommandLifecycleEvent, type OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "./execution-scope.js";
 
 export type ExecutionResourceIdentity = { serverOrigin: string; userId: string; workerId: string };
 export type ExecutionResourceRecord = {
@@ -131,26 +132,47 @@ export const openExecutionResourceJournal = async (options: { directory: string;
       pending.add(observed); tail = observed.catch(() => undefined); return observed;
     };
   };
+  const drain = async (): Promise<void> => { await tail; if (failures.size) throw new AggregateError([...failures.values()], "Execution resource responsibility could not be saved."); };
+  const assertClosed = async (): Promise<void> => {
+    await read();
+    if (pending.size || failures.size || [...records.values()].some(record => record.event.stage !== "stopped")) throw new Error("Execution resource journal retains unconfirmed boundaries; a replacement scope is forbidden.");
+  };
+  /** Observe only the saved boundary. A PID's absence alone cannot close its descendants. */
+  const reconcile = async (resourceId: string, settings: { deadline: number; lease?: ControllerJobLease }): Promise<void> => {
+    await read();
+    const original = records.get(resourceId);
+    if (original === undefined) throw new Error("Execution resource has no original reservation.");
+    if (original.event.stage === "stopped") {
+      await sink(original.generation)(original.event);
+      return;
+    }
+    if (original.event.proof === null) throw new Error("Execution resource birth evidence is unavailable; responsibility is retained.");
+    if (!await confirmControllerProcessesStopped(original.event.proof, [], settings.deadline, settings.lease)) throw new Error("Execution resource original boundary remains occupied.");
+    await sink(original.generation)({ ...original.event, sequence: original.event.sequence + 1, stage: "stopped" });
+  };
   return {
-    sink, read,
+    sink, read, drain, assertClosed, reconcile,
     snapshot: () => ({ records: structuredClone([...records.values()]), pending: pending.size, failures: [...failures.keys()] }),
-    drain: async (): Promise<void> => { await tail; if (failures.size) throw new AggregateError([...failures.values()], "Execution resource responsibility could not be saved."); },
-    assertClosed: async (): Promise<void> => {
-      await read();
-      if (pending.size || failures.size || [...records.values()].some(record => record.event.stage !== "stopped")) throw new Error("Execution resource journal retains unconfirmed boundaries; a replacement scope is forbidden.");
-    },
-    /** Observe only the saved boundary. A PID's absence alone cannot close its descendants. */
-    reconcile: async (resourceId: string, settings: { deadline: number; lease?: ControllerJobLease }): Promise<void> => {
-      await read();
-      const original = records.get(resourceId);
-      if (original === undefined) throw new Error("Execution resource has no original reservation.");
-      if (original.event.stage === "stopped") {
-        await sink(original.generation)(original.event);
-        return;
-      }
-      if (original.event.proof === null) throw new Error("Execution resource birth evidence is unavailable; responsibility is retained.");
-      if (!await confirmControllerProcessesStopped(original.event.proof, [], settings.deadline, settings.lease)) throw new Error("Execution resource original boundary remains occupied.");
-      await sink(original.generation)({ ...original.event, sequence: original.event.sequence + 1, stage: "stopped" });
+    /** Producers must join first. Reconcile their original resources without running commands again. */
+    reconcileRetained: async (settings: { generation: string; deadline: number }): Promise<void> => {
+      if (!generationValue(settings.generation)) throw new TypeError("Execution resource generation must be a positive int64 string.");
+      // Read joins pending original writes but does not let a historical save
+      // rejection prevent observing the retained process and output owners.
+      const observed = await withinExecutionDeadline(read(), settings.deadline);
+      const live = new Map(retainedOwnedCommandBoundaries().map(entry => [entry.resourceId, entry]));
+      const results = await Promise.allSettled(observed.filter(record => record.generation === settings.generation).map(async original => {
+        const retained = live.get(original.event.resourceId);
+        if (retained !== undefined) {
+          if (original.event.proof !== null && !same(original.event.proof, retained.proof)) throw new Error("Retained execution resource conflicts with its saved birth identity.");
+          await reconcileOwnedCommandBoundary(original.event.resourceId, sink(original.generation), settings.deadline);
+        } else if (original.event.stage !== "stopped" || failures.has(original.event.resourceId)) {
+          await withinExecutionDeadline(reconcile(original.event.resourceId, settings), settings.deadline);
+        }
+      }));
+      const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      try { await withinExecutionDeadline(drain(), settings.deadline); } catch (error) { errors.push(error); }
+      try { await withinExecutionDeadline(assertClosed(), settings.deadline); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "Original execution resources remain unconfirmed after reconciliation.");
     },
   };
 };
