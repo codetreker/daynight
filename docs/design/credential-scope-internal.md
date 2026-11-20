@@ -28,11 +28,34 @@ Scope 检查与现有凭据有效性、资源访问、角色和业务条件共�
 旧批准入口在 scoped 装配中不能绕过显式选择；旧生产装配仍保留原行为。
 目录及 v2 设备入口在真实路由注册时声明 browser-only 分类，方法回退单独登记。
 
+## MCP 应用授权准备入口
+
+显式 scoped OAuth 装配复用浏览器共享目录中的 MCP 快照。v2 inspect 沿用原请求
+ID、绑定 Cookie 和当前 Session；有效待决请求返回当前 `catalogRevision`，
+已批准、拒绝、消费或过期的请求只返回原安全状态。旧页面刷新后可以用原请求
+继续读取；读取不恢复授权码、state 或回调秘密。
+
+v2 decision 批准必须提交显示账户、当前目录修订和非空的实际可用 scope；
+目录过时返回冲突，非法或不可用选择拒绝。拒绝不携带目录修订或 scope。
+决定仍在原 Session 与授权请求事务中完成，并在等待行锁后复核数据库时间。
+同一写入保存批准决定、账号、授权码 hash 和规范化权限集合。scoped 装配中的
+旧批准入口拒绝缺少显式选择的批准，旧读取和拒绝保留原合同。
+
+授权码换取在原事务中消费授权并把批准集合保存为 MCP grant 的版本 1 策略。
+access 与 refresh 不复制该集合；refresh 继续读取和保留原 grant 当前策略，
+包括批准后由所有者修改的策略。公开 authorize、token、refresh 和 revoke 的
+资源绑定及 `daynight:mcp` scope 不变，正确绑定的授权码重放仍撤销原 family。
+提交未知不能交付或重放 redirect 和 token，通过原请求状态核对决定。
+
+v2 浏览器 HTTP 注册显式声明 browser-only 路由及方法回退，保留精确 Origin、
+账户和 Cookie 绑定、严格字段解析及禁止缓存。生产 OAuth 构造和路由继续使用
+原装配，受限签发与 v2 路由由统一启用阶段接入。
+
 ## 凭据存储与复核
 
 PAT 与 MCP grant 分别保存规范化业务 Scope 和独立版本，同值写入不推进版本。
 OAuth access 与 refresh 不复制权限；按 access hash 读取原 grant 的当前策略，
-事务复核按 grant、access 顺序加共享锁。授权请求可保存明确批准的集合；
+事务复核按 grant、access 顺序加共享锁。授权请求保存 scoped 批准的明确集合；
 固定 API profile 不保存集合，继续使用原资源和客户端绑定。读取已保存的非法
 策略会失败，scoped MCP 读取也拒绝缺失策略。编辑和 refresh 使用同一 grant 锁，
 编辑按账户、有效状态及预期版本更新，最近使用时间独立。
