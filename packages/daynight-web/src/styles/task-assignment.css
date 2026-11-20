@@ -17,6 +17,8 @@
 .assignee-trigger .assignee-former { display: inline-flex; align-items: center; padding: 0 3px; font-size: var(--text-sm); line-height: 1.5; }
 .task-detail-state-controls :is(.assignee-field-label, .assignee-trigger, .task-assignee-identity),
 .task-detail-state-controls .assignee-trigger .assignee-former { font-size: var(--text-xs); }
+.task-detail-state-controls .assignee-trigger .task-assignee-identity:has(.assignee-former) { flex-wrap: wrap; }
+.task-detail-state-controls .assignee-trigger .assignee-name { min-width: 2em; }
 .assignee-menu { position: fixed; z-index: 65; display: flex; flex-direction: column; width: 306px; max-width: calc(100vw - 24px); max-height: min(370px, calc(100dvh - 24px)); padding: 0; border: 1px solid #e1e4ed; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #17244726; color: #637087; overflow: hidden; }
 .assignee-search-wrap { flex: none; position: relative; padding: 11px 11px 8px; }
 .assignee-search-wrap > svg { position: absolute; top: 21px; left: 21px; color: #8a94a5; }
@@ -37,7 +39,7 @@
 .task-detail-status-assignee { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
 .task-detail-status-assignee > .task-status-picker { flex: none; }
 .task-detail-status-assignee > .task-assignee-field { flex: 0 1 auto; }
-.task-detail-state-controls .task-detail-status-assignee { flex-wrap: wrap; }
+.task-detail-state-controls .task-detail-status-assignee:has(.assignee-former) { flex-wrap: wrap; }
 .task-detail-state-controls { flex: 1 1 auto; }
 .task-assignment-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--text-sm); }
 .task-assignment-feedback p { margin: 0; }

@@ -168,6 +168,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
         const boxes = [...element.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select, .task-detail-ready, .task-automation-control')].map(node => node.getBoundingClientRect());
         return document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
       })).toBe(true);
+      await expect.poll(() => assignee.evaluate(button => {
+        const bounds = button.getBoundingClientRect();
+        const boxes = [...button.querySelectorAll('.assignee-avatar, .assignee-name, .assignee-former, .assignee-chevron')].map(node => node.getBoundingClientRect());
+        return boxes.length === 4 && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && boxes.slice(index + 1).every(other => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+      })).toBe(true);
     }
     await status.focus(); await page.keyboard.press('Enter');
     await expect(detail.locator('.task-status-option').first()).toHaveCSS('font-size', '21px');

@@ -14,8 +14,8 @@ The ordinary Task detail state controls select `xs` for the status trigger,
 assignee label and selected identity. The platform selector explicitly selects
 `xs` through the shared selection presentation. The shared `textSize` choice is
 independent of density and defaults to `sm`; native selects inherit it from their
-host, and existing touch rules retain precedence. The status and assignee group can wrap when enlarged text and a former-member
-marker cannot fit together. Menus and Goal detail retain their own typography. The [component design](../../../../docs/design/native-select.md)
+host, and existing touch rules retain precedence. The status and assignee group and its identity can wrap when enlarged text and a
+former-member marker cannot fit together; a minimum name width keeps it visible. Menus and Goal detail retain their own typography. The [component design](../../../../docs/design/native-select.md)
 owns the shared contract; the [shared selection decision](../architecture/2026-11-16-shared-selection-presentation.md)
 owns its presentation boundary.
 
