@@ -170,12 +170,12 @@ describe('personal task overview', () => {
     mock.value = state([current(first, '2026-11-13T10:01:59.999Z'), current(second, '2026-11-13T10:02:00Z')]);
     renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
     const row = screen.getByText('Task 0').closest('li')!, other = screen.getByText('Task 1').closest('li')!;
-    expect(within(row).queryByText(/Session needs checking/)).not.toBeInTheDocument();
+    expect(within(row).queryByText('Session needs attention')).not.toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /Open Session/ })).toBeInTheDocument();
-    expect(within(other).getByText('Session needs checking · Needs attention')).toBeInTheDocument();
+    expect(within(other).getByText('Session needs attention')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(1);
     act(() => vi.advanceTimersByTime(1));
-    expect(within(row).getByText('Session needs checking · Needs attention')).toBeInTheDocument();
+    expect(within(row).getByText('Session needs attention')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(30_000);
     act(() => vi.advanceTimersByTime(29_999));
     expect(within(row).getByText('Session observation expired')).toBeInTheDocument();

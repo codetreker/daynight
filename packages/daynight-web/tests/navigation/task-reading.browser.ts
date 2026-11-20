@@ -150,7 +150,7 @@ test('selected attachment keeps its new-tab target while copy uses overview', as
   expect(state.writes).toEqual([]); await reader.close();
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
   test(`execution time advances during a held sync without moving the graph at ${width}px in ${locale}`, async ({ page }) => {
     const state = await install(page, true);
     await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
@@ -177,6 +177,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       await page.clock.fastForward(16_000);
       await expect.poll(() => state.syncReads).toBeGreaterThan(reads);
       await expect(node.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(node.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
       const afterDuration = await duration.getAttribute('datetime');
       expect(afterDuration).toMatch(/^PT[0-9.]+S$/);
       expect(Number(afterDuration!.slice(2, -1))).toBeGreaterThan(Number(beforeDuration!.slice(2, -1)));
@@ -192,10 +193,16 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
       const row = taskRow(page.locator(`#standalone-task-${standaloneId}`));
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '12px');
+      await expect(row.locator('.task-stuck-label svg')).toBeVisible();
       expect(await row.evaluate(element => {
         const bounds = element.getBoundingClientRect();
         return bounds.left >= 0 && bounds.right <= innerWidth && element.scrollWidth <= element.clientWidth && [...element.querySelectorAll('.task-duration, .task-stuck-label')].every(item => { const box = item.getBoundingClientRect(); return box.left >= bounds.left && box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
+      await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+      await expect(row.locator('.task-stuck-label')).toHaveCSS('font-size', '15px');
+      await expect(row.locator('.task-duration')).toHaveCSS('font-size', '15px');
       expect(state.writes).toEqual([]);
     } finally { state.holdSync = null; gate.resolve(); }
   });
@@ -529,6 +536,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     const action = item.getByRole('button', { name: openLabel });
     await expect(action).toBeVisible(); await expectTextContrast(action);
     await expect(action).toHaveCSS('font-size', '12px');
+    await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '12px');
     await expect(action).toHaveCSS('min-height', '36px');
     await expect(action).toHaveCSS('padding-top', '3px');
     await page.keyboard.press('Tab'); await action.focus(); await expect(action).toBeFocused();
@@ -536,6 +544,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await expect(action).toHaveCSS('outline-width', '2px');
     await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
     await expect(action).toHaveCSS('font-size', '18px');
+    await expect(item.locator('.task-row-machine')).toHaveCSS('font-size', '18px');
+    expect(await item.evaluate(element => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await expect(item.locator('.root-status')).toHaveCSS('font-size', '18px');
     if (await item.locator('.task-paused-badge').count()) await expect(item.locator('.task-paused-badge')).toHaveCSS('font-size', '18px');
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
@@ -726,11 +736,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
       await expect(element.locator('.task-agent-permission')).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
       await expect(element.locator('.project-session-text')).toHaveCSS('font-size', '12px');
     }
-    for (const selector of ['.task-platform', '.root-status', ...(allowAgents ? ['.task-agent-permission'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '12px');
-    for (const selector of ['.task-row-title', '.task-row-machine', '.assignee-name']) await expect(element.locator(selector)).toHaveCSS('font-size', '14px');
+    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '12px');
+    for (const selector of ['.task-row-title', '.assignee-name']) await expect(element.locator(selector)).toHaveCSS('font-size', '14px');
     expect(await element.evaluate(row => row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => { document.documentElement.style.fontSize = '24px'; });
-    for (const selector of ['.task-platform', '.root-status', ...(allowAgents ? ['.task-agent-permission', '.project-session-text'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '18px');
+    for (const selector of ['.task-platform', '.root-status', '.task-row-machine', ...(allowAgents ? ['.task-agent-permission', '.project-session-text'] : [])]) await expect(element.locator(selector)).toHaveCSS('font-size', '18px');
     await expect(element.locator('.task-row-title')).toHaveCSS('font-size', '21px');
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     return element.evaluate(row => ({ meta: Array.from(row.querySelector('.task-row-meta')!.children).filter(child => !child.matches('.task-row-goal')).map(child => child.textContent), state: row.querySelector('.task-row-status')!.textContent, background: getComputedStyle(row).backgroundColor, titleSize: getComputedStyle(row.querySelector('.task-row-title')!).fontSize, idSize: getComputedStyle(row.querySelector('.task-row-id')!).fontSize }));

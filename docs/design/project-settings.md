@@ -18,7 +18,7 @@
 
 ## 仓库改址
 
-`management/project-repository` 拥有改址表单、确认展示和 controller，`api/project-repository.ts` 拥有预览与保存的协议验证。预览和回执校验请求项目、地址、分类、解绑事实和版本关系；两个版本及目标 GitHub ID 保持正十进制 int64 字符串，避免浮点精度损失。请求和响应沿用项目身份检查与 no-store。
+`management/project-repository` 拥有当前地址卡片、改址表单、确认展示和 controller。卡片的编辑入口打开共享 `ManagementDialog`，编辑和确认是同一弹窗的不同状态；关闭或返回保留草稿但撤销预览，重新打开必须重新预览。共享模态管理焦点、背景交互和隐藏分组时的暂停。[界面决策](../../.agents/notes/implemented/feature/2026-11-20-project-repository-dialog.md)记录入口的取舍。`api/project-repository.ts` 拥有预览与保存的协议验证。预览和回执校验请求项目、地址、分类、解绑事实和版本关系；两个版本及目标 GitHub ID 保持正十进制 int64 字符串，避免浮点精度损失。请求和响应沿用项目身份检查与 no-store。
 
 controller 复用 `useOperation` 的主体准入、在途和结果发布保护。预览只读，保存前重新核对有效 Project admin、归属与当前编辑身份。仓库操作使用共同 guard 的 `repository` owner，同步阻止同一渲染周期中的重复提交。409 清除预览及未知身份的确认选项；未知写入保留原操作结果，读取 Project GET 仅显示当前事实。取消保留草稿，真实失权撤回私有地址和预览。
 

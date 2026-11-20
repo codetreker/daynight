@@ -26,10 +26,16 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
   const fetch = vi.fn((url: string, init: RequestInit) => url.endsWith('/access') ? Promise.resolve(response(directAccessFixture(projectId, userId, role))) : Promise.resolve(handler(url, init)));
   vi.stubGlobal('fetch', fetch); return fetch;
 };
+const openEditor = async () => {
+  const edit = await screen.findByRole('button', { name: '修改' });
+  await waitFor(() => expect(edit).not.toBeDisabled()); fireEvent.click(edit);
+  return screen.findByRole('dialog', { name: '修改仓库地址' });
+};
 const editAndPreview = async () => {
-  const input = screen.getByLabelText('新仓库地址'); await waitFor(() => expect(input).not.toBeDisabled());
+  await openEditor();
+  const input = screen.getByLabelText('新仓库地址');
   fireEvent.change(input, { target: { value: target } }); fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
-  return screen.findByRole('dialog');
+  return screen.findByRole('dialog', { name: '确认修改仓库地址' });
 };
 beforeEach(() => { invalidateAuthRequests(); vi.spyOn(document, 'hasFocus').mockReturnValue(true); retention.mockClear(); summary.mockClear(); });
 
@@ -39,13 +45,16 @@ describe('repository settings editor', () => {
     const fetch = install((url, init) => init.method === 'PATCH' ? pending.promise : response(fixture()));
     render(<Editor />);
     let dialog = await editAndPreview(); await within(dialog).findByText(/这是同一个仓库/);
-    fireEvent.click(within(dialog).getByRole('button', { name: '取消' })); expect(screen.getByLabelText('新仓库地址')).toHaveValue(target);
-    fireEvent.click(screen.getByRole('button', { name: '预览更改' })); dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: '返回' })); expect(screen.getByLabelText('新仓库地址')).toHaveValue(target);
+    expect(screen.queryByRole('button', { name: '保存地址' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '取消' })); expect(screen.queryByRole('dialog')).toBeNull();
+    await openEditor(); expect(screen.getByLabelText('新仓库地址')).toHaveValue(target);
+    fireEvent.click(screen.getByRole('button', { name: '预览更改' })); dialog = await screen.findByRole('dialog', { name: '确认修改仓库地址' });
     const save = await within(dialog).findByRole('button', { name: '保存地址' }); fireEvent.click(save); fireEvent.click(save);
     await waitFor(() => expect(fetch.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1)); expect(retention).toHaveBeenLastCalledWith(true);
     await act(async () => pending.resolve(response({ projectId, repoUrl: target, repositoryVersion: '9007199254740994', changed: true, bindingsInvalidated: false })));
     await screen.findByText('仓库地址已保存。'); await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(changed).toHaveBeenCalledWith({ userId, projectId }); expect(screen.getByRole('button', { name: '预览更改' })).not.toBeDisabled(); unsubscribe();
+    expect(changed).toHaveBeenCalledWith({ userId, projectId }); expect(screen.getByRole('button', { name: '修改' })).not.toBeDisabled(); unsubscribe();
   });
   it('requires an explicit unknown switch choice and describes both binding effects', async () => {
     const fetch = install((_url, init) => init.method === 'PATCH' ? response({ projectId, repoUrl: target, repositoryVersion: '9007199254740994', changed: true, bindingsInvalidated: true }) : response(fixture('unverified')));
@@ -68,15 +77,71 @@ describe('repository settings editor', () => {
     });
     render(<Editor />); const dialog = await editAndPreview(); fireEvent.click(await within(dialog).findByRole('button', { name: '保存地址' }));
     const check = await within(dialog).findByRole('button', { name: '核对当前地址' }); fireEvent.click(check); await within(dialog).findByText(/读到的当前地址/);
-    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' })); expect(screen.getByLabelText('新仓库地址')).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' })); expect(screen.getByRole('button', { name: '修改' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '核对当前地址' })); expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(fetch.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(1);
   });
+  it('reports an access refresh failure during preview and permits retry', async () => {
+    let reads = 0;
+    const fetch = vi.fn((url: string, _init?: RequestInit) => {
+      if (url.endsWith('/access')) return ++reads === 2 ? Promise.reject(new TypeError('Network unavailable')) : Promise.resolve(response(directAccessFixture(projectId, userId, 'admin')));
+      if (url.endsWith('/preview')) return Promise.resolve(response(fixture()));
+      throw new Error('Unexpected product operation');
+    });
+    vi.stubGlobal('fetch', fetch); render(<Editor />); await openEditor();
+    fireEvent.change(screen.getByLabelText('新仓库地址'), { target: { value: target } });
+    fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
+    const dialog = await screen.findByRole('dialog', { name: '确认修改仓库地址' });
+    await within(dialog).findByText('无法读取仓库改址预览。请重试。');
+    const retry = within(dialog).getByRole('button', { name: '重新预览' }); expect(retry).not.toBeDisabled(); fireEvent.click(retry);
+    await within(dialog).findByRole('button', { name: '保存地址' });
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/preview'))).toHaveLength(1);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+  it('keeps server validation errors editable in the dialog', async () => {
+    const fetch = install(() => failure(400, 'invalid_input'));
+    render(<Editor />); await openEditor();
+    const input = screen.getByLabelText('新仓库地址'); fireEvent.change(input, { target: { value: target } });
+    fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
+    await screen.findByText('请输入有效的 HTTPS、SSH 或 SCP 仓库地址。');
+    expect(screen.getByRole('dialog', { name: '修改仓库地址' })).toBeInTheDocument();
+    expect(input).toHaveValue(target); expect(input).not.toBeDisabled();
+    expect(fetch.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(0);
+  });
+  it('keeps the draft and focus during access refresh and withdraws it on loss of administration', async () => {
+    const pending = deferred<Response>(); let reads = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (!url.endsWith('/access')) throw new Error('Unexpected product operation');
+      return ++reads === 1 ? Promise.resolve(response(directAccessFixture(projectId, userId, 'admin'))) : pending.promise;
+    }));
+    render(<Editor />); await openEditor(); const input = screen.getByLabelText('新仓库地址');
+    fireEvent.change(input, { target: { value: target } }); input.focus();
+    fireEvent.focus(window); await waitFor(() => expect(reads).toBeGreaterThan(1));
+    expect(input).toHaveValue(target); expect(input).toHaveFocus(); expect(input).not.toBeDisabled();
+    await act(async () => pending.resolve(response(directAccessFixture(projectId, userId, 'member'))));
+    await screen.findByText('只有项目管理员可以修改仓库地址。');
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByLabelText('新仓库地址')).toBeNull();
+  });
+  it('ignores a cancelled late preview after reopening and editing the draft', async () => {
+    const pending = deferred<Response>();
+    const fetch = install((url) => url.endsWith('/preview') ? pending.promise : response(fixture()));
+    render(<Editor />); await openEditor();
+    fireEvent.change(screen.getByLabelText('新仓库地址'), { target: { value: target } });
+    fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(([url]) => url.endsWith('/preview'))).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    fireEvent.change(screen.getByLabelText('新仓库地址'), { target: { value: 'https://github.com/o/other' } });
+    await act(async () => pending.resolve(response(fixture())));
+    expect(screen.getByRole('dialog', { name: '修改仓库地址' })).toBeInTheDocument();
+    expect(screen.getByLabelText('新仓库地址')).toHaveValue('https://github.com/o/other');
+    expect(screen.queryByRole('button', { name: '保存地址' })).toBeNull();
+    expect(fetch.mock.calls.filter(([, init]) => init.method === 'PATCH')).toHaveLength(0);
+  });
   it('keeps non-administrators read-only and validates the UTF-8 byte limit before preview', async () => {
     const fetch = install(() => { throw new Error('Unexpected product operation'); }, 'member'); const mounted = render(<Editor />);
-    await screen.findByText('只有项目管理员可以修改仓库地址。'); expect(screen.getByLabelText('新仓库地址')).toBeDisabled(); expect(fetch.mock.calls.every(([url]) => url.endsWith('/access'))).toBe(true); mounted.unmount();
+    await screen.findByText('只有项目管理员可以修改仓库地址。'); expect(screen.queryByLabelText('新仓库地址')).toBeNull(); expect(screen.getByRole('button', { name: '修改' })).toBeDisabled(); expect(fetch.mock.calls.every(([url]) => url.endsWith('/access'))).toBe(true); mounted.unmount();
     install(() => { throw new Error('Unexpected preview'); }); render(<Editor />);
-    const input = screen.getByLabelText('新仓库地址'); await waitFor(() => expect(input).not.toBeDisabled()); fireEvent.change(input, { target: { value: '中'.repeat(1400) } }); fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
-    await screen.findByText('仓库地址不能超过 4096 字节。'); expect(screen.queryByRole('dialog')).toBeNull();
+    await openEditor(); const input = screen.getByLabelText('新仓库地址'); fireEvent.change(input, { target: { value: '中'.repeat(1400) } }); fireEvent.click(screen.getByRole('button', { name: '预览更改' }));
+    await screen.findByText('仓库地址不能超过 4096 字节。'); expect(screen.getByRole('dialog', { name: '修改仓库地址' })).toBeInTheDocument();
   });
 });

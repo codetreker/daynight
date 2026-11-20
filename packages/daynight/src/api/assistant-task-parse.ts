@@ -96,11 +96,26 @@ export const parseAssistantTaskManual = (value: unknown, taskId: string, version
   if (version !== undefined && result.version !== version) return malformed();
   return result;
 };
+// The server sends scope only when it restricts a dimension and validation only
+// after the first registration; absence means unrestricted and unvalidated.
+const appendixScope = (value: unknown): T.AssistantTaskAppendixScope => {
+  const d = fields(value, ["projectIds", "eventTypes", "itemCategories"]);
+  const result = { projectIds: array(d.projectIds, assistantTaskId), eventTypes: array(d.eventTypes, v => text(v, true)), itemCategories: array(d.itemCategories, v => text(v, true)) };
+  return result.projectIds.length + result.eventTypes.length + result.itemCategories.length === 0 ? malformed() : result;
+};
+const appendixValidation = (value: unknown): T.AssistantTaskAppendixValidation => {
+  const d = fields(value, ["successCount", "failureCount", "lastValidatedAt"]);
+  const result = { successCount: assistantTaskInteger(d.successCount, true), failureCount: assistantTaskInteger(d.failureCount, true), lastValidatedAt: timestamp(d.lastValidatedAt) };
+  return result.successCount === "0" && result.failureCount === "0" ? malformed() : result;
+};
 export const parseAssistantTaskAppendix = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskAppendix => {
-  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt"]);
+  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt", "scope", "validation"]);
   const state = choice(d.state, ["active", "edited", "deleted"] as const);
-  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
-  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0)) return malformed();
+  const declared = { scope: Object.hasOwn(d, "scope"), validation: Object.hasOwn(d, "validation") };
+  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt),
+    ...(declared.scope ? { scope: appendixScope(d.scope) } : {}), ...(declared.validation ? { validation: appendixValidation(d.validation) } : {}) };
+  // Deletion clears the content together with the scope and every registered validation.
+  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0 || declared.scope || declared.validation)) return malformed();
   return result;
 };
 export const parseAssistantTaskProposal = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskProposal => {

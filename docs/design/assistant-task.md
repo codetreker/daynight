@@ -21,7 +21,8 @@
 | `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `102_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
-| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
+| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本；迁移 `104_assistant_task_appendix_validations.sql` 增加以 JSON 数组保存的适用范围（项目 ID、事件类型、事项类别）、成功与失败计数和可空的最近验证时间，既有行范围为空数组、计数为 0 |
+| `assistant_task_appendix_validations` | 附录验证登记：结果记录 ID、结果取值、登记 Bot 与时间；主键 `(appendix_id, outcome_record_id)` 保证同一结果记录对同一附录只登记一次 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
 | `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `101_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
 | `assistant_task_item_closures` | 迁移 `101_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
@@ -48,6 +49,8 @@
 周期复盘沿用问答超时的无调度器模式，只在事件拉取时推进。拉取先按 owner 及请求的任务和目标 Bot 有界预选候选：任务为 active、负责 Bot 未删除、上次周期复盘时间（为空时取任务创建时间）不晚于当前数据库时间前 7 天，且其后存在 `outcome` 记录。到期问答与复盘候选所涉任务合并后按 ID 顺序各取一次任务锁，两类维护不会反转锁顺序。core 在锁内重读任务与最新结果记录时间并再次判定，满足时写入负载为 `reason`（`periodic`）与窗口起点 `since` 的复盘事件，并单独更新上次周期复盘时间；该更新不推进任务版本，普通任务写入也不覆盖它。并发拉取中后取得锁者读到已前移的窗口，不再生成事件。事项复盘不移动周期窗口；问答读取只推进问答超时，不生成复盘。`retrospective` 不点亮关注，Bot 不能通过事件写入接口创建。
 
 经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
+
+附录范围由 core 校验：项目 ID 为规范 UUID，事件类型属于事件准入使用的已知类型，类别为非空且不超过 200 字节的文本，保留原文而不裁剪首尾空白，以便与事项保存的自由文本类别逐字匹配，每个集合最多 20 项且不重复。追加时只有声明了范围的请求才把规范化范围加入请求指纹，迁移前保存的附录重放指纹不变；用户编辑未提供范围时保留原范围。验证由负责 Bot 在任务锁与当前认领下提交：core 读取同一任务的附录与结果记录，拒绝已删除附录、非结果记录和 `inconclusive`，再插入验证登记；登记表主键冲突时返回 `operation_conflict`，不计数。计数与最近验证时间在同一事务中以附录当前版本为条件写回，验证不推进附录版本，因为版本只表示内容修订。用户删除附录时，同一事务删除其验证登记并清空范围、计数和最近验证时间。
 
 记录写入在任务记录头保护下使用数据库真实时钟，沿用 Thread 的有界前进机制；不能用 `head+1ms` 合成未来时间。成功写入返回实际持久位置，下一页以 `(created_at, id)` 继续。同一事务中的附录、问答和系统记录保持真实顺序。
 
@@ -82,7 +85,7 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `claim-operations/{id}` | GET 历史回执及当前认领 |
 | `manual, manual/versions, manual/versions/{manualVersion}` | GET 当前手册、版本页和历史版本 |
 | `manual/rollback` | POST 用户回退，带任务 `ifVersion` 和目标 `manualVersion` |
-| `appendix, appendix/{id}` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion` |
+| `appendix, appendix/{id}, appendix/{id}/validations` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion`。追加与编辑可带 `scope` 对象，含可选的 `projectIds`、`eventTypes`、`itemCategories` 数组；编辑省略 `scope` 时保留原范围，删除不接受 `scope`。POST `validations` 由负责 Bot 带认领与 `outcomeRecordId` 登记验证，返回更新后的附录。响应只在范围非空时包含列出三个数组的 `scope`，只在登记过验证后包含 `validation`（十进制字符串 `successCount`、`failureCount` 与 `lastValidatedAt`），使只认识原附录结构的客户端仍可读取未使用这两项的附录 |
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录。`outcome` 记录另带 `outcome` 与 `actionRecordId`，其他类型提交任一键被拒绝；响应只在结果记录中包含这两个键，使只认识原记录结构的客户端仍可读取没有结果记录的任务 |

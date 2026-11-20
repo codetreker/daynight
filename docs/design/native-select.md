@@ -26,7 +26,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 | `density` | `compact`、`filter`、`form`；默认 `form` | 选择公共高度；文字使用界面字号 |
 | `layout` | `content`、`fill`；默认 `content` | 按内容占位或填满可用宽度 |
 | `focusTone` | `default`、`task`；默认 `default` | 普通焦点或 Task/status 焦点颜色 |
-| `touchMode` | `none`、`responsive`、`container`；默认 `none` | 显式选择触控尺寸规则 |
+| `touchMode` | `none`、`responsive`、`responsive-target`、`container`；默认 `none` | 显式选择触控尺寸规则 |
 | `pending` | 布尔值；默认 `false` | 呈现调用者已确定的待定边框 |
 | `wrapperClassName` | 可静态解析的 class token 列表 | 外部宽度、所在行、flex/grid 占位和外边距 |
 
@@ -44,7 +44,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 调用者通过真实 `aria-expanded`、`aria-invalid`、禁用和公开 `pending` 提供状态。公共 owner 呈现中性 hover `#f0f3f7`、展开背景 `#eef1f8` 与边框 `#52649b`、禁用、错误和焦点；Task 焦点使用 3px 深色轮廓。summary marker 也由公共层隐藏。菜单 owner 继续管理开关、选中值、目录、网络、存储、定位和焦点恢复。
 
-TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详情和表单的原有人员编辑保留各自呈现。普通状态多选与两种 TagFilter 使用 SelectTrigger，表达式搜索仍使用单选 NativeSelect；这些任务筛选均显式选择 `filter`、`responsive`、`task`。细指针且宽度大于 800px 时高度统一为 32px、文字使用界面字号；800px 及以下或粗指针时高度为 44px，文字不小于 16 CSS px，触控命中宽度至少 44px。窄屏自然换行，标签和计数可见。TagFilter 的 352px 面板、界面字号正文、外部 chip 与定位生命周期独立于入口展示，几何变化沿既有观察更新位置。选择共享展示且保留各菜单语义的取舍见[筛选入口决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-selection-presentation.md)。
+TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详情和表单的原有人员编辑保留各自呈现。普通状态多选与两种 TagFilter 使用 SelectTrigger，表达式搜索仍使用单选 NativeSelect；这些任务筛选均显式选择 `filter`、`responsive-target`、`task`。细指针始终使用界面字号，宽度大于 800px 且非紧凑布局时高度为 32px，800px 及以下时高度及命中宽度至少 44px；粗指针高度及命中宽度至少 44px，文字不小于 16 CSS px。窄屏自然换行，标签和计数可见。TagFilter 的 352px 面板、界面字号正文、外部 chip 与定位生命周期独立于入口展示，几何变化沿既有观察更新位置。选择共享展示且保留各菜单语义的取舍见[筛选入口决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-selection-presentation.md)。
 
 ## 结构与几何
 
@@ -66,7 +66,7 @@ TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详
 
 公共基础选择器为 `.native-select[data-density] > .native-select__control`，状态规则使用真实属性或伪类限定。样式不依赖导入顺序或 `!important`。`:disabled` 同时覆盖直接禁用与 `fieldset` 继承，决定文字、背景和装饰箭头状态。`pending` 使用 attention 边框，`aria-invalid=true` 的 error 边框优先。3px 焦点轮廓独立保留，普通颜色为 `#8c8cf0`，Task/status 为 `#344054`。forced-colors 使用 `Canvas`、`CanvasText`、`GrayText` 和 `Highlight`，保留边框、箭头与焦点。
 
-`touchMode="responsive"` 在 viewport 不超过 800px 或 `pointer:coarse` 时使用至少 44px 高度和共享 `--text-touch-field` 字号，即 `max(1rem, 16px)`。`touchMode="container"` 查询命名容器 `native-select-region`：容器宽度不超过 600px 时，高度至少 44px 并保留原字号；粗指针下使用同一触控字号。默认 16px 根字号下触控文字为 16px，根字号增大时随之增长。容器由消费页面的已有 inline-size 容器提供，保留其原名称并追加公共名；内层异名容器不会改变查询目标。普通控件默认 `none`，不因窄 viewport 自动放大。
+`touchMode="responsive"` 在 viewport 不超过 800px 或 `pointer:coarse` 时使用至少 44px 高度和共享 `--text-touch-field` 字号，即 `max(1rem, 16px)`。`touchMode="responsive-target"` 复用相同的响应式目标尺寸与徽标规则，但在不超过 800px 且 `pointer:fine` 时保留界面字号；粗指针及其他指针环境沿用 `responsive` 的字号规则。`touchMode="container"` 查询命名容器 `native-select-region`：容器宽度不超过 600px 时，高度至少 44px 并保留原字号；粗指针下使用同一触控字号。默认 16px 根字号下触控文字为 16px，根字号增大时随之增长。容器由消费页面的已有 inline-size 容器提供，保留其原名称并追加公共名；内层异名容器不会改变查询目标。普通控件默认 `none`，不因窄 viewport 自动放大。
 
 ## 原生弹窗与外层关闭
 

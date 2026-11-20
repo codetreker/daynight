@@ -1,4 +1,4 @@
--- Schema snapshot version: 103
+-- Schema snapshot version: 104
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -19,7 +19,23 @@ CREATE TABLE "assistant_task_appendix" (
     "state" "text" NOT NULL,
     "version" bigint NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "scope_project_ids" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "scope_event_types" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "scope_item_categories" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "success_count" bigint DEFAULT 0 NOT NULL,
+    "failure_count" bigint DEFAULT 0 NOT NULL,
+    "last_validated_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_appendix_validations" (
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "appendix_id" "uuid" NOT NULL,
+    "outcome_record_id" "uuid" NOT NULL,
+    "outcome" "text" NOT NULL,
+    "validator_bot_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL
 );
 
 CREATE TABLE "assistant_task_claim_operations" (
@@ -1666,6 +1682,9 @@ CREATE TABLE "workers" (
 ALTER TABLE ONLY "assistant_task_appendix"
     ADD CONSTRAINT "assistant_task_appendix_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_appendix_validations"
+    ADD CONSTRAINT "assistant_task_appendix_validations_pkey" PRIMARY KEY ("appendix_id", "outcome_record_id");
+
 ALTER TABLE ONLY "assistant_task_claim_operations"
     ADD CONSTRAINT "assistant_task_claim_operations_pkey" PRIMARY KEY ("owner_user_id", "task_id", "operation_id");
 
@@ -2066,6 +2085,8 @@ ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
 
 CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_appendix_validations_task" ON "assistant_task_appendix_validations" USING "btree" ("task_id");
 
 CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", "settled_at") WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
 

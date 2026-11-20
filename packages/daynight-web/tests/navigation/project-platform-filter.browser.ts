@@ -74,7 +74,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`platform filter is usable w
   });
   expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
   expect(geometry.height).toBeGreaterThanOrEqual(44);
-  expect(geometry.font).toBe('16px');
+  expect(geometry.font).toBe('14px');
   expect(geometry.outline).toBe('rgb(52, 64, 84)');
   expect(geometry.outlineStyle).not.toBe('none');
   for (const control of geometry.controls) {

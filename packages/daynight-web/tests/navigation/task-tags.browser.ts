@@ -1361,7 +1361,9 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
   const context = await browser.newContext({ hasTouch: coarse, viewport: { width: 1280, height: 900 } });
   try {
     const page = await context.newPage(), state = await install(page, locale);
-    state.assigneeName = 'LongAssigneeName'.repeat(12);
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(coarse);
+    if (!coarse) expect(await page.evaluate(() => matchMedia('(pointer: fine)').matches)).toBe(true);
+    state.assigneeName = (locale === 'en' ? 'LongAssigneeName' : '很长的负责人姓名').repeat(12);
     state.tasks = state.tasks.map(task => ({ ...task, assignedTo: TEST_VIEWER_ID }));
     await page.goto(`/projects/${projectId}`);
     await page.locator('#project-section-tab-tasks').click();
@@ -1371,13 +1373,13 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
     await page.getByRole('option', { name: state.assigneeName, exact: true }).click();
     await expect(assignee).toHaveAccessibleName(new RegExp(state.assigneeName));
     const observations: unknown[] = [];
-    for (const width of [1280, 801, 800, 390, 320]) {
+    for (const width of [1280, 801, 800, 550, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
       const enlarged = coarse || width <= 800;
       for (const view of ['goals', 'standalone', 'chains']) {
         await page.locator(`#project-task-tab-${view}`).click();
         const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
-        const expected = { height: enlarged || compact ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
+        const expected = { height: enlarged || compact ? 44 : 32, fontSize: coarse ? '16px' : '14px' };
         const geometry = await filterGeometry(toolbar);
         if (width === 1280 && view === 'goals') await info.attach('initial-toolbar-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
         expect(geometry).toHaveLength(4);
@@ -1392,7 +1394,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
         observations.push({ width, view, coarse, geometry });
       }
       const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
-      const expected = { height: enlarged || compact ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
+      const expected = { height: enlarged || compact ? 44 : 32, fontSize: coarse ? '16px' : '14px' };
       const status = toolbar.locator('.task-status-multifilter > button');
       await status.click();
       const panel = toolbar.locator('.task-status-filter-panel'), all = panel.getByRole('checkbox').first();
@@ -1414,14 +1416,13 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
       }
       const tagPanel = tag.locator('.tag-filter-panel');
       await expect(tagPanel).toHaveCSS('font-size', '14px');
-      if (width === 1280) {
+      if (width === 550) {
         await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
-        const input = tagPanel.locator('input[type=search]');
-        const field = await input.evaluate(element => {
-          const box = element.getBoundingClientRect(), style = getComputedStyle(element);
-          return { height: box.height, line: parseFloat(style.lineHeight), padding: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), border: parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth) };
-        });
-        expect(field.height - field.padding - field.border).toBeGreaterThanOrEqual(field.line - 0.02);
+        for (const entry of await filterGeometry(toolbar)) {
+          expect(entry.fontSize).toBe(coarse ? '20px' : '17.5px');
+          expect(entry.height).toBeGreaterThanOrEqual(44);
+          expect(entry.width).toBeGreaterThanOrEqual(44);
+        }
         await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
       }
       const panelBox = await tagPanel.boundingBox();
@@ -1430,16 +1431,66 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
       expect((await filterGeometry(toolbar))[3]).toMatchObject({ outlineWidth: '3px', outlineColor: 'rgb(52, 64, 84)' });
       const remove = toolbar.locator('.tag-filter-selected button');
       while (await remove.count()) await remove.first().click();
+      if (width === 550) {
+        await page.locator('#project-task-tab-goals').click();
+        await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+        const goalEntries = await filterGeometry(toolbar);
+        expect(goalEntries).toHaveLength(4);
+        for (const entry of goalEntries) expect(entry.fontSize).toBe(coarse ? '20px' : '17.5px');
+        await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       if (width === 1280 || width === 320) await info.attach(`${locale}-${coarse ? 'coarse' : 'fine'}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     }
     const search = page.locator('.task-search-form input[type="text"]');
     await search.fill('goal'); await search.press('Enter');
     const searchToolbar = page.locator('.task-search-filters');
-    const geometry = await filterGeometry(searchToolbar);
-    expect(geometry).toHaveLength(3);
-    for (const entry of geometry) expect(entry).toMatchObject({ height: 44, fontSize: '16px' });
+    for (const width of [1280, 801, 800, 550, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const enlarged = coarse || width <= 800;
+      const geometry = await filterGeometry(searchToolbar);
+      expect(geometry).toHaveLength(3);
+      for (const entry of geometry) {
+        expect(entry).toMatchObject({ height: enlarged ? 44 : 32, fontSize: coarse ? '16px' : '14px' });
+        if (enlarged) expect(entry.width).toBeGreaterThanOrEqual(44);
+      }
+      if (width === 550) {
+        await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+        for (const entry of await filterGeometry(searchToolbar)) {
+          expect(entry.fontSize).toBe(coarse ? '20px' : '17.5px');
+          expect(entry.height).toBeGreaterThanOrEqual(44);
+        }
+        await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      }
+    }
     expect(state.writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+    await page.locator('#project-section-tab-statistics').click();
+    const statisticsSelect = page.locator('#project-section-panel-statistics .statistics-card').first().locator('select');
+    await expect(statisticsSelect).toBeVisible();
+    for (const width of [801, 800]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(statisticsSelect).toHaveCSS('font-size', coarse || width <= 800 ? '16px' : '14px');
+      const bounds = await statisticsSelect.boundingBox();
+      expect(bounds!.height).toBe(coarse || width <= 800 ? 44 : 32);
+    }
     await info.attach('production-filter-geometry', { body: JSON.stringify(observations), contentType: 'application/json' });
+  } finally { await context.close(); }
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true]) test(`tag panel search fits a larger root font in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: coarse, viewport: { width: 1280, height: 900 } });
+  try {
+    const page = await context.newPage();
+    await install(page, locale);
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const tag = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+    await tag.locator('summary').click();
+    await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+    const field = await tag.locator('.tag-filter-panel input[type=search]').evaluate(element => {
+      const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+      return { height: box.height, line: parseFloat(style.lineHeight), padding: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), border: parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth) };
+    });
+    expect(field.height - field.padding - field.border).toBeGreaterThanOrEqual(field.line - 0.02);
   } finally { await context.close(); }
 });

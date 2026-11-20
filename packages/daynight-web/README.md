@@ -1538,10 +1538,12 @@ width, and explicit focus, pending and touch presentation. Consumer
 combinations. Their CSS may control external width, margins and flex/grid
 placement; internal skin, arrow and touch sizing belong to the common owners.
 SelectTrigger similarly exposes static `layoutClassName` and element-specific
-refs, events and ARIA while excluding arbitrary className/style. Task Assignee,
-Status and both Tag entries use filter/responsive/task presentation: 32px/11px
-above 800px with a fine pointer, and 44px/16px at smaller widths or coarse pointers.
-Search retains NativeSelect single selection with the same explicit presentation.
+refs, events and ARIA while excluding arbitrary className/style. Project task
+assignee, status, platform and both tag entries use filter/responsive-target/task
+presentation. Fine pointers use the scalable interface size (14px at a 16px
+root), with a 32px height above 800px in noncompact layouts and at least 44px height and hit width at
+800px or below. Coarse pointers retain at least 44px targets and the scalable
+16 CSS px minimum. Search retains native single selection with the same presentation.
 Tag panel typography, positioning and menu state remain feature-owned.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
