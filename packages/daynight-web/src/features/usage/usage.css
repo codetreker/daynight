@@ -36,4 +36,4 @@
 @media (max-width: 600px) {
   .usage-filters label, .usage-filters .usage-filter-view { flex: 1 1 100%; }
 }
-.task-node-usage { display: block; font-size: 8px; line-height: 11px; color: var(--task-helper); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-node-usage { display: block; font-size: var(--text-metadata); line-height: 1.5; color: var(--task-helper); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

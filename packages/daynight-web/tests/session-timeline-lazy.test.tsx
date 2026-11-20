@@ -20,3 +20,18 @@ it('mounts tool details on expansion and preserves the entry across unrelated re
   expect(markdown).toHaveBeenCalledTimes(count);
   expect(details.open).toBe(true);
 });
+
+it('retains the native identifier and input when opening a shortened tool name', async () => {
+  const name = 'mcp__workspace_repository__find_current_public_release_notes';
+  const state = { ...emptySessionState(), entries: [{ kind: 'tool_call' as const, entryId: 'tool', entrySeq: '1', revision: '1', callId: 'call', name, input: '{"query":"release"}', output: [], status: 'running' as const, truncated: false }] };
+  const view = render(<SessionTimeline state={state} active canRespond={false} onRespond={async () => {}} hasOlder={false} loadingOlder={false} onLoadOlder={async () => {}} onLoadResource={async () => new Blob()} />);
+  const summary = view.container.querySelector('summary')!;
+  expect(summary).toHaveAccessibleName(`${name} · release · Running`);
+  expect(summary.querySelector('.session-tool-name-compact')).toHaveTextContent('find_…_release_notes');
+  expect(view.container.querySelector('.session-tool-exact-name')).toBeNull();
+  const details = summary.closest('details')!;
+  details.open = true; fireEvent(details, new Event('toggle'));
+  await waitFor(() => expect(view.container.querySelector('.session-tool-exact-name')).toHaveTextContent(name));
+  expect(view.container.querySelector('.session-tool-input')).toHaveTextContent('{"query":"release"}');
+  expect(screen.getByText('No output.')).toBeInTheDocument();
+});

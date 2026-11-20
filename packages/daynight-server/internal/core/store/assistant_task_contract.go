@@ -70,6 +70,12 @@ type AssistantTaskDAO interface {
 	// DeleteTaskContent deletes task material and inbox receipts and turns the
 	// task's enabled inbox into a tombstone in the caller's transaction.
 	DeleteTaskContent(context.Context, string, string) error
+	// RetrospectiveTasks preselects up to Limit task IDs whose periodic
+	// retrospective is due at the cutoff, filtered by TaskID and holder
+	// TargetBotID when set. It is a candidate list, not a locked decision.
+	RetrospectiveTasks(context.Context, AssistantTaskQuery, time.Time) ([]string, error)
+	LatestOutcomeAt(context.Context, string, string) (*time.Time, error)
+	MarkRetrospective(context.Context, string, string, time.Time) (bool, error)
 	ClaimOperation(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error)
 	InsertClaimOperation(context.Context, model.AssistantTaskClaimOperation) error
 	Manual(context.Context, string, string, int64) (model.AssistantTaskManual, error)
@@ -92,6 +98,7 @@ type AssistantTaskDAO interface {
 	InsertItem(context.Context, model.AssistantTaskItem) (bool, error)
 	SaveItem(context.Context, model.AssistantTaskItem, int64) (bool, error)
 	TransferOpenItems(context.Context, string, string, *string) error
+	InsertItemClosure(context.Context, model.AssistantTaskItemClosure) error
 	// RetargetPendingInbound moves the task's pending inbound events that target
 	// another Bot to the given responsible Bot; other event types are unchanged.
 	RetargetPendingInbound(context.Context, string, string, string) error
@@ -100,6 +107,9 @@ type AssistantTaskDAO interface {
 	// InsertRecord obtains a real monotonically increasing database timestamp,
 	// under the task's record-head barrier, and returns the persisted position.
 	InsertRecord(context.Context, model.AssistantTaskRecord) (model.AssistantTaskRecord, error)
+	// Metrics aggregates the task's trailing window ending at current database
+	// time in one statement, so every count comes from the same snapshot.
+	Metrics(context.Context, string, string, time.Duration) (model.AssistantTaskMetrics, error)
 	Event(context.Context, string, string, string) (model.AssistantTaskEvent, error)
 	Events(context.Context, AssistantTaskQuery) ([]model.AssistantTaskEvent, error)
 	InsertEvent(context.Context, model.AssistantTaskEvent) (bool, error)

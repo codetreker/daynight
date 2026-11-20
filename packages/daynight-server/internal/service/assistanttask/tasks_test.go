@@ -177,6 +177,7 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			_, err := s.SaveItem(ctx, actor, core.ItemInput{Mutation: core.Mutation{TaskID: "task", ID: "item"}, Key: "key", Episode: 2})
 			return err
 		}},
+		{"Metrics", []any{"task"}, func(s *Tasks) error { _, err := s.Metrics(ctx, actor, "task"); return err }},
 		{"ListRecords", []any{"task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"}}, func(s *Tasks) error {
 			_, err := s.ListRecords(ctx, actor, "task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"})
 			return err

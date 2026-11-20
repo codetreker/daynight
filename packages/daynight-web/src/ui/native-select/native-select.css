@@ -59,6 +59,11 @@
 .native-select[data-density]:has(> .native-select__control:disabled) { color: #747d91; }
 .native-select[data-density] > .native-select__control:focus-visible { outline: 3px solid var(--native-select-focus); outline-offset: 2px; }
 
+@container project-task-filters (max-width: 420px) {
+  .project-task-filters > .task-status-filter > .native-select { display: grid; }
+  .project-task-filters > .task-status-filter > .native-select > .native-select__control { padding-top: calc(1.5 * var(--text-metadata)); }
+}
+
 @media (forced-colors: active) {
   .native-select[data-density] { color: CanvasText; }
   .native-select[data-density] > .native-select__control,

@@ -88,6 +88,18 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 携带 `previousGeneration` 的 `TakeoverBot` 和 `GrantBotRecovery` 在 grant 事务开始前，先经 `service/session` 的既有生命周期包装执行媒体租约恢复。存储 gate 已释放的孤儿租约会被清理，避免崩溃残留阻止 active history 退役；仍被占用的 gate 保留真实活动租约。清理错误阻止 grant，等待文件系统 gate 时不持有数据库 scope。未推进执行代次的恢复授权不增加这一步。
 
+### 服务端观测 v1 协议
+
+`GET /api/v1/me/bots/{botId}/observation` 独立返回 `schemaVersion=1` 的 Bot 观测，支持 HEAD，不扩展旧管理 DTO。`server/bot` 解析路径与编码公开字段；`service/bot` 协调当前账号授权、数据库快照与 Session 采样；`core/bot.Observe` 拥有状态优先级和时效计算。应用组装注入同一个 Session engine，读取不经过启动、grant 或浏览器 Session 生命周期。
+
+第一次只读快照验证当前凭据和 Bot owner，读取 Bot、当前承载 Worker 与绑定 Session 的轻量元数据。`bot_recovery.worker_id` 优先于创建时 `bots.worker_id`；DAO 直接读取持久 Worker 行，不应用普通 inventory 的 72 小时过滤，也不读取其它 Task 的活动。恢复记录保存机器 ID 和最后登记名；同 ID 的当前 Worker 上报可更新显示名。未登记恢复身份的 Bot 从原 Worker 持久报告取得定位。Provider 来自冻结定义；平台 Session、test execution 和已知 native ID 来自现有绑定，不复制为另一套权威数据。
+
+释放快照后，`Engine.ObserveBotSession` 仅复制本 relay 对应 live cell 的已提交标量；它核对 server instance、execution generation 和 connection epoch，不加载正文、原凭据、controls 或操作能力，也不执行 `TestSnapshot` 的归档与授权生命周期。第二次只读快照重新授权并取得当前 Bot、Session 和连接租约。版本或 relay 发生变化时丢弃第一次 live 结果，精确 fence 及持久 lease 再决定能否报告活动。同 fence 的恢复授权清除了 lease 时，旧同步缓存也只能产生 recovering。
+
+状态先判断 Worker 失联，再判断当前机器身份、已确认启动失败与新鲜 Provider 失败。未绑定或首次缺 native ID 为 connecting；已有 native ID 但启动、连接或同步未完成为 recovering。只有当前同步来源才能产生 idle／working，`waiting_input` 表示 idle 并保留对应 reason。已停止、失败或非 active Session 为 abnormal。Worker 截止为最后报告加 120 秒；Session 截止为心跳加 30 秒、live 采样时间加 30 秒与持久 lease 截止的最早者；采用 Provider 失败时还受其预检时效约束。离线返回最后事实和 null `freshUntil`，不返回实时轮次。
+
+输出省略所有恢复证明与 token，不含 send 权限。它证明某次读取的定位与状态，不能证明原机器进程已停止、Provider 备份完整或用户下一次输入已获准。具体公开字段与消费者要求见[助手规格](../spec/assistant.md#字段版本与失败语义)。取舍见[Bot 观测决策](../../.agents/notes/implemented/architecture/2026-11-20-bot-availability-observation.md)。
+
 ## 登记与恢复事务
 
 Session 的 `RegisterBot` 用例 验证 PAT、Bot owner、绑定 Worker 和请求结构，按 Bot → Session 顺序取得锁。首次登记要求当前版本与请求相等、角色和 Session 尚未绑定、输入 configuration 与持久配置一致，并要求独立 registration 使用 `initialInput=none` 和相同 Provider。角色全文、revision、digest 随请求提交；服务端校验全文及摘要，但不拥有角色模板。

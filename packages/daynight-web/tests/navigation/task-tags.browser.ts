@@ -1300,6 +1300,63 @@ const filterGeometry = (toolbar: Locator) => toolbar.locator('.task-assignee-fil
     countHeight: count?.getBoundingClientRect().height, countFont: count ? getComputedStyle(count).fontSize : null };
 }));
 
+for (const locale of ['en', 'zh-CN'] as const) test(`project task filters fit narrow content in ${locale}`, async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true, viewport: { width: 320, height: 640 } });
+  try {
+    const page = await context.newPage();
+    await install(page, locale);
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const toolbar = page.locator('.project-task-filters:visible');
+    const region = page.locator('.project-task-filter-region:visible');
+    for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900]] as const) {
+      await page.setViewportSize({ width, height });
+      for (const view of ['standalone', 'chains', 'goals']) {
+        await page.locator(`#project-task-tab-${view}`).click();
+        const entries = await filterGeometry(toolbar);
+        expect(entries).toHaveLength(4);
+        expect(entries[0]!.top).toBe(entries[1]!.top);
+        expect(entries[2]!.top).toBe(entries[3]!.top);
+        expect(entries[2]!.top - entries[0]!.top).toBe(52);
+        for (const entry of entries) expect(entry.height).toBeGreaterThanOrEqual(44);
+        for (const label of await toolbar.locator('.tag-filter > summary .select-trigger__label').all()) {
+          expect(await label.evaluate(element => element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth)).toBe(true);
+        }
+        expect((await toolbar.boundingBox())!.height).toBeLessThanOrEqual(96);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      }
+    }
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.locator('#project-task-tab-goals').click();
+    const childTag = toolbar.locator('.tag-filter').last();
+    await childTag.locator('summary').tap();
+    await childTag.locator('.tag-filter-options input').first().check();
+    const childLabel = childTag.locator('.select-trigger__label');
+    expect(await childLabel.evaluate(element => element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(childTag.locator('summary')).toBeFocused();
+    await page.setViewportSize({ width: 1360, height: 900 });
+    for (const [width, columns] of [[263, 1], [263.5, 1], [264, 2], [420, 2], [421, 0]] as const) {
+      await region.evaluate((element, size) => { element.style.width = `${size}px`; }, width);
+      const layout = await toolbar.evaluate(element => ({ display: getComputedStyle(element).display, columns: getComputedStyle(element).gridTemplateColumns.split(' ').length }));
+      expect(layout.display).toBe(columns === 0 ? 'flex' : 'grid');
+      if (columns !== 0) expect(layout.columns).toBe(columns);
+    }
+    await region.evaluate(element => { element.style.width = '284px'; });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    const entries = await filterGeometry(toolbar);
+    for (const entry of entries) expect(entry.height).toBeGreaterThanOrEqual(44);
+    const status = toolbar.locator('.task-status-multifilter > button');
+    await status.focus(); await page.keyboard.press('Enter');
+    await expect(toolbar.locator('.task-status-filter-panel')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; document.documentElement.style.zoom = '2'; });
+    await status.focus(); await page.keyboard.press('Enter');
+    await expect(toolbar.locator('.task-status-filter-panel')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+  } finally { await context.close(); }
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true]) test(`task filter entries share rendered density in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }, info) => {
   const context = await browser.newContext({ hasTouch: coarse, viewport: { width: 1280, height: 900 } });
   try {
@@ -1316,9 +1373,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
     const observations: unknown[] = [];
     for (const width of [1280, 801, 800, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      const enlarged = coarse || width <= 800, expected = { height: enlarged ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
+      const enlarged = coarse || width <= 800;
       for (const view of ['goals', 'standalone', 'chains']) {
         await page.locator(`#project-task-tab-${view}`).click();
+        const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
+        const expected = { height: enlarged || compact ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
         const geometry = await filterGeometry(toolbar);
         if (width === 1280 && view === 'goals') await info.attach('initial-toolbar-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
         expect(geometry).toHaveLength(4);
@@ -1332,6 +1391,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
         }
         observations.push({ width, view, coarse, geometry });
       }
+      const compact = await toolbar.evaluate(element => getComputedStyle(element).display === 'grid');
+      const expected = { height: enlarged || compact ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
       const status = toolbar.locator('.task-status-multifilter > button');
       await status.click();
       const panel = toolbar.locator('.task-status-filter-panel'), all = panel.getByRole('checkbox').first();

@@ -96,6 +96,18 @@ describe('assistant task response contracts', () => {
     { trigger: { kind: 'daily', time: '24:00', timeZone: 'UTC' } }, { trigger: { kind: 'daily', time: '12:00', timeZone: 'Local' } },
     { trigger: { kind: 'daily', time: '12:00', timeZone: 'Bad/Zone' } }, { unknown: true }, { updatedAt: '2026-02-30T12:00:00Z' },
   ])('refuses malformed or contradictory tasks %#', patch => expect(() => api.parseAssistantTask({ ...task(), ...patch }, BOT_USER)).toThrow());
+  it('reads 30-day metrics and refuses contradictory closure timing', async () => {
+    const metrics = { observedAt: BOT_TIME, windowStart: '2026-01-01T00:00:00Z', windowEnd: BOT_TIME, actionCount: 4, outcomes: { effective: 2, ineffective: 1, inconclusive: 0 }, escalationCount: 1, resultUnknownCount: 0, closureCount: 3, untimedClosureCount: 1, averageResolutionMs: 90_000, recurringItemCount: 1 };
+    const fetch = vi.fn().mockResolvedValueOnce(botResponse(metrics));
+    vi.stubGlobal('fetch', fetch);
+    expect(await api.getAssistantTaskMetrics(taskId, signal(), admission())).toEqual(metrics);
+    expect(String(fetch.mock.calls[0]![0])).toBe(`/api/v1/assistant-tasks/${taskId}/metrics`);
+    const untimed = { ...metrics, closureCount: 0, untimedClosureCount: 0, averageResolutionMs: null };
+    expect(api.parseAssistantTaskMetrics(untimed)).toEqual(untimed);
+    expect(api.parseAssistantTaskMetrics({ ...metrics, averageResolutionMs: -5_000 }).averageResolutionMs).toBe(0);
+    for (const patch of [{ untimedClosureCount: 4 }, { averageResolutionMs: null }, { averageResolutionMs: 1.5 }, { averageResolutionMs: '90000' }, { untimedClosureCount: 3 }, { windowEnd: '2026-01-02T00:00:00Z' }, { windowStart: '2099-01-01T00:00:00Z' }, { actionCount: -1 }, { actionCount: 1.5 }, { outcomes: { effective: 1, ineffective: 0 } }, { extra: 1 }])
+      expect(() => api.parseAssistantTaskMetrics({ ...metrics, ...patch })).toThrow();
+  });
   it('accepts outcome records only with their evaluation and refuses evaluation keys on other kinds', () => {
     const outcome = { ...record(), kind: 'outcome', outcome: 'effective', actionRecordId: botId(85) };
     expect(api.parseAssistantTaskRecord(outcome, taskId)).toEqual(outcome);
@@ -133,6 +145,8 @@ describe('assistant task response contracts', () => {
     expect(() => api.parseAssistantTaskRecord({ ...record(), author: 'system' }, taskId)).toThrow();
     expect(() => api.parseAssistantTaskItem({ ...item(), episode: 2 }, taskId)).toThrow();
     expect(() => api.parseAssistantTaskEvent({ ...event(), type: 'invented' }, taskId)).toThrow();
+    const retrospective = { ...event(), type: 'retrospective', payload: { reason: 'item_closed', itemId: botId(84), episode: '9007199254740993' }, attention: false };
+    expect(api.parseAssistantTaskEvent(retrospective, taskId)).toEqual(retrospective);
     expect(() => api.parseAssistantTaskManual({ ...manual(), rules: { limit: Number.MAX_SAFE_INTEGER + 1 } }, taskId)).toThrow();
     expect(api.parseAssistantTaskManual({ ...manual(), rules: { value: 'embedded\0text' } }, taskId).rules).toEqual({ value: 'embedded\0text' });
     expect(() => api.parseAssistantTaskAppendix({ ...appendix(), state: 'deleted' }, taskId)).toThrow();

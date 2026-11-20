@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../src/api/operation.js";
-import { AssistantTaskApiError, assistantTaskClaimFingerprint, createAssistantTaskClient, parseAssistantTask, parseAssistantTaskClaimResult, parseAssistantTaskPage, parseAssistantTaskManual, parseAssistantTaskAppendix, parseAssistantTaskProposal, parseAssistantTaskItem, parseAssistantTaskRecord, parseAssistantTaskEvent, parseAssistantTaskInquiry } from "../../src/api/assistant-task.js";
+import { AssistantTaskApiError, assistantTaskClaimFingerprint, createAssistantTaskClient, parseAssistantTask, parseAssistantTaskClaimResult, parseAssistantTaskPage, parseAssistantTaskManual, parseAssistantTaskAppendix, parseAssistantTaskProposal, parseAssistantTaskItem, parseAssistantTaskRecord, parseAssistantTaskEvent, parseAssistantTaskInquiry, parseAssistantTaskMetrics } from "../../src/api/assistant-task.js";
 import { ProtocolError } from "../../src/api/validation.js";
 const owner = "11111111-1111-4111-8111-111111111111", taskId = "22222222-2222-4222-8222-222222222222", operationId = "33333333-3333-4333-8333-333333333333", botId = "44444444-4444-4444-8444-444444444444", other = "55555555-5555-4555-8555-555555555555";
 const now = "2026-11-13T10:00:00.123456Z", until = "2026-11-13T10:05:00.123456Z";
@@ -213,6 +213,35 @@ describe("assistant task resource routing", () => {
   });
 });
 
+describe("assistant task metrics", () => {
+  const start = "2026-10-20T00:00:00Z";
+  const metrics = { observedAt: now, windowStart: start, windowEnd: now, actionCount: 7, outcomes: { effective: 3, ineffective: 2, inconclusive: 1 }, escalationCount: 4, resultUnknownCount: 5, closureCount: 6, untimedClosureCount: 2, averageResolutionMs: 5400001, recurringItemCount: 1 };
+  it("reads the task metrics resource", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(metrics));
+    expect(await setup(fetch).getMetrics(taskId)).toEqual(metrics);
+    expect(String(fetch.mock.calls[0]![0])).toBe(`http://localhost:3000/api/v1/assistant-tasks/${taskId}/metrics`);
+    expect(fetch.mock.calls[0]![1]?.method).toBe("GET");
+  });
+  it("accepts a window without timed closures", () => {
+    const untimed = { ...metrics, closureCount: 2, untimedClosureCount: 2, averageResolutionMs: null };
+    expect(parseAssistantTaskMetrics(untimed)).toEqual(untimed);
+    expect(parseAssistantTaskMetrics({ ...untimed, closureCount: 0, untimedClosureCount: 0 })).toMatchObject({ averageResolutionMs: null });
+  });
+  it.each([
+    ["negative count", { actionCount: -1 }],
+    ["fractional count", { escalationCount: 1.5 }],
+    ["missing outcome", { outcomes: { effective: 1, ineffective: 0 } }],
+    ["unknown field", { extra: 1 }],
+    ["more untimed than total closures", { untimedClosureCount: 7 }],
+    ["average without timed closures", { untimedClosureCount: 6 }],
+    ["timed closures without average", { averageResolutionMs: null }],
+    ["window end differing from observation", { windowEnd: start }],
+    ["window start after its end", { windowStart: "2026-11-14T00:00:00Z" }],
+  ])("rejects %s", (_name, change) => {
+    expect(() => parseAssistantTaskMetrics({ ...metrics, ...change })).toThrow(ProtocolError);
+  });
+});
+
 describe("assistant task application JSON", () => {
   const applicationData = { version: 3, nested: [{ version: 4, fraction: 0.125, negative: -12, zero: 0 }], maximum: Number.MAX_SAFE_INTEGER };
   it.each([
@@ -231,6 +260,13 @@ describe("assistant task application JSON", () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": owner } }));
     await expect(setup(fetch).getItem(taskId, operationId)).rejects.toMatchObject({ code: "invalid_response", outcomeUnconfirmed: false });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("reads item retrospective events whose episode exceeds the JavaScript safe integer range", async () => {
+    const retrospective = { ...event, type: "retrospective", attention: false, payload: { reason: "item_closed", itemId: operationId, episode: "9007199254740993" } };
+    const value = { items: [retrospective], nextCursor: null, observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(value));
+    const page = await setup(fetch).listEvents(taskId);
+    expect(page.items).toEqual([retrospective]);
   });
   it("rejects numeric application bigint inputs at the parser and preserves string resource versions", () => {
     expect(() => parseAssistantTaskItem({ ...item, appState: { version: 3n } }, taskId)).toThrow(ProtocolError);

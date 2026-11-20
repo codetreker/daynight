@@ -8,7 +8,7 @@ The names in the GitHub App management list were larger and heavier than the sec
 
 ## Decision
 
-The list section owns its heading typography: its h2 uses 1.17em at weight 700, while every App h3 uses weight 650 and 15px above 600px or 14px at narrower widths. Both retain their semantic levels and inherited font family. The [registration design](../../../../docs/design/github-app-registration.md#管理工作区) describes the workspace.
+The list section owns its heading typography: its h2 uses the shared section heading role at weight 700, while every App h3 uses the shared interface role at weight 650 across widths. Both retain their semantic levels and inherited font family. The [registration design](../../../../docs/design/github-app-registration.md#管理工作区) describes the workspace.
 
 ## Alternatives
 
@@ -16,4 +16,4 @@ The list section owns its heading typography: its h2 uses 1.17em at weight 700, 
 
 ## Consequences
 
-The section is visually stronger than each name without changing the list's behavior. The list-specific rules must remain aligned with the shared typography if its base font changes.
+The section is visually stronger than each name without changing the list's behavior. The shared roles preserve the hierarchy as browser font preferences change.

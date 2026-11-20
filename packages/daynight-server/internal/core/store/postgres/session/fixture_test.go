@@ -225,6 +225,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"assistant_task_inbox_receipts",
 		"assistant_task_inboxes",
 		"assistant_task_inquiries",
+		"assistant_task_item_closures",
 		"assistant_task_items",
 		"assistant_task_manual_versions",
 		"assistant_task_proposals",

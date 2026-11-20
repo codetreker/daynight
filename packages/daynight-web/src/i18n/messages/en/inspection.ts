@@ -161,7 +161,7 @@ export const inspection: InspectionMessages = {
     openInNewTab: "Open in new tab", missing: "This attachment was not found. It may have been deleted.", returnToTask: "Return to task project",
     title: "Attachments", heading: ({ count }) => `Attachments · ${count}`, refresh: "Refresh attachments",
     chooseFile: "Choose one file", targetPath: "Target relative path", pathPlaceholder: "For example, docs/design.md",
-    uploading: "Uploading…", upload: "Upload file", uploadHint: "Upload one file at a time. An existing path is overwritten directly.",
+    uploading: "Uploading…", upload: "Upload file", backToFiles: "Back to files", uploadHint: "Upload one file at a time. An existing path is overwritten directly.",
     invalidPath: "Enter a valid relative file path, using / between directories, without empty segments or the . and .. segments.",
     invalidReference: "This attachment reference is invalid or leaves the task attachment root.",
     writeError: "The attachment operation failed. Check and try again.", loading: "Loading attachments…",

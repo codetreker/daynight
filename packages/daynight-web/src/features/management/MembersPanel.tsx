@@ -70,7 +70,6 @@ const sameInvitation = (a: ProjectInvitation, b: ProjectInvitation) =>
 
 type MembersPanelProps = {
   readonly projectId: string;
-  readonly projectName?: string | null | undefined;
   readonly resultHost?: HTMLElement | null | undefined;
   readonly presentationGeneration?: number | undefined;
   readonly onStateChange?: ((state: ProjectSettingsSectionState) => void) | undefined;
@@ -85,7 +84,7 @@ type MembersPanelProps = {
 
 export const MembersPanel = (props: MembersPanelProps) => <ProjectAccessBoundary projectId={props.projectId} initialRead active={props.active ?? true}><MembersContent key={`${props.user.id}:${props.projectId}`} {...props} /></ProjectAccessBoundary>;
 
-const MembersContent = ({ projectId, projectName = null, resultHost, presentationGeneration, onStateChange, user, onRemoved, onUnavailable, onMembershipChange, active = true, onRoute = true, onGuardChange }: MembersPanelProps) => {
+const MembersContent = ({ projectId, resultHost, presentationGeneration, onStateChange, user, onRemoved, onUnavailable, onMembershipChange, active = true, onRoute = true, onGuardChange }: MembersPanelProps) => {
   const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon }, format } = useI18n();
   const access = useProjectAccess(projectId);
   const [members, setMembers] = useState<readonly ProjectParticipant[] | null>(null);
@@ -717,7 +716,7 @@ const MembersContent = ({ projectId, projectName = null, resultHost, presentatio
   </>;
   return <>
     {onRoute && (resultHost === undefined ? result : resultHost !== null ? createPortal(result, resultHost) : null)}
-    <div className="page-heading members-page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle members-project-name">{projectName === null || access.status === 'unavailable' ? <span className="members-project-name-placeholder" aria-hidden="true">&nbsp;</span> : m.subtitle({ projectName })}</p></div>{admin && <button className="button primary" type="button" disabled={loading || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
+    <div className="members-page-heading"><h2 tabIndex={-1}>{m.title}</h2>{admin && <button className="button primary" type="button" disabled={loading || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
     {grantIssue !== null && <div className="notice warning" role="alert"><p>{grantIssue.observed ? m.grantObserved : m.grantUnknown}</p>{grantIssue.error instanceof ApiError && grantIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{grantIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && grantIssueRef.current !== null) { const issue = { ...grantIssueRef.current, observed: true }; grantIssueRef.current = issue; setGrantIssue(issue); } }); }}>{m.readCurrentMembers}</button></div>}
     {admin && (addition.unknown || addConfirmed) && <div className="notice warning" role="status"><p>{addition.unknown ? (locale === 'zh-CN' ? '添加结果未确认。核对当前成员不会解除重复提交保护。' : 'The add result is unconfirmed. Checking current members does not unlock another add.') : (locale === 'zh-CN' ? '添加已确认；正在等待最新成员列表。' : 'The add was confirmed; the current member list is pending.')}</p>{addition.observed && addition.unknown && <p>{members?.some(member => member.userId === addition.targetId) ? (locale === 'zh-CN' ? '当前已加入。' : 'Currently a member.') : (locale === 'zh-CN' ? '当前不是项目成员。' : 'Not currently a project member.')}</p>}{addition.error !== null && <ManagementError error={addition.error} />}<button className="button" type="button" disabled={addition.checking || !access.ready || !active} onClick={() => { void checkAddition().then(success => { if (success && addConfirmed) { heldAddition.current = null; setAddConfirmed(false); } }); }}>{addition.checking ? (locale === 'zh-CN' ? '正在核对…' : 'Checking…') : m.readCurrentMembers}</button></div>}
     {invitationIssue !== null && <div className="notice warning" role="alert"><p>{invitationIssue.observed ? m.invitationObserved : m.invitationUnknown}</p>{!invitationIssue.observed && (access.status === 'unavailable' || access.status === 'ready' && !admin) && <p>{m.invitationUnreadable}</p>}{invitationIssue.error instanceof ApiError && invitationIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{invitationIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal, true).then((observed) => { if (observed && invitationIssueRef.current !== null) { const issue = { ...invitationIssueRef.current, observed: true }; invitationIssueRef.current = issue; setInvitationIssue(issue); } }); }}>{m.readCurrentInvitations}</button></div>}
@@ -730,7 +729,7 @@ const MembersContent = ({ projectId, projectName = null, resultHost, presentatio
     {receipt?.lostAccess !== true && (unavailable || access.status === "unavailable") && error === null && access.error === null && <div className="notice error" role="alert">{common.notFound}</div>}
     {!loading && members !== null && !unavailable && access.status !== 'unavailable' && <>
       {access.status === 'ready' && !admin && <div className="notice">{m.memberNotice}</div>}
-      <section className="panel" aria-labelledby="members-title"><div className="panel-heading"><div><h2 id="members-title">{m.membersTitle} <span className="badge">{format.number(members.length)}</span></h2><p>{m.accessDescription}</p></div>{admin && <ProjectMemberSearch projectId={projectId} access={access} active={active && onRoute} members={members} addition={{ ...addition, locked: addition.locked || pending || addConfirmed }} onAdd={(id) => { void addMember(id); }} onCheck={() => { void checkAddition(); }} />}</div>
+      <section className="panel" aria-labelledby="members-title"><div className="panel-heading"><div><h3 id="members-title">{m.membersTitle} <span className="badge">{format.number(members.length)}</span></h3><p>{m.accessDescription}</p></div>{admin && <ProjectMemberSearch projectId={projectId} access={access} active={active && onRoute} members={members} addition={{ ...addition, locked: addition.locked || pending || addConfirmed }} onAdd={(id) => { void addMember(id); }} onCheck={() => { void checkAddition(); }} />}</div>
         <div className="grant-table">
           <div className="row grant-row head" aria-hidden="true"><span>{m.memberColumn}</span><span>{m.effectiveColumn}</span><span>{m.teamColumn}</span><span>{m.directColumn}</span><span>{m.actionColumn}</span></div>
           {members.map((member) => {

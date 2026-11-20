@@ -313,6 +313,15 @@ var webhookEventActorSQL string
 //go:embed schema/migrations/098_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
+//go:embed schema/migrations/101_assistant_task_item_lifecycle.sql
+var assistantTaskItemLifecycleSQL string
+
+//go:embed schema/migrations/102_assistant_task_retrospectives.sql
+var assistantTaskRetrospectivesSQL string
+
+//go:embed schema/migrations/103_assistant_task_metrics.sql
+var assistantTaskMetricsSQL string
+
 //go:embed schema/migrations/104_assistant_task_appendix_validations.sql
 var assistantTaskAppendixValidationsSQL string
 
@@ -422,6 +431,9 @@ var schemaMigrations = []migration{
 	{version: 98, sql: assistantTaskOutcomesSQL},
 	{version: 99, sql: assistantTaskInboxesSQL},
 	{version: 100, sql: botRecoverySQL},
+	{version: 101, sql: assistantTaskItemLifecycleSQL},
+	{version: 102, sql: assistantTaskRetrospectivesSQL},
+	{version: 103, sql: assistantTaskMetricsSQL},
 	{version: 104, sql: assistantTaskAppendixValidationsSQL},
 }
 
