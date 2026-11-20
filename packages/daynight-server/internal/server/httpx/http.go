@@ -252,6 +252,9 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
+		case "insufficient_scope":
+			status = http.StatusForbidden
+			w.Header().Set("Daynight-Scope-Status", "insufficient_scope")
 		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_tag_filter", "invalid_search_expression":
 			status = http.StatusBadRequest
 		case "goal_dependency_target_unavailable":
@@ -299,6 +302,9 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
+			if fault.Code == "insufficient_scope" {
+				response.Code = "forbidden"
+			}
 			var claim *model.AssistantTaskClaimError
 			if errors.As(err, &claim) {
 				response.Details = &api.ErrorDetails{HolderBotID: claim.Claim.HolderBotID, ClaimGeneration: &claim.Claim.Generation, LeaseUntil: claim.Claim.LeaseUntil}

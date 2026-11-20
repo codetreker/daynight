@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -116,6 +117,22 @@ func checkTeamBody(value any) error {
 
 // RegisterTeamTools exposes the Team use cases through the common MCP wrapper.
 func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) error {
+	return registerTeamTools(e, teams, projects, identities, nil)
+}
+
+// RegisterScopedTeamTools registers the same tools with request credential admission.
+// The provider must return the policy snapshot obtained by request authentication.
+func RegisterScopedTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) error {
+	if authorization == nil {
+		return fmt.Errorf("Team credential authorization is required")
+	}
+	if !scopeProtected(teams) {
+		return fmt.Errorf("scoped Team service is required")
+	}
+	return registerTeamTools(e, teams, projects, identities, authorization)
+}
+
+func registerTeamTools(e *Entry, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) error {
 	if e == nil || teams == nil || projects == nil || identities == nil {
 		return fmt.Errorf("Team tool dependencies are required")
 	}
@@ -139,7 +156,15 @@ func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 			}
-			return teamTool(ctx, actor, name, a, teams, projects, identities)
+			_, write, err := teamToolOperations(name, actor.Principal, a)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			result, err := teamTool(ctx, actor, name, a, teams, projects, identities, authorization)
+			if authorization != nil {
+				result = scopeRefusalResult(result, err, write)
+			}
+			return result, err
 		}
 		var err error
 		switch name {
@@ -155,7 +180,7 @@ func RegisterTeamTools(e *Entry, teams teamOperations, projects teamProjectOpera
 	return nil
 }
 
-func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver) (ToolResult, error) {
+func teamTool(ctx context.Context, actor RequestActor, name string, a teamArguments, teams teamOperations, projects teamProjectOperations, identities personalTeamResolver, authorization teamservice.AuthorizationProvider) (ToolResult, error) {
 	p := actor.Principal
 	if name == "team_create" {
 		if err := checkTeamBody(api.CreateTeamRequest{Name: a.Name, ExpectedUserID: p.UserID}); err != nil {
@@ -243,6 +268,16 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: map[string]any{"teamId": id, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: map[string]any{"teamId": id}}, nil
 	case "team_projects":
+		if authorization != nil {
+			// Check visibility through the protected Team service before exposing
+			// a scope refusal for a specific Team.
+			if _, err := teams.Get(ctx, p, id); err != nil {
+				return ToolResult{}, err
+			}
+			if err := requireTeamToolScopes(ctx, authorization, p, scopepolicy.ProjectRead); err != nil {
+				return ToolResult{}, err
+			}
+		}
 		project := func(items []model.Project, cursor *string) teamListData[Project] {
 			page := teamListData[Project]{Items: make([]Project, 0, len(items)), NextCursor: cursor}
 			for _, item := range items {

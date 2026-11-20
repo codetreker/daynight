@@ -610,9 +610,9 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Runtime monitoring shows scheduling and admission, actual capacity, tasks in
-cleanup, current failures and the latest recovery. The cleanup section retains
-only permission-projected activities with `kind === 'cleanup'` and
+Runtime monitoring shows scheduling and admission, actual capacity and its
+reported active/retained breakdown, and tasks in cleanup. The cleanup section
+retains only permission-projected activities with `kind === 'cleanup'` and
 `scope.kind === 'claim'`, in observation order. It retains phases, activity
 states, waits, retry times and task links, including ID labels when names are
 omitted. An empty filtered section remains visible: complete observations show
@@ -621,8 +621,10 @@ cleanup tasks in this observation.” The same rule applies to an unexpired reta
 observation after a failed refresh. Execution, maintenance and non-task cleanup
 activities remain part of the monitoring protocol without appearing in this
 section. System monitoring separately shows host resources, environment and
-software. Task associations open the existing task detail; fixed diagnostic categories and real
-retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
+software. Cleanup and admission task associations open the existing task detail;
+known retry times are displayed without inventing external waits or deadlines.
+Current failures, recent recovery and monitoring delivery have no panels or
+replacement entries in the Web view.
 
 Monitoring is independent of the existing Worker snapshot. Redis observation
 time and a monotonic browser clock mark an observation stale at 90 seconds and
@@ -2591,8 +2593,14 @@ geometry or system-menu behavior.
 The [Web typography specification](../../docs/spec/web-typography.md) owns the
 allowed sizes, renderer settings, accessibility adjustments, and acceptance criteria.
 `src/styles/typography.css` owns the six numeric scale values. Its fixed transitional
-role mappings preserve unmigrated consumers, including the terminal's `xs` base
-and the touch-field `max(var(--text-base), 16px)` minimum.
+role mappings preserve unmigrated consumers. The retained terminal bridge still
+maps to `xs`, but recording output directly selects `sm` and multiplies it by
+its unitless user zoom. Surrounding controls, timestamps and errors use ordinary
+shared sizes independently of that zoom. The touch-field bridge retains
+`max(var(--text-base), 16px)`; migrated Session fields use the shared coarse-pointer
+adjustment, and Bot creation and directory inputs use the responsive adjustment.
+The [Session and Bot typography decision](../../.agents/notes/implemented/architecture/2026-11-20-session-bot-typography.md)
+records these renderer and input responsibilities.
 
 The harness runs `scripts/typography-policy.test.mts` and scans every CSS, TS and
 TSX file under `src/`, including unreferenced sources. Run the scan independently:

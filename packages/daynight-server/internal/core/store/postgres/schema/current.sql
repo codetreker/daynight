@@ -1,4 +1,4 @@
--- Schema snapshot version: 106
+-- Schema snapshot version: 108
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -332,6 +332,7 @@ CREATE TABLE "device_authorizations" (
     "expires_at" timestamp with time zone NOT NULL,
     "next_poll_at" timestamp with time zone NOT NULL,
     "poll_interval_seconds" integer NOT NULL,
+    "approved_business_scopes" "text"[],
     CONSTRAINT "device_authorizations_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "device_authorizations_check1" CHECK ((("status" = 'pending'::"text") = ("user_id" IS NULL))),
     CONSTRAINT "device_authorizations_device_code_hash_check" CHECK (("octet_length"("device_code_hash") = 32)),
@@ -511,6 +512,8 @@ CREATE TABLE "personal_access_tokens" (
     "expires_at" timestamp with time zone,
     "last_used_at" timestamp with time zone,
     "description" "text",
+    "business_scopes" "text"[],
+    "scope_version" bigint,
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
@@ -2211,7 +2214,11 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
+CREATE INDEX "project_pr_review_assignments_worker_cursor" ON "project_pr_review_assignments" USING "btree" ("user_id", "worker_id", "project_id", "repository_id", "github_pr_id");
+
 CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+
+CREATE INDEX "project_pull_requests_open_github_id" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "github_id") INCLUDE ("number") WHERE ("state" = 'open'::"text");
 
 CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 

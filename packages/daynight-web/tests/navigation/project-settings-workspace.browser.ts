@@ -418,3 +418,46 @@ test('project member search uses shared responsive text at both member routes', 
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
   }
 });
+
+test('project prompt purposes save and clear independently while preserving hidden drafts', async ({ page }) => {
+  await install(page); await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  const resources = { worker: { text: 'Project worker', revision: '2' }, reviewer: { text: 'Project reviewer', revision: '9' } };
+  const writes: { path: string; body: { expectedUserId: string; revision: string; text: string } }[] = [];
+  await page.route(`**/api/v1/me/projects/${projectId}/*-prompt`, async route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    const resource = path.endsWith('/reviewer-prompt') ? resources.reviewer : resources.worker;
+    if (request.method() === 'PUT') {
+      const body = request.postDataJSON() as { expectedUserId: string; revision: string; text: string };
+      writes.push({ path, body }); resource.text = body.text; resource.revision = String(Number(resource.revision) + 1);
+    }
+    await route.fulfill({ json: { scope: 'project', scopeId: projectId, ...resource, updatedAt: time }, headers: { 'Daynight-User-ID': actorId } });
+  });
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${base}?tab=prompts`);
+  const input = page.getByLabel('Prompt text'), worker = page.getByRole('button', { name: 'Worker', exact: true }), reviewer = page.getByRole('button', { name: 'Reviewer', exact: true });
+  await expect(input).toHaveValue('Project worker');
+  await input.fill('Worker project draft');
+  await reviewer.click(); await expect(input).toHaveValue('Project reviewer');
+  await input.fill('Reviewer project 汉');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({ path: `/api/v1/me/projects/${projectId}/reviewer-prompt`, body: { expectedUserId: actorId, revision: '9', text: 'Reviewer project 汉' } });
+  await expect(page.getByText('Saved revision: 10')).toBeVisible();
+  await worker.click(); await expect(input).toHaveValue('Worker project draft');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toEqual({ path: `/api/v1/me/projects/${projectId}/worker-prompt`, body: { expectedUserId: actorId, revision: '2', text: 'Worker project draft' } });
+  await reviewer.click(); await expect(input).toHaveValue('Reviewer project 汉');
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => writes.length).toBe(3);
+  expect(writes[2]).toEqual({ path: `/api/v1/me/projects/${projectId}/reviewer-prompt`, body: { expectedUserId: actorId, revision: '10', text: '' } });
+  await expect(page.getByText('Saved revision: 11')).toBeVisible();
+  await input.fill('Hidden project draft'); await worker.click();
+  await page.getByRole('button', { name: 'Open navigation' }).click(); await page.getByRole('link', { name: 'My Workers' }).click();
+  const dialog = page.getByRole('alertdialog'); await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: /keep editing/i }).click();
+  await expect(reviewer).toHaveAttribute('aria-pressed', 'true');
+  await expect(input).toHaveValue('Hidden project draft');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

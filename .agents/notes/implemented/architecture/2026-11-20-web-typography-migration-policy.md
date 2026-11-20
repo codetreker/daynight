@@ -39,8 +39,14 @@ member search, GitHub management, Webhook consumers, Project and personal Task
 lists, Goal cards, tags and search use public sizes directly. Dependency graphs,
 charts, project statistics, Usage and pull request views also select the public
 scale. Task and Goal details, Steps, Thread and attachment controls also select
-the public scale; shared Markdown retains its own selection. Chart plot geometry scales from `xs` and label rows use their computed
-line height; graph geometry retains its independent root-size adaptation and view
+the public scale; shared Markdown retains its own selection. Session timelines,
+tool records, drafts, Test Sessions, terminal recordings,
+Bot conversations, Bot management and Assistant Task panels also select public
+sizes directly. The [Session and Bot typography decision](2026-11-20-session-bot-typography.md)
+records terminal output's direct `sm` selection and the input inheritance rules;
+terminal recordings no longer reference the retained `xs` bridge.
+Chart plot geometry scales from `xs` and label rows use their computed line
+height; graph geometry retains its independent root-size adaptation and view
 zoom. Usage and pull request search inputs use the shared responsive adjustment.
 
 The shared selection CSS owns touch text adjustments and sizes controls from

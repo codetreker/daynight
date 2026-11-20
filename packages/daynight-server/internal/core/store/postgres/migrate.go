@@ -331,6 +331,12 @@ var credentialDescriptionsSQL string
 //go:embed schema/migrations/106_repository_default_branch.sql
 var repositoryDefaultBranchSQL string
 
+//go:embed schema/migrations/107_review_poll_indexes.sql
+var reviewPollIndexesSQL string
+
+//go:embed schema/migrations/108_pat_business_scopes.sql
+var patBusinessScopesSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -443,6 +449,8 @@ var schemaMigrations = []migration{
 	{version: 104, sql: assistantTaskAppendixValidationsSQL},
 	{version: 105, sql: credentialDescriptionsSQL},
 	{version: 106, sql: repositoryDefaultBranchSQL},
+	{version: 107, sql: reviewPollIndexesSQL},
+	{version: 108, sql: patBusinessScopesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

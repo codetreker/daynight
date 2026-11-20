@@ -12,6 +12,12 @@ import (
 func (s *Snapshot) ReviewAssignment(ctx context.Context, userID, projectID string, repoID, prID int64) (*store.ReviewAssignment, error) {
 	return reviewassignment.NewReader(s.tx).ReviewAssignment(ctx, userID, projectID, repoID, prID)
 }
+func (s *Snapshot) ReviewPollWorker(ctx context.Context, userID, workerID string) (*store.ReviewPollWorker, error) {
+	return reviewassignment.NewReader(s.tx).ReviewPollWorker(ctx, userID, workerID)
+}
+func (s *Snapshot) ReviewPollCandidates(ctx context.Context, userID, workerID string, projectIDs []string, after *store.ReviewPollKey, limit int) ([]store.ReviewPollCandidate, error) {
+	return reviewassignment.NewReader(s.tx).ReviewPollCandidates(ctx, userID, workerID, projectIDs, after, limit)
+}
 func (s *Store) ReviewScanStart(ctx context.Context) (time.Time, *store.ReviewWorkerKey, error) {
 	return reviewassignment.NewReader(s.Pool).ReviewScanStart(ctx)
 }
