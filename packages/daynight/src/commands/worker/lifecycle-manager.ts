@@ -185,6 +185,16 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     } else if (original.status === "confirmed") receipt = parseLifecycleActivationReceipt(original.receipt);
     else { store.markBlocked("resume_interrupted"); throw new Error("Original activation did not commit; an explicit new resume is required."); }
     const authority = await readAuthority();
+    if (authority.instance?.instanceId === activation.binding.instanceId && authority.instance.instanceEpoch === receipt.instanceEpoch
+      && BigInt(authority.intentVersion) > BigInt(receipt.intentVersion) && authority.desired === "disabled" && authority.admission === "closed") {
+      // The committed activation remains in its ledger, but cannot hold a newer
+      // stop behind its continuation. Failed authority reads never retire it.
+      store.observeAuthority(authority);
+      store.closeAdmission({ operationId: authority.operationId ?? randomUUID(), local: false });
+      pendingResume = undefined;
+      await stop();
+      return;
+    }
     if (authority.intentVersion !== receipt.intentVersion || authority.desired !== "enabled" || authority.admission !== "open" || authority.instance?.instanceId !== activation.binding.instanceId || authority.instance.instanceEpoch !== receipt.instanceEpoch) throw new Error("Worker authority changed after activation.");
     signal.throwIfAborted();
     store.commitActivation({ ...activation, receipt: json(receipt) });

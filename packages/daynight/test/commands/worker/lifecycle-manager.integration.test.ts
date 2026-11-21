@@ -198,6 +198,42 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(owner.rebuild).toHaveBeenCalledOnce();
   }, 5000);
 
+  it.each([false, true])("reports a superseding remote disable after activation (lost response: %s) and permits a new remote resume", async lostResponse => {
+    const f = fixture(); await start(f); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    f.onActivation(async request => {
+      if (request.operationId !== id(22)) return;
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: request.intentVersion, source: "web", localEpoch: null, originOperationId: null });
+      if (lostResponse) throw unknown();
+    });
+    const resume = f.manager.resume(id(22));
+    if (lostResponse) await expect(resume).rejects.toThrow(); else await resume;
+    await f.manager.reconcile();
+    expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed", receipt: { intentVersion: "3", admission: "open" } });
+    expect(f.store.readState()).toMatchObject({ admission: "closed", desired: "disabled", intentVersion: "4", phase: "disabled", activation: null, localEpoch: "2", localVeto: true });
+    expect(f.cloud().observation).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
+    expect(owner.rebuild).not.toHaveBeenCalled();
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    await f.manager.waitForAdmission();
+    expect(f.store.readState()).toMatchObject({ admission: "open", intentVersion: "5", localVeto: false });
+    expect(owner.rebuild).toHaveBeenCalledOnce();
+  }, 5000);
+
+  it("retains a committed activation while its final authority read is unavailable", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const failure = unknown();
+    f.onActivation(request => { if (request.operationId === id(22)) vi.mocked(f.api.read).mockRejectedValueOnce(failure); });
+    await expect(f.manager.resume(id(22))).rejects.toBe(failure);
+    expect(f.store.readState()).toMatchObject({ admission: "closed", phase: "resuming", activation: { operationId: id(22) } });
+    expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed" });
+    await f.manager.reconcile();
+    expect(f.store.readState().admission).toBe("open");
+    expect(owner.rebuild).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+  });
+
   it("retries a remote resume lookup after observing its version without inventing a local request", async () => {
     const f = fixture(); await start(f); await disable(f);
     await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });

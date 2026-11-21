@@ -51,7 +51,11 @@ activation before opening local admission. Original requests are queried or
 resolved under their original identity; activation has its own child phase.
 The current management instance retains the resume continuation independently of
 its observed intent version. A lost intent response or a failed stop/report does
-not erase the next activation step. Local intents retain their frozen request;
+not erase the next activation step. A confirmed activation followed by a newer
+disabled intent for the same management instance retains its original receipt
+but retires its continuation. Management then stops and reports the newer intent
+so that another explicit resume can proceed; an unavailable authority read is
+not evidence of supersession. Local intents retain their frozen request;
 only an operation first observed remotely gets a requestless ledger entry.
 Continuations bind the original local epoch and management instance, so a later
 veto invalidates them. They are not reconstructed after process restart: an
