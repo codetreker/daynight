@@ -16,6 +16,7 @@ export type WorkerConfigurationValue = {
   readonly agentControlMode?: WorkerControlMode | null;
   readonly archiveSessions?: boolean;
   readonly enableSudoCleanup?: boolean;
+  readonly enableWindowsProcessCleanup?: boolean;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly taskTagFilter?: WorkerTaskTagFilter;
   readonly native: WorkerConfigurationNative;
@@ -28,7 +29,7 @@ export type WorkerConfigurationFailure = {
   readonly phase: 'validate' | 'prepare' | 'apply' | 'stop' | 'persist'; readonly occurredAt: string;
 };
 export type WorkerConfigurationKey =
-  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'archiveSessions' | 'enableSudoCleanup' | 'native' | 'taskTagFilter' }
+  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'archiveSessions' | 'enableSudoCleanup' | 'enableWindowsProcessCleanup' | 'native' | 'taskTagFilter' }
   | { readonly kind: 'projectPreparation' | 'projectRemoval' | 'projectNative'; readonly projectId: string };
 export type WorkerConfigurationOutcome = {
   readonly key: WorkerConfigurationKey; readonly targetRevision: string;
@@ -105,6 +106,7 @@ export const parseWorkerConfigurationValue = (value: unknown, options: WorkerCon
     ...(archiveSessionsSupported ? { archiveSessions: boolean(data.archiveSessions) } : {}),
     ...(Object.hasOwn(data, 'taskTagFilter') ? { taskTagFilter: parseWorkerTaskTagFilter(data.taskTagFilter) } : {}),
     ...(Object.hasOwn(data, 'enableSudoCleanup') ? { enableSudoCleanup: boolean(data.enableSudoCleanup) } : {}),
+    ...(Object.hasOwn(data, 'enableWindowsProcessCleanup') ? { enableWindowsProcessCleanup: boolean(data.enableWindowsProcessCleanup) } : {}),
     ...(controlModeSupported ? { agentControlMode: data.agentControlMode === null ? null : choice(data.agentControlMode, ['herdr', 'web'] as const) } : {}),
     native: parseConfigurationNative(data.native), projects };
 };
@@ -122,14 +124,14 @@ const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsS
   if (!projectKind && Object.hasOwn(rawKey, 'projectId')) return malformed();
   const key: WorkerConfigurationKey = projectKind
     ? { kind: choice(rawKey.kind, ['projectPreparation', 'projectRemoval', 'projectNative']), projectId: id(rawKey.projectId) }
-    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'enableSudoCleanup', 'native', 'taskTagFilter', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
+    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'enableSudoCleanup', 'enableWindowsProcessCleanup', 'native', 'taskTagFilter', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
   let appliedValue: WorkerConfigurationOutcome['appliedValue'] = null;
   if (data.appliedValue !== null) {
     switch (key.kind) {
       case 'maxConcurrent': appliedValue = integer(data.appliedValue, 1); break;
       case 'pollIntervalMs': appliedValue = integer(data.appliedValue, 1, 2_147_483_647); break;
       case 'recoveryLimit': appliedValue = integer(data.appliedValue, 0); break;
-      case 'preferPlatformSpecificTasks': case 'archiveSessions': case 'enableSudoCleanup': appliedValue = boolean(data.appliedValue); break;
+      case 'preferPlatformSpecificTasks': case 'archiveSessions': case 'enableSudoCleanup': case 'enableWindowsProcessCleanup': appliedValue = boolean(data.appliedValue); break;
       case 'taskTagFilter': if (typeof data.appliedValue !== 'string' || !/^[0-9a-f]{64}$/.test(data.appliedValue)) return malformed(); appliedValue = data.appliedValue; break;
       case 'agentControlMode': appliedValue = choice(data.appliedValue, ['herdr', 'web'] as const); break;
       case 'native': case 'projectNative': appliedValue = parseConfigurationNative(data.appliedValue); break;
@@ -161,7 +163,7 @@ export const parseWorkerConfiguration = (value: unknown, options?: WorkerConfigu
   }
   if (data.observation !== null) {
     const raw = fields(data.observation, ['baseRevision', 'desiredRevision', 'items', 'reportedAt'], false, true);
-    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'projectPreparation', 'projectRemoval', 'projectNative', 'taskTagFilter'];
+    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'enableWindowsProcessCleanup', 'projectPreparation', 'projectRemoval', 'projectNative', 'taskTagFilter'];
     const desiredRevision = parseConfigurationRevision(raw.desiredRevision);
     const items = array(raw.items, item => {
       const entry = record(item), key = record(entry.key);

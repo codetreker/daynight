@@ -33,6 +33,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   controlModeAwaitingAdoption: '等待 Worker 同步托管模式。', controlModeUnsupported: '升级服务后可配置托管模式。',
   preferPlatformSpecificTasks: '优先领取平台特定任务', preferPlatformTasks: ({ platform }) => `优先领取 ${platform} 的任务`, platformPreferenceDetail: '优先从所有已选项目中领取指定此 Worker 平台的任务，再领取不限平台任务。', enabled: '开启', disabled: '关闭',
   enableSudoCleanup: '启用 sudo 清理', enableSudoCleanupDetail: '默认关闭。在 Linux 和 macOS 上，自动清理因权限不足失败后，Worker 会自动探测并尝试当次免密提权清理，无需人工执行命令或逐次确认。设置生效后将在下次清理时使用。', sudoCleanupUnsupportedService: '服务尚未提供此配置。', sudoCleanupUnsupportedPlatform: 'Windows 不支持 sudo 清理。', sudoCleanupUnknownPlatform: '等待识别 Worker 平台。',
+  enableWindowsProcessCleanup: '启用 Windows 进程清理', enableWindowsProcessCleanupDetail: '默认关闭。在 Windows 上，工作目录位于任务 worktree 内的运行中进程会一直占住该目录，自动清理无法删除。开启后，Worker 会终止这些进程，以及 Windows 归属为其子进程的那些进程，然后重试删除。被终止的子进程可能包含并非由 Worker 启动的进程。设置生效后将在下次清理时使用。', windowsProcessCleanupUnsupportedService: '服务尚未提供 Windows 进程清理配置。', windowsProcessCleanupUnsupportedPlatform: 'Windows 进程清理仅适用于 Windows Worker。', windowsProcessCleanupUnknownPlatform: '等待识别 Worker 平台后再决定是否提供 Windows 进程清理。',
   archiveSessions: '归档 Session', archiveSessionsDetail: '默认开启。Worker 清理已结束的 Session 时读取当前已生效的设置。关闭后跳过归档并释放录制，包括历史录制。运行中的 Session 仍可查看、控制和记录。已删除的录制不能补传，云端已有归档保持不变。',
   archiveSessionsUnsupportedService: '请升级服务以配置 Session 归档。', archiveSessionsUnsupportedWorker: '此 Worker 尚未报告支持 Session 归档。请升级 Worker 或等待支持报告。',
   defaultModel: '使用 Agent 默认模型', customModel: '指定模型', inherit: '继承适用设置', inheritGlobal: '继承全局', customArgs: '自定义参数', clearArgs: '没有附加参数',
@@ -49,7 +50,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   affectedProjects: '将移除的项目', affectedTasks: '上次观测中的任务', noObservedTasks: '上次观测中没有相关任务。',
   localSettings: '本机设置', localSettingsDetail: '以下设置保留在 Worker 本机。', localSettingsItems: ['仓库根目录与本机路径', 'Worker 身份、服务连接与凭据'],
   state: { pending: '等待生效', applying: '应用中', applied: '已生效', error: '失败', unsaved: '未保存' },
-  kind: { taskTagFilter: '任务标签筛选',  enableSudoCleanup: '启用 sudo 清理', archiveSessions: '归档 Session', agentControlMode: '托管模式', preferPlatformSpecificTasks: '优先领取平台特定任务', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔', recoveryLimit: '自动恢复次数上限', native: '默认 Agent', projectNative: '项目 Agent', projectPreparation: '仓库准备', projectRemoval: '停止项目执行' },
+  kind: { taskTagFilter: '任务标签筛选',  enableSudoCleanup: '启用 sudo 清理', enableWindowsProcessCleanup: '启用 Windows 进程清理', archiveSessions: '归档 Session', agentControlMode: '托管模式', preferPlatformSpecificTasks: '优先领取平台特定任务', maxConcurrent: '并发任务上限', pollIntervalMs: '任务轮询间隔', recoveryLimit: '自动恢复次数上限', native: '默认 Agent', projectNative: '项目 Agent', projectPreparation: '仓库准备', projectRemoval: '停止项目执行' },
   codes: { not_found: '资源不存在', permission_denied: '权限不足', timeout: '操作超时', command_failed: '命令执行失败', invalid_output: '命令输出无效', invalid_configuration: '配置无效', io_error: '存储或 I/O 错误', unavailable: '资源暂不可用' },
   phases: { validate: '校验', prepare: '准备', apply: '应用', stop: '停止', persist: '持久化' },
 };

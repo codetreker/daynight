@@ -117,7 +117,7 @@ export const unsupportedConfigurationFields = (source: string): readonly string[
 
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
-  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup'] as const) setKnown(root, key, known[key]);
+  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'enableWindowsProcessCleanup'] as const) setKnown(root, key, known[key]);
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
   if (known.taskTagFilter !== undefined) {
     const source = root.get('taskTagFilter');

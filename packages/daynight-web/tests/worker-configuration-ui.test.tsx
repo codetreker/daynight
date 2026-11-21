@@ -190,6 +190,69 @@ describe('Worker configuration form', () => {
     change('Concurrent task limit', '3'); save(); await flush();
     expect(JSON.parse(body).value).not.toHaveProperty('enableSudoCleanup');
   });
+  it('saves Windows process cleanup on a Windows Worker and discards an edit on request', async () => {
+    const value = { ...configurationValue(), enableWindowsProcessCleanup: false, future: { number: 'unchanged' } };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount({ platform: 'windows', online: false }); await flush();
+    const toggle = screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' });
+    expect(toggle).not.toBeChecked(); expect(toggle).toBeEnabled();
+    expect(document.getElementById('feedback-enableWindowsProcessCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); save(); await flush();
+    expect(JSON.parse(writes[0]!).value).toMatchObject({ enableWindowsProcessCleanup: true, future: { number: 'unchanged' } });
+    fireEvent.click(toggle); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(toggle).toBeChecked();
+  });
+  it.each([
+    ['linux', 'Windows process cleanup applies only to Windows Workers.'],
+    ['macos', 'Windows process cleanup applies only to Windows Workers.'],
+    [undefined, 'Waiting to identify the Worker platform before offering Windows process cleanup.'],
+  ] as const)('disables Windows process cleanup on %s while other settings remain editable', async (platform, message) => {
+    install(() => configurationResponse(configurationResource('1', { ...configurationValue(), enableWindowsProcessCleanup: false })));
+    mount(platform === undefined ? {} : { platform }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    change('Concurrent task limit', '3'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('preserves a Windows process cleanup draft when the platform becomes unavailable and saves only other edits', async () => {
+    let resource = configurationResource('1', { ...configurationValue(), enableWindowsProcessCleanup: false });
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value); resource = configurationResource('2', body.value);
+      }
+      return configurationResponse(resource);
+    });
+    const view = mount({ platform: 'windows' }); await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' }));
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="linux" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    change('Concurrent task limit', '3'); save(); await flush();
+    // The edit made on Windows is not carried into a save made elsewhere.
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, enableWindowsProcessCleanup: false });
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="windows" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('does not add the absent Windows process cleanup field when saving other settings', async () => {
+    let body = '';
+    install((_url, init) => { if (init.method === 'PUT') body = String(init.body); return configurationResponse(configurationResource(init.method === 'PUT' ? '2' : '1', { ...configurationValue(), maxConcurrent: init.method === 'PUT' ? 3 : 2 })); });
+    mount({ platform: 'windows' }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable Windows process cleanup' })).toBeDisabled();
+    expect(screen.getByText('The service does not yet provide Windows process cleanup.')).toBeInTheDocument();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(JSON.parse(body).value).not.toHaveProperty('enableWindowsProcessCleanup');
+  });
   it('edits the archive target and reports the observed value independently', async () => {
     const value = { ...configurationValue(), archiveSessions: true };
     let resource = observed('1', value, [...globals(value), item({ kind: 'archiveSessions' }, true)]);
