@@ -1,3 +1,5 @@
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -307,7 +309,7 @@ it("publishes the first generation and its Controller proof in one visible commi
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
     if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
-      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(15); }
+      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
       finally { observer.close(); }
       observedInitialCommit = true;
     }

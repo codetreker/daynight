@@ -183,7 +183,7 @@ test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s
   if (variant === "missing-manifest") await rm(manifest);
   if (variant === "unindexed") await writeFile(orphan, orphanBody);
   const db = openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} }); connections.push(db);
-  expect(db.pragma("user_version", { simple: true })).toBe(15);
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
   expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
   expect(db.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: f.operation });
   const rows = db.prepare("SELECT id,CAST(revision AS TEXT) AS revision,CAST(entry_seq AS TEXT) AS entry_seq,value,content_hash,byte_length FROM timeline_entries").all();

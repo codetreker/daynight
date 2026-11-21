@@ -48,6 +48,7 @@ const fixture = async (wrongAppCertificate = false) => {
   if (wrongAppCertificate) expect(new X509Certificate(actualCert.cert).verify(new X509Certificate(appCert.cert).publicKey)).toBe(false);
   let authOrigin = "", appOrigin = "", previewOrigin = "", loginRequests = 0, tokenRequests = 0;
   const sso: string[] = [];
+  const credentials: { path: string; method: string; origin: string | undefined; body: unknown }[] = [];
   const auth = createHttpServer((request, response) => {
     const route = request.url?.split("?")[0];
     const json = (status: number, value: unknown) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
@@ -100,11 +101,19 @@ const fixture = async (wrongAppCertificate = false) => {
       sso.push("complete"); response.writeHead(303, { location: `${appOrigin}/auth/complete?returnPath=%2Fprojects` }); response.end();
     } else if (route === "/auth/complete") response.end("ok");
     else if (route === "/service") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ authorization: request.headers.authorization })); }
-    else if (route === "/api/v1/me/tokens" || route === "/api/v1/me") {
+    else if (route === "/api/v1/me/tokens") { response.writeHead(400); response.end(); }
+    else if (route === "/api/v2/me/tokens" || route === "/api/v1/me" || route === "/api/v1/me/credential-scope-catalog") {
       tokenRequests++;
       if (!request.headers.cookie?.includes("__Host-daynight_session=fixture")) { response.writeHead(403); response.end(); return; }
-      response.writeHead(route.endsWith("tokens") ? 201 : 200, { "content-type": "application/json" });
-      response.end(JSON.stringify(route.endsWith("tokens") ? { token: "synthetic-token", id: "synthetic-token-id" } : { id: "synthetic-user" }));
+      let body = "";
+      request.on("data", chunk => { body += String(chunk); });
+      request.on("end", () => {
+        credentials.push({ path: route, method: request.method!, origin: request.headers.origin, body: body ? JSON.parse(body) : null });
+        response.writeHead(route.endsWith("tokens") ? 201 : 200, { "content-type": "application/json" });
+        response.end(JSON.stringify(route.endsWith("tokens") ? { token: "synthetic-token", id: "synthetic-token-id", scopePolicy: { scopes: ["session:read", "session:produce"], scopeVersion: "1" } }
+          : route.endsWith("credential-scope-catalog") ? { pat: { catalogRevision: "synthetic-catalog", groups: [{ id: "session", scopeIds: ["session:read", "session:produce", "session:control"] }], defaultScopes: ["session:read", "session:produce", "session:control"] } }
+          : { id: "synthetic-user" }));
+      });
     } else { response.writeHead(404); response.end(); }
   });
   const ws = new WebSocketServer({ server: app });
@@ -112,13 +121,21 @@ const fixture = async (wrongAppCertificate = false) => {
   appOrigin = `https://app.daynight.localhost:${await listen(app)}`;
   previewOrigin = appOrigin.replace("app.daynight.localhost", "preview.daynight.localhost");
   const environment = { baseURL: appOrigin, authURL: authOrigin, proxyURL: `http://127.0.0.1:${proxyPort}`, resourceIdentity: { network: "fixture", ingressNetwork: "fixture", applicationContainer: "fixture", postgresContainer: "fixture" }, startServer: async (credentials: { appId: string; appSecret: string }) => { expect(credentials).toEqual({ appId: "synthetic-app", appSecret: "synthetic-secret" }); }, close: async () => {} };
-  return { directory, environment, sso, counts: () => ({ loginRequests, tokenRequests }) };
+  return { directory, environment, sso, credentials, counts: () => ({ loginRequests, tokenRequests }) };
 };
 
 test("isolated OAuth follows both trusted TLS hosts and preserves secure cookies", async () => {
   const f = await fixture();
   expect(await authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).toEqual({ token: "synthetic-token", tokenId: "synthetic-token-id", userId: "synthetic-user" });
-  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 2 });
+  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 3 });
+  expect(f.credentials.map(({ path, method }) => ({ path, method }))).toEqual([
+    { path: "/api/v1/me", method: "GET" },
+    { path: "/api/v1/me/credential-scope-catalog", method: "GET" },
+    { path: "/api/v2/me/tokens", method: "POST" },
+  ]);
+  expect(f.credentials[2]).toMatchObject({ origin: f.environment.baseURL, body: {
+    name: "External image source regression", expiresAt: expect.any(String), expectedUserId: "synthetic-user", catalogRevision: "synthetic-catalog", scopes: ["session:produce", "session:read"],
+  } });
   expect(f.sso).toEqual(["start", "authorize", "callback", "complete"]);
 }, 30_000);
 
