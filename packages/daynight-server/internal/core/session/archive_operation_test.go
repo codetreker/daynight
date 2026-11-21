@@ -787,6 +787,9 @@ func TestConfiguredArchiveCapacity(t *testing.T) {
 		if !errors.As(err, &capacity) || capacity.Stage != stage {
 			t.Fatalf("capacity stage = %v, want %s", err, stage)
 		}
+		if got := capacity.Error(); got != "Session archive capacity is unavailable." {
+			t.Fatalf("capacity error = %q", got)
+		}
 	}
 	begin := func(owner string) (*ArchiveOperation, error) {
 		return s.BeginArchive(t.Context(), model.Principal{UserID: owner}, "", "", uuid.NewString(), ArchiveV1Read)
@@ -841,5 +844,22 @@ func TestConfiguredArchiveCapacity(t *testing.T) {
 		if err := r.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestNewEngineRejectsInvalidArchiveLimits(t *testing.T) {
+	for _, limits := range [][]ArchiveLimits{
+		{{MaxConcurrent: 0, MaxConcurrentPerOwner: 5}},
+		{{MaxConcurrent: 20, MaxConcurrentPerOwner: 0}},
+		{{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}, {MaxConcurrent: 2, MaxConcurrentPerOwner: 2}},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("invalid limits did not panic: %+v", limits)
+				}
+			}()
+			NewEngine(nil, limits...)
+		}()
 	}
 }
