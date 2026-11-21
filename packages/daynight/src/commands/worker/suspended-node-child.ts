@@ -65,37 +65,44 @@ export const createSuspendedNodeChild = async (options: {
     socket = connection;
     connection.setEncoding("utf8");
     let pending = "", backpressured = false;
+    const rejectFrame = (message: string) => {
+      pending = ""; framesPending = backpressured;
+      connection.destroy(); child.emit("error", new Error(message));
+    };
     const parse = () => {
-      backpressured = false;
+      if (backpressured) return;
       let end: number;
       while ((end = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, end); pending = pending.slice(end + 1);
         let message: unknown;
-        try { message = JSON.parse(line); } catch { connection.destroy(); return; }
+        try { message = JSON.parse(line); } catch { rejectFrame("Windows guardian sent an invalid JSON frame."); return; }
         if (!authenticated) {
-          if (typeof message !== "object" || message === null || !("secret" in message) || message.secret !== secret) { connection.destroy(); return; }
+          if (typeof message !== "object" || message === null || !("secret" in message) || message.secret !== secret) { rejectFrame("Windows guardian channel authentication failed."); return; }
           authenticated = true; server.close();
         } else if (typeof message === "object" && message !== null && "kind" in message && message.kind === "launcher-output") {
           const output = message as { stream?: unknown; data?: unknown };
-          if ((output.stream !== "stdout" && output.stream !== "stderr") || typeof output.data !== "string") { connection.destroy(); return; }
+          if ((output.stream !== "stdout" && output.stream !== "stderr") || typeof output.data !== "string") { rejectFrame("Windows guardian sent an invalid output frame."); return; }
           const stream = output.stream === "stdout" ? stdout : stderr;
           if (!stream.write(Buffer.from(output.data, "base64"))) {
-            framesPending = pending.length > 0;
+            framesPending = true;
             backpressured = true; connection.pause();
-            stream.once("drain", () => { parse(); if (!backpressured) connection.resume(); finish(); });
+            stream.once("drain", () => { backpressured = false; parse(); if (!backpressured) connection.resume(); finish(); });
             return;
           }
         } else child.emit("message", message);
       }
       framesPending = pending.length > 0;
+      // EOF cannot supply the missing bytes. Complete frames and their writers
+      // drain first; only the unusable tail is discarded, with capture failure.
+      if (channelClosed && framesPending) rejectFrame("Windows guardian channel ended with an incomplete frame.");
     };
     connection.on("data", chunk => {
       pending += String(chunk); framesPending = pending.length > 0;
-      if (Buffer.byteLength(pending) > 1_048_576) { connection.destroy(); child.emit("error", new Error("Windows guardian frame exceeded its limit.")); return; }
+      if (Buffer.byteLength(pending) > 1_048_576) { rejectFrame("Windows guardian frame exceeded its limit."); return; }
       parse();
     });
     connection.on("error", error => child.emit("error", error));
-    connection.on("close", () => { channelClosed = true; child.emit("disconnect"); finish(); });
+    connection.on("close", () => { channelClosed = true; child.emit("disconnect"); parse(); finish(); });
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(endpoint, () => { server.off("error", reject); resolve(); }); });
   let native: Awaited<ReturnType<typeof createSuspendedProcess>>;

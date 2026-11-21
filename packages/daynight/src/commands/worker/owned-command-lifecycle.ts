@@ -176,6 +176,15 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
   let closed = false, dispatchClosed = false, birthClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
+  const captureFailures: unknown[] = [];
+  let pendingCleanupError: OwnedCommandCleanupError | undefined;
+  const captureFailure = (error: unknown): void => {
+    if (!captureFailures.includes(error)) captureFailures.push(error);
+    failure ??= error;
+    // A late channel or writer failure still belongs to the original result,
+    // even when its owner has already started reconciling timed-out cleanup.
+    if (pendingCleanupError !== undefined && !pendingCleanupError.errors.includes(error)) pendingCleanupError.errors.push(error);
+  };
   const birth = Promise.withResolvers<void>();
   void birth.promise.catch(() => {});
   let cleanupBoundaryDeadline: number | undefined;
@@ -200,12 +209,12 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   const outputJobs = new Set<Promise<void>>();
   const outputStreams: Promise<void>[] = [];
   const consume = (stream: NonNullable<typeof child.stdout>, target: Buffer[], callback?: (chunk: Buffer) => Promise<void>) => {
-    outputStreams.push(finished(stream, { readable: true, writable: false, cleanup: true }).catch(error => { failure ??= error; }));
+    outputStreams.push(finished(stream, { readable: true, writable: false, cleanup: true }).catch(captureFailure));
     stream.on("data", (chunk: Buffer) => {
       accept(target, chunk);
       if (callback === undefined || failure !== undefined) return;
       stream.pause();
-      const work = Promise.resolve().then(() => callback(chunk)).catch(error => { failure ??= error; }).finally(() => { outputJobs.delete(work); stream.resume(); });
+      const work = Promise.resolve().then(() => callback(chunk)).catch(captureFailure).finally(() => { outputJobs.delete(work); stream.resume(); });
       outputJobs.add(work);
     });
   };
@@ -215,8 +224,8 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   remember();
   let spawned = false, failedSpawn = false;
   child.once("spawn", () => { spawned = true; });
-  child.once("error", error => {
-    failure ??= error;
+  child.on("error", error => {
+    captureFailure(error);
     if (process.platform !== "win32" && !spawned && child.pid === undefined) failedSpawn = true;
   });
   child.once("close", () => {
@@ -331,7 +340,11 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     if (lease !== undefined) releaseControllerJobLease(lease);
     stopped = true;
     closeRetained(resourceId);
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) {
+      const failures = [...new Set([failure, ...captureFailures])];
+      if (failures.length > 1) throw new AggregateError(failures, "Owned command failed while capturing its output.");
+      throw failure;
+    }
     if (result === undefined) throw new Error("Owned launcher ended without a command result.");
     const stderr = Buffer.concat(chunks.stderr).toString("utf8");
     if ((result.code !== 0 && !(result.code !== null && options.allowAnyExitCode) && !(result.code === 1 && options.allowExitOne)) || result.signal !== null) throw new OwnedCommandError(`Owned prerequisite command failed: exit=${String(result.code)}, signal=${String(result.signal)}.`, result.code, result.signal as NodeJS.Signals | null, stderr);
@@ -340,9 +353,10 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   } catch (error) {
     // A stopped event remains final even when the command itself failed.
     if (!stopped) {
-      const failures = [error];
+      const failures = [...new Set([error, ...(failure === undefined ? [] : [failure]), ...captureFailures])];
       try { await event("unknown"); } catch (cause) { failures.push(cause); }
-      const cleanup = new OwnedCommandCleanupError(failures, error);
+      const cleanup = new OwnedCommandCleanupError([...new Set([...failures, ...captureFailures])], error);
+      pendingCleanupError = cleanup;
       registerOwnedCommandCleanupConfirmation(cleanup, () => !retained.has(resourceId));
       throw cleanup;
     }

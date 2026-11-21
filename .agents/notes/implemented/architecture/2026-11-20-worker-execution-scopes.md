@@ -78,6 +78,13 @@ grace period. A command result or closed output pipe cannot prove that a descend
 which closed its inherited streams has exited. Loss of parent IPC makes the verified group leader
 close its own group instead of abandoning its descendants.
 
+The Windows guardian drains complete output frames and backpressured writers
+before treating an incomplete EOF tail as a capture failure. Missing bytes cannot
+keep output joins pending forever. Native exit and handle release still require
+their original evidence. Cancellation does not suppress later channel or writer
+errors; errors arriving after a cleanup timeout remain in that original result,
+even when resource closure is subsequently confirmed.
+
 Controller bootstrap also waits for its original launch record and birth proof.
 A POSIX Controller can outlive its original Host and be reparented. If its command
 identity becomes uncertain while birth and group still match, shutdown only

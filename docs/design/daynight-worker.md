@@ -50,6 +50,8 @@ reporter 的 `stop()` 已结束只证明其上报循环已 join，不替代它�
 
 `owned-command-lifecycle.ts` 为 Worker 内的短命命令和 `repository/git-owned.ts` 提供共同的受控 launcher。命令先等待 `prepared` 持久事件。POSIX launcher 在独立 PGID 中等待私有 IPC；Windows 父进程用 `CREATE_SUSPENDED` 创建子进程，分配原 Job、取得出生证明并保存 `bound` 后才恢复主线程。launcher 随后通过私有通道报告身份，父进程独立核验，在同一次同步检查中复核取消后才放行用户命令。受信 launcher 不继承命令的 Node 启动 hooks。流式输入、输出与消费 writer 全部结束后才能确认资源闭合。父连接丢失、取消、证明不匹配或保存失败均不能放行。POSIX 在已启动但尚未完成出生握手时收到取消，先关闭业务派发，再用独立清理期限等待原私有 IPC 凭据和独立出生核验；保存原 bound 后停止整组，不能先杀直接子进程而丢失证明。原证明仍缺失或不匹配时继续保留 unknown，未完成的握手与写入也继续由原生产者持有。Windows 父进程持有原 Job lease，停止使用整 Job 成员证明；POSIX 检查原进程出生身份及整组为空。
 
+Windows guardian 通道在 EOF 后先排空完整帧和背压中的实际 writer，再将残缺尾帧作为明确的 capture 错误保留。无后续字节可到达的残帧不得永久占据输出 join；原生退出、输出排空和原句柄释放仍须分别确认。取消先发生时，后到的通道或 writer 错误与取消一并保留；初次清理超时后的错误继续附在原清理结果上，确认资源闭合不抹去输出失败。
+
 POSIX launcher 在子命令结果返回后仍作为原 PGID 的存活身份保留，收到 `SIGTERM` 不先退出。父进程取得结果即可进入停止流程：组内只剩 launcher 时立即结束温和等待，否则等待后代退出后再升级 `SIGKILL`；每次发送组信号前仍核验原进程出生身份。这样既能处理拒绝 `SIGTERM` 的命令，也能处理主命令已退出且不再持有输出流的后代，而普通命令不承担固定两秒等待。已核对自身 PGID 的 launcher 在父 IPC 断开时清理自己的整组，不能只退出并留下无法归属的后代。
 
 Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待出生证明保存；Windows 的 Job 和进程句柄在恢复主线程前显式移交给原执行 owner。父进程只在保存成功后放行 Controller 主程序。出生保存前的清理若失败，原 backend 保留同一进程句柄和清理闭包，后续 shutdown/close 只核对原边界；没有出生证明仍保持 unknown，不能推断未启动。记录 PID 的退出不足以释放 Web 执行容量。
