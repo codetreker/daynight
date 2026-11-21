@@ -2496,18 +2496,26 @@ path. The original Git registration is removed by ordinary Git and both resource
 are observed absent before settlement. Sudo failure retains the original error
 and cleanup responsibility; the Worker does not ask for a password.
 
+When the service provides `enableWindowsProcessCleanup`, the Worker validates
+and applies the boolean the same way. It is an independent target rather than a
+platform branch of `enableSudoCleanup`: the two authorize different things, and
+an operator who accepts privileged deletion of files the Worker owns has not
+thereby accepted termination of processes it does not own. Nothing consumes the
+value yet; recognizing it keeps the member out of the unknown-target path, so a
+Worker reports its application instead of preserving it as opaque authority.
+
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged
 failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Deployed schemas 1–10 are strictly decoded under their frozen historical
-structures and converted to schema 11. Old targets become `desiredJson` and their
+Deployed schemas 1–11 are strictly decoded under their frozen historical
+structures and converted to schema 12. Old targets become `desiredJson` and their
 revision becomes `applicationRevision`; older formats without a remote observation
 retain null. Schema 9 retains its original Web ledger without mode application
-items; current two-tool targets use schema 11 without redefining schema 9's
-interpretation. Schema 10 historical mode facts remain readable after conversion to schema 11.
+items; current two-tool targets use schema 12 without redefining schema 9's
+interpretation. Schema 10 historical mode facts remain readable after conversion to schema 12.
 
 For schemas 1–8, conversion removes mode items and `nativeMode`. It retains a
 native value and its source only when the historical mode proves Web, and still
@@ -2517,7 +2525,11 @@ and sources. Original record IDs, origins, source JSON, remote observations,
 hidden sources, sudo provenance, failure numbers, started removals and blockers
 remain; migration changes the generation and resets the report cursor. Previously
 unknown `enableSudoCleanup` or `archiveSessions` is reconciled as a target without
-manufacturing success. Old mode or third-tool targets retain their original raw
+manufacturing success. Schemas 11 and 12 share one storage envelope and only 12
+recognizes `enableWindowsProcessCleanup`, so a schema 11 checkpoint reconciles
+that member the same way, an older envelope keeps it as opaque authority, and
+any envelope before 12 that already records an application result for it is
+rejected. Old mode or third-tool targets retain their original raw
 source and require explicit correction before application; migration does not
 convert them into current targets or create a mode application obligation.
 

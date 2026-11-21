@@ -226,7 +226,7 @@ describe("Worker cloud configuration application", () => {
       JSON.parse = originalParse;
       JSON.stringify = originalStringify;
     }
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(11);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(12);
   });
 
   it("migrates a structurally valid historical native value larger than the current item limit", async () => {
@@ -244,7 +244,7 @@ describe("Worker cloud configuration application", () => {
     const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
     expect(actual.args).toHaveLength(2050);
     expect(actual.args[2049]).toBe("x".repeat(4096));
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(11);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(12);
   });
 
   it("invalidates only native proofs that depend on a changed tool selection", async () => {
@@ -368,7 +368,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated).toMatchObject({ schemaVersion: 11, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
+    expect(migrated).toMatchObject({ schemaVersion: 12, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual(cache.desired);
     expect(migrated.currentItems.every(entry => !("nativeMode" in entry))).toBe(true);
     await reopened.receive(receivedDesired({ ...original, revision: "2" })); await reopened.settle();
@@ -444,7 +444,7 @@ describe("Worker cloud configuration application", () => {
       expect(invalid).not.toHaveBeenCalled();
       expect(reopened.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
       const saved = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
-      expect(saved).toMatchObject({ schemaVersion: 11, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
+      expect(saved).toMatchObject({ schemaVersion: 12, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
       await reopened.stop();
       const againApply = vi.fn(async () => {});
       const again = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: againApply });
@@ -526,7 +526,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated.schemaVersion).toBe(11);
+    expect(migrated.schemaVersion).toBe(12);
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.authority.observationRevision).toBe(saved.observationRevision);

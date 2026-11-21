@@ -24,6 +24,7 @@
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
 | enableSudoCleanup | 布尔值；默认 false，保存目标不代表 Worker 已应用或执行 sudo |
+| enableWindowsProcessCleanup | 布尔值；默认 false，保存目标不代表 Worker 已应用或终止过任何进程 |
 | taskTagFilter | Worker 级标签名称筛选，`{names: string[], match: "any" | "all"}`；空集合规范为 `any`，不限制新认领 |
 | toolPaths | 工具能力协商后为固定两键 codex/copilot，各项为未采纳 null、显式自动或显式路径 |
 | archiveSessions | 归档能力协商后为布尔值，默认 true；false 表示关闭 Session 归档 |
@@ -34,7 +35,7 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。toolPaths、enableSudoCleanup 与 archiveSessions 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。toolPaths、enableSudoCleanup、enableWindowsProcessCleanup 与 archiveSessions 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。
 
 ### 工具路径三态
 
