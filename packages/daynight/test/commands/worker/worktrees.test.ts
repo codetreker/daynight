@@ -1,8 +1,8 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync, realpathSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { cpSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -17,6 +17,13 @@ import { openExecutionResourceJournal } from "../../../src/commands/worker/execu
 import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import * as files from "../../../src/platform/files.js";
+
+// Only the selected removal is replaced; every other directory removal runs the
+// real implementation.
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir) };
+});
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -60,6 +67,9 @@ type RefFormat = "files" | "reftable";
 let seedRoot: string | undefined;
 const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
+const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+const busyError = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
 const pendingReservations = new Set<Promise<unknown>>();
@@ -186,6 +196,8 @@ afterAll(async () => {
 });
 afterEach(async () => {
   controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
+  vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
+  vi.mocked(readdir).mockImplementation(actualFs.readdir);
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -478,6 +490,76 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await mkdir(target); await writeFile(path.join(target, "foreign"), "keep\n");
     await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow("not empty");
     expect(await readFile(path.join(target, "foreign"), "utf8")).toBe("keep\n");
+  });
+
+  it("completes reservation cleanup once a transient holder releases it", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) === owned && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(entry, options);
+    });
+    await adapter.removeUnpublishedReservation(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a reservation replaced during the busy backoff instead of removing its replacement", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    // Prepared outside the reservation so it keeps its own inode; recreating the
+    // same name in place can reuse the inode just freed and leave identity equal.
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      await actualFs.rmdir(target);
+      await actualFs.rename(replacement, target);
+      throw busyError();
+    });
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it("rejects a reservation replaced during the registration scan of a busy retry", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    const owned = path.normalize(target);
+    let attempts = 0;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the retry's first identity check still passes and the
+      // swap lands inside its registration scan.
+      registrationBoundary.afterRead = () => {
+        if (swapped) return;
+        swapped = true;
+        rmdirSync(target);
+        renameSync(replacement, target);
+      };
+      throw busyError();
+    });
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/changed before cleanup/);
+    expect(swapped).toBe(true);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
   });
 
   it("rejects symlink parents when cleaning a reservation by task identity", async () => {
@@ -1166,6 +1248,72 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
+  it("completes cleanup when the task worktree root is transiently busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) === root && ++attempts < 3) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(attempts).toBe(3);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it("rejects a worktree root replaced during the metadata read of a busy retry", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    await writeFile(path.join(replacement, "keep"), "retained\n");
+    let attempts = 0;
+    let armed = false;
+    let swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Armed only now, so the swap lands inside the retry's metadata read
+      // rather than before its identity checks have run.
+      armed = true;
+      throw busyError();
+    });
+    vi.mocked(readdir).mockImplementation((async (entry: Parameters<typeof actualFs.readdir>[0], options: Parameters<typeof actualFs.readdir>[1]) => {
+      const result = await actualFs.readdir(entry, options);
+      if (armed && !swapped && path.normalize(String(entry)) === root) {
+        swapped = true;
+        rmdirSync(root);
+        renameSync(replacement, root);
+      }
+      return result;
+    }) as typeof actualFs.readdir);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("changed during cleanup");
+    expect(swapped).toBe(true);
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(root, "keep"), "utf8")).toBe("retained\n");
+  });
+
+  it("retains the task worktree root and its registration when it stays busy", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      attempts++;
+      throw busyError();
+    });
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(attempts).toBe(6);
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {
     const f = await repositoryFixture("files"); let enabled = true, calls = 0;
     const denied = Object.assign(new Error("denied"), { code: "EACCES" });
@@ -1721,6 +1869,52 @@ exec "$@"
         catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
       }
     }
+  });
+
+  it("retains a pointerless empty worktree that is locked during the busy backoff", async () => {
+    const f = await repositoryFixture("files"); const adapter = manager(f.root); const binding = await prepareCleanupFixture(f, adapter);
+    // Captured while the pointer still resolves, then emptied to reach the
+    // recovery branch for a registered worktree whose pointer is already gone.
+    const admin = administrativeDirectory(binding.worktreePath);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== root) return actualFs.rmdir(entry, options);
+      attempts++;
+      // Only the first attempt is busy, and the lock appears during its
+      // backoff: a retry that did not revalidate would remove the directory.
+      if (attempts > 1) return actualFs.rmdir(entry, options);
+      writeFileSync(path.join(admin, "locked"), "human");
+      throw busyError();
+    });
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect((await lstat(root)).isDirectory()).toBe(true);
+  });
+
+  it("retains worktree contents that are locked during the busy backoff of an entry removal", async () => {
+    const f = await repositoryFixture("files");
+    let attempts = 0;
+    let admin = "";
+    const adapter = manager(f.root, {
+      removeDirectory: async (target, options) => {
+        if (admin === "") return actualFs.rm(target, options);
+        attempts++;
+        // Only the first entry removal is busy, and the lock appears during
+        // its backoff: a retry admitted on local identity alone would delete
+        // the entry and go on clearing the worktree.
+        if (attempts > 1) return actualFs.rm(target, options);
+        writeFileSync(path.join(admin, "locked"), "human");
+        throw busyError();
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    admin = administrativeDirectory(binding.worktreePath);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
   });
 
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {

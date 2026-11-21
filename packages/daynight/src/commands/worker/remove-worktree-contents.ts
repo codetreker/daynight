@@ -3,9 +3,42 @@ import { constants } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
 import type { FileHandle, rm } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Operation } from "../../api/operation.js";
 
 const identity = (entry: BigIntStats): string => `${entry.dev}:${entry.ino}`;
+
+// Windows binds a directory handle to every process working directory and keeps
+// it open briefly after that process exits, so removal immediately after a
+// terminated agent observes EBUSY on an otherwise unowned directory. These
+// delays cover that release window; a directory held by a live process still
+// fails with its original error once they are exhausted.
+const busyRetryDelaysMs = [20, 40, 80, 160, 320];
+
+/**
+ * Each delay is a window in which another writer can replace the target, so
+ * `reprove` must re-establish the same ownership the caller verified before its
+ * first attempt and re-admit the mutation. Cancellation and deadline alone do
+ * not make a later attempt safe.
+ */
+export const retryWhileBusy = async <T>(operation: Operation, reprove: () => Promise<void>, action: () => Promise<T>): Promise<T> => {
+  for (let attempt = 0; ; attempt++) {
+    try { return await action(); }
+    catch (error) {
+      if (attempt >= busyRetryDelaysMs.length) throw error;
+      if (!(error instanceof Error && "code" in error && error.code === "EBUSY")) throw error;
+      operation.check();
+      await delay(busyRetryDelaysMs[attempt]!);
+      operation.check();
+      await reprove();
+      // `reprove` ends in asynchronous reads, so cancellation and the deadline
+      // can arrive while it awaits. Checking here, at the admission boundary
+      // every caller shares, keeps a retry from starting a mutation instead of
+      // relying on each verifier to end with a check of its own.
+      operation.check();
+    }
+  }
+};
 
 export class WorktreePermissionError extends Error {
   constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = "WorktreePermissionError"; }
@@ -96,7 +129,12 @@ export const removeWorktreeContents = async (
           await admitMutation();
           // Nonrecursive removal unlinks symlinks and hard links without
           // changing the target inode's permissions or following its contents.
-          await filesystem(() => removeEntry(child, { recursive: false }));
+          await filesystem(() => retryWhileBusy(operation, async () => {
+            await verifyDirectory(directory, entry, handle);
+            const retained = await lstat(child, { bigint: true });
+            if (retained.isDirectory() || identity(retained) !== identity(observed) || (retained.mode & 0o170000n) !== (observed.mode & 0o170000n)) throw new Error(`Worktree entry identity changed: ${child}`);
+            await admitMutation();
+          }, () => removeEntry(child, { recursive: false })));
           operation.check();
         }
         await verifyDirectory(directory, entry, handle);
@@ -104,7 +142,10 @@ export const removeWorktreeContents = async (
       await verifyDirectory(directory, entry, handle);
       if (!keepRoot) {
         await admitMutation();
-        await filesystem(() => rmdir(directory));
+        await filesystem(() => retryWhileBusy(operation, async () => {
+          await verifyDirectory(directory, entry, handle);
+          await admitMutation();
+        }, () => rmdir(directory)));
         operation.check();
       }
     } catch (error) {
