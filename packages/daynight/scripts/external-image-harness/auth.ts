@@ -78,11 +78,18 @@ export async function authenticate(options: {
   assert.equal(typeof app.app?.id, "string"); assert.equal(typeof app.secret, "string");
   await environment.startServer({ appId: app.app.id, appSecret: app.secret });
   await authorize(`${environment.baseURL}/api/v1/auth/login?provider=github&returnPath=%2Fprojects`);
-  const minted = await json(`${environment.baseURL}/api/v1/me/tokens`, 201, {
-    name: "External image source regression", expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-  });
   const principal = await json(`${environment.baseURL}/api/v1/me`, 200);
-  assert.equal(typeof minted.token, "string"); assert.equal(typeof minted.id, "string");
   assert.equal(typeof principal.id, "string");
+  const catalog = await json(`${environment.baseURL}/api/v1/me/credential-scope-catalog`, 200);
+  const scopes = ["session:read", "session:produce"];
+  assert.equal(typeof catalog.pat?.catalogRevision, "string");
+  assert(Array.isArray(catalog.pat?.groups));
+  const available = catalog.pat.groups.flatMap((group: { scopeIds: string[] }) => group.scopeIds);
+  assert(scopes.every(scope => available.includes(scope)), "The isolated service must offer Test Session read and producer scopes.");
+  const minted = await json(`${environment.baseURL}/api/v2/me/tokens`, 201, {
+    expectedUserId: principal.id, name: "External image source regression", expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    catalogRevision: catalog.pat.catalogRevision, scopes,
+  });
+  assert.equal(typeof minted.token, "string"); assert.equal(typeof minted.id, "string");
   return { token: minted.token, tokenId: minted.id, userId: principal.id };
 }
