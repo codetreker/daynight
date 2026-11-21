@@ -1461,7 +1461,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
       reportHolderTerminated: event => { reported.push(event); },
       stopHoldingProcesses: async (target, _operation, options) => {
-        const holder = { pid: 804, image: "node.exe", directory: target };
+        // A holder usually sits in a descendant rather than the target itself,
+        // so the directory it held and the directory it blocked are different
+        // facts and the report has to carry both.
+        const holder = { pid: 804, image: "node.exe", directory: path.join(target, "packages", "app") };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [804] };
       },
@@ -1474,7 +1477,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       return actualFs.rmdir(target, options);
     });
     await adapter.removeWorktree(f.project, f.owner, operation());
-    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: binding.worktreePath } }]);
+    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: path.join(binding.worktreePath, "packages", "app") } }]);
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 

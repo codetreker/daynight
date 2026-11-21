@@ -91,8 +91,12 @@ const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Par
 // carry the record of what it terminated, and the processes it ended may be
 // ones the Worker never started. This is the operator's trace for that case.
 const holderTerminatedReporter = (emit: (event: WorkerEvent) => void): NonNullable<Parameters<typeof createWorkerGitManager>[0]["reportHolderTerminated"]> => event => {
+  // The holder's working directory is often a descendant of the target rather
+  // than the target itself, and naming the target as what it held would be
+  // wrong. Both belong here: one is the process that was ended, the other is
+  // the directory that could not be removed because of it.
   emit({ kind: "worktree-holder-terminated", component: "git", phase: "worktree-remove",
-    message: `Terminated ${event.holder.image} (${event.holder.pid}) holding ${event.target} as its working directory, with the processes attributed to it as children (configuration revision ${event.revision}).` });
+    message: `Terminated ${event.holder.image} (${event.holder.pid}), whose working directory ${event.holder.directory} kept ${event.target} from being removed, together with the processes Windows attributes to it as children (configuration revision ${event.revision}).` });
 };
 
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {
