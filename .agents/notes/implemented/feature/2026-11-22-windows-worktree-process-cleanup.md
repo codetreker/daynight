@@ -88,6 +88,22 @@ asynchronous reads. A manifest removed or a registration retargeted during the
 backoff therefore refuses before any holder is inspected, and the original
 error is retained.
 
+The captured evidence is itself proven before anything relies on it. The
+inspection that produced the result resolved the registration before those
+reads, so an association retargeted in between would be captured as the
+baseline and then agree with itself on every later comparison. A fresh
+inspection must match the one already held, and the captured metadata must
+still read the same, before the capture is trusted.
+
+On the main path the admission is `verifyOwnedRoot` rather than
+`verifyOwnership`. The weaker one checks the directory identities before it
+awaits the pointer, metadata and lock reads. Once the busy holder exits, the
+now empty root can be replaced during those reads and a holder started inside
+the replacement; with the pointer already gone, an empty replacement satisfies
+every remaining check. Terminating that unrelated process tree cannot be undone
+by the identity failure that follows, so the recovery uses the verifier that
+rechecks the identities after the reads, as ordinary root removal already does.
+
 ## Alternatives
 
 **Use the Restart Manager to find the holders.** `RmStartSession`,

@@ -24,7 +24,7 @@ import { skipWithoutSymbolicLinks } from "../../helpers/symlink-support.js";
 // real implementation.
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir) };
+  return { ...actual, rmdir: vi.fn(actual.rmdir), readdir: vi.fn(actual.readdir), lstat: vi.fn(actual.lstat) };
 });
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
@@ -204,6 +204,7 @@ afterEach(async () => {
   controlledGit.command = ""; controlledGit.script = undefined; controlledGit.child = undefined; cleanupBoundary.afterSuccess = undefined; registrationBoundary.afterRead = undefined;
   vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
   vi.mocked(readdir).mockImplementation(actualFs.readdir);
+  vi.mocked(lstat).mockImplementation(actualFs.lstat);
   vi.unstubAllEnvs();
   operations.splice(0).forEach((entry) => entry.dispose());
   await Promise.allSettled([...pendingReservations]);
@@ -1296,6 +1297,43 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 
+  it.skipIf(process.platform !== "win32")("terminates no holder when the busy root is replaced during the metadata read", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async target => { stops++; return { observed: [{ pid: 914, image: "node.exe", directory: target }], terminated: [914] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    const replacement = path.join(f.root, "replacement");
+    await mkdir(replacement);
+    let attempts = 0, armed = false, swapped = false;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      // Armed only once the busy retries are exhausted, so the swap lands in
+      // the asynchronous reads of the admission that precedes termination,
+      // after its first identity check has already passed.
+      if (++attempts >= 6) armed = true;
+      throw busyError();
+    });
+    vi.mocked(readdir).mockImplementation((async (entry: Parameters<typeof actualFs.readdir>[0], options: Parameters<typeof actualFs.readdir>[1]) => {
+      const result = await actualFs.readdir(entry, options);
+      if (armed && !swapped && path.normalize(String(entry)) === root) {
+        swapped = true;
+        rmdirSync(root);
+        renameSync(replacement, root);
+      }
+      return result;
+    }) as typeof actualFs.readdir);
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(swapped).toBe(true);
+    expect(errorText(error)).toContain("changed during cleanup");
+    // The replacement is unrelated to this worktree, so nothing in it may be
+    // terminated even though it satisfies every check taken before the reads.
+    expect(stops).toBe(0);
+  });
+
   it.skipIf(process.platform !== "win32")("retains a busy worktree and its registration when the target is not applied", async () => {
     const f = await repositoryFixture("files");
     let stops = 0;
@@ -2003,6 +2041,40 @@ exec "$@"
     });
     const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
     expect(errorText(error)).toContain(kind === "manifest" ? "manifest changed" : "metadata gitdir changed");
+    expect(stops).toBe(0);
+    expect((await lstat(root)).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates no holder when the registration is retargeted while the evidence is captured", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async target => { stops++; return { observed: [{ pid: 913, image: "node.exe", directory: target }], terminated: [913] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = administrativeDirectory(binding.worktreePath);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let retargeted = false;
+    const pointer = path.normalize(path.join(root, ".git"));
+    vi.mocked(lstat).mockImplementation((async (target: Parameters<typeof actualFs.lstat>[0], options: Parameters<typeof actualFs.lstat>[1]) => {
+      // The branch tests the absent pointer directly after the inspection that
+      // resolved the registration, and the evidence is captured right after.
+      // Retargeting here is the window a baseline taken from disk would miss.
+      if (!retargeted && path.normalize(String(target)) === pointer) {
+        retargeted = true;
+        writeFileSync(path.join(admin, "gitdir"), "C:\\elsewhere\\.git\n");
+      }
+      return actualFs.lstat(target, options);
+    }) as typeof actualFs.lstat);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(retargeted).toBe(true);
+    expect(errorText(error)).toContain("while its ownership evidence was captured");
     expect(stops).toBe(0);
     expect((await lstat(root)).isDirectory()).toBe(true);
   });

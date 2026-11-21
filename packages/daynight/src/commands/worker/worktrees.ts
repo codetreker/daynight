@@ -637,6 +637,14 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   if (contents === null) throw new Error(`Worktree metadata ${path.join(emptyRegistration, name)} disappeared.`);
                   emptyAssociation.set(name, contents);
                 }
+                // The inspection that produced `result` resolved the registration
+                // before these reads, so a value retargeted in between would be
+                // captured as the baseline and then agree with itself forever.
+                // Prove the captured evidence against a fresh inspection of the
+                // same worktree before anything may rely on it.
+                const confirmedEmpty = await inspectWorktree(project, owner, repository, operation, true);
+                if (JSON.stringify(confirmedEmpty) !== JSON.stringify(result)) throw new Error("The empty worktree changed while its ownership evidence was captured.");
+                for (const [name, contents] of emptyAssociation) if (await ordinaryFile(path.join(emptyRegistration, name)) !== contents) throw new Error(`Worktree metadata ${name} changed while its ownership evidence was captured.`);
                 const reproveEmptyOwnership = async (): Promise<void> => {
                   await reproveEmpty();
                   const current = manifestFor(project, owner, repository);
@@ -781,10 +789,15 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                       // processes to act on, and again before the retry mutates
                       // anything: termination is asynchronous, and the directory
                       // this cleanup owns must still be the one it removes.
-                      await verifyOwnership();
+                      // The root must be proven through the verifier that rechecks
+                      // identities after its asynchronous reads. Once the busy holder
+                      // exits, an empty replacement would satisfy every remaining
+                      // check, and terminating its process tree cannot be undone by
+                      // the later identity failure.
+                      await verifyOwnedRoot();
                       await (optionsForProcessStop)(binding.worktreePath, operation);
                       operation.check();
-                      await verifyOwnership();
+                      await verifyOwnedRoot();
                       await removeOwnedWorktree();
                       operation.check();
                     } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
