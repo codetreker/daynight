@@ -9,21 +9,21 @@ import { transitionConfigurationDesired } from "./configuration-state.js";
 type CacheRead = { readonly cache: WorkerConfigurationCache; readonly migrated: boolean };
 
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 11, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
+  schemaVersion: 12, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {
   const decoded = decodeConfigurationCache(source, identity);
   const convertItems = (items: typeof decoded.cache.currentItems) => items.flatMap(item => {
-    if (decoded.cache.schemaVersion !== 10 && decoded.cache.schemaVersion !== 11 && item.value.key.kind === "agentControlMode") return [];
+    if (decoded.cache.schemaVersion !== 10 && decoded.cache.schemaVersion !== 12 && item.value.key.kind === "agentControlMode") return [];
     const { nativeMode, ...rest } = item as typeof item & { readonly nativeMode?: "herdr" | "web" | null };
-    if (decoded.cache.schemaVersion !== 9 && decoded.cache.schemaVersion !== 10 && decoded.cache.schemaVersion !== 11 && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
+    if (decoded.cache.schemaVersion !== 9 && decoded.cache.schemaVersion !== 10 && decoded.cache.schemaVersion !== 12 && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
       return [{ ...rest, value: { ...item.value, appliedValue: null, state: "pending" as const, error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, actualSource: null }];
     }
     return [rest];
   });
   let cache: WorkerConfigurationCache = {
-    ...decoded.cache, schemaVersion: 11,
+    ...decoded.cache, schemaVersion: 12,
     authority: decoded.migrated ? { ...decoded.cache.authority, generation: randomUUID() } : decoded.cache.authority,
     projectionCursor: decoded.migrated ? null : decoded.cache.projectionCursor,
     currentItems: convertItems(decoded.cache.currentItems), retainedItems: convertItems(decoded.cache.retainedItems),
@@ -38,7 +38,10 @@ export const parseConfigurationCache = (source: unknown, identity: WorkerConfigu
     const { received, previousDesired } = decoded.migration;
     cache = transitionConfigurationDesired(cache, received, new Set(), randomUUID, previousDesired, true);
   }
-  if (decoded.migrated && decoded.cache.schemaVersion !== 10 && !cache.authority.pendingApplication && applicableConfigurationDesired(configurationDesired(cache)) !== null
+  // Schema 12 reports itself for both the version it decodes and the one before
+  // it, so these obligations stay with the genuinely older envelopes that never
+  // understood the member in question.
+  if (decoded.migrated && decoded.cache.schemaVersion !== 10 && decoded.cache.schemaVersion !== 12 && !cache.authority.pendingApplication && applicableConfigurationDesired(configurationDesired(cache)) !== null
     && !cache.currentItems.some(item => item.value.key.kind === "agentControlMode")) {
     // Historical mode confirmations do not prove adoption by this Web-only process.
     // Preserve the old ledger and its target revision while adding a fresh obligation.
@@ -50,13 +53,26 @@ export const parseConfigurationCache = (source: unknown, identity: WorkerConfigu
     }] };
   }
   const desired = applicableConfigurationDesired(configurationDesired(cache));
-  if (decoded.migrated && !cache.authority.pendingApplication && desired?.value.taskTagFilter !== undefined) {
+  if (decoded.migrated && decoded.cache.schemaVersion !== 12 && !cache.authority.pendingApplication && desired?.value.taskTagFilter !== undefined) {
     // Older checkpoints retained this member as opaque authority. A fresh
     // obligation records that no application of its newly understood value occurred.
     const targetRevision = cache.authority.applicationRevision!;
     cache = { ...cache, currentItems: [...cache.currentItems, {
       recordId: randomUUID(), origin: { generation: cache.authority.generation, targetRevision, source: "application" },
       value: { key: { kind: "taskTagFilter" }, targetRevision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null },
+      backoffStep: 0, failureId: null, started: false, actualSource: null, blockedByRemovalId: null,
+    }] };
+  }
+  if (decoded.migrated && !cache.authority.pendingApplication && desired?.value.enableWindowsProcessCleanup !== undefined
+    && !cache.currentItems.some(item => item.value.key.kind === "enableWindowsProcessCleanup")) {
+    // The previous checkpoint carried this member as opaque authority, so no
+    // application of its now understood value is recorded. Only the envelopes
+    // that kept it opaque reach here: an older one never adopts the member at
+    // all, which leaves the target undefined and this obligation unneeded.
+    const targetRevision = cache.authority.applicationRevision!;
+    cache = { ...cache, currentItems: [...cache.currentItems, {
+      recordId: randomUUID(), origin: { generation: cache.authority.generation, targetRevision, source: "application" },
+      value: { key: { kind: "enableWindowsProcessCleanup" }, targetRevision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null },
       backoffStep: 0, failureId: null, started: false, actualSource: null, blockedByRemovalId: null,
     }] };
   }

@@ -240,7 +240,11 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   const currentReceived = authority.desiredJson === null || !webOnly ? null : receiveStoredDesired9(authority.desiredJson);
   // Schema 10 can persist the current network authority without changing its storage envelope.
   // Older decoders continue to interpret their original wire formats independently.
-  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") }, true, false);
+  // Every version decoded here predates the Windows process cleanup target, so
+  // the binary that wrote this cache could not have applied it. Keeping the
+  // field opaque leaves it to the next received document, where a ledger entry
+  // accompanies it, rather than adopting a target with no application result.
+  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") }, true, false, false);
   const desired = networkReceived?.known ?? legacyReceived?.known ?? currentReceived?.known ?? null;
   const rawRevision = legacyReceived?.known.revision ?? currentReceived?.revision ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
@@ -253,6 +257,7 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
     return [item.value.key.kind];
   }));
   if (data.schemaVersion === 6 && (currentKinds.has("enableSudoCleanup") || currentKinds.has("archiveSessions"))) throw new TypeError("Worker configuration cache has a future application result.");
+  if (currentKinds.has("enableWindowsProcessCleanup")) throw new TypeError("Worker configuration cache has a future application result.");
   const missingSudo = legacy && desired?.value.enableSudoCleanup !== undefined && !currentKinds.has("enableSudoCleanup");
   const missingArchive = legacy && desired?.value.archiveSessions !== undefined && !currentKinds.has("archiveSessions");
   const previousDesired = desired === null ? null : { ...desired, value: { ...desired.value } };
@@ -307,8 +312,8 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
 
 export const decodeConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): (DecodedCache | { readonly cache: CurrentConfigurationCache; readonly migration: null }) & { readonly migrated: boolean } => {
   if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
-  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 11;
-  if (version === 11) return { cache: decodeCurrentConfigurationCache(data, identity), migration: null, migrated: false };
+  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 12;
+  if (version === 11 || version === 12) return { cache: decodeCurrentConfigurationCache(data, identity), migration: null, migrated };
   if (version === 6 || version === 7 || version === 8 || version === 9 || version === 10) return { ...parseCurrent(data, identity, version === 6 || version === 7, version === 9 || version === 10), migrated };
   return { cache: upgradeSchema5(parseSchema5(version === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity, undefined, true)), migration: null, migrated };
 };

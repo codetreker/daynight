@@ -22,7 +22,7 @@ flowchart LR
   W --> R[当前目标与实际结果]
 ~~~
 
-目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup 和 taskTagFilter 直接包含在目标中，不增加字段专用的能力协商。
+目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup、enableWindowsProcessCleanup 和 taskTagFilter 直接包含在目标中，不增加字段专用的能力协商。
 
 ## 持久化与表示
 
@@ -30,7 +30,7 @@ workers 保存 configuration_revision、configuration_updated_at、desired_confi
 
 目标 JSONB 作为独立原始事实与 revision、修改时间一起读取；读取不以当前候选 schema 的解析结果替代原值。完整 PUT 的候选严格验证，未知或不兼容的已存字段可被合法替换。旧 mode 只保留在原始目标中，完整新候选不会将其恢复。观测按其存储协议解码；公开 revision 为十进制字符串。项目覆盖以 key 存在性保留继承语义。
 
-configuration_observation 的 items 保存除 mode 和 archiveSessions 外的应用项，包括 enableSudoCleanup；mode 与 archiveSessions 观测保存在同一 JSONB 的私有扩展槽，各自保留可恢复顺序的序号。internal/protocol/worker 的存储 codec 拥有该表示，DAO 写入与实际存储字节预算使用同一编码，读取时按序号恢复公开 items。仍在运行的旧服务忽略未知扩展槽，不会回显这些槽中的 key；直接字段的兼容基线按需求规定。旧报告完整替换观测时会移除扩展，此后必须等待 Worker 重新报告，不能复活旧 applied 值。数据库迁移后，旧二进制重启会因迁移版本超出其已知范围而拒绝启动。
+configuration_observation 的 items 保存除 mode 和 archiveSessions 外的应用项，包括 enableSudoCleanup 和 enableWindowsProcessCleanup；mode 与 archiveSessions 观测保存在同一 JSONB 的私有扩展槽，各自保留可恢复顺序的序号。internal/protocol/worker 的存储 codec 拥有该表示，DAO 写入与实际存储字节预算使用同一编码，读取时按序号恢复公开 items。仍在运行的旧服务忽略未知扩展槽，不会回显这些槽中的 key；直接字段的兼容基线按需求规定。旧报告完整替换观测时会移除扩展，此后必须等待 Worker 重新报告，不能复活旧 applied 值。数据库迁移后，旧二进制重启会因迁移版本超出其已知范围而拒绝启动。
 
 archive_sessions 是 `boolean NOT NULL DEFAULT true` 独立列，迁移为已有 Worker 设为 true，新 Worker 也从 true 开始。它不存入基础 desired JSONB，避免旧服务完整重写该 JSON 时擦除已保存的归档目标。读取时将列与目标组合；目标 revision、修改时间和列值在同一 Worker 行事务中维护。
 
@@ -66,7 +66,7 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 目标、项目覆盖、观测 key 与应用值分别做闭合解析。native 原子组合保证 Agent/model/args 的表示有效，服务端不运行 native preflight。观测只接受闭合诊断字段，不把自由输出带入日志或 HTTP。
 
-对目标配置基础 JSON 和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。typed 与最终 Raw 预算只排除规范空筛选的固定成员开销；非空值完整计入 4 MiB。配置 PUT 专属正文预算在原 1 MiB 上增加规范空成员及逗号的精确编码长度，其他入口不变。客户端把本机完整事实与本批 wire 投影分开，以条数、Go JSON 存储编码和完整请求编码同时选择连续前缀。固定保留 taskTagFilter 的有界摘要及原优先真实未完成或失败停止核验，其余项（包括全局 native）按持久化 recordId 游标轮转；匹配接纳后才按源记录身份清理失败，且仅当前 generation 的捕获推进游标。未知结果、未发送失败和原停止归属继续留在本机检查点，目标接纳与责任登记不受单批名额阻挡。本机表示与应用机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。观测项总数最多 1029，除 mode、archiveSessions、enableSudoCleanup 和 taskTagFilter 外的项最多 1025；四种项各有一个独立名额，不挤占原项。未协商扩展项的响应省略对应项；规范化 JSON 的总字节预算仍独立适用。
+对目标配置基础 JSON 和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。typed 与最终 Raw 预算只排除规范空筛选的固定成员开销；非空值完整计入 4 MiB。配置 PUT 专属正文预算在原 1 MiB 上增加规范空成员及逗号的精确编码长度，其他入口不变。客户端把本机完整事实与本批 wire 投影分开，以条数、Go JSON 存储编码和完整请求编码同时选择连续前缀。固定保留 taskTagFilter 的有界摘要及原优先真实未完成或失败停止核验，其余项（包括全局 native）按持久化 recordId 游标轮转；匹配接纳后才按源记录身份清理失败，且仅当前 generation 的捕获推进游标。未知结果、未发送失败和原停止归属继续留在本机检查点，目标接纳与责任登记不受单批名额阻挡。本机表示与应用机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。观测项总数最多 1030，除 mode、archiveSessions、enableSudoCleanup、enableWindowsProcessCleanup 和 taskTagFilter 外的项最多 1025；五种项各有一个独立名额，不挤占原项。未协商扩展项的响应省略对应项；规范化 JSON 的总字节预算仍独立适用。
 
 enableSudoCleanup 观察项沿用原 state、targetRevision 与 boolean/null appliedValue；没有该项表示本批未观察，而不是实际关闭。服务端不会替未认识此字段的 Worker 生成应用项。服务端仍整体替换本次 observation，不聚合此前各批 items，也不引入 completeness 字段。应用观测保留本批服务器接纳时间；机器报告可以更新，而应用结果仍是此前已接纳的整批状态。消费者将当前目标与所报每项目标版本比较，保持旧实际值和明确等待/失败含义；缺少当前目标项表示本批未观察，不能复用另一批结果宣称成功。
 
