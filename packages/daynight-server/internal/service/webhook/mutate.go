@@ -107,7 +107,7 @@ func fingerprint(p model.Principal, o Owner, m Mutation) (string, error) {
 	if m.Kind != "endpoint.create" {
 		ifVersion = &m.IfVersion
 	}
-	return core.Fingerprint(core.Intent{OperationID: m.OperationID, ActorID: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Kind: m.Kind, TargetID: m.EndpointID, IssuedAt: m.IssuedAt, IfVersion: ifVersion, Name: m.Name, Enabled: m.Enabled, Destination: dest, HasSubscriptions: m.HasSubscriptions, Subscriptions: m.Subscriptions, ConfirmProjectIDs: m.ConfirmProjectIDs, Mode: m.Mode})
+	return core.Fingerprint(core.Intent{OperationID: m.OperationID, ActorID: p.UserID, OwnerKind: o.Kind, OwnerID: o.ID, Kind: m.Kind, TargetID: m.EndpointID, IssuedAt: m.IssuedAt, IfVersion: ifVersion, Name: m.Name, Enabled: m.Enabled, Destination: dest, HasSubscriptions: m.HasSubscriptions, Subscriptions: m.Subscriptions, ConfirmProjectIDs: m.ConfirmProjectIDs, Mode: m.Mode, ClientKey: m.ClientKey})
 }
 func checkTime(issued string, now time.Time, policy wm.Policy) error {
 	switch err := core.CheckIssuedAtLimits(issued, now, time.Duration(policy.OperationMaxAgeSeconds)*time.Second, time.Duration(policy.OperationFutureSkewSeconds)*time.Second); {
@@ -133,6 +133,9 @@ func validateMutation(m *Mutation) error {
 	}
 	if m.Kind != "endpoint.create" && (core.CanonicalUUID(m.EndpointID) != nil || m.IfVersion <= 0) {
 		return fault("invalid_input", "Invalid endpoint or version.")
+	}
+	if m.ClientKey != nil && (m.Kind != "endpoint.create" || core.ValidClientKey(*m.ClientKey) != nil) {
+		return fault("invalid_input", "Invalid endpoint client key.")
 	}
 	if m.Name != nil {
 		name, err := core.NormalizeName(*m.Name)
@@ -329,7 +332,7 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			if _, e = io.ReadFull(s.random(), secret); e != nil {
 				return e
 			}
-			ep = wm.Endpoint{ID: id, Owner: o, Name: *m.Name, Enabled: *m.Enabled, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: m.Destination.Kind, AdapterVersion: m.Destination.AdapterVersion, Origin: destinationOrigin(m.Destination.URL), ActiveKeyID: keyID, CreatedAt: now, UpdatedAt: now}
+			ep = wm.Endpoint{ID: id, Owner: o, Name: *m.Name, ClientKey: clientKey(m), Enabled: *m.Enabled, ConfigVersion: 1, DestinationRevision: 1, DestinationKind: m.Destination.Kind, AdapterVersion: m.Destination.AdapterVersion, Origin: destinationOrigin(m.Destination.URL), ActiveKeyID: keyID, CreatedAt: now, UpdatedAt: now}
 			document, e := encodeDestination(*m.Destination)
 			if e != nil {
 				return e
@@ -379,6 +382,8 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 			ep.Enabled = false
 			ep.DestinationConfiguration = nil
 			ep.Name, ep.DestinationKind, ep.AdapterVersion, ep.Origin = "", "", "", ""
+			// The tombstone releases the creation key for a later create.
+			ep.ClientKey = ""
 			ep.ActiveKeyID = ""
 			keys = nil
 			changed = true
@@ -477,8 +482,31 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 					}
 				}
 			}
+			if m.Kind == "endpoint.create" && ep.ClientKey != "" {
+				// The source locks above serialize same-owner Team creates; the
+				// partial unique index guards every other interleaving.
+				holder, e := w.LiveEndpointByClientKey(ctx, o, ep.ClientKey)
+				if e == nil {
+					return endpointExists(ctx, sc, p, &holder)
+				}
+				if !errors.Is(e, model.ErrNotFound) {
+					return e
+				}
+			}
 			if e = w.PutEndpoint(ctx, ep); e != nil {
-				return e
+				if !errors.Is(e, store.ErrWebhookClientKeyExists) {
+					return e
+				}
+				holder, readErr := w.LiveEndpointByClientKey(ctx, o, ep.ClientKey)
+				if readErr == nil {
+					return endpointExists(ctx, sc, p, &holder)
+				}
+				if !errors.Is(readErr, model.ErrNotFound) {
+					return readErr
+				}
+				// The holder was deleted after the collision; report the
+				// refusal without an identity that no longer exists.
+				return endpointExists(ctx, sc, p, nil)
 			}
 			if e = subscriptionChanges.save(ctx, w); e != nil {
 				return e
@@ -571,5 +599,28 @@ func (s *Service) Mutate(ctx context.Context, p model.Principal, o Owner, m Muta
 		return Result{}, &model.Fault{Code: "write_outcome_unknown", Message: "The write committed but its response could not be verified. Check the original operation.", Cause: err}
 	}
 	return Result{Body: body, Replay: replay}, err
+}
+func clientKey(m Mutation) string {
+	if m.ClientKey == nil {
+		return ""
+	}
+	return *m.ClientKey
+}
+
+// endpointExists refuses a create whose key a live endpoint of the owner holds.
+// The holder's identity is disclosed only to callers allowed to read endpoints.
+func endpointExists(ctx context.Context, sc store.WebhookWriteScope, p model.Principal, holder *wm.Endpoint) error {
+	refusal := &model.Fault{Code: "endpoint_exists", Message: "A live webhook endpoint already uses this client key."}
+	if holder == nil {
+		return refusal
+	}
+	readable, err := hasScope(ctx, sc, p, scopepolicy.WebhookRead)
+	if err != nil {
+		return err
+	}
+	if readable {
+		refusal.ExistingEndpoint = &model.ExistingEndpointDetails{ID: holder.ID, ConfigVersion: holder.ConfigVersion}
+	}
+	return refusal
 }
 func destinationOrigin(value string) string { origin, _ := core.ValidateURL(value); return origin }

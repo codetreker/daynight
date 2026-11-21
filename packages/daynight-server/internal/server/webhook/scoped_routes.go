@@ -89,7 +89,7 @@ func (s scopedAdapter) List(ctx context.Context, p model.Principal, o Owner, q L
 	if err != nil {
 		return nil, err
 	}
-	return s.service.ListAuthorized(ctx, a, serviceOwner(o), webhookservice.ListQuery{Query: q.Query, Enabled: q.Enabled, Limit: q.Limit, Cursor: q.Cursor})
+	return s.service.ListAuthorized(ctx, a, serviceOwner(o), serviceListQuery(q))
 }
 func (s scopedAdapter) Get(ctx context.Context, p model.Principal, o Owner, id string) (any, error) {
 	a, err := scopedAuthorization(ctx, p)

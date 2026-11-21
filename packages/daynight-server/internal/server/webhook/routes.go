@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -150,7 +151,7 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 		"unauthenticated": 401, "forbidden": 403, "permission_denied": 403, "not_found": 404,
 		"webhook_project_ineligible": 403,
 		"identity_mismatch":          409, "version_conflict": 409, "operation_conflict": 409,
-		"version_exhausted": 409, "destination_unsupported": 409,
+		"version_exhausted": 409, "destination_unsupported": 409, "endpoint_exists": 409,
 		"generation_conflict": 409, "delivery_busy": 409, "target_changed": 409, "delivery_stopped": 409,
 		"operation_expired": 410, "payload_expired": 410, "content_too_large": 413,
 		"webhooks_unavailable": 503, "dependency_unavailable": 503,
@@ -193,7 +194,12 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, p model.Princip
 	if f != nil && f.Code == "insufficient_scope" && status == http.StatusForbidden {
 		message = "Credential scope is insufficient."
 	}
-	httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
+	var details *api.ErrorDetails
+	if f != nil && code == "endpoint_exists" && f.ExistingEndpoint != nil {
+		configVersion := strconv.FormatInt(f.ExistingEndpoint.ConfigVersion, 10)
+		details = &api.ErrorDetails{EndpointID: &f.ExistingEndpoint.ID, ConfigVersion: &configVersion}
+	}
+	httpx.WriteJSON(w, r, logger, status, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context()), Details: details}})
 }
 
 func returnReceipt(r *http.Request) (bool, error) {
@@ -320,6 +326,9 @@ func (h *Routes) write(w http.ResponseWriter, r *http.Request, p model.Principal
 	}
 	if kind == "endpoint.create" || kind == "endpoint.update" {
 		allowed = append(allowed, "name", "enabled", "destination", "subscriptions")
+		if kind == "endpoint.create" {
+			allowed = append(allowed, "clientKey")
+		}
 		if kind == "endpoint.update" {
 			allowed = append(allowed, "confirmProjectIds")
 		}

@@ -128,6 +128,7 @@ address policy, so the panels only use those contracts and show their errors.
 - The ten-minute reaction window is a heuristic: a reaction after the window
   is delivered, and an unrelated write inside the window is suppressed.
 - Two concurrent creations can still produce two personal endpoints targeting
-  one inbox. Inbox idempotency prevents duplicate inbound events, but removing
-  the duplicate endpoint needs an atomic create-if-absent in the Webhook
-  endpoint contract, which is not implemented.
+  one inbox while the subscription panel creates endpoints without a key. Inbox
+  idempotency prevents duplicate inbound events. The Webhook endpoint contract
+  now provides an atomic per-owner [creation key](2026-11-21-webhook-endpoint-client-key.md);
+  the panel closes this gap once it creates and finds its endpoint by that key.

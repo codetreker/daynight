@@ -287,6 +287,15 @@ func mutationInput(fields map[string]json.RawMessage, digest, kind, endpoint str
 				seen[id] = true
 			}
 		}
+		if kind == "endpoint.create" {
+			m.ClientKey, err = httpx.OptionalString(fields, "clientKey")
+			if err != nil {
+				return m, err
+			}
+			if m.ClientKey != nil && webhookcore.ValidClientKey(*m.ClientKey) != nil {
+				return m, httpx.InvalidInput("clientKey must contain 1 to 200 visible ASCII characters")
+			}
+		}
 		if kind == "endpoint.create" && (m.Name == nil || m.Enabled == nil || m.Destination == nil || !m.HasSubscriptions) {
 			return m, httpx.InvalidInput("name, enabled, destination and subscriptions are required")
 		}
@@ -307,7 +316,7 @@ func mutationInput(fields map[string]json.RawMessage, digest, kind, endpoint str
 }
 
 func listInput(r *http.Request) (ListQuery, error) {
-	values, err := httpx.QueryValues(r, "q", "enabled", "limit", "cursor")
+	values, err := httpx.QueryValues(r, "q", "enabled", "clientKey", "limit", "cursor")
 	if err != nil {
 		return ListQuery{}, err
 	}
@@ -326,6 +335,13 @@ func listInput(r *http.Request) (ListQuery, error) {
 		}
 		b := v == "true"
 		result.Enabled = &b
+	}
+	if _, ok := values["clientKey"]; ok {
+		v := values.Get("clientKey")
+		if webhookcore.ValidClientKey(v) != nil {
+			return ListQuery{}, httpx.InvalidInput("clientKey must contain 1 to 200 visible ASCII characters")
+		}
+		result.ClientKey = &v
 	}
 	return result, nil
 }
