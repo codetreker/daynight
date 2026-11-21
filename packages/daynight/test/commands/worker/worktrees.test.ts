@@ -1893,6 +1893,30 @@ exec "$@"
     expect((await lstat(root)).isDirectory()).toBe(true);
   });
 
+  it("retains worktree contents that are locked during the busy backoff of an entry removal", async () => {
+    const f = await repositoryFixture("files");
+    let attempts = 0;
+    let admin = "";
+    const adapter = manager(f.root, {
+      removeDirectory: async (target, options) => {
+        if (admin === "") return actualFs.rm(target, options);
+        attempts++;
+        // Only the first entry removal is busy, and the lock appears during
+        // its backoff: a retry admitted on local identity alone would delete
+        // the entry and go on clearing the worktree.
+        if (attempts > 1) return actualFs.rm(target, options);
+        writeFileSync(path.join(admin, "locked"), "human");
+        throw busyError();
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    admin = administrativeDirectory(binding.worktreePath);
+    expect(errorText(await adapter.removeWorktree(f.project, f.owner, operation()).catch(error => error))).toContain("acquired a Git lock");
+    expect(attempts).toBe(1);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
+  });
+
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root); const binding = await prepareCleanupFixture(f, adapter);
     await rm(path.join(binding.worktreePath, ".git"));

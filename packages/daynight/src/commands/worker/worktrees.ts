@@ -698,7 +698,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
                 await verifyOwnership();
                 try {
-                  await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation }, removeDirectory);
+                  // The inode checks inside the walk prove only local identity.
+                  // Admitting every entry through `verifyOwnership` adds the
+                  // manifest, the captured metadata and the external Git lock,
+                  // so a lock taken during a busy backoff stops the retry the
+                  // same way it stops the first attempt.
+                  await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation, beforeMutation: verifyOwnership }, removeDirectory);
                   await verifyOwnership();
                   try { await unlink(path.join(binding.worktreePath, ".git")); }
                   catch (error) {

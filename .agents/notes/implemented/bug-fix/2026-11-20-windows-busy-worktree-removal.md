@@ -43,7 +43,14 @@ and the compiler rejects a new caller that has none.
 
 Every removal site supplies one. Inside `removeWorktreeContents`, entry removal
 reproves the parent directory and the entry's own inode and type, and nested
-directory removal reproves the directory. Outside the content walk,
+directory removal reproves the directory. Those checks prove local identity
+only, so the task worktree caller also passes `verifyOwnership` as
+`beforeMutation`: the walk admits every mutation, first attempt and retry
+alike, through the same manifest, captured metadata and external Git lock the
+caller verified before the walk began. Without it a lock taken during a busy
+backoff would go unseen until after the contents were already gone, because
+the walk itself rechecks nothing outside the directory it is clearing.
+Outside the content walk,
 `removeEmptyDirectory` in `worktrees.ts` removes the task worktree root, the
 directory the agent's own working directory holds. It passes `verifyOwnedRoot`,
 which runs `verifyOwnership` and then rechecks the captured directory
@@ -100,6 +107,14 @@ out the worktree root, which `visit(target, root, true)` deliberately preserves
 and `removeEmptyDirectory` removes afterwards. The root is the agent's own
 working directory and therefore the single path most likely to be busy, so
 omitting it would have left the original failure in place.
+
+**Reprove the external Git lock only on the retry path.** This would keep the
+content walk's per-entry cost unchanged, but it recreates the divergence the
+required `reprove` parameter exists to prevent: the first attempt and the
+retries would admit mutations through different evidence. Passing
+`verifyOwnership` as `beforeMutation` instead strengthens both at once, at the
+cost of one manifest lookup, the captured directory and metadata reads and one
+lock read per removed entry.
 
 **Add the missing check to each retry callback as it is found.** Three separate
 findings had the same shape: a first attempt verified ownership around an
