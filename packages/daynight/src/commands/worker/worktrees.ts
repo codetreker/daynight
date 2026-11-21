@@ -620,6 +620,34 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
                 const emptyPath = result.binding.worktreePath, emptyLeaf = result.leaf;
                 const emptyRegistration = result.registration.directory;
+                const emptyManifestName = result.manifest.directoryName;
+                // Terminating processes is irreversible and reaches beyond the
+                // directory, so it needs the same ownership evidence the main
+                // path proves, not only the identity checks that suffice for
+                // removing an empty directory whose inode already matched.
+                const emptyOwnership = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
+                for (const target of [path.join(repository.root, ".worktrees"), path.dirname(emptyPath), path.dirname(emptyRegistration), emptyRegistration]) {
+                  const identity = await directory(target);
+                  if (identity === null) throw new Error(`Worktree ownership directory ${target} disappeared.`);
+                  emptyOwnership.set(target, identity);
+                }
+                const emptyAssociation = new Map<string, string>();
+                for (const name of ["gitdir", "commondir"]) {
+                  const contents = await ordinaryFile(path.join(emptyRegistration, name));
+                  if (contents === null) throw new Error(`Worktree metadata ${path.join(emptyRegistration, name)} disappeared.`);
+                  emptyAssociation.set(name, contents);
+                }
+                const reproveEmptyOwnership = async (): Promise<void> => {
+                  await reproveEmpty();
+                  const current = manifestFor(project, owner, repository);
+                  if (current === null || current.directoryName !== emptyManifestName) throw new Error("The empty worktree manifest changed during cleanup.");
+                  for (const [target, identity] of emptyOwnership) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+                  for (const [name, contents] of emptyAssociation) if (await ordinaryFile(path.join(emptyRegistration, name)) !== contents) throw new Error(`Worktree metadata ${name} changed during cleanup.`);
+                  // Those reads are asynchronous, so the evidence is bound to
+                  // the directory and registration observed after them.
+                  for (const [target, identity] of emptyOwnership) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+                  await reproveEmpty();
+                };
                 const reproveEmpty = async (): Promise<void> => {
                   operation.check();
                   if (await directory(emptyPath) !== emptyLeaf) throw new Error("The empty worktree directory changed during cleanup.");
@@ -645,11 +673,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     // would permanently route the recovery away from itself.
                     try {
                       operation.check();
-                      await reproveEmpty();
+                      await reproveEmptyOwnership();
                       await (optionsForProcessStop)(emptyPath, operation);
                       operation.check();
-                      await reproveEmpty();
-                      await removeEmptyDirectory(emptyPath, operation, reproveEmpty);
+                      await reproveEmptyOwnership();
+                      await removeEmptyDirectory(emptyPath, operation, reproveEmptyOwnership);
                       operation.check();
                     } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
                   } else {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { cpSync, realpathSync, renameSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -1975,6 +1975,36 @@ exec "$@"
     expect(stops).toBe(2);
     expect(worktreePaths(f.repository)).not.toContain(root);
     expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32").each(["manifest", "registration"] as const)("terminates no holder when the pointerless worktree loses its %s during the busy backoff", async kind => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async target => { stops++; return { observed: [{ pid: 911, image: "node.exe", directory: target }], terminated: [911] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = administrativeDirectory(binding.worktreePath);
+    const manifestPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`);
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    let broken = false;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!broken) {
+        broken = true;
+        // The evidence the first attempt proved stops being true before the
+        // recovery decides whose processes to terminate.
+        if (kind === "manifest") rmSync(manifestPath, { force: true });
+        else writeFileSync(path.join(admin, "gitdir"), "C:\\elsewhere\\.git\n");
+      }
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(errorText(error)).toContain(kind === "manifest" ? "manifest changed" : "metadata gitdir changed");
+    expect(stops).toBe(0);
+    expect((await lstat(root)).isDirectory()).toBe(true);
   });
 
   it("retains a pointerless empty worktree that is locked during the busy backoff", async () => {

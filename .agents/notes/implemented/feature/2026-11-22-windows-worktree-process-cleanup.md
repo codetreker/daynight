@@ -76,6 +76,18 @@ permanently route every subsequent attempt away from the recovery, including
 after a Worker restart and including the case where the target was enabled only
 after an earlier cleanup had already failed with it disabled.
 
+It does not reuse that branch's existing verifier. Those checks — the leaf
+identity, the still absent pointer and the registration lock — are enough for a
+nonrecursive removal of a directory whose inode already matched: the worst
+outcome is removing the very directory that was proven. Terminating processes
+is irreversible, reaches descendants, and acts on something other than the
+directory, so it is admitted through the evidence the main path proves: the
+owner manifest, the captured ownership-directory identities, and the
+registration's `gitdir` and `commondir` association, each rechecked after those
+asynchronous reads. A manifest removed or a registration retargeted during the
+backoff therefore refuses before any holder is inspected, and the original
+error is retained.
+
 ## Alternatives
 
 **Use the Restart Manager to find the holders.** `RmStartSession`,
