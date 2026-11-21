@@ -70,6 +70,7 @@ export const stopWindowsWorktreeProcesses = async (
   operation.check();
   const inventory = await list(target, () => operation.check(), options.kernel);
   const failures: unknown[] = [], terminated: number[] = [];
+  let failed = false, failure: unknown;
   try {
     for (const holder of inventory.holders) {
       operation.check();
@@ -82,7 +83,20 @@ export const stopWindowsWorktreeProcesses = async (
       }
       catch (error) { failures.push(error); }
     }
-  } finally { inventory.release(); }
+  } catch (error) {
+    failed = true;
+    failure = error;
+    throw error;
+  } finally {
+    // A throw from here would otherwise replace the error that is already on
+    // its way out — the cancellation or deadline that ended the loop — and the
+    // caller would see a handle failure where the real cause was elsewhere.
+    try { inventory.release(); }
+    catch (error) {
+      if (failed) throw new AggregateError([failure, error], `Windows worktree holder termination and handle release failed for ${target}.`, { cause: failure });
+      throw error;
+    }
+  }
   if (failures.length > 0 && terminated.length === 0) {
     throw new AggregateError(failures, `No Windows worktree holder could be terminated for ${target}.`, { cause: failures[0] });
   }

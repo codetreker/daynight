@@ -82,6 +82,13 @@ real process table and checks it against the two parents Node already knows —
 this process's `ppid`, and a child it just spawned. Pointing the offset at the
 neighbouring field makes it report 17 instead of the real identifier.
 
+Releasing those handles cannot replace the error that ended the termination.
+A throw from a `finally` discards whatever was already on its way out, so a
+cancellation or deadline would reach the caller as a handle failure instead —
+and the attempt-level record depends on the cancellation still being
+recognizable. The release is therefore aggregated with the original, which the
+content walk already does for its directory handles.
+
 ### Keeping ownership proven
 
 Ownership is verified before the inventory decides which processes to act on,

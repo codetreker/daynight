@@ -102,6 +102,32 @@ describe("Windows worktree process termination", () => {
     expect(released).toEqual([2]);
   });
 
+  it("keeps the cancellation as the cause when releasing the handles also fails", async () => {
+    // A throw from the release would replace the error already on its way out,
+    // and the caller would read a handle failure where the real cause was the
+    // cancellation that ended the loop.
+    const current = operation();
+    const controller = new AbortController();
+    const cancelled: Operation = { ...current, signal: controller.signal, check: () => { controller.signal.throwIfAborted(); } };
+    const cancellation = new Error("cleanup cancelled");
+    const releaseFailure = new Error("CloseHandle failed");
+    const error = await stopWindowsWorktreeProcesses(target, cancelled, {
+      holders: async () => ({ holders: [holder(100), holder(101)], release: () => { throw releaseFailure; } }),
+      terminate: async () => { controller.abort(cancellation); },
+    }).catch(failure => failure as AggregateError);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([cancellation, releaseFailure]);
+    expect((error as AggregateError).cause).toBe(cancellation);
+  });
+
+  it("reports the release failure on its own when nothing else went wrong", async () => {
+    const releaseFailure = new Error("CloseHandle failed");
+    await expect(stopWindowsWorktreeProcesses(target, operation(), {
+      holders: async () => ({ holders: [holder(110)], release: () => { throw releaseFailure; } }),
+      terminate: async () => {},
+    })).rejects.toBe(releaseFailure);
+  });
+
   it("reports a termination before cancellation discards the accumulated result", async () => {
     // The return value never arrives on this path, so a caller that read only
     // the result would report that nothing had been terminated. Process 70 is
