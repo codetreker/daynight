@@ -20,7 +20,7 @@ const Host = ({ enabled = true, target = worker }: { readonly enabled?: boolean;
     <button disabled={state.busy} onClick={() => void state.check()}>Check</button></>;
 };
 const render = (ui = <Host />) => renderWithLocale(ui, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
-afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); sessionStorage.clear(); });
+afterEach(() => { invalidateAuthRequests(); sessionStorage.clear(); });
 
 describe('Worker lifecycle original operation continuity', () => {
   it('hydrates an unknown operation, resolves an absent original and never submits it again', async () => {
