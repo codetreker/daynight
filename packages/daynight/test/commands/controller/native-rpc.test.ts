@@ -1,3 +1,4 @@
+import { NativeDispatchRejectedError, retainDispatchedOutcome } from "../../../src/commands/controller/providers/native-rpc.js";
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { expect, test, vi } from "vitest";
@@ -77,4 +78,13 @@ test("a failed native revocation callback still settles every pending request", 
   const second = expect(rpc.request("thread/read", {})).rejects.toThrow("Invalid native protocol");
   expect(() => child.stdout.write("invalid\n")).not.toThrow();
   await Promise.all([first, second]); rpc.dispose();
+});
+
+
+test("a nested admission refusal after a native call cannot claim that call was not dispatched", async () => {
+  const refusal = new NativeDispatchRejectedError("nested callback refused"); let calls = 0;
+  const result = retainDispatchedOutcome(async () => { calls++; throw refusal; });
+  await expect(result).rejects.toMatchObject({ cause: refusal });
+  await expect(result).rejects.not.toBeInstanceOf(NativeDispatchRejectedError);
+  expect(calls).toBe(1);
 });

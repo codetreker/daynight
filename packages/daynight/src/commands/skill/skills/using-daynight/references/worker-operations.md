@@ -10,6 +10,48 @@ Current execution monitoring uses direct POST with fresh observations; it does n
 read or replay an earlier snapshot. Deploy a compatible Server before upgrading a
 Worker. A monitoring failure does not establish that execution or cleanup stopped.
 
+## Disable, observe and resume a Worker
+
+Use the original machine, `DN_CONFIG_DIR`, service and Worker identity. These
+commands manage the whole Worker's admission; they do not replace Task pause,
+claim release or native Session recovery commands.
+
+```bash
+daynight worker disable --worker-id <uuid> --local --confirm --json
+daynight worker lifecycle show --worker-id <uuid> --local --json
+daynight worker resume --worker-id <uuid> --confirm --json
+```
+
+Local disable persists a veto before waking the original manager. It works
+without waiting for cloud intent, but failure to contact the service can leave
+`sync` pending. The manager closes execution admission, joins producers and stops
+original native resources while retaining claims, worktrees, Sessions and unknown
+operations. It does not send cleanup prompts, release claims or alter Git files.
+Stopped management does not run capability probes, assistant renewal, takeover
+or delivery loops.
+
+`show` is a local read, including the retained resource inventory. Inspect
+`operationId`, `localEpoch`, `intentVersion`, `phase`, `stop`, `save`, `sync`,
+`inventoryComplete`, `resources` and `errorCode`. Describe local stop as confirmed
+only with complete inventory, `stop=confirmed` and `save=durable`; report cloud
+synchronization separately. A successful query, accepted IPC request or absent PID
+is not stop evidence. Transition commands report `outcome`; `pending` exits 3 and
+`blocked` exits 1. Preserve the original result and query it after uncertainty.
+
+Resume needs online service authority, original stop/save evidence and explicit
+activation. It reopens admission for a fresh execution scope while preserving
+independent Task pauses, permissions, recovery budgets and original native
+identities. Missing evidence prevents recovery; initial prompts and unknown
+requests are not replayed. Without a live manager, an available original instance
+lock permits management only, never a background execution scope or lock takeover.
+Use normal foreground `worker run` when execution is required.
+
+Unknown assistant event, record, item, answer or attention writes without an
+original-operation result protocol remain unknown. Matching text, an existing
+resource, HTTP 404 or a failed permission check cannot establish non-submission
+or success. Do not delete the private lifecycle database, create a replacement
+Worker or submit another write to hide that responsibility.
+
 ## Legacy Bot storage migration
 
 Explicitly authorized migration moves one stopped original Bot's Worker and

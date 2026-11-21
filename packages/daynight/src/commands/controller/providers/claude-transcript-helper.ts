@@ -18,6 +18,7 @@ export type ClaudeTranscriptHelperOptions = Omit<ClaudeTranscriptOptions, "acqui
   /** Hold the writer lease until release or confirmed helper exit. */
   readonly acquireIndexLease: (owner?: ProcessProof) => ClaudeTranscriptIndexLease | Promise<ClaudeTranscriptIndexLease>;
   readonly onSpawn: (child: ChildProcess) => void;
+  readonly assertNativeDispatch?: () => void;
 };
 
 /** Owns one read-only helper and joins its readers before releasing outstanding writer leases. */
@@ -26,7 +27,7 @@ export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelper
   await mkdir(options.indexDirectory, { recursive: true, mode: 0o700 });
   const ownedDirectory = await mkdtemp(path.join(options.indexDirectory, "claude-reader-"));
   let child: ChildProcess;
-  try { child = fork(fileURLToPath(import.meta.url), ["--daynight-claude-transcript-helper"], { execArgv: ["--max-old-space-size=128"], stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", windowsHide: true }); }
+  try { options.signal?.throwIfAborted(); options.assertNativeDispatch?.(); child = fork(fileURLToPath(import.meta.url), ["--daynight-claude-transcript-helper"], { execArgv: ["--max-old-space-size=128"], stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "json", windowsHide: true }); }
   catch (error) { await rm(ownedDirectory, { recursive: true, force: true }); throw error; }
   let sequence = 0, closed = false, closing: Promise<void> | null = null, active: string | null = null;
   let scheduledRequests = 0, requestTail: Promise<void> = Promise.resolve();
@@ -149,7 +150,7 @@ export const openClaudeTranscriptHelper = async (options: ClaudeTranscriptHelper
     await new Promise<void>((resolve, reject) => { child.once("spawn", () => { try { options.onSpawn(child); resolve(); } catch (error) { reject(error); } }); child.once("error", reject); });
     if (!child.pid) throw new ClaudeTranscriptError("closed", "Claude transcript helper process identity is unavailable.");
     processProof = await captureProcessProof(child.pid);
-    const { acquireIndexLease: _acquire, onSpawn: _spawn, signal: _signal, ...input } = options; void _acquire; void _spawn; void _signal;
+    const { acquireIndexLease: _acquire, onSpawn: _spawn, signal: _signal, assertNativeDispatch: _admission, ...input } = options; void _acquire; void _spawn; void _signal; void _admission;
     snapshot = await request<ClaudeTranscriptSnapshot>("open", { ...input, indexDirectory: ownedDirectory });
   } catch (error) {
     try { await stop(); } catch (close) { throw new AggregateError([error, close], "Claude transcript helper failed and shutdown was not confirmed."); }

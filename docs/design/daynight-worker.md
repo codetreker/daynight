@@ -70,6 +70,24 @@ Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁�
 
 执行作用域和资源事件接口提供本机机制。持久停用意图、云端准入、Controller 最终 dispatch 围栏及显式恢复授权由生命周期集成层负责；单独建立或重建作用域不声明完整 Worker 停用能力。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
 
+## 持久停用与恢复
+
+`lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、实例 epoch 与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
+
+业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。
+
+本地入口为 `daynight worker disable --worker-id <uuid> --local --confirm --json`。命令在唤醒管理根之前提交本机否决；网络失败不能撤销该否决。IPC 只传原身份、操作 ID 和管理动作，回执仅确认受理；实际结果从原 SQLite 读取。原管理根不可达且请求明确尚未发出时，管理命令仅尝试取得空闲实例锁核对原责任，不接管占用的锁，也不建立业务作用域。私有 IPC 凭据不能出现在 URL、任务材料或日志中。
+
+管理根保留生命周期观察、原操作结果查询、停止和保存通道。独立心跳仅报告管理连接及已有事实；它不启动能力探测。凭据缺失时，显式管理 owner 仍可依据原私有身份尝试本地停止和保存；网络方法在发送前明确拒绝，原云端责任继续保留。关闭期间不得运行清理 prompt、Reviewer 工作、assistant 续期、接管或事件投递。停用保留原 claim、worktree、分支、HEAD/index、Session、native ID、独立暂停和恢复预算，不自动 stash、commit、reset、release 或删除现场。
+
+`daynight worker lifecycle show --worker-id <uuid> --local --json` 只读完整私有库存。`phase`、`stop`、`save`、`sync` 是独立事实：仅库存完整、原责任全部闭合且保存完成，才能确认本机停止；云端未收到观测仍单独报告同步未完成。云端明细可按条数限制截断，但总数、库存摘要与 `detailsComplete` 保留该区别，本机查询不使用展示截断证明完整。outbox 固定原序列及正文；原回执或更高权威覆盖后才能退休，重传同序列不刷新原观测时间。
+
+`daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 与首次 bootstrap 各有独立资格，不能清除本机否决。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
+
+未知外部写入按原请求身份恢复。assistant claim/inbox 需要原请求指纹，事件确认需要原事件和 ack operation，Session 操作需要原 Session、绑定与执行代次。只有原回执才能结算派发结果，已受理仍不证明 native 停止。普通 assistant `addEvent`、`addRecord`、`saveItem`、`answer`、`clearAttention` 没有原操作结果查询协议时保留未知责任；相同正文、对象存在、404、权限失败或旧 fence 均不能证明原写成功或从未提交。该限制会阻止完整停止与恢复资格，必须保留原证据。取舍见[本机生命周期决策](../../.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md)。
+
+逐执行 `recovery` 来自 Task/Bot owner 的原 claim、Session 和执行代次观察，独立记录 `eligible`、`blocked` 或 `unknown`，随同观测正文持久化到 outbox。Worker 开门本身不证明原执行已恢复；暂停、所有权变化、原生材料或预算阻塞仍可形成部分恢复。完整结束的历史执行不占未来恢复清单，未结责任及尚未恢复的原执行继续保留。旧代完整终态以原 canonical JSON 和 SHA-256 压缩保存，不计未来作用域的资源总数；历史证据不授权重用旧资源 ID。
+
 ## 状态来源与清理判定
 
 Worker 用期望状态与实际状态之差选择动作，不以重复的步骤完成标记替代资源自身的状态。下表的来源在每次相关决策时读取；本机索引、done 状态或历史成功回执不能代替当前资源观察。
@@ -462,7 +480,7 @@ Agent 完成全部交付和证据后，核验原 active claim、Worker 和 workt
 
 Release 在远端确认前保留 worktree，拒绝时仍可恢复原执行；确认成功后尚未完成本机收尾时，下一次 run 按原 claim 缺席继续处理。远端操作保留既有权限、精确版本和 release 的 stoppedConfirmed。停止后再检查取消，随后只提交一次 release；未知响应保留原错误和资源责任，不通过 GET 推断请求成功或重放。有效 200 后收尾失败明确报告释放已确认并保留错误原因。管理 runtime 只关闭自身句柄、释放锁；管理期间 runner 停机是这一单控制者方案的操作代价。
 
-Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和专用 Worker resume 入口均已移除；释放任务通过普通认领开始新执行。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
+Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和为已释放 Task 建立新 claim 的专用 resume 入口均已移除；释放任务通过普通认领开始新执行。Worker 整体生命周期的 `worker resume --worker-id` 只恢复原 Worker 准入，不提供 Task 领取例外。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
 
 ## 观测关联和错误
 

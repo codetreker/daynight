@@ -1,3 +1,4 @@
+import { NativeDispatchRejectedError } from "../../../src/commands/controller/providers/native-rpc.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ProviderControls } from "../../../src/commands/controller/providers/controls.js";
@@ -239,4 +240,28 @@ test.each(["codex", "claude", "copilot"] as const)("%s controls start above the 
 test("control revision floors reject malformed and exhausted native counters", () => {
   expect(new ProviderControls(vi.fn()).value.revision).toBe("1");
   for (const floor of ["-1", "01", "not-a-number", "9223372036854775807"]) expect(() => new ProviderControls(vi.fn(), floor)).toThrow();
+});
+
+
+test("Claude partial permission mutation cannot be reported as wholly not dispatched", async () => {
+  const refusal = new NativeDispatchRejectedError("admission closed"); let fenced = false;
+  const f = claude("0", false, () => { if (fenced) throw refusal; }); await f.controls.refresh();
+  f.native.applyFlagSettings.mockImplementationOnce(async () => { fenced = true; });
+  const pending = f.controls.set("permissions", "default", randomUUID(), f.controls.store.value.revision);
+  await expect(pending).rejects.toMatchObject({ cause: refusal });
+  await expect(pending).rejects.not.toBeInstanceOf(NativeDispatchRejectedError);
+  expect(f.native.applyFlagSettings).toHaveBeenCalledOnce(); expect(f.native.setPermissionMode).not.toHaveBeenCalled(); expect(f.confirmed).not.toHaveBeenCalled();
+});
+
+
+test("Codex live setting application remains partial when stopping refuses the future-turn update", async () => {
+  const refusal = new NativeDispatchRejectedError("Controller stopped before native dispatch."); let stopped = false;
+  const f = codex("0", () => { if (stopped) throw refusal; }); await f.controls.refresh(); f.setTurn("original-turn");
+  f.request.mockImplementationOnce(async () => { stopped = true; return { status: "applied" }; });
+  const pending = f.controls.set("model", "model-b", randomUUID(), f.controls.store.value.revision);
+  await expect(pending).rejects.toThrow("current turn, but future-turn settings are unconfirmed");
+  await expect(pending).rejects.not.toBeInstanceOf(NativeDispatchRejectedError);
+  expect(f.request.mock.calls.filter(([method]) => method === "turn/settings/update")).toHaveLength(1);
+  expect(f.request.mock.calls.filter(([method]) => method === "thread/settings/update")).toHaveLength(0);
+  expect(f.confirmed).not.toHaveBeenCalled();
 });

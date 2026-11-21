@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { open, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, sameControlValue, type SessionSetting } from "./controls.js";
-import { record, string, NativeRpcError, type NativeRpc } from "./native-rpc.js";
+import { record, string, NativeRpcError, NativeDispatchRejectedError, type NativeRpc } from "./native-rpc.js";
 import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
 import { IMAGE_LIMITS, type ProviderImageCapabilities } from "../../../session/image-values.js";
 import { unknownCodexGeometry, type CodexImageProfile } from "./codex-image-profile.js";
@@ -122,11 +122,10 @@ export class CodexControls {
       if (id === "model") this.turnModel = value;
       liveApplied = true;
     }
-    this.assertNativeDispatch?.();
     let resolve!: () => void, reject!: (error: Error) => void;
     const confirmation = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); void confirmation.catch(() => {}); this.pending.set(operationId, { patch, resolve, reject });
-    try { await this.rpc.request("thread/settings/update", { threadId: this.session(), ...patch }); }
-    catch (error) { if (error instanceof NativeRpcError) this.pending.delete(operationId); if (liveApplied) { const message = `Codex applied this setting to the current turn, but future-turn settings are unconfirmed: ${controlError(error)}`; this.store.update({ settingsError: message }); throw new Error(message); } throw error; }
+    try { this.assertNativeDispatch?.(); await this.rpc.request("thread/settings/update", { threadId: this.session(), ...patch }); }
+    catch (error) { if (error instanceof NativeRpcError || error instanceof NativeDispatchRejectedError) this.pending.delete(operationId); if (liveApplied) { const message = `Codex applied this setting to the current turn, but future-turn settings are unconfirmed: ${controlError(error)}`; this.store.update({ settingsError: message }); throw new Error(message); } throw error; }
     await controlDeadline(confirmation, "Codex setting confirmation");
   }
   private sandbox(type: string) {

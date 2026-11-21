@@ -42,6 +42,7 @@ const refuse = (code: string): never => { throw Object.assign(new Error(code), {
 
 /** Durable source intents precede IO; frozen submissions retain their sealed content. */
 export const createMarkdownCaptureCoordinator = (options: {
+  beforeSpawn?(): void;
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore;
   bridge: Pick<ProviderOptions, keyof Hooks>; writable(): boolean; fence(): string | null;
   nativeReadPolicy?(): NativeReadPolicy | null;
@@ -230,7 +231,7 @@ export const createMarkdownCaptureCoordinator = (options: {
       const source = await lease.runWriter(async (outputPath, writerSignal) => {
         const joined = AbortSignal.any([signal, writerSignal]);
         if (request.locator.kind === "local") {
-          const context = await createLocalImageContext({ cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
+          const context = await createLocalImageContext({ ...(options.beforeSpawn === undefined ? {} : { beforeSpawn: options.beforeSpawn }), cwd: record.context.cwd, platform: record.context.platform, policyRevision: sourcePolicy!.revision, nativeReadAllowed: true, expectedRoot: record.context.root });
           try {
             checkContext(record.context, true, fence, sourcePolicy!); joined.throwIfAborted();
             const result = await copyLocalImage({ path: request.locator.path, context, outputPath, signal: joined, checkPolicy: async (checkpoint: LocalImageCheckpoint) => {

@@ -160,6 +160,7 @@ than allowing a guessed process kill. Journal records remain private and are
 retained with their original evidence.
 
 These mechanisms do not themselves implement persistent disable intent, cloud
-admission or Controller dispatch fencing. Lifecycle integration must consume
-those authorities before advertising complete disable/resume support. Provider
+admission or Controller dispatch fencing. The [local lifecycle integration](2026-11-21-worker-local-lifecycle.md) consumes
+those authorities; complete stop/resume still depends on the original inventory
+and unresolved-operation evidence. Provider
 and platform acceptance remains distinct from controlled mechanism tests.

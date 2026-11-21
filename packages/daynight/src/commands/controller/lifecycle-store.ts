@@ -31,7 +31,7 @@ import { controllerJournalReadOptions, controllerJournalWriteOptions, controller
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
-import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
+import { controllerPayloadHash, parseControllerLifecycleBinding, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
@@ -149,6 +149,13 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
           })() }));
         }
         db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
+      }
+      const lifecycle = db.prepare("SELECT ticket_hash,binding_json FROM worker_lifecycle_bindings WHERE execution_generation=?").get(ticket.executionGeneration) as { ticket_hash: string; binding_json: string } | undefined;
+      if (lifecycle !== undefined) {
+        const binding = parseControllerLifecycleBinding(json(lifecycle.binding_json));
+        if (lifecycle.ticket_hash !== controllerPayloadHash(ticket) || controllerPayloadHash(binding) !== controllerPayloadHash(ticket.lifecycleBinding)) throw new Error("Controller journal lifecycle binding changed.");
+      } else if (ticket.lifecycleBinding !== undefined) {
+        db.prepare("INSERT INTO worker_lifecycle_bindings(execution_generation,ticket_hash,binding_json) VALUES(?,?,?)").run(ticket.executionGeneration, controllerPayloadHash(ticket), JSON.stringify(ticket.lifecycleBinding));
       }
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
       sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite }, options.maxOnlineBytes === undefined ? {} : { maxOnlineBytes: options.maxOnlineBytes });

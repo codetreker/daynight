@@ -20,7 +20,7 @@ const defaultDependencies: WorkerCommandDependencies = {
   resources: async options => (await import("./resource-recovery-runtime.js")).runCompletedWebResourceRecovery(options),
   setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
-  run: async (options) => (await import("./runtime.js")).runWorker(options),
+  run: async (options) => (await import("./runtime.js")).runManagedWorker(options),
   manage: async (options) => (await import("./runtime.js")).runWorkerControl(options),
 };
 
@@ -47,6 +47,10 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   };
   const option = (name: string): string => command.options.get(name) as string;
   const rawProject = command.options.get("--project") as string | undefined;
+  if (command.command.name === "disable" || command.command.name === "resume" || command.path.at(-2) === "lifecycle") {
+    await (await import("./lifecycle-command.js")).runWorkerLifecycleCommand({ kind: command.command.name as "disable" | "resume" | "show", workerId: uuid(option("--worker-id"), "Worker ID") }, context);
+    return;
+  }
   if (command.command.name === "migrate-bot" || command.command.name === "migrated-bot-history") {
     await (await import("./bots/migration-command.js")).runWorkerBotMigration({ botId: uuid(command.values[0]!, "Bot ID"), kind: command.command.name === "migrate-bot" ? "migrate" : "history", confirmed: command.options.has("--confirm") }, context);
     return;
