@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { request, readAuthRequestGeneration } from "../src/api/client";
 import { AccountSessionProvider, useAccountSession } from "../src/app/AccountSessionProvider";
+import { workerLifecycleStorageKey } from '../src/features/workers/lifecycle-storage';
 
 const KEY = "daynight.activeUser";
 const A = "11111111-1111-4111-8111-111111111111";
@@ -26,12 +27,13 @@ class Channel extends EventTarget {
 }
 
 function Consumer() {
-  const { session, sync, requiresRefresh, retryInitialization, retryPublication, signOut } = useAccountSession();
+  const { session, sync, requiresRefresh, retryInitialization, retryPublication, signOut, privateCleanup, retryPrivateCleanup } = useAccountSession();
   return <>
     <output data-testid="session">{session.status === "authenticated" ? `${session.status}:${session.user.id}:${session.generation}` : session.status}</output>
     <output data-testid="refresh">{String(requiresRefresh)}</output>
     <output data-testid="sync">{sync.status === "error" ? `${sync.issue.phase}:${sync.persisted}` : sync.status}</output>
     <output data-testid="cause">{sync.status === "error" && sync.issue.cause instanceof Error ? sync.issue.cause.message : ""}</output>
+    <output data-testid="private-cleanup">{privateCleanup.size}</output><button onClick={retryPrivateCleanup}>retry private cleanup</button>
     <button onClick={retryInitialization}>initialize</button><button onClick={retryPublication}>publish</button><button onClick={() => signOut()}>sign out</button>
   </>;
 }
@@ -51,6 +53,26 @@ beforeEach(() => {
 });
 
 describe("account session owner", () => {
+  it('clears cold lifecycle journals on logout and retries failed removal without a Worker view', async () => {
+    const owned = workerLifecycleStorageKey(location.origin, A, C), other = workerLifecycleStorageKey(location.origin, B, C);
+    sessionStorage.setItem(owned, 'original request'); sessionStorage.setItem(other, 'other account');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? response(user(A)) : new Response(null, { status: 204 })));
+    mount(); await waitFor(() => expect(session()).toBe(`authenticated:${A}:1`));
+    const remove = Storage.prototype.removeItem;
+    const failure = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function(this: Storage, key: string) {
+      if (this === sessionStorage && key === owned) throw new DOMException('Storage removal blocked');
+      return remove.call(this, key);
+    });
+    fireEvent.click(screen.getByText('sign out'));
+    await waitFor(() => expect(session()).toBe('anonymous'));
+    await waitFor(() => expect(screen.getByTestId('private-cleanup')).toHaveTextContent('1'));
+    expect(sessionStorage.getItem(owned)).toBe('original request');
+    failure.mockRestore(); fireEvent.click(screen.getByText('retry private cleanup'));
+    await waitFor(() => expect(screen.getByTestId('private-cleanup')).toHaveTextContent('0'));
+    expect(sessionStorage.getItem(owned)).toBeNull();
+    expect(sessionStorage.getItem(other)).toBe('other account');
+    sessionStorage.removeItem(other);
+  });
   it("initializes once from the server, replaces a stale marker and ignores ordinary same-value events", async () => {
     localStorage.setItem(KEY, JSON.stringify(B));
     const fetcher = vi.fn(async () => response(user(A)));

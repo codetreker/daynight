@@ -71,6 +71,7 @@ export const browserConfigs = [
   'worker-settings-typography-playwright.config.ts',
   'typography-ownership-playwright.config.ts',
   'worker-alias-playwright.config.ts',
+  'worker-lifecycle-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
 ] as const;
 
