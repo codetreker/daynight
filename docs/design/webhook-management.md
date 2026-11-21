@@ -30,7 +30,13 @@ Webhook 管理模块处理 Personal User 和 shared Team 的 endpoint 配置、�
 
 创建事务在来源锁之后、全部权限与 scope 检查通过且写入之前，读取同一 owner 下持有该键的活动 endpoint。存在持有者时返回领域错误 `endpoint_exists`，HTTP 适配映射为 409，不写入效果或回执。调用方当前具有 `webhook:read` 时，错误 details 携带持有者的 `endpointId` 和十进制字符串 `configVersion`；否则不含 details。Team 来源锁以 Team 根串行同一 Team 的创建；Personal owner 没有覆盖全部创建的 owner 级锁。唯一性的最终保证因此是 `webhook_endpoints (owner_kind, owner_id, client_key) WHERE deleted_at IS NULL AND client_key IS NOT NULL` 部分唯一索引。携带键的 endpoint 写入在 savepoint 内执行；索引冲突只回滚该 savepoint，事务随后读取已提交的持有者并返回同一 `endpoint_exists`。持有者在冲突后已被删除时，错误不含 details。
 
-`clientKey` 属于规范化意图指纹：同一操作 ID 的匹配重放返回原结果，同一操作 ID 换用不同键返回 `operation_conflict`。未携带键时指纹编码与引入该字段前相同，既有回执继续匹配；不携带 `clientKey` 的请求行为不变。备选方案与取舍见[创建键决策](../../.agents/notes/implemented/feature/2026-11-21-webhook-endpoint-client-key.md)。
+`clientKey` 属于规范化意图指纹：同一操作 ID 的匹配重放返回原结果，同一操作 ID 换用不同键返回 `operation_conflict`。未携带键时指纹编码与引入该字段前相同，既有回执继续匹配；不携带 `clientKey` 的请求在准入、写入和回执上的行为不变，但其活动 endpoint 响应同样新增该字段。备选方案与取舍见[创建键决策](../../.agents/notes/implemented/feature/2026-11-21-webhook-endpoint-client-key.md)。
+
+### 发布顺序
+
+引入该字段之前发布的 CLI 与 Web 解析器严格拒绝未知字段。新服务在每个活动 endpoint 详情、列表项及创建、更新结果中返回 `clientKey`（未设置时为 `null`），包括没有键的 endpoint，因此旧 CLI 的 `webhook get`、`list`、`create` 和 `update` 都会报告协议错误；创建与更新此时已经提交，调用方只能看到失败。接受该字段的 CLI 同时把缺少字段视为 `null`，可以继续读取旧服务。
+
+因此必须先发布接受 `clientKey` 的 CLI 版本，并升级会调用 Webhook 命令的已安装 CLI（包括 Worker 使用的全局安装），之后才能部署返回该字段的服务。合并源码不会部署服务，但合并后的服务在该 CLI 发布前不得部署。部署后仍在运行旧 Web 包的标签页，其 Webhook 读取会报告协议错误，重新加载后恢复。
 
 ## 目标配置与签名秘密
 

@@ -59,8 +59,14 @@ server already owns.
   receive `endpoint_exists`. Personal creates wait on the unique index rather
   than a lock, and the refused transaction performs one extra read.
 - Every keyed endpoint write pays for a savepoint; unkeyed writes are unchanged.
-- Active endpoint and list projections gain a `clientKey` field. Released CLI
-  and Web parsers that reject unknown fields need the accompanying versions
-  that accept it.
+- Active endpoint and list projections gain a `clientKey` field, `null` for
+  unkeyed endpoints. Released CLI parsers reject unknown fields, so a server
+  returning it breaks every `webhook get`, `list`, `create` and `update` of an
+  older CLI, after create and update have already committed. A CLI that
+  accepts the field, and treats its absence as `null`, must be published and
+  adopted before the server is deployed; the
+  [management design](../../../../docs/design/webhook-management.md#发布顺序)
+  owns that ordering. Omitting the field for unkeyed endpoints would avoid the
+  ordering but give reads two shapes for one meaning.
 - The key carries no server-side meaning; callers choose a namespace that
   cannot collide with their other uses.
