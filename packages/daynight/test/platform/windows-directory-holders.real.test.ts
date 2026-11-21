@@ -15,7 +15,11 @@ const children: ChildProcess[] = [];
 const roots: string[] = [];
 afterEach(async () => {
   for (const child of children.splice(0)) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }).catch(() => undefined);
+  // Windows holds a directory handle briefly after the process that had it as
+  // its working directory exits, which is the window these fixtures sit in the
+  // moment they are killed. Without retries the removal loses that race, the
+  // swallowed failure goes unnoticed, and each run leaves a directory behind.
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => undefined);
 });
 
 /** A live shell whose working directory is `directory`, kept open by `pause`. */
