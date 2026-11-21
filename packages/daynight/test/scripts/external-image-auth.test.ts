@@ -40,13 +40,14 @@ const run: RunCommand = async (command, args, options) => {
   return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
 };
 
-const fixture = async (wrongAppCertificate = false) => {
+const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "session:produce"]) => {
   const base = path.resolve(import.meta.dirname, "../../../../.tmp/external-image-auth-tests"); await mkdir(base, { recursive: true });
   const directory = await mkdtemp(path.join(base, "auth-")); roots.push(directory);
   const appCert = await certificate(directory, "daynight"), providerCert = await certificate(directory, "provider");
   const actualCert = wrongAppCertificate ? await certificate(directory, "untrusted") : appCert;
   if (wrongAppCertificate) expect(new X509Certificate(actualCert.cert).verify(new X509Certificate(appCert.cert).publicKey)).toBe(false);
   let authOrigin = "", appOrigin = "", previewOrigin = "", loginRequests = 0, tokenRequests = 0;
+  let tokenBody: Record<string, unknown> | null = null, tokenOrigin: string | undefined;
   const sso: string[] = [];
   const auth = createHttpServer((request, response) => {
     const route = request.url?.split("?")[0];
@@ -100,11 +101,18 @@ const fixture = async (wrongAppCertificate = false) => {
       sso.push("complete"); response.writeHead(303, { location: `${appOrigin}/auth/complete?returnPath=%2Fprojects` }); response.end();
     } else if (route === "/auth/complete") response.end("ok");
     else if (route === "/service") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ authorization: request.headers.authorization })); }
-    else if (route === "/api/v1/me/tokens" || route === "/api/v1/me") {
+    else if (route === "/api/v1/me" || route === "/api/v1/me/credential-scope-catalog" || route === "/api/v2/me/tokens") {
       tokenRequests++;
       if (!request.headers.cookie?.includes("__Host-daynight_session=fixture")) { response.writeHead(403); response.end(); return; }
-      response.writeHead(route.endsWith("tokens") ? 201 : 200, { "content-type": "application/json" });
-      response.end(JSON.stringify(route.endsWith("tokens") ? { token: "synthetic-token", id: "synthetic-token-id" } : { id: "synthetic-user" }));
+      if (route === "/api/v2/me/tokens") {
+        tokenOrigin = request.headers.origin;
+        const chunks: Buffer[] = [];
+        request.on("data", chunk => chunks.push(Buffer.from(chunk)));
+        request.on("end", () => { tokenBody = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>; response.writeHead(201, { "content-type": "application/json" }); response.end(JSON.stringify({ token: "synthetic-token", id: "synthetic-token-id" })); });
+      } else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(route === "/api/v1/me" ? { id: "synthetic-user" } : { pat: { catalogRevision: "catalog-v1", groups: [{ scopeIds: scopes }] } }));
+      }
     } else { response.writeHead(404); response.end(); }
   });
   const ws = new WebSocketServer({ server: app });
@@ -112,13 +120,14 @@ const fixture = async (wrongAppCertificate = false) => {
   appOrigin = `https://app.daynight.localhost:${await listen(app)}`;
   previewOrigin = appOrigin.replace("app.daynight.localhost", "preview.daynight.localhost");
   const environment = { baseURL: appOrigin, authURL: authOrigin, proxyURL: `http://127.0.0.1:${proxyPort}`, resourceIdentity: { network: "fixture", ingressNetwork: "fixture", applicationContainer: "fixture", postgresContainer: "fixture" }, startServer: async (credentials: { appId: string; appSecret: string }) => { expect(credentials).toEqual({ appId: "synthetic-app", appSecret: "synthetic-secret" }); }, close: async () => {} };
-  return { directory, environment, sso, counts: () => ({ loginRequests, tokenRequests }) };
+  return { directory, environment, sso, counts: () => ({ loginRequests, tokenRequests }), tokenRequest: () => ({ body: tokenBody, origin: tokenOrigin }) };
 };
 
 test("isolated OAuth follows both trusted TLS hosts and preserves secure cookies", async () => {
   const f = await fixture();
   expect(await authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).toEqual({ token: "synthetic-token", tokenId: "synthetic-token-id", userId: "synthetic-user" });
-  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 2 });
+  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 3 });
+  expect(f.tokenRequest()).toEqual({ origin: f.environment.baseURL, body: { expectedUserId: "synthetic-user", name: "External image source regression", expiresAt: expect.any(String), catalogRevision: "catalog-v1", scopes: ["session:read", "session:produce"] } });
   expect(f.sso).toEqual(["start", "authorize", "callback", "complete"]);
 }, 30_000);
 
@@ -126,6 +135,13 @@ test("isolated OAuth rejects an untrusted Daynight TLS certificate before login"
   const f = await fixture(true);
   await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Isolated OAuth HTTP request failed");
   expect(f.counts()).toEqual({ loginRequests: 0, tokenRequests: 0 });
+}, 30_000);
+
+test("isolated OAuth refuses to mint when a required Test Session scope is unavailable", async () => {
+  const f = await fixture(false, ["session:read"]);
+  await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Test Session read and producer scopes");
+  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 2 });
+  expect(f.tokenRequest().body).toBeNull();
 }, 30_000);
 
 test("the namespace forward carries HTTP and WebSocket over verified local TLS", async () => {

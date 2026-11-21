@@ -215,6 +215,10 @@ PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久
 
 活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。原生runtime在welcome取得currentFence，初始同步和events/sync ACK后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
 
+活动 ledger 的状态 GET 与相同身份、offset、hash 和字节的 PUT 复用归档容量退避。仅精确的 HTTP 429 `resource_busy` 可重放；旧服务的早期容量拒绝可缺少 Task body 版本头，成功及其他需校验的响应仍须提供版本。每次请求最多 15 秒，同步轮次从首次拒绝起最多 30 秒、总共最多重试四次；连续 checkpoint 共用预算，每个成功后的新请求从第一档退避开始。发送前与等待后核对连接代次和取消，未知 PUT 结果仍查询原 syncId 的状态；即使重试预算已耗尽，也允许一次最多 15 秒的原身份状态观察，保留原写入错误及未知结果。诊断只记录受限 request ID、Session、等待阶段、次数、延时和错误类别。
+
+图片 prepare 从进入 Controller 起最多等待 checkpoint 10 秒，包括 outbox flush；超时或连接变化走原有暂不可用路径并释放 media block；Markdown 采集取消也会结束其前台等待。Server 不向 Controller 传播独立 HTTP 请求的取消，连接保持时该取消不能提前释放 media block。仍有效的后台同步由原生命周期继续持有，不重放图片操作。具体取舍见[在线 ledger 退避决策](../../.agents/notes/implemented/bug-fix/2026-11-21-online-ledger-backoff.md)。
+
 relay在发送submit的同步调用内再次核对当前epoch的完整checkpoint、最新本地sourceThrough、空outbox及不存在在途事件批次，检查到发送之间不await。服务controller-channel逐帧同步执行Handle，使随后发送的source事件不能越过该submit、提前使账本失效。若等待期间来源前进，submit保持未发送，沿同一冻结request、attempt和outcome重新确认历史；该过程不重读图片来源、不重新stage，也不把暂时的历史等待记成采集失败。
 
 回执是 ImageHistorySyncReceipt 原对象，不加外层 envelope。acceptedOffset 为 0..byteLength 的非负 Decimal，各状态 byteLength/sha256 都是原绑定身份。receiving 的 timelineRevision/error 均 null；complete 要求 acceptedOffset=byteLength、非 null 正 timelineRevision、error=null；failed 的 timelineRevision=null、error 非 null，并保留原 syncId/身份/最后确认偏移。complete 必须经过完整长度/hash、strict JSON、全部 entry 集合/顺序、源连续性、权限/停止条件和 gap 校验，随后按实际总量检查并原子替换完整索引，不能用长度相等代替内容一致。实际内容总量超限的确定失败将原 `quota_exceeded` code 和安全说明写入该 syncId 的 failed 回执；原偏移和身份保留，旧 checkpoint 不被替换。暂时 IO 故障保持 receiving；提交结果未知先查询同一 syncId，不能据失败响应或超时推断回滚或更换身份。
