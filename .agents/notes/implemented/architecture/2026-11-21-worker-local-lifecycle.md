@@ -32,7 +32,11 @@ owned command or Bot CLI probe, including original initialization, its in-flight
 close and terminal save;
 it does not wait for a whole producer whose Git jobs may require that same
 reconciliation to finish. Individual failures retain unknown responsibility
-without preventing other resources from reconciling.
+without preventing other resources from reconciling. Windows probes that assigned
+the original guardian to a Job, terminated that Job and confirmed it empty still
+join the guardian, streams and handles, but do not issue a second direct
+termination against the exited process. Initialization without a successful Job
+assignment retains its original guardian cleanup.
 
 Local disable saves its veto before IPC or network access. IPC wakes the original
 manager and does not stand in for resource evidence. An unavailable manager permits

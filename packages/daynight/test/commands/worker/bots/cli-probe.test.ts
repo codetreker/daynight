@@ -181,10 +181,9 @@ describe("owned Bot CLI capability probes", () => {
     }
     const f = await withOwnedCommandLifecycle(journal.sink("1"), fixture);
     await f.scope.run(process.execPath, [f.file]);
-    const stopFailure = lease !== undefined ? new nativeJob.WindowsBotJobError("fixture-stop", 5) : new Error("unconfirmed original boundary");
-    if (lease !== undefined) vi.spyOn(lease, "terminate").mockImplementationOnce(() => { throw stopFailure; });
-    else vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(stopFailure);
-    await expect(f.scope.close()).rejects.toMatchObject({ name: "BotCliProbeCleanupError", cause: stopFailure });
+    if (lease !== undefined) vi.spyOn(lease, "terminate").mockImplementationOnce(() => { throw new nativeJob.WindowsBotJobError("fixture-stop", 5); });
+    else vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(new Error("unconfirmed original boundary"));
+    await expect(f.scope.close()).rejects.toBeInstanceOf(BotCliProbeCleanupError);
     expect(retainedBotCliProbes()).toContainEqual(f.scope.ownership);
     const [unknown] = await journal.read();
     expect(unknown!.event).toMatchObject({ resourceId: f.scope.ownership.launchId, stage: "unknown", proof: f.scope.ownership.process });

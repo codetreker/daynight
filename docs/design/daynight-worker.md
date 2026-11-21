@@ -60,7 +60,7 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 
 正常 Worker 路径通过 `withOwnedCommandLifecycle` 注入 `execution-resources/` 私有持久库存。每资源 JSON 绑定服务、账号、Worker、代际和单调事件序号，以文件同步、原子替换及目录屏障保存 `prepared/bound/stopped/unknown`。旧事件不能覆盖新事实，迟到 unknown 不能撤销已证明的停止；替换已成功但目录屏障失败时，核对原事实并补完屏障后才能确认保存。重启后缺少原出生证明或 Windows lease 的责任保持未知，不能只因 PID 不存在清空库存。原 claim、worktree、HEAD/index、Session、journal 和未知业务操作仍由各自原记录拥有；停止不执行 stash、commit、reset 或删除现场。
 
-管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
+管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。 Windows Bot probe 已将原 guardian 成功分配给 Job，并通过该 Job 终止且确认其清空后，只继续等待原 guardian 退出、流关闭和句柄释放，不再次单独终止已退出的进程；尚未将 guardian 成功分配给 Job 的初始化失败仍由原 guardian 关闭路径负责。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
 
 首次 `prepared` 保存前即保留原生产者的未启动责任。保存失败或原写入尚未完成时，管理侧只 join 同一写入，并凭原生产者确认未启动的事实补完原持久记录和终态保存，不重新派发命令。该凭据仅属于原进程内的具体资源和代际；重启后任意 `proof: null` 记录仍不能据此推断没有进程。
 

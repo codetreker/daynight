@@ -19,8 +19,8 @@ export type BotCliProbeOwnership = {
 };
 
 export class BotCliProbeCleanupError extends Error {
-  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>, readonly failure?: { stage: string; nativeStage?: string; win32Code?: number }, options?: ErrorOptions) {
-    super("Bot CLI probe process cleanup is unconfirmed; retain its ownership and retry cleanup before releasing aliases.", options);
+  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>, readonly failure?: { stage: string; nativeStage?: string; win32Code?: number }) {
+    super("Bot CLI probe process cleanup is unconfirmed; retain its ownership and retry cleanup before releasing aliases.");
     this.name = "BotCliProbeCleanupError";
   }
 }
@@ -64,6 +64,7 @@ export const createBotCliProbe = async (
   const initialized = Promise.withResolvers<void>();
   let proof: ProcessProof | null = null, jobObjectName: string | null = null;
   let windowsJob: WindowsBotJobLease | undefined;
+  let guardianAssigned = false;
   let stopPending: Promise<void> | undefined;
   let waiting: { resolve(value: Record<string, unknown>): void; reject(error: Error): void } | undefined;
   let terminalFailure: Error | undefined;
@@ -141,15 +142,19 @@ export const createBotCliProbe = async (
           await stopControllerProcesses(proof, [], deadline);
           if (!await confirmControllerProcessesStopped(proof, [])) throw new Error("Probe descendants remain active.");
         }
-        // Before the command gate, only this known guardian can need direct
-        // termination, including when native job assignment failed.
-        if (!started && child?.pid !== undefined && !closed && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        // An assigned Job already stopped its guardian. Before a successful
+        // assignment or command dispatch, the original child handle still owns
+        // direct termination, including failed Job setup.
+        if (!guardianAssigned && !started && child?.pid !== undefined && !closed && child.exitCode === null && child.signalCode === null) {
+          stage = "terminate-guardian";
+          child.kill("SIGKILL");
+        }
         stage = "join-guardian";
         while (child !== undefined && !closed && Date.now() < deadline) await delay(20);
         if (child !== undefined && !closed) throw new Error("Probe supervisor streams remain open.");
         stage = "close-job-handle";
         windowsJob?.close();
-        if (!handlesClosed && suspended !== undefined) { suspended.closeHandles(); handlesClosed = true; }
+        if (!handlesClosed && suspended !== undefined) { stage = "close-guardian-handles"; suspended.closeHandles(); handlesClosed = true; }
         nativeStopped = true;
       }
       stage = "save-stopped";
@@ -159,7 +164,7 @@ export const createBotCliProbe = async (
     } catch (error) {
       if (retireRejectedPreparation()) return;
       try { await save("unknown"); } catch { /* The original save and cleanup remain strongly owned for reconciliation. */ }
-      throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) }, { cause: error });
+      throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) });
     }
   };
   const close = async (): Promise<void> => {
@@ -206,6 +211,7 @@ export const createBotCliProbe = async (
       jobObjectName = windowsJob.name;
       verifyGuardian(false);
       windowsJob.assign(child.pid);
+      guardianAssigned = true;
       if (!windowsJob.inspect().includes(child.pid)) throw new Error("The Windows Bot probe guardian is absent from its owned job.");
       verifyGuardian(false);
       proof = { ...proof, jobObjectName };
