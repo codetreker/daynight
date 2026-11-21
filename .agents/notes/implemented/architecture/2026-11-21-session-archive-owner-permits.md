@@ -16,7 +16,8 @@ The [archive residency decision](2026-11-07-session-archive-residency.md)
 retains instance and original-owner admission and operation lifetime. An owner
 permit admits different Sessions up to its supplied limit, excludes duplicate
 Session operations, and grants physical cleanup exclusive access to the owner.
-Production admission continues to use one instance slot and one owner slot.
+The [capacity configuration decision](2026-11-21-session-archive-capacity.md)
+sets the production instance and owner limits independently.
 
 Standalone gates check and reserve under one process-local lock. Redis keeps the
 existing owner residency key and string type. A versioned value represents

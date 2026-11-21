@@ -776,3 +776,90 @@ func TestArchiveOwnerMultipleSessionsAndCleanupAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestConfiguredArchiveCapacity(t *testing.T) {
+	s := archiveAdmissionFixture(t, t.TempDir())
+	s.Engine = NewEngine(s.files, ArchiveLimits{MaxConcurrent: 20, MaxConcurrentPerOwner: 5})
+	assertStage := func(err error, stage string) {
+		t.Helper()
+		requireArchiveBusy(t, err)
+		var capacity *ArchiveCapacityError
+		if !errors.As(err, &capacity) || capacity.Stage != stage {
+			t.Fatalf("capacity stage = %v, want %s", err, stage)
+		}
+		if got := capacity.Error(); got != "Session archive capacity is unavailable." {
+			t.Fatalf("capacity error = %q", got)
+		}
+	}
+	begin := func(owner string) (*ArchiveOperation, error) {
+		return s.BeginArchive(t.Context(), model.Principal{UserID: owner}, "", "", uuid.NewString(), ArchiveV1Read)
+	}
+	owner := uuid.NewString()
+	held := make([]*ArchiveOperation, 0, 20)
+	for i := 0; i < 5; i++ {
+		op, err := begin(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err := begin(owner)
+	assertStage(err, "owner_busy")
+	for i := 5; i < 20; i++ {
+		op, err := begin(uuid.NewString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, op)
+	}
+	_, err = begin(uuid.NewString())
+	assertStage(err, "instance_full")
+	if err := held[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := begin(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range held[1:] {
+		if err := op.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reservations := make([]*ArchivePreflightReservation, 0, 20)
+	for i := 0; i < 20; i++ {
+		r, err := s.TryReserveArchivePreflight()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservations = append(reservations, r)
+	}
+	_, err = s.TryReserveArchivePreflight()
+	assertStage(err, "preflight_full")
+	for _, r := range reservations {
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNewEngineRejectsInvalidArchiveLimits(t *testing.T) {
+	for _, limits := range [][]ArchiveLimits{
+		{{MaxConcurrent: 0, MaxConcurrentPerOwner: 5}},
+		{{MaxConcurrent: 20, MaxConcurrentPerOwner: 0}},
+		{{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}, {MaxConcurrent: 2, MaxConcurrentPerOwner: 2}},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("invalid limits did not panic: %+v", limits)
+				}
+			}()
+			NewEngine(nil, limits...)
+		}()
+	}
+}

@@ -40,6 +40,10 @@ oauth:
 webhook:
   enabled: false
 
+session:
+  archive_max_concurrent: 20
+  archive_max_concurrent_per_owner: 5
+
 task_sync:
   overlap: 10s
 

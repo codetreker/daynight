@@ -19,7 +19,7 @@ import (
 
 func TestScopedBotCreationUsesInternalDiscoveryAuthority(t *testing.T) {
 	_, db, _, owner := testsupport.ProjectService(t)
-	app, err := NewScoped(db, nil, nil, "", nil, time.Second, "https://daynight.test", nil)
+	app, err := NewScoped(db, nil, nil, "", nil, time.Second, "https://daynight.test", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

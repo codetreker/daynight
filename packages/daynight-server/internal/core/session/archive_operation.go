@@ -90,11 +90,11 @@ func (s *Execution) TryReserveArchivePreflight() (*ArchivePreflightReservation, 
 	select {
 	case s.archivePreflightSlots <- struct{}{}:
 	default:
-		return nil, archiveBusy()
+		return nil, archiveBusy("preflight_full")
 	}
 	if len(s.archiveSlots) == cap(s.archiveSlots) {
 		<-s.archivePreflightSlots
-		return nil, archiveBusy()
+		return nil, archiveBusy("instance_full")
 	}
 	return &ArchivePreflightReservation{engine: s.Engine}, nil
 }
@@ -169,7 +169,7 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
-		return nil, archiveBusy()
+		return nil, archiveBusy("instance_full")
 	}
 	admitted := false
 	defer func() {
@@ -191,7 +191,7 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	permit, err := s.files.TryAcquireArchive(ctx, owner, sessionID, s.archiveOwnerLimit, false)
 	if err != nil {
 		if onlyArchiveGateBusy(err) {
-			return nil, errors.Join(archiveBusy(), err)
+			return nil, errors.Join(archiveBusy("owner_busy"), err)
 		}
 		return nil, err
 	}
@@ -199,7 +199,18 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	return &ArchiveOperation{execution: s, principal: p, project: project, task: taskID, id: id, owner: owner, mode: mode, permit: permit}, nil
 }
 
-func archiveBusy() error { return fault("resource_busy", "Session archive capacity is unavailable.") }
+// ArchiveCapacityError identifies the admission stage while preserving the public fault.
+type ArchiveCapacityError struct {
+	Stage string
+	Cause error
+}
+
+func (e *ArchiveCapacityError) Error() string { return e.Cause.Error() }
+func (e *ArchiveCapacityError) Unwrap() error { return e.Cause }
+
+func archiveBusy(stage string) error {
+	return &ArchiveCapacityError{Stage: stage, Cause: fault("resource_busy", "Session archive capacity is unavailable.")}
+}
 
 func (op *ArchiveOperation) Close() error {
 	if op == nil {

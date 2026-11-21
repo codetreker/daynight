@@ -119,7 +119,11 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	if _, ok := database.(store.AssistantTaskInboundWriter); !ok {
 		unavailable = append(unavailable, "assistant-task:inbox")
 	}
-	modules, scopeErr := application.NewScoped(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, c.Server.PublicOrigin, unavailable, capture...)
+	if err := c.Session.Validate(); err != nil {
+		return &App{ScopeError: err}
+	}
+	archiveLimits := &coresession.ArchiveLimits{MaxConcurrent: c.Session.MaxConcurrent, MaxConcurrentPerOwner: c.Session.MaxConcurrentPerOwner}
+	modules, scopeErr := application.NewScoped(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, c.Server.PublicOrigin, unavailable, archiveLimits, capture...)
 	if scopeErr != nil {
 		return &App{ScopeError: scopeErr}
 	}

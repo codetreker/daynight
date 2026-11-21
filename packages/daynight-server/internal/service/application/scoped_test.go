@@ -19,7 +19,7 @@ func TestScopedApplicationRetainsPolicySourcesAndSharedEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewScoped(database, files, nil, callback, preview, time.Second, origin, []scopepolicy.ScopeID{"webhook:deliver"})
+	app, err := NewScoped(database, files, nil, callback, preview, time.Second, origin, []scopepolicy.ScopeID{"webhook:deliver"}, nil)
 	if err != nil || app == nil || app.Scoped == nil {
 		t.Fatalf("scoped assembly: app=%v error=%v", app, err)
 	}
@@ -41,7 +41,7 @@ func TestScopedApplicationRetainsPolicySourcesAndSharedEngine(t *testing.T) {
 }
 
 func TestScopedApplicationRejectsMissingWorkerPromptReader(t *testing.T) {
-	app, err := NewScoped(nil, nil, nil, "https://daynight.test/callback", nil, time.Second, "https://daynight.test", nil)
+	app, err := NewScoped(nil, nil, nil, "https://daynight.test/callback", nil, time.Second, "https://daynight.test", nil, nil)
 	if app != nil || err == nil || !strings.Contains(err.Error(), "worker prompt snapshot reader is required") {
 		t.Fatalf("missing transaction dependency published a partial application: app=%v error=%v", app, err)
 	}

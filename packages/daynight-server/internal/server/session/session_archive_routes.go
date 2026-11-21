@@ -28,7 +28,7 @@ func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(Pr
 		for method, handler := range map[string]httpx.AuthenticatedHandler{"GET": h.archiveStatus, "POST": h.updateArchive, "PUT": h.putArchive} {
 			route := h.auth.Require(h.Parameters(handler, method == http.MethodGet))
 			if method == http.MethodPut {
-				route = h.archivePreflight(route)
+				route = h.archivePreflight(route, archiveVersionNone)
 			}
 			if method == http.MethodPost || method == http.MethodPut {
 				registerProducerRoute(mux, method+" "+base, route, producerCredential, observe)
@@ -36,7 +36,7 @@ func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(Pr
 				mux.HandleFunc(method+" "+base, route)
 			}
 		}
-		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent, true))))
+		mux.HandleFunc("GET "+base+"/content", h.archivePreflight(h.auth.Require(h.Parameters(h.archiveContent, true)), archiveVersionRequested))
 		for path, methods := range map[string]string{base: "GET, POST, PUT", base + "/content": "GET"} {
 			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				httpx.MethodNotAllowed(h.logger, methods)(w, r)
@@ -54,7 +54,15 @@ func (h *Routes) registerArchiveRoutes(mux httpx.RouteRegistrar, observe func(Pr
 
 type archiveReservationKey struct{}
 
-func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
+type archiveVersionAdvertisement int
+
+const (
+	archiveVersionNone archiveVersionAdvertisement = iota
+	archiveVersionKnown
+	archiveVersionRequested
+)
+
+func (h *Routes) archivePreflight(next http.HandlerFunc, version archiveVersionAdvertisement) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Downloads do not consume request bodies. Prevent net/http from
 		// draining an incomplete body before writing the response or after it.
@@ -63,6 +71,15 @@ func (h *Routes) archivePreflight(next http.HandlerFunc) http.HandlerFunc {
 		}
 		reservation, err := h.service.TryReserveArchivePreflight()
 		if err != nil {
+			// These routes are v1 Task body capable; /content is shared with
+			// legacy and v2 archives, so it additionally requires the request's
+			// explicit Task body capability selector.
+			protocol, protocolErr := selectedSessionProtocol(r)
+			requested := r.Header.Values("Daynight-Task-Body-History-Version")
+			if httpx.ErrorKind(err) == "resource_busy" && protocolErr == nil && protocol == sp.Protocol &&
+				(version == archiveVersionKnown || version == archiveVersionRequested && len(requested) == 1 && requested[0] == "1") {
+				w.Header().Set("Daynight-Task-Body-History-Version", "1")
+			}
 			httpx.CloseUnreadBody(w, r)
 			h.Failure(w, r, err)
 			return

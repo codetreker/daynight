@@ -132,6 +132,7 @@ type Application struct {
 }
 
 type constructors struct {
+	archiveLimits    *sessioncore.ArchiveLimits
 	identity         func(store.IdentityWriter, *uniauth.Client, string, *identity.PreviewSSO) *identity.Identity
 	taskObservations func(store.SnapshotReader, task.SessionObserver) *task.Observations
 	projects         func(store.Transactions, *sessioncore.Engine) *project.AppProjects
@@ -141,7 +142,12 @@ type constructors struct {
 }
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, capture ...task.Capturer) *Application {
+	return newWithArchiveLimits(database, files, client, callbackURL, preview, overlap, nil, capture...)
+}
+
+func newWithArchiveLimits(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, limits *sessioncore.ArchiveLimits, capture ...task.Capturer) *Application {
 	return assemble(database, files, client, callbackURL, preview, overlap, constructors{
+		archiveLimits:    limits,
 		identity:         identity.NewWithPreviewSSO,
 		taskObservations: task.NewObservations,
 		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
@@ -160,7 +166,12 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	if len(capture) != 0 && capture[0] != nil {
 		capturer = capture[0]
 	}
-	engine := sessioncore.NewEngine(files)
+	var engine *sessioncore.Engine
+	if construct.archiveLimits == nil {
+		engine = sessioncore.NewEngine(files)
+	} else {
+		engine = sessioncore.NewEngine(files, *construct.archiveLimits)
+	}
 	oauthAuthenticator := oauth.NewAuthenticator(database)
 	workerReadOnly := worker.NewReadOnly(database, oauthAuthenticator.RecheckAPIAccess)
 	sessions := session.New(database, engine)

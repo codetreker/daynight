@@ -134,7 +134,7 @@ func run(ctx context.Context, args []string, lookup func(string) (string, bool),
 		httpx.LogFailure(logger, ctx, "configuration", phase, err)
 		return 1
 	}
-	logger.InfoContext(ctx, "configuration_loaded", "event", "configuration_loaded", "component", "configuration", "local_override_loaded", cfg.LocalOverrideLoaded)
+	logger.InfoContext(ctx, "configuration_loaded", "event", "configuration_loaded", "component", "configuration", "local_override_loaded", cfg.LocalOverrideLoaded, "session_archive_max_concurrent", cfg.Session.MaxConcurrent, "session_archive_max_concurrent_per_owner", cfg.Session.MaxConcurrentPerOwner)
 	if output.Err() != nil {
 		return 1
 	}

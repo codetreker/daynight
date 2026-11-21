@@ -31,7 +31,7 @@ func (s *archiveRuntimeStore) ListArchiveCleanup(ctx context.Context, cursor str
 
 func TestArchiveCleanupApplicationLifecycle(t *testing.T) {
 	db := &archiveRuntimeStore{entered: make(chan struct{}), release: make(chan struct{}), exited: make(chan struct{})}
-	app := NewModules(config.Config{}, db, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, nil, nil, nil)
 	if err := app.assembleArchiveCleanup(db, nil, nil); err != nil {
 		t.Fatal(err)
 	}

@@ -208,7 +208,15 @@ func (h *Routes) Parameters(next httpx.AuthenticatedHandler, scopedRead ...bool)
 	}
 }
 func (h *Routes) Failure(w http.ResponseWriter, r *http.Request, err error) {
-	httpx.WriteError(w, r, h.logger, "session", "relay", err)
+	phase := "relay"
+	var capacity *sessioncore.ArchiveCapacityError
+	if errors.As(err, &capacity) && httpx.ErrorKind(err) == "resource_busy" {
+		switch capacity.Stage {
+		case "preflight_full", "instance_full", "owner_busy":
+			phase = capacity.Stage
+		}
+	}
+	httpx.WriteError(w, r, h.logger, "session", phase, err)
 }
 func (h *Routes) channelAdmissionFailure(w http.ResponseWriter, r *http.Request, err error) {
 	var fault *model.Fault

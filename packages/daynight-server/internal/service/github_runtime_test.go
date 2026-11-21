@@ -66,7 +66,7 @@ func TestGitHubProductionAssemblyStartsAndDrains(t *testing.T) {
 	scans := make(chan struct{}, 1)
 	adminReads := 0
 	db := githubAssemblyStore{scans: scans, adminReads: &adminReads}
-	app := NewModules(config.Config{}, db, func(context.Context) error { return nil }, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, func(context.Context) error { return nil }, nil, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := app.assembleGitHub(db, logger); err != nil {
 		t.Fatal(err)
@@ -250,7 +250,7 @@ type githubAssemblyWithoutAdminStore struct {
 }
 
 func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
-	app := NewModules(config.Config{}, compositionOnlyStore{}, func(context.Context) error { return nil }, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, func(context.Context) error { return nil }, nil, nil)
 	if err := app.assembleGitHub(nil, slog.Default()); err == nil {
 		t.Fatal("missing App store accepted")
 	}
@@ -268,7 +268,7 @@ func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
 func TestGitHubAssemblyExposesSupervisorFailureThroughReadiness(t *testing.T) {
 	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
 	baseErr := errors.New("database unavailable")
-	app := NewModules(config.Config{}, db, func(context.Context) error { return baseErr }, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, func(context.Context) error { return baseErr }, nil, nil)
 	if err := app.assembleGitHub(db, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
