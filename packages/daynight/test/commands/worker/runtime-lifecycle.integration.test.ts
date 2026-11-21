@@ -139,7 +139,12 @@ it("waits for the Worker heartbeat receipt before registering lifecycle authorit
     expect(api.register).toHaveBeenCalledOnce();
     expect(remote.report).toHaveBeenCalledOnce();
     expect(f.state()).toMatchObject({ admission: "closed", phase: "disabled" });
-  } finally { receipt.resolve({ observedAt: time, lastReportedAt: time }); execution.cancellation.abort(); await execution.running; }
+  } finally {
+    receipt.resolve({ observedAt: time, lastReportedAt: time });
+    execution.cancellation.abort();
+    await expect(execution.running).rejects.toMatchObject({ name: "AbortError", cause: execution.cancellation.signal.reason });
+  }
+  await released(f);
 });
 
 describe("Worker lifecycle runtime assembly", () => {
