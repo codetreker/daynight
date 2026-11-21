@@ -339,7 +339,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     catch (error) { if (!missing(error) || await directory(target) !== null) throw error; }
     operation.check();
   };
-  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation): Promise<void> => {
+  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation, policy: WorkerCleanupPolicy | null = null): Promise<void> => {
     const parents = [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")];
     const target = path.join(parents[1]!, uuid(directoryName, "Worktree directory"));
     const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
@@ -363,12 +363,27 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       // and every retry share this function so they cannot diverge.
       for (const [entry, expected] of directories) if (await directory(entry) !== expected) throw new Error(`Worktree reservation directory ${entry} changed before cleanup.`);
     };
-    await verifyReservation();
-    await removeEmptyDirectory(target, operation, async () => {
+    const admitReservation = async (): Promise<void> => {
       operation.check();
       await verifyReservation();
       operation.check();
-    });
+    };
+    await verifyReservation();
+    try { await removeEmptyDirectory(target, operation, admitReservation); }
+    catch (ordinaryError) {
+      // A reservation is an ordinary managed directory, so a live process can
+      // hold it exactly as it holds a registered worktree. `verifyReservation`
+      // already rechecks its identities after the registration scan, which is
+      // the evidence an irreversible termination needs.
+      if (!busy(ordinaryError) || process.platform !== "win32" || policy?.enableWindowsProcessCleanup !== true) throw ordinaryError;
+      try {
+        await admitReservation();
+        await (optionsForProcessStop)(target, operation);
+        await admitReservation();
+        await removeEmptyDirectory(target, operation, admitReservation);
+        operation.check();
+      } catch (error) { throw new AggregateError([ordinaryError, error], `Reservation process cleanup failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+    }
     if (await directory(target) !== null || (await registrations(repository, target, operation)).length > 0) throw new Error("The unregistered task reservation removal is incomplete.");
   };
   const scanWorktrees = async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false, settled: readonly OwnedWorktree[] = []): Promise<WorktreeScan> => {
@@ -502,7 +517,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const repository = await requirePrepared(project, operation), identity = coordinates(owner);
       if (manifestFor(project, identity, repository) !== null) throw new Error("The original worktree has a published manifest; reservation cleanup is prohibited.");
       if (createWorktreeManifestStore(repository.commonDirectory).list().some(manifest => manifest.directoryName === identity.worktreeId)) throw new Error("The worktree reservation belongs to another published manifest.");
-      await removeEmptyReservation(repository, identity.worktreeId, operation);
+      await removeEmptyReservation(repository, identity.worktreeId, operation, optionsForCleanupPolicy?.() ?? null);
     },
     verifyWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
       const repository = await requirePrepared(project, operation);
@@ -614,7 +629,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
               }
               if (result === null) throw new Error("The original worktree manifest is missing; resource removal cannot be authorized.");
               if (result.registration === null) {
-                if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation);
+                if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation, policy);
                 return;
               }
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {

@@ -515,6 +515,49 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.skipIf(process.platform !== "win32")("terminates the processes holding a persistently busy reservation and completes cleanup", async () => {
+    const f = await repositoryFixture("files");
+    const stopped: string[] = [];
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async target => { stopped.push(path.normalize(target)); return { observed: [{ pid: 915, image: "node.exe", directory: target }], terminated: [915] }; },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      // A reservation is held exactly as a registered worktree is; only
+      // termination releases it.
+      if (stopped.length === 0) throw busyError();
+      return actualFs.rmdir(entry, options);
+    });
+    await adapter.removeUnpublishedReservation(f.project, f.owner, operation());
+    expect(stopped).toEqual([owned]);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "win32")("retains a busy reservation and terminates nothing when the target is not applied", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: false, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async () => { stops++; return { observed: [], terminated: [] }; },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      throw busyError();
+    });
+    await expect(adapter.removeUnpublishedReservation(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(stops).toBe(0);
+    expect((await lstat(target)).isDirectory()).toBe(true);
+  });
+
   it("rejects a reservation replaced during the busy backoff instead of removing its replacement", async () => {
     const f = await repositoryFixture("files"), adapter = manager(f.root);
     await adapter.prepareRepository(f.project, operation());

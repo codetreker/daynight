@@ -104,6 +104,21 @@ every remaining check. Terminating that unrelated process tree cannot be undone
 by the identity failure that follows, so the recovery uses the verifier that
 rechecks the identities after the reads, as ordinary root removal already does.
 
+### Every busy removal, not only the registered worktree
+
+Cleanup removes three managed directories, and all three can be held: the
+worktree contents, the worktree root, and an unregistered reservation left
+when a task path has a directory but no Git registration. The first two are
+one sequence and share the main recovery. The reservation is reached through
+its own path and had none, so an operator who enabled the target would still
+have seen cleanup stop there.
+
+It is admitted through its existing verifier, which already rechecks the
+reservation identities after its asynchronous registration scan and is
+therefore the strong form this action needs. The inaccessible-worktree branch
+is deliberately not included: it recovers permission obstacles, which this
+target does not authorize.
+
 ## Alternatives
 
 **Use the Restart Manager to find the holders.** `RmStartSession`,
