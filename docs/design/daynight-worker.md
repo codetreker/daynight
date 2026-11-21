@@ -74,11 +74,11 @@ Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁�
 
 `lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、实例 epoch 与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
 
-业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。
+业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
 
 本地入口为 `daynight worker disable --worker-id <uuid> --local --confirm --json`。命令在唤醒管理根之前提交本机否决；网络失败不能撤销该否决。IPC 只传原身份、操作 ID 和管理动作，回执仅确认受理；实际结果从原 SQLite 读取。原管理根不可达且请求明确尚未发出时，管理命令仅尝试取得空闲实例锁核对原责任，不接管占用的锁，也不建立业务作用域。私有 IPC 凭据不能出现在 URL、任务材料或日志中。
 
-管理根保留生命周期观察、原操作结果查询、停止和保存通道。独立心跳仅报告管理连接及已有事实；它不启动能力探测。凭据缺失时，显式管理 owner 仍可依据原私有身份尝试本地停止和保存；网络方法在发送前明确拒绝，原云端责任继续保留。关闭期间不得运行清理 prompt、Reviewer 工作、assistant 续期、接管或事件投递。停用保留原 claim、worktree、分支、HEAD/index、Session、native ID、独立暂停和恢复预算，不自动 stash、commit、reset、release 或删除现场。
+管理根保留生命周期观察、原操作结果查询、停止和保存通道。独立心跳仅报告管理连接及已有事实；它不启动能力探测。 实例注册前，管理根先取得同一 Worker 轻量心跳的成功回执，确保服务端 Worker 记录已经存在。因 Worker 记录不存在而明确拒绝的实例注册保留原账本；重新确认此前置后才允许作出新的注册决策，其他拒绝不能借此重试。submitted/unknown 注册继续按原 operationId 查询和 resolve，不得换 ID 绕过未知结果。凭据缺失时，显式管理 owner 仍可依据原私有身份尝试本地停止和保存；网络方法在发送前明确拒绝，原云端责任继续保留。关闭期间不得运行清理 prompt、Reviewer 工作、assistant 续期、接管或事件投递。停用保留原 claim、worktree、分支、HEAD/index、Session、native ID、独立暂停和恢复预算，不自动 stash、commit、reset、release 或删除现场。
 
 `daynight worker lifecycle show --worker-id <uuid> --local --json` 只读完整私有库存。`phase`、`stop`、`save`、`sync` 是独立事实：仅库存完整、原责任全部闭合且保存完成，才能确认本机停止；云端未收到观测仍单独报告同步未完成。云端明细可按条数限制截断，但总数、库存摘要与 `detailsComplete` 保留该区别，本机查询不使用展示截断证明完整。outbox 固定原序列及正文；原回执或更高权威覆盖后才能退休，重传同序列不刷新原观测时间。
 

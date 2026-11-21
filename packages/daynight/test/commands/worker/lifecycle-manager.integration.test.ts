@@ -77,15 +77,15 @@ const fixture = () => {
     operation: vi.fn(async (operationId: string) => { const result = receipts.get(operationId); if (result === undefined) throw missing(); return structuredClone(result); }),
     resolve: vi.fn(async (request: LifecycleResolveRequest) => { const result = receipts.get(request.request.operationId); if (result === undefined) throw new Error("Fixture requires an explicit original resolution."); return structuredClone(result); }),
   };
-  const resources = vi.fn(async (_deadline: number) => {});
-  const manager = createLifecycleManager({ store, api, platform: "macos", signal: cancellation.signal, reconcileResources: resources, reportError: error => { errors.push(error); } });
+  const resources = vi.fn(async (_deadline: number) => {}), registration = vi.fn(async () => {});
+  const manager = createLifecycleManager({ store, api, platform: "macos", signal: cancellation.signal, reconcileResources: resources, ensureWorkerRegistered: registration, reportError: error => { errors.push(error); } });
   let closed = false;
   const dispose = async () => {
     if (closed) return; closed = true; cancellation.abort(new Error("Fixture stopped"));
     try { await manager.close(); } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
   };
   cleanups.push(dispose);
-  return { directory, file, store, api, manager, cancellation, errors, receipts, resources, dispose, readStarted,
+  return { directory, file, store, api, manager, cancellation, errors, receipts, resources, registration, dispose, readStarted,
     cloud: () => structuredClone(cloud), setCloud: (value: Partial<LifecycleResource>) => { cloud = { ...cloud, ...value }; },
     blockReads: (work: Promise<LifecycleResource>) => { readGate = work; },
     onActivation: (hook: typeof activationHook) => { activationHook = hook; },
@@ -270,6 +270,57 @@ describe("Worker lifecycle management with real local authority", () => {
     } finally { cancellation.abort(); await manager.close(); }
   });
 
+  it("retains a missing-Worker refusal and resumes only after registration succeeds again", async () => {
+    const f = fixture();
+    vi.mocked(f.api.register).mockRejectedValueOnce(missing());
+    await expect(f.manager.initializeForControl()).rejects.toThrow();
+    const original = f.store.listOperations().find(operation => operation.kind === "instance")!;
+    expect(original).toMatchObject({ status: "rejected", receipt: { status: 404 } });
+    f.registration.mockRejectedValueOnce(missing());
+    await expect(f.manager.initializeForControl()).rejects.toThrow();
+    expect(f.api.register).toHaveBeenCalledOnce();
+    expect(f.store.readOperation(original.operationId)).toEqual(original);
+
+    f.store.closeAdmission({ operationId: id(60), local: true });
+    await f.manager.resume(id(61));
+    expect(f.registration).toHaveBeenCalledTimes(3);
+    expect(f.registration).toHaveBeenLastCalledWith(true);
+    expect(f.api.register).toHaveBeenCalledTimes(2);
+    const replacement = vi.mocked(f.api.register).mock.calls[1]![0];
+    expect(replacement.operationId).not.toBe(original.operationId);
+    expect(replacement.previousInstanceEpoch).toBeNull();
+    expect(f.store.readOperation(original.operationId)).toEqual(original);
+    expect(f.store.readOperation(replacement.operationId)?.status).toBe("confirmed");
+    expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false });
+    expect(f.store.readOperation(id(61), "activation")?.status).toBe("confirmed");
+  });
+
+  it("preserves a registration refusal unrelated to the Worker existence prerequisite", async () => {
+    const f = fixture();
+    vi.mocked(f.api.register).mockRejectedValueOnce(new ApiError({ operation: "test.lifecycle" }, "response", { status: 403, confirmedRefusal: true }));
+    await expect(f.manager.initializeForControl()).rejects.toThrow();
+    const original = f.store.listOperations().find(operation => operation.kind === "instance")!;
+    await expect(f.manager.initializeForControl()).rejects.toThrow("Original management registration remains unresolved or was refused.");
+    expect(f.registration).toHaveBeenCalledOnce();
+    expect(f.api.register).toHaveBeenCalledOnce();
+    expect(f.store.readOperation(original.operationId)).toEqual(original);
+  });
+
+  it("does not replace an unresolved registration when the Worker prerequisite is available", async () => {
+    const f = fixture();
+    vi.mocked(f.api.register).mockRejectedValueOnce(unknown());
+    vi.mocked(f.api.resolve).mockRejectedValue(unknown());
+    await expect(f.manager.initializeForControl()).rejects.toThrow();
+    const original = f.store.listOperations().find(operation => operation.kind === "instance")!;
+    await expect(f.manager.initializeForControl()).rejects.toThrow();
+    expect(f.registration).toHaveBeenCalledOnce();
+    expect(f.api.register).toHaveBeenCalledOnce();
+    expect(f.api.operation).toHaveBeenCalledExactlyOnceWith(original.operationId, f.cancellation.signal);
+    expect(f.api.resolve).toHaveBeenCalledExactlyOnceWith({ protocolVersion: 1, requestKind: "instance", request: original.request }, f.cancellation.signal);
+    expect(f.store.listOperations().filter(operation => operation.kind === "instance")).toEqual([original]);
+    expect(f.store.readState().admission).toBe("closed");
+  });
+
   it("keeps the same registration after its committed response is lost during control initialization", async () => {
     const f = fixture(), register = vi.mocked(f.api.register).getMockImplementation()!;
     vi.mocked(f.api.register).mockImplementation(async request => { await register(request); throw unknown(); });
@@ -279,6 +330,7 @@ describe("Worker lifecycle management with real local authority", () => {
     const binding = await f.manager.initializeForControl();
     expect(binding.instanceEpoch).toBe("1");
     expect(f.api.register).toHaveBeenCalledOnce();
+    expect(f.registration).toHaveBeenCalledOnce();
     expect(f.api.operation).toHaveBeenCalledWith(original.operationId, f.cancellation.signal);
     expect(f.store.readOperation(original.operationId)?.status).toBe("confirmed");
   });

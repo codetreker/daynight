@@ -19,6 +19,7 @@ export type LifecycleManagerOptions = {
   store: LifecycleStore; api: WorkerLifecycleClient; platform: "macos" | "linux" | "windows"; signal: AbortSignal;
   reconcileResources(deadline: number): Promise<void>;
   reportError(error: unknown): void;
+  ensureWorkerRegistered?(refresh?: boolean): Promise<void>;
   recovery?(): readonly LifecycleRecoveryObservation[];
 };
 
@@ -62,7 +63,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     store.recordOperation({ operationId: original.operationId, phase, status: "submitted" });
     let receipt: T;
     try { receipt = await action(); } catch (error) {
-      store.recordOperation({ operationId: original.operationId, phase, status: error instanceof ApiError && error.confirmedRefusal ? "rejected" : "unknown", receipt: error instanceof ApiError && error.confirmedRefusal ? { code: error.code ?? "refused" } : null });
+      store.recordOperation({ operationId: original.operationId, phase, status: error instanceof ApiError && error.confirmedRefusal ? "rejected" : "unknown", receipt: error instanceof ApiError && error.confirmedRefusal ? { code: error.code ?? "refused", ...(error.status === undefined ? {} : { status: error.status }) } : null });
       throw error;
     }
     store.recordOperation({ operationId: original.operationId, phase, status: "confirmed", receipt: json(receipt) });
@@ -225,7 +226,21 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     }
     await options.reconcileResources(Date.now() + 60_000);
     await reconcileOperations();
+    let registrationVerified = false;
+    if (initialization !== undefined) {
+      const original = store.readOperation(initialization.request.operationId);
+      const refusal = original?.receipt;
+      if (original?.status === "rejected" && refusal !== null && typeof refusal === "object" && !Array.isArray(refusal)
+        && (refusal.status === 404 || refusal.code === "not_found") && options.ensureWorkerRegistered !== undefined) {
+        // The rejected request remains immutable. Only renewed Worker registration
+        // evidence permits a separate decision after its missing prerequisite.
+        await options.ensureWorkerRegistered(true);
+        registrationVerified = true;
+        initialization = undefined;
+      }
+    }
     if (initialization === undefined) {
+      if (!registrationVerified) await options.ensureWorkerRegistered?.();
       // A new management instance settles older unknown registrations before advancing its epoch.
       const recoveredInstances = store.listOperations().filter(operation => operation.kind === "instance" && operation.status === "confirmed").map(operation => operation.receipt).filter((value): value is { [key: string]: LifecycleJson } => value !== null && typeof value === "object" && !Array.isArray(value));
       const previousEpoch = recoveredInstances.reduce((max, receipt) => typeof receipt.instanceEpoch === "string" && (max === null || BigInt(receipt.instanceEpoch) > BigInt(max)) ? receipt.instanceEpoch : max, before.instanceEpoch);

@@ -84,7 +84,7 @@ import { readWorkerClaim } from "../../api/task-properties.js";
 import { parseFrozenNative } from "./store.js";
 import { withWorkerLifecycle } from "./lifecycle-context.js";
 import { reconcileLifecycleRequest } from "./lifecycle-request-recovery.js";
-import { runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
+import { reportLifecycleHeartbeat, runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
 import { collectLifecycleRecovery, selectLifecycleRecoveryResources, type LifecycleRecoverySources } from "./lifecycle-recovery.js";
 import { requireWorkerNetworkToken, workerNetworkUnavailable } from "./management-network.js";
 import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
@@ -401,8 +401,8 @@ const reconcileLifecycleResources = async (options: WorkerRunOptions, root: Work
       const saved = readControllerSnapshot(resource.identity.journalFile);
       if (saved === null || saved.controllerProcess === null || saved.executionId !== resource.identity.executionId || saved.controllerInstanceId !== resource.identity.controllerInstanceId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
       if (process.platform === "win32") {
-        if (typeof resource.identity.launchId !== "string") throw new Error("Original Windows launch identity is unavailable.");
-        const ticket = await readLaunchTicket(options.homeDirectory, resource.identity.launchId);
+        const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
+        const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
         readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
       } else if (!await confirmControllerProcessesStopped(resource.processProof as ProcessProof, saved.nativeProcesses, activeDeadline)) throw new Error("Original lifecycle native boundary is not empty.");
       lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "controller_boundary", executionId: saved.executionId, controllerInstanceId: saved.controllerInstanceId, nativeSessionId: saved.nativeSessionId }, saveState: "durable" });
@@ -552,7 +552,19 @@ const prepareLifecycleManagement = async (options: WorkerRunOptions, root: Worke
   root.store.adoptLifecycle(root.identity);
   signal.addEventListener("abort", () => { try { root.lifecycle?.closeForRestart(); } catch (error) { options.log?.(`Worker lifecycle persistence failed: ${String(error)}\n`); } }, { once: true });
   root.journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity: root.identity });
+  let heartbeatReport: Promise<Awaited<ReturnType<typeof remote.report>>> | undefined;
+  let workerRegistered = false;
+  const heartbeat = { signal, machine: machineDescription(currentWorkerPlatform()), platform: currentWorkerPlatform(),
+    workingDirectory: options.workingDirectory, version: options.version, executionReporterActive: () => root.executionReporterActive === true,
+    send: async (report: Parameters<typeof remote.report>[1], operation: Operation) => {
+      const pending = heartbeatReport ??= (async () => {
+        if (await remote.currentUserId(operation.signal) !== userId) throw new Error("Original Worker management account changed.");
+        return remote.report(workerId, report, operation);
+      })();
+      try { const receipt = await pending; workerRegistered = true; return receipt; } finally { if (heartbeatReport === pending) heartbeatReport = undefined; }
+    }, reportError: (error: unknown) => options.log?.(`Worker management heartbeat: ${String(error)}\n`) };
   root.manager = createLifecycleManager({ store: root.lifecycle, api: managementLifecycleClient(local.serverUrl, local.serverToken, root.identity),
+    ensureWorkerRegistered: async refresh => { if (refresh || !workerRegistered) await reportLifecycleHeartbeat(heartbeat); },
     recovery: () => {
       const sources = root.readRecoverySources?.() ?? root.recoverySources ?? {};
       const claims = new Set(root.store!.listUnfinishedTasks().map(task => task.claimId));
@@ -570,12 +582,7 @@ const prepareLifecycleManagement = async (options: WorkerRunOptions, root: Worke
       },
     });
     root.manager.start();
-    root.heartbeat = runLifecycleHeartbeat({ signal, machine: machineDescription(currentWorkerPlatform()), platform: currentWorkerPlatform(),
-      workingDirectory: options.workingDirectory, version: options.version, executionReporterActive: () => root.executionReporterActive === true,
-      send: async (report, operation) => {
-        if (await remote.currentUserId(operation.signal) !== userId) throw new Error("Original Worker management account changed.");
-        return remote.report(workerId, report, operation);
-      }, reportError: error => options.log?.(`Worker management heartbeat: ${String(error)}\n`) });
+    root.heartbeat = runLifecycleHeartbeat(heartbeat);
   }
 };
 

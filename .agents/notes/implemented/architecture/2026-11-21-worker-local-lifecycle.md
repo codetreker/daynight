@@ -19,7 +19,11 @@ Reservations and local closure serialize in that database. The
 retain their original ownership: management survives closure, while every new
 scope receives fresh objects and cancellation. Controller tickets and journals
 freeze the same lifecycle binding; final Provider boundaries read the original
-persistent authority, including after asynchronous preparation.
+persistent authority, including after asynchronous preparation. Controller resources
+also retain their original ticket and journal storage root. Bot-local storage
+cannot be replaced by the default root during Windows stop verification; legacy
+resources derive a root only from their frozen canonical journal path and still
+verify the original execution and lifecycle binding.
 
 Local disable saves its veto before IPC or network access. IPC wakes the original
 manager and does not stand in for resource evidence. An unavailable manager permits
@@ -32,6 +36,12 @@ cannot settle a cloud request or authorize recovery.
 Explicit resume consumes complete original stop/save evidence and online service
 activation before opening local admission. Original requests are queried or
 resolved under their original identity; activation has its own child phase.
+Management instance registration follows a confirmed lightweight Worker report,
+which establishes the server-side Worker prerequisite without native probes. A
+registration refused because the Worker record was absent remains in the ledger;
+a new registration decision requires confirming that prerequisite again. Other
+refusals do not permit this retry. Unknown registrations retain their original
+request identity and must be resolved before another decision.
 Normal reconnect and initial bootstrap cannot clear a local veto. Independent
 Task pauses, claims, worktrees, native context and recovery budgets remain owned
 by their existing mechanisms. A management-only command's activation receipt does

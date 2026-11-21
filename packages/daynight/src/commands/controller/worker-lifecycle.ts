@@ -7,6 +7,7 @@ import { controllerExecutionDirectory, controllerPayloadHash, parseLaunchTicket,
 import type { ControllerOperation } from "./lifecycle-store.js";
 import { freezeNativeLifecycleFence } from "./native-lifecycle.js";
 import type { ProcessProof } from "./process-proof.js";
+import { resolveControllerStateDirectory } from "./paths.js";
 
 /** A stopped Worker still permits interruption and storage of original results. */
 const management = new AsyncLocalStorage<boolean>();
@@ -23,7 +24,8 @@ export const openControllerWorkerLifecycle = (homeDirectory: string, ticket: Con
   }
   const store = openLifecycleStore({ file, identity: { serverOrigin: binding.serverOrigin, userId: binding.userId, workerId: binding.workerId }, allowCreate: false });
   const identity: { [key: string]: LifecycleJson } = { executionId: ticket.executionId, sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration,
-    controllerInstanceId: ticket.controllerInstanceId, launchId: ticket.launchId,
+    controllerInstanceId: ticket.controllerInstanceId, controllerId: ticket.controllerId, launchId: ticket.launchId,
+    storageStateDirectory: resolveControllerStateDirectory(homeDirectory, storageStateDirectory), ticketHash: controllerPayloadHash(ticket),
     journalFile: path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite") };
   if (ticket.claimId === undefined) identity.testExecutionId = ticket.testExecutionId!;
   else Object.assign(identity, { projectId: ticket.projectId, taskId: ticket.taskId, claimId: ticket.claimId, worktreeId: ticket.worktreeId });

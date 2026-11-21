@@ -124,6 +124,24 @@ afterEach(async () => {
   for (const mock of forbidden) expect(mock).not.toHaveBeenCalled();
 });
 
+it("waits for the Worker heartbeat receipt before registering lifecycle authority", async () => {
+  const f = await fixture(), { api, remote } = controlledCloud();
+  const receipt = Promise.withResolvers<{ observedAt: string; lastReportedAt: string }>();
+  remote.report.mockImplementationOnce(() => receipt.promise);
+  const execution = start(f);
+  try {
+    await vi.waitFor(() => expect(remote.report).toHaveBeenCalledOnce());
+    expect(api.register).not.toHaveBeenCalled();
+    expect(execution.scope).not.toHaveBeenCalled();
+    for (const operation of forbidden) expect(operation).not.toHaveBeenCalled();
+    receipt.resolve({ observedAt: time, lastReportedAt: time });
+    await vi.waitFor(() => expect(api.report).toHaveBeenCalled());
+    expect(api.register).toHaveBeenCalledOnce();
+    expect(remote.report).toHaveBeenCalledOnce();
+    expect(f.state()).toMatchObject({ admission: "closed", phase: "disabled" });
+  } finally { receipt.resolve({ observedAt: time, lastReportedAt: time }); execution.cancellation.abort(); await execution.running; }
+});
+
 describe("Worker lifecycle runtime assembly", () => {
   it("cold-starts a disabled Worker with a management heartbeat and no business scope", async () => {
     const f = await fixture(), cloud = controlledCloud(), runtime = start(f);
