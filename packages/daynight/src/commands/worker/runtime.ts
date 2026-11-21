@@ -769,7 +769,14 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let probeStop: Promise<void> | undefined;
   const stopProbes = (): Promise<void> => {
     if (probeStop !== undefined) return probeStop;
-    const work = join([selectionVerifier.close(), tools?.close()]);
+    const work = (async () => {
+      // Configuration jobs publish their final saved results through the tool
+      // manager. Keep it open until those publishers join; its own owner still
+      // reports any failure, and independent probe cleanup must also proceed.
+      try { await configuration?.stop(); }
+      catch (error) { if (!failures.includes(error)) failures.push(error); }
+      await join([selectionVerifier.close(), tools?.close()]);
+    })();
     probeStop = work;
     void work.catch(() => { if (probeStop === work) probeStop = undefined; });
     return work;

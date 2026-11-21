@@ -25,6 +25,15 @@ cannot be replaced by the default root during Windows stop verification; legacy
 resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
+Tool selection remains alive through configuration jobs and their final state
+publication. A configuration failure stays with that owner while tool cleanup
+still runs. Native inventory reconciliation independently joins each original
+owned command or Bot CLI probe, including original initialization, its in-flight
+close and terminal save;
+it does not wait for a whole producer whose Git jobs may require that same
+reconciliation to finish. Individual failures retain unknown responsibility
+without preventing other resources from reconciling.
+
 Local disable saves its veto before IPC or network access. IPC wakes the original
 manager and does not stand in for resource evidence. An unavailable manager permits
 management under the original free instance lock, without taking over a live lock
@@ -73,6 +82,12 @@ native boundary bind that dispatch to the same closed gate and generation.
 can finish after losing a write response, and an existing object need not have
 been created by that operation. Keeping the child request independently unknown
 prevents false stopping and unsafe recovery.
+
+**Wait for every producer before reconciling native inventory.** A configuration
+Git job can be waiting for the inventory to confirm its original command closure.
+Waiting for that whole producer creates a cycle. Resource-specific reconciliation
+retains the original close operation while allowing independent boundaries to
+make progress.
 
 ## Consequences
 

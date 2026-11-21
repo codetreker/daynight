@@ -60,7 +60,8 @@ export const createBotCliProbe = async (
   for (const key of Object.keys(guardianEnvironment)) if (key.toUpperCase() === "NODE_OPTIONS") delete guardianEnvironment[key];
   let child: ChildProcess | GatedNodeChild | undefined, closed = false, started = false, stopped = false, nativeStopped = false;
   let suspended: Awaited<ReturnType<typeof createSuspendedNodeChild>> | undefined;
-  let handlesClosed = false, initializing = true;
+  let handlesClosed = false;
+  const initialized = Promise.withResolvers<void>();
   let proof: ProcessProof | null = null, jobObjectName: string | null = null;
   let windowsJob: WindowsBotJobLease | undefined;
   let stopPending: Promise<void> | undefined;
@@ -167,7 +168,10 @@ export const createBotCliProbe = async (
     finally { stopPending = undefined; }
   };
   retained.set(launchId, { ownership, close: async () => {
-    if (initializing) throw new Error("The original Bot CLI probe is still establishing its process boundary.");
+    // The original constructor owns birth and its writes. Cancellation can
+    // arrive before its gate opens; recovery must join that same constructor
+    // before stopping, without inferring closure from a missing proof.
+    await initialized.promise;
     await close();
   } });
   try {
@@ -216,7 +220,7 @@ export const createBotCliProbe = async (
     }
     verifyGuardian();
     operation.check();
-    initializing = false;
+    initialized.resolve();
     return {
       get ownership() { return ownership(); },
       close,
@@ -238,7 +242,7 @@ export const createBotCliProbe = async (
       },
     };
   } catch (error) {
-    initializing = false;
+    initialized.resolve();
     if (error instanceof WindowsBotJobSetupError) { windowsJob = error.lease; jobObjectName = windowsJob.name; }
     await close();
     operation.check();

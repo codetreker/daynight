@@ -15,6 +15,8 @@ import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
+import * as toolRuntimes from "../../../src/commands/worker/tool-selection-runtime.js";
+import { ToolSelectionManager, type ToolSelectionTargets } from "../../../src/commands/worker/tool-selection.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import * as workerIdentity from "../../../src/commands/worker/identity.js";
 import * as atomicFiles from "../../../src/platform/files.js";
@@ -33,7 +35,7 @@ import { createNativeSelectionVerifier } from "../../../src/commands/worker/nati
 import { BotCliProbeCleanupError, createBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudNative, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
@@ -64,7 +66,7 @@ vi.mock("node:crypto", async original => {
 });
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   const { createWorkerToolSelectionFixture } = await import("../../helpers/worker-tool-runtime-fixture.js");
-  return { createWorkerToolSelectionRuntime: createWorkerToolSelectionFixture };
+  return { createWorkerToolSelectionRuntime: vi.fn(createWorkerToolSelectionFixture) };
 });
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
@@ -669,6 +671,82 @@ describe("worker cloud-first startup", () => {
       expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
       expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
     } finally { release.resolve(); cancellation.abort(); await running; constructing.mockRestore(); }
+  });
+
+  it.each([false, true])("keeps tools open for a late configuration publication and preserves close failure=%s", async (failStop: boolean) => {
+    const f = await fixture(false, false), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const unavailable = new Error("Controlled native preparation unavailable"), stopFailure = new Error("Controlled configuration close failure");
+    const order: string[] = [];
+    let rejectStop = failStop, configurationJoined = false;
+    let preparationSignal: AbortSignal | undefined, lateState: cloudConfiguration.WorkerConfigurationSnapshot | undefined;
+    let tools: ToolSelectionManager | undefined;
+    const closeTools = vi.fn(async () => {
+      order.push("tools-close");
+      const operation = createOperation();
+      try { await tools!.close(operation); } finally { operation.dispose(); }
+    });
+    const createTools: typeof toolRuntimes.createWorkerToolSelectionRuntime = vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).getMockImplementation()!;
+    vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockImplementationOnce((options: Parameters<typeof toolRuntimes.createWorkerToolSelectionRuntime>[0]) => {
+      tools = new ToolSelectionManager({ ...options, probe: { check: async () => ({ version: "fixture" }), close: async () => {} } });
+      return { ...createTools(options), manager: tools,
+        setTargets: (targets: ToolSelectionTargets | null) => targets === null ? tools!.suspendTargets() : tools!.setTargets(targets),
+        prepareNative: async (_native: WorkerCloudNative, signal: AbortSignal) => { preparationSignal = signal; entered.resolve(); await release.promise; throw unavailable; },
+        close: closeTools,
+      };
+    });
+    const createConfiguration = cloudConfiguration.createWorkerConfigurationManager;
+    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async (options: Parameters<typeof cloudConfiguration.createWorkerConfigurationManager>[0]) => {
+      const manager = await createConfiguration({ ...options, onChange: snapshot => {
+        options.onChange?.(snapshot);
+        if (options.signal.aborted) { lateState = snapshot; order.push("late-publication"); }
+      } });
+      const stop = manager.stop;
+      manager.stop = async () => { await stop(); if (!configurationJoined) { configurationJoined = true; order.push("configuration-joined"); } if (rejectStop) throw stopFailure; };
+      return manager;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    const result = running.then(() => undefined, error => error);
+    try {
+      await entered.promise;
+      await vi.waitFor(() => expect(mocks.reporter).toHaveBeenCalled());
+      if (!failStop) cancellation.abort();
+      const stopping = control!.stop();
+      await vi.waitFor(() => expect(preparationSignal?.aborted).toBe(true));
+      expect(closeTools).not.toHaveBeenCalled();
+      release.resolve();
+      await stopping;
+      expect(lateState?.items.find(item => item.key.kind === "native")).toMatchObject({ state: "error", error: { code: "unavailable" } });
+      const persisted = configurationCache.parseConfigurationCache(JSON.parse(await readFile(f.paths.configurationFile, "utf8")), { serverOrigin: origin, userId: uuid(6), workerId }).cache;
+      expect(persisted.currentItems.find(item => item.value.key.kind === "native")?.value).toMatchObject({ state: "error", error: { code: "unavailable" } });
+      expect(order.indexOf("late-publication")).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf("late-publication")).toBeLessThan(order.indexOf("configuration-joined"));
+      expect(order.indexOf("configuration-joined")).toBeLessThan(order.indexOf("tools-close"));
+      expect(closeTools).toHaveBeenCalledOnce();
+      expect(() => tools!.setTargets({ source: "local", revision: null, choices: { codex: null, copilot: null } })).toThrow("Tool selection manager is closed.");
+      if (failStop) {
+        const configurationResult = control!.snapshot().resources.find(owner => owner.resourceId === "configuration")?.result;
+        expect(configurationResult).toMatchObject({ stop: "unknown", save: "failed" });
+        expect(configurationResult?.error).toBe(stopFailure);
+        expect(control!.snapshot().resources).toContainEqual(expect.objectContaining({ resourceId: "probes", result: expect.objectContaining({ stop: "confirmed", save: "durable" }) }));
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+        rejectStop = false;
+        expect((await control!.reconcile()).every(owner => owner.stop === "confirmed")).toBe(true);
+      }
+      expect(control!.snapshot().stopped).toBe(true);
+      cancellation.abort();
+      const failure = await result;
+      if (failStop) expect(failure instanceof AggregateError ? failure.errors : [failure]).toContain(stopFailure);
+      else expect(failure).toBeUndefined();
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally {
+      release.resolve(); rejectStop = false;
+      if (control !== undefined && !control.snapshot().stopped) await control.reconcile();
+      cancellation.abort(); await result; constructing.mockRestore();
+      vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockReset().mockImplementation(createTools);
+    }
   });
 
   it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {
