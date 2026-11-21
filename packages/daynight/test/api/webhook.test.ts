@@ -68,6 +68,9 @@ describe("webhook API boundaries", () => {
     expect(parseWebhookEndpoint(legacy, owner, endpointId)).toMatchObject({ clientKey: null });
     for (const clientKey of ["", "has space", "x".repeat(201), 1]) expect(() => parseWebhookEndpoint({ ...active, clientKey }, owner, endpointId)).toThrow();
     const item = { id: endpointId, owner, clientKey: "inbox", name: "Inbox", enabled: true, configVersion: "1", destination: active.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: null, lastResult: null };
+    const tombstone = { id: endpointId, owner, lifecycle: "deleted", configVersion: "2", deletedAt: time };
+    expect(parseWebhookEndpoint(tombstone, owner, endpointId)).toEqual(tombstone);
+    for (const clientKey of [null, "assistant-task-inbox:1"]) expect(() => parseWebhookEndpoint({ ...tombstone, clientKey }, owner, endpointId)).toThrow();
     expect(parseWebhookEndpointPage({ items: [item, { ...item, id: deliveryId, clientKey: null }], nextCursor: null }, owner).items.map(i => i.clientKey)).toEqual(["inbox", null]);
     expect(() => parseWebhookEndpointPage({ items: [{ ...item, clientKey: "a b" }], nextCursor: null }, owner)).toThrow();
   });
