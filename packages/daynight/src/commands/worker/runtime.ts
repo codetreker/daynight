@@ -77,7 +77,7 @@ import { createNativeSelectionVerifier } from "./native-selection.js";
 import { createExecutionScopeManager, withinExecutionDeadline, type ExecutionScope, type OwnerStopResult } from "./execution-scope.js";
 import { openExecutionResourceJournal, type ExecutionResourceIdentity } from "./execution-resource-journal.js";
 import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries, OwnedCommandAdmissionError } from "./owned-command-lifecycle.js";
-import { openLifecycleStore, readLifecycleIdentity, type LifecycleStore, type LifecycleJson } from "./lifecycle-store.js";
+import { LifecycleAdmissionError, openLifecycleStore, readLifecycleIdentity, type LifecycleStore, type LifecycleJson } from "./lifecycle-store.js";
 import { createLifecycleManager, type LifecycleManager } from "./lifecycle-manager.js";
 import { createWorkerLifecycleClient } from "../../api/worker-lifecycle-client.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
@@ -630,7 +630,17 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
           // Re-observing this reservation must remain possible after a failed
           // save closes admission; the journal still checks its original fence.
           admittedResources.add(event.resourceId);
-          if (root.lifecycle !== undefined && lifecycleBinding !== undefined) root.lifecycle.reserveExecution({ binding: lifecycleBinding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId });
+          try {
+            if (root.lifecycle !== undefined && lifecycleBinding !== undefined) root.lifecycle.reserveExecution({ binding: lifecycleBinding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId });
+          } catch (error) {
+            // Admission rejection precedes the reservation write. Other failures
+            // retain responsibility because their persistence outcome is unknown.
+            if (error instanceof LifecycleAdmissionError) {
+              admittedResources.delete(event.resourceId);
+              throw new OwnedCommandAdmissionError(error);
+            }
+            throw error;
+          }
         }
         if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
         try { await root.journal.sink(scope.generation)(event); }

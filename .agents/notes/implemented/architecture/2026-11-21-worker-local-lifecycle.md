@@ -31,8 +31,13 @@ still runs. Native inventory reconciliation independently joins each original
 owned command or Bot CLI probe, including original initialization, its in-flight
 close and terminal save;
 it does not wait for a whole producer whose Git jobs may require that same
-reconciliation to finish. Individual failures retain unknown responsibility
-without preventing other resources from reconciling. Windows probes that assigned
+reconciliation to finish. A lifecycle admission refusal before a reservation
+write retires the attempted
+owned command as never started and removes its in-memory admission marker.
+Persistence failures with an uncertain outcome retain the original responsibility
+and marker for reconciliation; they cannot use the never-started path. Individual
+failures retain unknown responsibility without preventing other resources from
+reconciling. Windows probes that assigned
 the original guardian to a Job, terminated that Job and confirmed it empty still
 join the guardian, streams and handles, but do not issue a second direct
 termination against the exited process. Initialization without a successful Job
@@ -57,11 +62,16 @@ activation before opening local admission. Original requests are queried or
 resolved under their original identity; activation has its own child phase.
 The current management instance retains the resume continuation independently of
 its observed intent version. A lost intent response or a failed stop/report does
-not erase the next activation step. A confirmed activation followed by a newer
-disabled intent for the same management instance retains its original receipt
-but retires its continuation. Management then stops and reports the newer intent
-so that another explicit resume can proceed; an unavailable authority read is
-not evidence of supersession. Local intents retain their frozen request;
+not erase the next activation step. A newer disabled intent for the same
+management instance retires an obsolete
+activation continuation both before its observation is accepted and after its
+activation result is known. The original operation ledger retains confirmed and
+unknown outcomes independently of that continuation. The ordinary management loop
+reports the current stop before querying superseded unknown activations under
+their original identities. Failed queries preserve stop reporting and block new
+activation; resolved outcomes allow a later explicit resume to proceed. An
+unavailable authority read is not evidence of supersession. Local intents retain
+their frozen request;
 only an operation first observed remotely gets a requestless ledger entry.
 Continuations bind the original local epoch and management instance, so a later
 veto invalidates them. They are not reconstructed after process restart: an

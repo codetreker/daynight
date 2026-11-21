@@ -171,9 +171,22 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     store.compactHistory();
     return envelope;
   };
+  const retireSupersededActivation = async (activation: LifecycleActivation, authority: CloudResource): Promise<boolean> => {
+    if (authority.instance?.instanceId !== activation.binding.instanceId || authority.instance.instanceEpoch !== activation.binding.instanceEpoch
+      || BigInt(authority.intentVersion) <= BigInt(activation.binding.intentVersion) || authority.desired !== "disabled" || authority.admission !== "closed") return false;
+    // Newer closed authority retires the continuation, not its original outcome.
+    // An unknown activation remains in the ledger for independent reconciliation.
+    store.observeAuthority(authority);
+    store.closeAdmission({ operationId: authority.operationId ?? randomUUID(), local: false });
+    pendingResume = undefined;
+    await stop();
+    return true;
+  };
   const finishPreparedActivation = async (activation: LifecycleActivation): Promise<void> => {
     const current = store.readState(), { operationId, action } = activation, phase = action === "resume" ? "activation" : "primary";
     if (current.phase !== "resuming" || !isDeepStrictEqual(current.activation, activation)) throw new Error("Original activation was superseded locally.");
+    if (await retireSupersededActivation(activation, await readAuthority())) return;
+    assertLocalEpoch(activation.binding.localEpoch);
     let original = store.readOperation(operationId, phase);
     if (original !== null && ["submitted", "unknown"].includes(original.status)) {
       await resolveOriginal(original);
@@ -194,16 +207,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     } else if (original.status === "confirmed") receipt = parseLifecycleActivationReceipt(original.receipt);
     else { store.markBlocked("resume_interrupted"); throw new Error("Original activation did not commit; an explicit new resume is required."); }
     const authority = await readAuthority();
-    if (authority.instance?.instanceId === activation.binding.instanceId && authority.instance.instanceEpoch === receipt.instanceEpoch
-      && BigInt(authority.intentVersion) > BigInt(receipt.intentVersion) && authority.desired === "disabled" && authority.admission === "closed") {
-      // The committed activation remains in its ledger, but cannot hold a newer
-      // stop behind its continuation. Failed authority reads never retire it.
-      store.observeAuthority(authority);
-      store.closeAdmission({ operationId: authority.operationId ?? randomUUID(), local: false });
-      pendingResume = undefined;
-      await stop();
-      return;
-    }
+    if (await retireSupersededActivation(activation, authority)) return;
     if (authority.intentVersion !== receipt.intentVersion || authority.desired !== "enabled" || authority.admission !== "open" || authority.instance?.instanceId !== activation.binding.instanceId || authority.instance.instanceEpoch !== receipt.instanceEpoch) throw new Error("Worker authority changed after activation.");
     signal.throwIfAborted();
     store.commitActivation({ ...activation, receipt: json(receipt) });
@@ -360,6 +364,15 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
         ? { operationId: cloud.operationId, binding: { ...binding(), intentVersion: cloud.intentVersion } } : undefined;
       store.observeAuthority(cloud);
       if (cloud.desired === "disabled") { store.closeAdmission({ operationId: cloud.operationId ?? randomUUID(), local: false }); await stop(); }
+    }
+    const supersededActivations = store.listOperations().filter(original => original.kind === "activation" && ["submitted", "unknown"].includes(original.status)
+      && original.request !== null && BigInt(parseLifecycleActivationRequest(original.request).intentVersion) < BigInt(cloud.intentVersion));
+    if (supersededActivations.length > 0) {
+      // Publish the current stop before querying older outcomes. Failed lookups
+      // cannot suppress disabled observations or permit a new execution scope.
+      await stop();
+      await report();
+      for (const original of supersededActivations) await resolveOriginal(original);
     }
     await continueResume(cloud);
     await disableCloud(cloud);

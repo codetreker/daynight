@@ -209,7 +209,7 @@ describe("Worker lifecycle management with real local authority", () => {
     const resume = f.manager.resume(id(22));
     if (lostResponse) await expect(resume).rejects.toThrow(); else await resume;
     await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
-    expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed", receipt: { intentVersion: "3", admission: "open" } });
+    await expect.poll(() => f.store.readOperation(id(22), "activation"), { timeout: 3500 }).toMatchObject({ status: "confirmed", receipt: { intentVersion: "3", admission: "open" } });
     expect(f.store.readState()).toMatchObject({ admission: "closed", desired: "disabled", intentVersion: "4", phase: "disabled", activation: null, localEpoch: "2", localVeto: true });
     expect(owner.rebuild).not.toHaveBeenCalled();
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
@@ -218,6 +218,138 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(f.store.readState()).toMatchObject({ admission: "open", intentVersion: "5", localVeto: false });
     expect(owner.rebuild).toHaveBeenCalledOnce();
   }, 5000);
+
+  it("automatically settles a retired unknown activation before a later remote resume can open admission", async () => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    f.onActivation(async request => {
+      if (request.operationId !== id(22)) return;
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: request.intentVersion, source: "web", localEpoch: null, originOperationId: null });
+      throw unknown();
+    });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const original = f.store.readOperation(id(22), "activation");
+    expect(original).toMatchObject({ status: "unknown" });
+    const operation = vi.mocked(f.api.operation).getMockImplementation()!;
+    const blockedResume = deferred<void>();
+    let available = false;
+    vi.mocked(f.api.operation).mockImplementation(async operationId => {
+      if (operationId === id(22) && !available) {
+        expect(f.cloud().observation).toMatchObject({ intentVersion: f.cloud().intentVersion, observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
+        if (f.cloud().intentVersion === "5") blockedResume.resolve();
+        throw unknown();
+      }
+      return operation(operationId);
+    });
+    f.manager.start();
+    await expect.poll(() => f.cloud().observation, { timeout: 2500 }).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
+    const sequence = BigInt(f.cloud().observation!.reportSequence);
+    await expect.poll(() => BigInt(f.cloud().observation!.reportSequence), { timeout: 3500 }).toBeGreaterThan(sequence);
+    expect(f.store.readOperation(id(22), "activation")).toEqual(original);
+    expect(f.api.operation).toHaveBeenCalledWith(id(22), f.cancellation.signal);
+    await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    await waitSignal(blockedResume.promise, AbortSignal.timeout(2500));
+    expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, activation: null, intentVersion: "5" });
+    expect(f.store.readOperation(id(22), "activation")).toEqual(original);
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(0);
+    expect(owner.rebuild).not.toHaveBeenCalled();
+    available = true;
+    await waitSignal(f.manager.waitForAdmission(), AbortSignal.timeout(3500));
+    expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed", request: original!.request, requestHash: original!.requestHash, receipt: { intentVersion: "3", admission: "open" } });
+    expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false, intentVersion: "5" });
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
+    expect(f.api.resolve).not.toHaveBeenCalled();
+    expect(owner.rebuild).toHaveBeenCalledOnce();
+  }, 10_000);
+
+  it.each(["bootstrap", "resume"] as const)("retires %s when cloud disable commits before its activation report", async action => {
+    const f = fixture();
+    if (action === "resume") { await f.manager.initializeForControl(); await disable(f); }
+    const owner = control(); f.manager.attach(owner);
+    const entered = deferred<LifecycleObservationEnvelope>(), release = deferred<void>();
+    const report = vi.mocked(f.api.report).getMockImplementation()!;
+    const refusal = new ApiError({ operation: "test.lifecycle" }, "response", { status: 409, serverError: { code: "stale_intent", message: "Intent was superseded.", requestId: id(99) }, confirmedRefusal: true, cause: undefined });
+    vi.mocked(f.api.report).mockImplementation(async envelope => {
+      if (envelope.observation.phase === "resuming") {
+        entered.resolve(envelope); await waitSignal(release.promise, f.cancellation.signal);
+        throw refusal;
+      }
+      return report(envelope);
+    });
+    const result = (action === "bootstrap" ? f.manager.initializeForControl() : f.manager.resume(id(22))).then(() => null, error => error);
+    const local = openLifecycleStore({ file: f.file, identity });
+    try {
+      const envelope = await waitSignal(entered.promise, AbortSignal.timeout(2000));
+      const activation = local.readState().activation!;
+      expect(local.readState()).toMatchObject({ phase: "resuming", admission: "closed" });
+      expect(local.readOperation(activation.operationId, action === "resume" ? "activation" : "primary")).toBeNull();
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: envelope.intentVersion, source: "web", localEpoch: null, originOperationId: null });
+      release.resolve();
+      expect(await result).toBe(refusal);
+      const outbox = local.listOutbox().find(row => row.uploadState === "unknown")!;
+      expect(outbox).toMatchObject({ intentVersion: envelope.intentVersion });
+      await f.manager.reconcile();
+      expect(local.readState()).toMatchObject({ phase: "disabled", desired: "disabled", admission: "closed", activation: null, stop: "confirmed", save: "durable", inventoryComplete: true });
+      expect(f.cloud().observation).toMatchObject({ operationId: id(24), intentVersion: String(BigInt(envelope.intentVersion) + 1n), observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
+      expect(local.readOutboxHistory(outbox.id)).toMatchObject({ uploadState: "covered" });
+      expect(vi.mocked(f.api.report).mock.calls.filter(([request]) => request.reportSequence === envelope.reportSequence)).toHaveLength(1);
+      expect(local.readOperation(activation.operationId, action === "resume" ? "activation" : "primary")).toBeNull();
+      expect(f.api.activate).toHaveBeenCalledTimes(action === "resume" ? 1 : 0);
+      expect(owner.rebuild).not.toHaveBeenCalled();
+    } finally { release.resolve(); await result; local.close(); }
+  });
+
+  it.each([
+    { status: "unknown", laterVeto: false }, { status: "unknown", laterVeto: true },
+    { status: "rejected", laterVeto: false }, { status: "rejected", laterVeto: true },
+  ] as const)("retires a superseded $status activation while preserving its outcome (later veto: $laterVeto)", async ({ status, laterVeto }) => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const failure = status === "unknown" ? unknown() : new ApiError({ operation: "test.lifecycle" }, "response", { status: 409, serverError: { code: "stale_intent", message: "Intent was superseded.", requestId: id(99) }, confirmedRefusal: true, cause: undefined });
+    vi.mocked(f.api.activate).mockRejectedValueOnce(failure);
+    await expect(f.manager.resume(id(22))).rejects.toBe(failure);
+    const original = f.store.readOperation(id(22), "activation");
+    expect(original).toMatchObject({ status });
+    const entered = deferred<void>(), release = deferred<void>();
+    const read = vi.mocked(f.api.read).getMockImplementation()!;
+    vi.mocked(f.api.read).mockImplementationOnce(async () => {
+      entered.resolve(); await waitSignal(release.promise, f.cancellation.signal); return read();
+    });
+    const local = openLifecycleStore({ file: f.file, identity });
+    const result = f.manager.reconcile();
+    try {
+      await waitSignal(entered.promise, AbortSignal.timeout(2000));
+      const veto = laterVeto ? local.closeAdmission({ operationId: id(26), local: true }) : local.readState();
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: "3", source: "web", localEpoch: null, originOperationId: null });
+      release.resolve(); await result;
+      expect(local.readOperation(id(22), "activation")).toEqual(original);
+      expect(local.readState()).toMatchObject({ localEpoch: veto.localEpoch, localVeto: true, admission: "closed", phase: "disabled", activation: null, intentVersion: "4", stop: "confirmed", save: "durable" });
+      expect(f.cloud().observation).toMatchObject({ operationId: id(24), intentVersion: "4", localEpoch: veto.localEpoch, observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
+      expect(f.api.operation).not.toHaveBeenCalledWith(id(22), f.cancellation.signal);
+      expect(f.api.resolve).not.toHaveBeenCalled();
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+      expect(owner.rebuild).not.toHaveBeenCalled();
+    } finally { release.resolve(); await result; local.close(); }
+  });
+
+  it.each(["unavailable", "same intent", "newer enabled", "different instance"] as const)("retains an unknown activation when authority is %s", async boundary => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    vi.mocked(f.api.activate).mockRejectedValueOnce(unknown());
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const activation = f.store.readState().activation, original = f.store.readOperation(id(22), "activation");
+    const failure = unknown();
+    vi.mocked(f.api.operation).mockRejectedValue(failure);
+    if (boundary === "unavailable") vi.mocked(f.api.read).mockRejectedValueOnce(failure);
+    else if (boundary === "same intent") f.setCloud({ desired: "disabled", admission: "closed" });
+    else if (boundary === "newer enabled") f.setCloud({ intentVersion: "4", desired: "enabled", admission: "closed" });
+    else f.setCloud({ intentVersion: "4", desired: "disabled", admission: "closed", instance: { instanceId: id(50), instanceEpoch: "2" } });
+    await expect(f.manager.reconcile()).rejects.toBe(failure);
+    expect(f.store.readState()).toMatchObject({ phase: "resuming", admission: "closed", activation });
+    expect(f.store.readOperation(id(22), "activation")).toEqual(original);
+    expect(f.api.resolve).not.toHaveBeenCalled();
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+  });
 
   it("retains a committed activation while its final authority read is unavailable", async () => {
     const f = fixture(); await start(f); await disable(f);
