@@ -22,6 +22,22 @@ export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promi
   if (grant.sessionId !== ticket.sessionId || grant.claimId !== ticket.claimId || grant.testExecutionId !== ticket.testExecutionId || grant.executionGeneration !== ticket.executionGeneration || grant.controllerId !== ticket.controllerId || grant.controllerInstanceId !== ticket.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("Controller credential is stale or belongs to another execution.");
   return grant;
 };
+/** Limit the foreground wait without taking ownership of the history work. */
+export const waitForImageHistory = async (work: () => Promise<void>, signal?: AbortSignal, deadline = Date.now() + 10_000): Promise<void> => {
+  signal?.throwIfAborted();
+  let abort!: () => void;
+  let timer!: NodeJS.Timeout;
+  const interrupted = new Promise<never>((_, reject) => {
+    abort = () => reject(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    timer = setTimeout(() => reject(new ImageCaptureNotDispatchedError("Image capture history checkpoint was not ready before the deadline.")), Math.max(0, deadline - Date.now()));
+  });
+  try {
+    await Promise.race([work(), interrupted]);
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new ImageCaptureNotDispatchedError("Image capture history checkpoint was not ready before the deadline.");
+  } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+};
 export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(error: unknown): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
@@ -56,6 +72,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     const previous = mediaRequests.get(requestKey);
     if (previous) { if (previous.key !== key) throw new Error("Media request ID has different content."); return; }
     const decode = request.action === "complete" || request.action === "retry_capture";
+    const historyDeadline = request.action === "prepare" ? Date.now() + 10_000 : 0;
     const controller = new AbortController();
     if (!synchronized) { respond(null, { code: "rate_limited", message: "Controller media capacity is unavailable." }); return; }
     let blockLease: ControllerMediaBlockLease | null = null;
@@ -75,7 +92,10 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         await admission; acquired = true; controller.signal.throwIfAborted();
         const media = journal.media(); let result: ImageResponse["result"];
         switch (request.action) {
-          case "prepare": await callbacks.beforeImage?.(); result = await media.prepare(request.body); break;
+          case "prepare":
+            await waitForImageHistory(async () => { await callbacks.beforeImage?.(); }, controller.signal, historyDeadline);
+            controller.signal.throwIfAborted();
+            result = await media.prepare(request.body); break;
           case "write": result = await media.write(request.body); break;
           case "complete": result = await media.complete(request.body); break;
           case "status": result = await media.status(request.body); break;

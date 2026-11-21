@@ -30,7 +30,7 @@ import { controllerExecutionDirectory, readLaunchTicket } from "./launch-ticket.
 import { openControllerLifecycleStore, type ControllerOperation } from "./lifecycle-store.js";
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
-import { createControllerRelay } from "./relay.js";
+import { createControllerRelay, waitForImageHistory } from "./relay.js";
 import { createUsageRuntime } from "./usage/runtime.js";
 import { loadServerConfiguration } from "../../config/server.js";
 import { providerDisplayEntry } from "./provider-display.js";
@@ -41,7 +41,7 @@ import type { NativeInputLease } from "./media/preparations.js";
 import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
 import { nativeInputPublicationFailure } from "./media/native-publication.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
-import { assertImageHistoryAvailable, syncControllerImageHistory } from "./media/history-sync.js";
+import { assertImageHistoryAvailable, createImageHistoryRetryBudget, syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
 type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string; storageStateDirectory?: string };
@@ -137,7 +137,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   let accountingFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
+  let historyConnectionAbort = new AbortController();
   let historyWork: Promise<void> | null = null;
+  const historyCalls = new Set<Promise<void>>();
   let historyTimer: NodeJS.Timeout | null = null;
   let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
@@ -236,7 +238,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (accountingFailure !== undefined) throw accountingFailure;
     if (stopping) throw new Error("Controller stopped before native dispatch.");
   };
-  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: () => synchronizeImageHistory(true), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: signal => waitForImageHistory(() => synchronizeImageHistory(true), signal ? AbortSignal.any([signal, historyConnectionAbort.signal]) : historyConnectionAbort.signal), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
@@ -251,7 +253,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const markdownTimeline = createMarkdownTimelinePipeline({ journal, captures: markdownCaptures, onError: error => nativeEvent(() => { throw error; }) });
   const stopMarkdownTimeline = own(() => markdownTimeline.stop());
   relay = createControllerRelay(ticket, journal, {
-    onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
+    onConnection: connected => { synchronized = connected; if (!connected) { historyConnectionAbort.abort(new Error("Controller history connection changed.")); historyConnectionAbort = new AbortController(); markdownCaptures.invalidate(); } if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: error => {
       if (!isOutboxFailure(error)) { diagnostic(error); return; }
       stopForAccountingFailure(error);
@@ -320,9 +322,15 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   own(async () => {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     historyAbort.abort(new Error("Controller history synchronization stopped."));
-    await historyWork;
+    await Promise.allSettled([...historyCalls]);
   });
-  async function synchronizeImageHistory(forCapture = false): Promise<void> {
+  function synchronizeImageHistory(forCapture = false): Promise<void> {
+    const call = runImageHistorySynchronization(forCapture);
+    historyCalls.add(call);
+    void call.finally(() => historyCalls.delete(call)).catch(() => {});
+    return call;
+  }
+  async function runImageHistorySynchronization(forCapture: boolean): Promise<void> {
     let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     if (stopping || !relay?.connected()) {
@@ -333,6 +341,13 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (forCapture) throw new ImageCapturePrerequisiteError({ code: "component_unsupported", message: "Complete image history synchronization is unavailable." });
       return;
     }
+    const fence = relay.currentFence();
+    if (!fence) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    const roundSignal = AbortSignal.any([historyAbort.signal, historyConnectionAbort.signal]);
+    const checkConnection = () => {
+      roundSignal.throwIfAborted();
+      if (stopping || !relay.connected() || JSON.stringify(relay.currentFence()) !== JSON.stringify(fence)) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+    };
     if (forCapture) {
       try { assertImageHistoryAvailable(journal); }
       catch (error) {
@@ -342,18 +357,17 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         throw error;
       }
       await relay.flush();
-      if (stopping || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image capture history connection changed before synchronization.");
+      checkConnection();
       requiredSourceThrough = journal.getLastSourceSequence();
     }
     const previous = historyWork;
+    const retryBudget = createImageHistoryRetryBudget();
     const work = (async () => {
       if (previous) await previous;
-      if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
       for (;;) {
-        if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
-        const fence = relay.currentFence();
-        if (!fence || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
-        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal, ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        checkConnection();
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: roundSignal, retryBudget, onRetry: event => diagnostic(JSON.stringify({ operation: "image_history_retry", ...event })), ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        checkConnection();
         if (!forCapture || journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())) return;
         // Native events can advance the acknowledged source while an older
         // frozen body uploads. Submit requires the complete current ledger.
@@ -419,7 +433,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       await stopMarkdownCaptures().catch(fail);
       await stopMarkdownTimeline().catch(fail);
       historyAbort.abort(new Error("Controller history synchronization stopped."));
-      await historyWork?.catch(error => diagnostic(error));
+      await Promise.allSettled([...historyCalls]);
       try { await closeRelay(); } catch (error) { fail(error); }
       try { await stopMedia(); } catch (error) { fail(error); }
       for (const socket of sockets) socket.destroy();

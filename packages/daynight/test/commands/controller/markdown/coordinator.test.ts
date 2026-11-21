@@ -7,6 +7,7 @@ import sharp from "sharp";
 import Database from "better-sqlite3";
 import { openControllerLifecycleStore } from "../../../../src/commands/controller/lifecycle-store.js";
 import { createControllerCaptureBridge } from "../../../../src/commands/controller/media/capture.js";
+import { waitForImageHistory } from "../../../../src/commands/controller/relay.js";
 import { migrateDirectCaptureState } from "../../../../src/commands/controller/media/capture-migration.js";
 import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError } from "../../../../src/commands/controller/media/capture-error.js";
 import { createMarkdownCaptureCoordinator } from "../../../../src/commands/controller/markdown/coordinator.js";
@@ -280,6 +281,27 @@ test("full history preparation completes before source IO without a register fra
   try { await entered.promise; expect(reads).toBe(0); expect(f.calls).toEqual([]); }
   finally { gate.resolve(); await work; }
   expect(reads).toBe(1); expect(f.calls).toEqual(["submit"]);
+});
+
+test("invalidating a Markdown capture cancels its history wait without starting source IO", async () => {
+  let reads = 0;
+  const f = await directFixture(() => { reads++; });
+  const history = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+  let observed!: AbortSignal;
+  vi.spyOn(f.bridge.providerOptions, "prepareImageCapture").mockImplementation((_request, signal) => {
+    observed = signal!; entered.resolve();
+    return waitForImageHistory(() => history.promise, signal);
+  });
+  f.coordinator.enqueue(f.occurrence, "https://images.example/original.png", f.context);
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const work = f.coordinator.tick();
+  try {
+    await entered.promise; f.coordinator.invalidate(); await work;
+    expect(observed.aborted).toBe(true); expect(reads).toBe(0); expect(f.calls).toEqual([]);
+    expect(f.coordinator.get(f.occurrence.imageId)?.submission).toBeUndefined();
+    history.resolve(); await history.promise;
+    expect(reads).toBe(0); expect(f.calls).toEqual([]);
+  } finally { history.resolve(); await work; }
 });
 
 test("a rejected submit records its correlated refusal and never fabricates a service capture", async () => {

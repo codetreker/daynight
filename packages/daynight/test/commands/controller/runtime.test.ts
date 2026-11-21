@@ -27,7 +27,7 @@ vi.mock("../../../src/commands/controller/media/capture.js", async importOrigina
   return { ...original, createControllerCaptureBridge: (...args: Parameters<typeof original.createControllerCaptureBridge>) => { fixture.captureCreate(); return original.createControllerCaptureBridge(...args); } };
 });
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
-vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { stop: vi.fn(), flush: historyRuntime.flush, close: fixture.relayClose, connected: () => historyRuntime.connected, imageHistorySupported: () => historyRuntime.supported, currentFence: () => ({ connectionEpoch: "1" }), authorize: async () => {}, receipt: vi.fn() }; } }));
+vi.mock("../../../src/commands/controller/relay.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/relay.js")>(), createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { stop: vi.fn(), flush: historyRuntime.flush, close: fixture.relayClose, connected: () => historyRuntime.connected, imageHistorySupported: () => historyRuntime.supported, currentFence: () => ({ connectionEpoch: "1" }), authorize: async () => {}, receipt: vi.fn() }; } }));
 vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
@@ -137,8 +137,74 @@ test("capture history catches up a source tail that advances while its frozen ch
     await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
     await (fixture.options as ProviderOptions).prepareImageCapture!({} as never);
     expect(sync.mock.calls.map(([options]) => options.requiredSourceThrough)).toEqual(["7", "8"]);
+    expect(sync.mock.calls[0]![0].retryBudget).toBe(sync.mock.calls[1]![0].retryBudget);
     expect(historyRuntime.flush).toHaveBeenCalledTimes(2); expect(completed).toBe("8");
   } finally { process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
+
+test("disconnect aborts the history round and its foreground capture wait", async () => {
+  setup(); historyRuntime.supported = true;
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal();
+  Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null, getLastSourceSequence: () => "7", hasImageHistoryCheckpoint: () => false });
+  let observedSignal!: AbortSignal;
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockImplementation(options => new Promise((_resolve, reject) => {
+    observedSignal = options.signal!;
+    observedSignal.addEventListener("abort", () => reject(observedSignal.reason), { once: true });
+  }));
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    const pending = (fixture.options as ProviderOptions).prepareImageCapture!({} as never);
+    const outcome = expect(pending).rejects.toMatchObject({ name: "ImageCaptureNotDispatchedError", cause: expect.objectContaining({ message: "Controller history connection changed." }) });
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+    fixture.relayCallbacks!.onConnection(false);
+    await outcome;
+    expect(observedSignal.aborted).toBe(true);
+    expect(sync).toHaveBeenCalledOnce();
+  } finally { process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
+
+test("caller cancellation ends capture waiting without cancelling the connection's history work", async () => {
+  setup(); historyRuntime.supported = true;
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal();
+  Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null, getLastSourceSequence: () => "7", hasImageHistoryCheckpoint: () => true });
+  let release!: () => void, observedSignal!: AbortSignal;
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockImplementation(options => { observedSignal = options.signal!; return new Promise(resolve => { release = resolve; }); });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    const abort = new AbortController();
+    const pending = (fixture.options as ProviderOptions).prepareImageCapture!({} as never, abort.signal);
+    const outcome = expect(pending).rejects.toMatchObject({ name: "ImageCaptureNotDispatchedError" });
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+    abort.abort(new Error("Caller cancelled.")); await outcome;
+    expect(observedSignal.aborted).toBe(false);
+    release(); await Promise.resolve();
+  } finally { release?.(); process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
+
+test("shutdown retains a foreground history flush after its waiter times out", async () => {
+  setup(); historyRuntime.supported = true;
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal();
+  Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null, getLastSourceSequence: () => "7", hasImageHistoryCheckpoint: () => false });
+  let release!: () => void;
+  historyRuntime.flush.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockResolvedValue(undefined);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    vi.useFakeTimers();
+    const pending = (fixture.options as ProviderOptions).prepareImageCapture!({} as never);
+    const outcome = expect(pending).rejects.toMatchObject({ name: "ImageCaptureNotDispatchedError" });
+    await vi.advanceTimersByTimeAsync(10_000); await outcome;
+    process.emit("SIGTERM", "SIGTERM"); await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.closed).toBe(false); expect(sync).not.toHaveBeenCalled();
+    release(); await vi.advanceTimersByTimeAsync(0); await running;
+    expect(fixture.closed).toBe(true); expect(sync).not.toHaveBeenCalled();
+  } finally { release?.(); vi.useRealTimers(); process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
 });
 
 test.each(["SIGTERM", "SIGINT"] as const)("%s during native initialization closes the eventual provider before releasing its journal", async signal => {
