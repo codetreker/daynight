@@ -2506,7 +2506,8 @@ Windows keeps a directory handle open for every process working directory, so a
 live process makes an owned directory undeletable. When ordinary removal has
 exhausted its busy retries and still fails with `EBUSY`, and the applied value
 is true, cleanup lists the processes whose working directory lies inside the
-verified directory, terminates each one together with its descendants, and runs
+verified directory, terminates each one along with the processes attributable
+to it as children, and runs
 the same removal sequence again. Ownership is proven before the inventory
 decides which processes to act on and again before the retry removes anything;
 each holder's process handle stays open from inspection until termination, so
@@ -2526,8 +2527,10 @@ same obstacle and the original error and cleanup responsibility are preserved.
 A 32-bit holder is read through its own process parameters rather than the
 native ones, which do not carry its active working directory.
 A holder belonging to another account cannot be read or terminated and is
-skipped rather than failing the inventory. The target defaults to false, and
-without it no process is terminated.
+skipped rather than failing the inventory. Descendant termination is not a
+guarantee either: a grandchild whose parent already exited may survive, and if
+it still holds the directory the retry keeps the original error. The target
+defaults to false, and without it no process is terminated.
 
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged

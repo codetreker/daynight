@@ -19,8 +19,11 @@ const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation)
   operation.check();
   const timeout = Math.max(1, Math.floor(Math.min(operation.remainingMs(), operation.limits.requestMs)));
   await new Promise<void>((resolve, reject) => {
-    // /T covers descendants the holder spawned, which is the part of this
-    // action the Worker does not own and the configuration target authorizes.
+    // /T also ends the processes Windows can attribute to this holder as its
+    // children, which is the part of the action the Worker does not own and the
+    // configuration target authorizes. It is not a guarantee: a grandchild
+    // whose parent already exited may no longer be attributable and can
+    // survive, in which case the caller's retry meets the same obstacle.
     const child = execFile("taskkill", ["/PID", String(holder.pid), "/T", "/F"], { timeout, windowsHide: true }, error => {
       operation.signal.removeEventListener("abort", abort);
       // 128 is "process not found": the holder exited between inventory and

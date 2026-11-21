@@ -22,11 +22,19 @@ processes whose working directory lies inside the verified worktree, terminates
 each one with its descendants, and runs the same removal sequence again.
 
 The option exists because that termination reaches processes the Worker never
-launched: `taskkill /T` takes the holder's whole tree, and a holder may itself
-be something an agent spawned and abandoned. That is an operator decision, not
-a default, which is also why it is a target of its own rather than a platform
-branch of `enableSudoCleanup`: privileged deletion of files the Worker owns and
-termination of processes it does not own authorize different things.
+launched: `taskkill /T` also terminates the processes it can attribute to the
+holder as children, and a holder may itself be something an agent spawned and
+abandoned. That is an operator decision, not a default, which is also why it is
+a target of its own rather than a platform branch of `enableSudoCleanup`:
+privileged deletion of files the Worker owns and termination of processes it
+does not own authorize different things.
+
+`/T` is not a guarantee that every descendant dies. A grandchild whose parent
+has already exited may no longer be attributable to the holder and can survive.
+That is not a correctness problem here: a survivor that still holds the
+directory leaves the retry failing with the same `EBUSY`, which is preserved
+together with cleanup responsibility, exactly as when no holder was reportable
+at all.
 
 ### Finding the holders
 
@@ -157,7 +165,8 @@ directory whose ownership was proven would make the option unbounded.
 ## Consequences
 
 Cleanup recovers a worktree held by a live process on Windows when the operator
-has enabled it, at the cost of terminating that process and its descendants.
+has enabled it, at the cost of terminating that process and the processes
+attributable to it as children.
 The target defaults to false and nothing happens without it, so existing
 deployments are unchanged.
 
