@@ -202,6 +202,10 @@ afterEach(async () => {
 describe("worker cloud-first startup", () => {
   it("releases a Bot probe rejected by local disable during environment preparation", async () => {
     const f = await fixture(false, false);
+    // Lifecycle initialization reconciles retained Task owners before opening a
+    // scope, even when this fixture has no configured projects or saved claims.
+    const taskCoordinator = { ...coordinator(async () => {}), executionSnapshot: vi.fn(() => ({ recovery: [] })) };
+    mocks.coordinator.mockReturnValue(taskCoordinator);
     const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
     const time = "2026-11-21T00:00:00.000Z";
     let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "enabled", admission: "closed",
@@ -258,17 +262,27 @@ describe("worker cloud-first startup", () => {
       },
     });
     const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
-    const { cancellation, running } = start(f, { lifecycle: true, onExecutionScope: control => { controls.push(control); } });
+    const managementMessages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => { managementMessages.push(message.trim()); }, onExecutionScope: control => { controls.push(control); } });
+    const waitForStage = async <T>(stage: string, work: Promise<T>): Promise<T> => {
+      try {
+        return await withinExecutionDeadline(Promise.race([work, running.then(() => { throw new Error("Worker stopped before the barrier."); })]), Date.now() + 5_000);
+      } catch (cause) { throw new Error(`Worker did not complete ${stage}. Management diagnostics: ${managementMessages.join("; ") || "none"}`, { cause }); }
+    };
     let lifecycle: ReturnType<typeof openLifecycleStore> | undefined;
     try {
-      await withinExecutionDeadline(entered.promise, Date.now() + 5_000);
+      await waitForStage("Bot alias preparation", Promise.race([entered.promise, result.promise.then(error => {
+        throw new Error("Bot environment preparation settled before the alias barrier.", { cause: error });
+      })]));
+      expect(taskCoordinator.executionSnapshot).toHaveBeenCalled();
+      expect(api.activate).toHaveBeenCalledOnce();
       lifecycle = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
       expect(lifecycle.readState().admission).toBe("open");
       expect(controls).toHaveLength(1);
       const spawnCount = vi.mocked(childProcesses.spawn).mock.calls.length;
       lifecycle.closeAdmission({ operationId: uuid(81), local: true });
       release.resolve();
-      const error = await withinExecutionDeadline(result.promise, Date.now() + 5_000);
+      const error = await waitForStage("Bot probe admission rejection", result.promise);
       expect(error).toBeInstanceOf(LifecycleAdmissionError);
       expect(retainedBotCliProbes()).toEqual([]);
       expect(retainedOwnedCommandBoundaries()).toEqual([]);
