@@ -15,6 +15,7 @@ export type ConfigurationDraft = {
   readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
   readonly archiveSessions?: boolean;
   readonly enableSudoCleanup?: boolean | undefined;
+  readonly enableWindowsProcessCleanup?: boolean | undefined;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly taskTagFilter?: WorkerTaskTagFilter & { readonly input: string };
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
@@ -35,6 +36,7 @@ export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDr
 
   ...(value.archiveSessions === undefined ? {} : { archiveSessions: value.archiveSessions }),
   ...(value.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: value.enableSudoCleanup }),
+  ...(value.enableWindowsProcessCleanup === undefined ? {} : { enableWindowsProcessCleanup: value.enableWindowsProcessCleanup }),
   ...(value.toolPaths === undefined ? {} : { toolPaths: structuredClone(value.toolPaths) }),
   ...(value.taskTagFilter === undefined ? {} : { taskTagFilter: { ...value.taskTagFilter, names: [...value.taskTagFilter.names], input: '' } }),
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
@@ -101,7 +103,7 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     return { projectId: project.projectId, nativeOverrides };
   });
   return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
-    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), ...(draft.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: draft.enableSudoCleanup }), ...(taskTagFilter === undefined ? {} : { taskTagFilter }), native, projects }) : null, errors };
+    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), ...(draft.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: draft.enableSudoCleanup }), ...(draft.enableWindowsProcessCleanup === undefined ? {} : { enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup }), ...(taskTagFilter === undefined ? {} : { taskTagFilter }), native, projects }) : null, errors };
 };
 const filterKey = (filter: ConfigurationDraft['taskTagFilter']): string | undefined => {
   if (filter === undefined) return undefined;
@@ -109,19 +111,19 @@ const filterKey = (filter: ConfigurationDraft['taskTagFilter']): string | undefi
   try { return taskTagFilterSemantics({ names: pending === '' ? filter.names : [...filter.names, filter.input], match: filter.match }); }
   catch { return JSON.stringify(filter); }
 };
-const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly enableSudoCleanup?: boolean | undefined }>(source: T, includeControlMode: boolean, includeToolPaths: boolean, includeArchiveSessions: boolean, includeSudoCleanup: boolean) => {
-  const { agentControlMode, toolPaths, archiveSessions, enableSudoCleanup, ...rest } = source;
-  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}), ...(includeSudoCleanup && enableSudoCleanup !== undefined ? { enableSudoCleanup } : {}) };
+const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly enableSudoCleanup?: boolean | undefined; readonly enableWindowsProcessCleanup?: boolean | undefined }>(source: T, includeControlMode: boolean, includeToolPaths: boolean, includeArchiveSessions: boolean, includeSudoCleanup: boolean, includeWindowsProcessCleanup: boolean) => {
+  const { agentControlMode, toolPaths, archiveSessions, enableSudoCleanup, enableWindowsProcessCleanup, ...rest } = source;
+  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}), ...(includeSudoCleanup && enableSudoCleanup !== undefined ? { enableSudoCleanup } : {}), ...(includeWindowsProcessCleanup && enableWindowsProcessCleanup !== undefined ? { enableWindowsProcessCleanup } : {}) };
 };
-export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true): boolean => {
-  const a = parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup));
-  const b = parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup));
+export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true, includeWindowsProcessCleanup = true): boolean => {
+  const a = parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup));
+  const b = parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup));
   const { taskTagFilter: af, ...ar } = a, { taskTagFilter: bf, ...br } = b;
   return JSON.stringify(ar) === JSON.stringify(br) && (af === undefined ? bf === undefined : bf !== undefined && taskTagFilterSemantics(af) === taskTagFilterSemantics(bf));
 };
-export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true): boolean => {
-  const { taskTagFilter: af, ...ar } = projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup);
-  const { taskTagFilter: bf, ...br } = projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup);
+export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true, includeWindowsProcessCleanup = true): boolean => {
+  const { taskTagFilter: af, ...ar } = projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup);
+  const { taskTagFilter: bf, ...br } = projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup, includeWindowsProcessCleanup);
   return JSON.stringify(ar) === JSON.stringify(br) && filterKey(af) === filterKey(bf);
 };
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
@@ -140,6 +142,7 @@ export const configurationFieldChanges = (draft: ConfigurationDraft, desired: Wo
     preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
     archiveSessions: draft.archiveSessions !== desired.archiveSessions,
     enableSudoCleanup: draft.enableSudoCleanup !== desired.enableSudoCleanup,
+    enableWindowsProcessCleanup: draft.enableWindowsProcessCleanup !== desired.enableWindowsProcessCleanup,
     agentControlMode: errors.agentControlMode !== undefined || draft.agentControlMode !== desired.agentControlMode,
     taskTagFilter: errors.taskTagFilter !== undefined || filterKey(draft.taskTagFilter) !== filterKey(desired.taskTagFilter === undefined ? undefined : { ...desired.taskTagFilter, input: '' }),
     toolPaths: Object.fromEntries(tools.map(tool => [tool, errors[`toolPaths.${tool}`] !== undefined || JSON.stringify(draft.toolPaths?.[tool]) !== JSON.stringify(desired.toolPaths?.[tool])])) as Readonly<Record<Tool, boolean>>,

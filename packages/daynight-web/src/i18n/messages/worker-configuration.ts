@@ -64,6 +64,11 @@ export type WorkerConfigurationMessages = {
   readonly sudoCleanupUnsupportedService: string;
   readonly sudoCleanupUnsupportedPlatform: string;
   readonly sudoCleanupUnknownPlatform: string;
+  readonly enableWindowsProcessCleanup: string;
+  readonly enableWindowsProcessCleanupDetail: string;
+  readonly windowsProcessCleanupUnsupportedService: string;
+  readonly windowsProcessCleanupUnsupportedPlatform: string;
+  readonly windowsProcessCleanupUnknownPlatform: string;
   readonly archiveSessions: string;
   readonly archiveSessionsDetail: string;
   readonly archiveSessionsUnsupportedService: string;
@@ -133,7 +138,7 @@ export type WorkerConfigurationMessages = {
   readonly localSettingsDetail: string;
   readonly localSettingsItems: readonly string[];
   readonly state: Readonly<Record<'pending' | 'applying' | 'applied' | 'error' | 'unsaved', string>>;
-  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'archiveSessions' | 'enableSudoCleanup' | 'taskTagFilter' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
+  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'archiveSessions' | 'enableSudoCleanup' | 'enableWindowsProcessCleanup' | 'taskTagFilter' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
   readonly codes: Readonly<Record<'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_configuration' | 'io_error' | 'unavailable', string>>;
   readonly phases: Readonly<Record<'validate' | 'prepare' | 'apply' | 'stop' | 'persist', string>>;
 };
