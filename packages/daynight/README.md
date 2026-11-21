@@ -2513,6 +2513,19 @@ decides which processes to act on and again before the retry removes anything;
 each holder's process handle stays open from inspection until termination, so
 Windows cannot recycle its identifier onto an unrelated process in between.
 
+Neither the Worker nor any of its own ancestors is reported as a holder.
+Termination reaches the descendants of what it is given, so ending an ancestor
+would end the cleanup along with it, partway through a removal and with no
+error left to report. A Worker started from a shell whose working directory is
+inside the worktree has exactly that ancestor.
+
+A failed attempt names the holders it ended, by image and identifier. The
+termination cannot be undone and may reach processes the Worker never started,
+so this is the operator's only record of it: every exit carries it, including
+cancellation, the postcondition observation and a failure reported after the
+removal itself succeeded. Holders that survived are not claimed as ended, and a
+recovery that terminated nothing says so instead.
+
 Every managed directory this cleanup removes is covered: the worktree contents
 and its root, the registered worktree left empty and pointerless by an
 interrupted attempt, and an unregistered reservation. Each is admitted through

@@ -51,7 +51,11 @@ type TerminatedHolder = { readonly pid: number; readonly image: string; readonly
  *
  * Termination cannot be undone, and the processes it ends may be ones the
  * Worker never started. When the attempt then fails this message is the only
- * record the operator receives that it happened at all. */
+ * record the operator receives that it happened at all.
+ *
+ * A holder that exited on its own just before its termination is listed too:
+ * `taskkill` reports the same absence either way, and the record errs toward
+ * naming a process the Worker did not end rather than omitting one it did. */
 const terminatedHolders = (ended: readonly TerminatedHolder[]): string =>
   ended.length === 0
     ? "No holder was terminated."

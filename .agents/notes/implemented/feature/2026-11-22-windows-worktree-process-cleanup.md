@@ -228,6 +228,13 @@ exit. The recovery's own failure says only that it ended nothing, so the two
 never repeat each other. A nested reservation cleanup shares the array, so one
 attempt reports all of its terminations together.
 
+The record is not exact in one direction. A holder that exited on its own just
+before its termination is listed as ended, because `taskkill` reports the same
+absence either way and distinguishing them would mean asking about liveness
+the inventory has no reason to track. That errs toward naming a process the
+Worker did not end rather than omitting one it did, which is the direction an
+irreversible action should be wrong in.
+
 A recovery that succeeds leaves no such record, because this cleanup has no
 channel that carries anything but errors. Adding one would change the Worker
 event protocol, which is a larger decision than this target; the configuration
