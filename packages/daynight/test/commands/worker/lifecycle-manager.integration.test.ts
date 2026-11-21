@@ -200,7 +200,7 @@ describe("Worker lifecycle management with real local authority", () => {
 
   it("retries a remote resume lookup after observing its version without inventing a local request", async () => {
     const f = fixture(); await start(f); await disable(f);
-    await f.manager.reconcile();
+    await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
     const operation = vi.mocked(f.api.operation).getMockImplementation()!;
     vi.mocked(f.api.operation).mockRejectedValueOnce(unknown()).mockImplementation(operation);
@@ -224,7 +224,8 @@ describe("Worker lifecycle management with real local authority", () => {
   }, 5000);
 
   it("reconciles a remote resume placeholder after saving its confirmed receipt fails", async () => {
-    const f = fixture(); await start(f); await disable(f); await f.manager.reconcile();
+    const f = fixture(); await start(f); await disable(f);
+    await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
     const failure = new Error("Resume receipt persistence unavailable"), record = f.store.recordOperation;
     let fail = true;
@@ -244,7 +245,7 @@ describe("Worker lifecycle management with real local authority", () => {
 
   it("does not apply a remote resume to a local veto added during its operation lookup", async () => {
     const f = fixture(); await start(f); await disable(f);
-    await f.manager.reconcile();
+    await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
     const lookup = deferred<void>(), release = deferred<void>(), operation = vi.mocked(f.api.operation).getMockImplementation()!;
     vi.mocked(f.api.operation).mockImplementation(async operationId => { if (operationId === id(22)) { lookup.resolve(); await release.promise; } return operation(operationId); });
