@@ -138,6 +138,30 @@ describe("Worker configuration cache", () => {
     await second.stop();
   });
 
+  it("reads each cleanup member from its own committed application", async () => {
+    // Every other assertion here leaves the Windows member absent, and the
+    // cleanup behaviour tests inject a policy rather than reading one. Without
+    // this, nothing proves the member reaches a policy at all, and nothing
+    // would notice the two members sharing one value or one revision again.
+    const original = cache();
+    const recorded = tracked(81, { kind: "enableSudoCleanup" });
+    const sudo = { ...recorded, value: { ...recorded.value, appliedValue: false } };
+    const processes = tracked(82, { kind: "enableWindowsProcessCleanup" }, "11");
+    // The members were committed by different targets. A fully applied cache
+    // requires every member to sit at the application revision, so differing
+    // revisions only exist while an application is still pending.
+    const raw = JSON.stringify(modern({ ...desired, value: { ...desired.value, enableSudoCleanup: false, enableWindowsProcessCleanup: true } }, "11"));
+    const source = { ...original, schemaVersion: 12, authority: { ...original.authority, desiredJson: raw, applicationRevision: "11", pendingApplication: true }, currentItems: withoutModeItems([...original.currentItems, sudo, processes]) };
+    const folder = await directory(), file = path.join(folder, "members.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, [JSON.stringify(source)], 0o600);
+    const manager = await createWorkerConfigurationManager({ file, identity, signal, applyNative: async () => {} });
+    try {
+      await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
+      // Opposite values and different revisions: a shared one cannot produce this.
+      expect(manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, sudoRevision: "10", enableWindowsProcessCleanup: true, windowsProcessRevision: "11" });
+    } finally { await manager.stop(); }
+  });
+
   it.each([
     { target: false, applied: true, source: "observed", expected: true },
     { target: true, applied: false, source: "observed", expected: false },
