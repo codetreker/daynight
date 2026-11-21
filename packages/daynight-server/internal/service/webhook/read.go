@@ -115,7 +115,13 @@ func (s *Service) endpointView(ctx context.Context, scope store.WebhookReadScope
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": subscriptions, "capabilities": map[string]any{"manage": manage && canWrite, "readSecret": manage && canSecret, "redeliver": manage && canDeliver}, "createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(), "deletedAt": nil}, nil
+	return map[string]any{"id": e.ID, "owner": owner, "lifecycle": "active", "clientKey": clientKeyView(e), "name": e.Name, "enabled": e.Enabled, "configVersion": version(e.ConfigVersion), "destinationRevision": version(e.DestinationRevision), "destination": map[string]any{"kind": e.DestinationKind, "adapterVersion": e.AdapterVersion, "url": url, "displayUrl": display}, "signing": map[string]any{"scheme": "standard-webhooks-v1", "activeKeyId": e.ActiveKeyID, "overlapUntil": overlap}, "subscriptions": subscriptions, "capabilities": map[string]any{"manage": manage && canWrite, "readSecret": manage && canSecret, "redeliver": manage && canDeliver}, "createdAt": e.CreatedAt.UTC(), "updatedAt": e.UpdatedAt.UTC(), "deletedAt": nil}, nil
+}
+func clientKeyView(e wm.Endpoint) any {
+	if e.ClientKey == "" {
+		return nil
+	}
+	return e.ClientKey
 }
 func (s *Service) Get(ctx context.Context, p model.Principal, o Owner, id string) (any, error) {
 	var v any
@@ -203,14 +209,16 @@ func (s *Service) Secret(ctx context.Context, p model.Principal, o Owner, id str
 type cursor struct {
 	Version                                              int
 	List, User, Kind, Owner, Query, Enabled, View, After string
-	CreatedAt                                            time.Time
+	// ClientKey binds the filter; it is empty when the list is unfiltered.
+	ClientKey string `json:",omitempty"`
+	CreatedAt time.Time
 }
 
 func decodeCursor(data []byte, target any) error {
 	var allowed []string
 	switch target.(type) {
 	case *cursor:
-		allowed = []string{"Version", "List", "User", "Kind", "Owner", "Query", "Enabled", "View", "After", "CreatedAt"}
+		allowed = []string{"Version", "List", "User", "Kind", "Owner", "Query", "Enabled", "View", "After", "CreatedAt", "ClientKey"}
 	case *historyCursor:
 		allowed = []string{"Version", "Kind", "User", "OwnerKind", "OwnerID", "Endpoint", "Delivery", "Filter", "View", "ID", "Time", "Generation", "Sequence"}
 	case *historyDisclosure:
@@ -247,13 +255,16 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 			flag = strconv.FormatBool(*q.Enabled)
 		}
 		c := cursor{Version: 1, List: "endpoints", User: p.UserID, Kind: o.Kind, Owner: o.ID, Query: q.Query, Enabled: flag, View: strconv.FormatBool(m)}
+		if q.ClientKey != nil {
+			c.ClientKey = *q.ClientKey
+		}
 		if q.Cursor != nil {
 			b, e := base64.RawURLEncoding.DecodeString(*q.Cursor)
 			if e != nil {
 				return fault("invalid_input", "Invalid cursor.")
 			}
 			var old cursor
-			if decodeCursor(b, &old) != nil || old.Version != c.Version || old.List != c.List || old.View != c.View || old.CreatedAt.IsZero() || old.User != c.User || old.Kind != c.Kind || old.Owner != c.Owner || old.Query != c.Query || old.Enabled != c.Enabled || core.CanonicalUUID(old.After) != nil {
+			if decodeCursor(b, &old) != nil || old.Version != c.Version || old.List != c.List || old.View != c.View || old.CreatedAt.IsZero() || old.User != c.User || old.Kind != c.Kind || old.Owner != c.Owner || old.Query != c.Query || old.Enabled != c.Enabled || old.ClientKey != c.ClientKey || core.CanonicalUUID(old.After) != nil {
 				return fault("invalid_input", "Invalid cursor.")
 			}
 			c.After = old.After
@@ -274,7 +285,7 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 			limit = 50
 		}
 		for _, ep := range list {
-			if ep.DeletedAt != nil || (c.After != "" && (ep.CreatedAt.Before(c.CreatedAt) || (ep.CreatedAt.Equal(c.CreatedAt) && ep.ID <= c.After))) || (q.Enabled != nil && ep.Enabled != *q.Enabled) {
+			if ep.DeletedAt != nil || (c.After != "" && (ep.CreatedAt.Before(c.CreatedAt) || (ep.CreatedAt.Equal(c.CreatedAt) && ep.ID <= c.After))) || (q.Enabled != nil && ep.Enabled != *q.Enabled) || (q.ClientKey != nil && ep.ClientKey != *q.ClientKey) {
 				continue
 			}
 			v, e := s.endpointView(ctx, sc, ep, p, m)
@@ -306,7 +317,7 @@ func (s *Service) List(ctx context.Context, p model.Principal, o Owner, q ListQu
 				lastAttemptAt = attempt.AdmittedAt.UTC()
 				lastResult = AttemptResult(*attempt)
 			}
-			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": len(projects), "eventTypeCount": len(eventTypes), "lastResult": lastResult, "lastAttemptAt": lastAttemptAt})
+			items = append(items, map[string]any{"id": ep.ID, "owner": v["owner"], "clientKey": v["clientKey"], "name": ep.Name, "enabled": ep.Enabled, "configVersion": version(ep.ConfigVersion), "destination": dest, "projectCount": len(projects), "eventTypeCount": len(eventTypes), "lastResult": lastResult, "lastAttemptAt": lastAttemptAt})
 			last = ep.ID
 			lastTime = ep.CreatedAt
 		}

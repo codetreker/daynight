@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -233,4 +234,31 @@ func TestScopedWebhookDisabledDraftAndReconfirmation(t *testing.T) {
 		mgmtWantFault(t, err, "insufficient_scope")
 		f.noEffects()
 	})
+}
+
+func TestScopedWebhookClientKeyRefusalNeedsReadForDetails(t *testing.T) {
+	for _, tc := range []struct {
+		scopes  []scopepolicy.ScopeID
+		details bool
+	}{{[]scopepolicy.ScopeID{"webhook:write"}, false}, {[]scopepolicy.ScopeID{"webhook:read", "webhook:write"}, true}} {
+		f, auth, _ := scopedMutationFixture(t, tc.scopes...)
+		f.writer.LiveByClientKeyFn = func(context.Context, wm.Owner, string) (wm.Endpoint, error) {
+			holder := f.endpoint
+			holder.ClientKey = "inbox"
+			return holder, nil
+		}
+		m := clientKeyCreate(f, "inbox")
+		m.Enabled = mgmtPtr(false)
+		m.ReturnReceipt = true
+		_, err := f.service.MutateAuthorized(f.ctx, auth, f.owner, m)
+		mgmtWantFault(t, err, "endpoint_exists")
+		var refusal *model.Fault
+		if !errors.As(err, &refusal) || (refusal.ExistingEndpoint != nil) != tc.details {
+			t.Fatalf("scopes=%v details=%#v", tc.scopes, refusal.ExistingEndpoint)
+		}
+		if tc.details && (refusal.ExistingEndpoint.ID != f.endpoint.ID || refusal.ExistingEndpoint.ConfigVersion != f.endpoint.ConfigVersion) {
+			t.Fatalf("details=%#v", refusal.ExistingEndpoint)
+		}
+		f.noEffects()
+	}
 }

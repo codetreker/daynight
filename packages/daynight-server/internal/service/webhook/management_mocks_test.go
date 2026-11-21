@@ -51,6 +51,7 @@ type mgmtWebhookDAO struct {
 	mgmtMockBase
 	EndpointFn          func(context.Context, wm.Owner, string) (wm.Endpoint, error)
 	EndpointsFn         func(context.Context, wm.Owner) ([]wm.Endpoint, error)
+	LiveByClientKeyFn   func(context.Context, wm.Owner, string) (wm.Endpoint, error)
 	SigningKeysFn       func(context.Context, string) ([]wm.SigningKey, error)
 	SubscriptionsFn     func(context.Context, string) ([]wm.Subscription, error)
 	BindingsFn          func(context.Context, string) ([]wm.Binding, error)
@@ -72,6 +73,10 @@ type mgmtWebhookDAO struct {
 	LatestAttemptFn     func(context.Context, string) (*store.WebhookAttempt, error)
 }
 
+func (m *mgmtWebhookDAO) LiveEndpointByClientKey(p0 context.Context, p1 wm.Owner, p2 string) (wm.Endpoint, error) {
+	m.need("LiveEndpointByClientKey", m.LiveByClientKeyFn != nil)
+	return m.LiveByClientKeyFn(p0, p1, p2)
+}
 func (m *mgmtWebhookDAO) Endpoint(p0 context.Context, p1 wm.Owner, p2 string) (wm.Endpoint, error) {
 	m.need("Endpoint", m.EndpointFn != nil)
 	return m.EndpointFn(p0, p1, p2)

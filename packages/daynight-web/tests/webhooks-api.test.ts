@@ -72,6 +72,14 @@ describe("Webhook wire contracts", () => {
     expect(parseWebhookEndpoint(deleted, owner)).toEqual(deleted);
     expect(() => parseWebhookEndpoint({ ...deleted, name: "Old private name" }, owner)).toThrow();
   });
+  it("accepts the optional creation key on active endpoints and summaries", () => {
+    expect(parseWebhookEndpoint({ ...endpoint(), clientKey: "assistant-task-inbox:1" }, owner)).toMatchObject({ lifecycle: "active", clientKey: "assistant-task-inbox:1" });
+    expect(parseWebhookEndpoint({ ...endpoint(), clientKey: null }, owner)).toMatchObject({ lifecycle: "active", clientKey: null });
+    for (const key of ["", "has space", "x".repeat(201), 1]) expect(() => parseWebhookEndpoint({ ...endpoint(), clientKey: key }, owner)).toThrow();
+    expect(parseWebhookEndpointPage({ items: [{ ...summary(), clientKey: "inbox" }], nextCursor: null }, owner).items[0]?.clientKey).toBe("inbox");
+    expect(() => parseWebhookEndpointPage({ items: [{ ...summary(), clientKey: "a b" }], nextCursor: null }, owner)).toThrow();
+    expect(() => parseWebhookEndpoint({ id: endpointId, owner, lifecycle: "deleted", configVersion: "8", deletedAt: now, clientKey: null }, owner)).toThrow();
+  });
   it("rejects foreign owners and duplicate subscription or page identities", () => {
     expect(() => parseWebhookEndpoint({ ...endpoint(), owner: { kind: "team", id: uuid(8) } }, owner)).toThrow();
     expect(() => parseWebhookEndpoint({ ...endpoint(), subscriptions: [endpoint().subscriptions[0], endpoint().subscriptions[0]] }, owner)).toThrow();

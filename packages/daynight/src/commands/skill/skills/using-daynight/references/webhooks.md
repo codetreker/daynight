@@ -58,9 +58,9 @@ targets:
 
 | Input | Rules |
 | --- | --- |
-| Create | All four top-level fields are required. Destination requires kind `"http"`, adapterVersion `"1"`, and configuration with only an HTTPS `url`. |
+| Create | All four top-level fields are required. Destination requires kind `"http"`, adapterVersion `"1"`, and configuration with only an HTTPS `url`. Optional `clientKey` (1-200 visible ASCII characters) identifies at most one live endpoint per owner; a create reusing a live key is refused with `endpoint_exists` and creates nothing. Deleting the endpoint releases its key. |
 | Events | Each subscription explicitly selects a Project and a nonempty, duplicate-free event array: task.created, task.status_changed, task.paused, task.deleted, task.step_updated or task.thread_posted. Never infer all-Projects scope. |
-| Update | Nonempty partial object using the same top-level keys; omitted fields stay unchanged. `{"enabled":false}` disables the endpoint. Supplied destination must include complete kind/adapterVersion/configuration; supplied subscriptions replace the entire array. |
+| Update | Nonempty partial object using the same top-level keys except `clientKey`, which cannot change after creation; omitted fields stay unchanged. `{"enabled":false}` disables the endpoint. Supplied destination must include complete kind/adapterVersion/configuration; supplied subscriptions replace the entire array. |
 | Subscription replace | Reads the array directly, without an object wrapper. Each item requires id, projectId and eventTypes. |
 
 New subscriptions use id:null. Retained IDs must be read, unique and kept with

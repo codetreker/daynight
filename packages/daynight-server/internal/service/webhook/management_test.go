@@ -107,8 +107,10 @@ func TestManagementUpdatesOnlyChangedConfiguration(t *testing.T) {
 func TestManagementDeletesDamagedConfigurationWithoutDecoding(t *testing.T) {
 	f := newMgmtFixture(t)
 	f.endpoint.DestinationConfiguration = []byte("damaged")
+	f.endpoint.ClientKey = "released-on-delete"
 	m := f.mutation("endpoint.delete")
 	expected := f.endpoint
+	expected.ClientKey = ""
 	expected.Name = ""
 	expected.Enabled = false
 	expected.ConfigVersion = 2
@@ -729,5 +731,125 @@ func TestManagementSecretCurrentKeyAndPermissions(t *testing.T) {
 				t.Fatalf("secret=%#v", v)
 			}
 		})
+	}
+}
+
+func clientKeyCreate(f *mgmtFixture, key string) Mutation {
+	m := f.mutation("endpoint.create")
+	m.EndpointID = ""
+	m.IfVersion = 0
+	m.Name = mgmtPtr("Keyed")
+	m.Enabled = mgmtPtr(true)
+	m.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://receiver.example/Keyed"}
+	m.HasSubscriptions = true
+	m.ClientKey = &key
+	return m
+}
+
+func TestManagementCreateStoresClientKeyAfterLiveCheck(t *testing.T) {
+	f := newMgmtFixture(t)
+	m := clientKeyCreate(f, "assistant-task-inbox:1")
+	f.writer.LiveByClientKeyFn = func(_ context.Context, o wm.Owner, key string) (wm.Endpoint, error) {
+		if o != f.owner || key != "assistant-task-inbox:1" {
+			t.Errorf("client key lookup=%v %q", o, key)
+		}
+		return wm.Endpoint{}, model.ErrNotFound
+	}
+	f.recordWrites()
+	expected := f.endpoint
+	expected.ID = mgmtRandomID(0)
+	expected.ClientKey = "assistant-task-inbox:1"
+	f.respondMutation(m, expected, "applied", []wm.SigningKey{f.key})
+	result, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.effects.endpoints) != 1 || f.effects.endpoints[0].ClientKey != "assistant-task-inbox:1" {
+		t.Fatalf("endpoint effects=%#v", f.effects.endpoints)
+	}
+	if view := result.Body.(map[string]any)["endpoint"].(map[string]any); view["clientKey"] != "assistant-task-inbox:1" {
+		t.Fatalf("view=%#v", view)
+	}
+	f.order("write.LockConfigurationSources", "write.LockCredential", "write.dao.LiveEndpointByClientKey", "write.dao.PutEndpoint", "write.dao.PutOperation")
+	withoutKey := m
+	withoutKey.ClientKey = nil
+	keyed, err := fingerprint(f.principal, f.owner, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unkeyed, err := fingerprint(f.principal, f.owner, withoutKey)
+	if err != nil || keyed == unkeyed || f.effects.operations[0].Fingerprint != keyed {
+		t.Fatalf("client key did not bind the receipt fingerprint: %v", err)
+	}
+}
+
+func TestManagementCreateRefusesLiveClientKey(t *testing.T) {
+	holder := func(f *mgmtFixture) wm.Endpoint {
+		h := f.endpoint
+		h.ClientKey = "inbox"
+		h.ConfigVersion = 7
+		return h
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(*mgmtFixture)
+		details *model.ExistingEndpointDetails
+	}{
+		{"locked check", func(f *mgmtFixture) {
+			f.writer.LiveByClientKeyFn = func(context.Context, wm.Owner, string) (wm.Endpoint, error) { return holder(f), nil }
+		}, &model.ExistingEndpointDetails{ID: "33333333-3333-4333-8333-333333333333", ConfigVersion: 7}},
+		{"index collision", func(f *mgmtFixture) {
+			calls := 0
+			f.writer.LiveByClientKeyFn = func(context.Context, wm.Owner, string) (wm.Endpoint, error) {
+				calls++
+				if calls == 1 {
+					return wm.Endpoint{}, model.ErrNotFound
+				}
+				return holder(f), nil
+			}
+			f.writer.PutEndpointFn = func(context.Context, wm.Endpoint) error { return store.ErrWebhookClientKeyExists }
+		}, &model.ExistingEndpointDetails{ID: "33333333-3333-4333-8333-333333333333", ConfigVersion: 7}},
+		{"holder deleted after collision", func(f *mgmtFixture) {
+			f.writer.LiveByClientKeyFn = func(context.Context, wm.Owner, string) (wm.Endpoint, error) { return wm.Endpoint{}, model.ErrNotFound }
+			f.writer.PutEndpointFn = func(context.Context, wm.Endpoint) error { return store.ErrWebhookClientKeyExists }
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newMgmtFixture(t)
+			f.recordWrites()
+			tc.prepare(f)
+			_, err := f.service.Mutate(f.ctx, f.principal, f.owner, clientKeyCreate(f, "inbox"))
+			mgmtWantFault(t, err, "endpoint_exists")
+			var refusal *model.Fault
+			errors.As(err, &refusal)
+			mgmtWantEqual(t, refusal.ExistingEndpoint, tc.details)
+			if len(f.effects.operations) != 0 || len(f.effects.keys) != 0 {
+				t.Fatalf("refusal wrote effects: %#v", f.effects)
+			}
+		})
+	}
+}
+
+func TestManagementClientKeyInputRules(t *testing.T) {
+	for _, tc := range []struct {
+		kind, key string
+	}{{"endpoint.create", ""}, {"endpoint.create", "has space"}, {"endpoint.create", strings.Repeat("k", 201)}, {"endpoint.update", "inbox"}, {"endpoint.delete", "inbox"}, {"signing.rotate", "inbox"}} {
+		f := newMgmtFixture(t)
+		m := clientKeyCreate(f, tc.key)
+		if tc.kind != "endpoint.create" {
+			m = f.mutation(tc.kind)
+			switch tc.kind {
+			case "endpoint.update":
+				m.Name = mgmtPtr("Renamed")
+			case "signing.rotate":
+				m.Mode = "immediate"
+			}
+			m.ClientKey = &tc.key
+		}
+		_, err := f.service.Mutate(f.ctx, f.principal, f.owner, m)
+		mgmtWantFault(t, err, "invalid_input")
+		if f.reads != 0 {
+			t.Fatalf("%s %q reached storage", tc.kind, tc.key)
+		}
 	}
 }
