@@ -4,6 +4,7 @@ import { createSessionResourceClient, type SessionResourceClient } from '../../.
 import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId, readAuthRequestGeneration } from './client';
+import { createArchiveReadRetry } from './archive-retry';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
 import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTaskOperationResponse, parseTimelinePage, RELAY_LIMITS,
   type BrowserMessage, type CurrentSessionResponse, type OperationResponse, type TimelinePage } from '../../../daynight/src/session/controller-protocol';
@@ -97,14 +98,11 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
     resources,
     archive: (id, signal) => get(`${sessionRoot(id)}/archive`, signal, (value) => parseSessionArchiveStatus(archiveEnvelope(value))),
     archiveContent: async (id, signal, expectedStatus) => {
-      const generation = readAuthRequestGeneration();
+      const retry = createArchiveReadRetry(signal, userId, onPrincipalMismatch, id);
       let lifetime = signal;
-      const assertCurrent = () => {
-        lifetime.throwIfAborted();
-        if (generation !== readAuthRequestGeneration()) throw new DOMException('The authenticated account changed.', 'AbortError');
-      };
+      const assertCurrent = () => { lifetime.throwIfAborted(); retry.assertCurrent(); };
       try {
-        const response = await request(`${sessionRoot(id)}/archive/content`, signal, { headers: { Accept: 'application/json', [TASK_BODY_HISTORY_VERSION_HEADER]: '1' } });
+        const response = await retry.get(`${sessionRoot(id)}/archive/content`, { headers: { Accept: 'application/json', [TASK_BODY_HISTORY_VERSION_HEADER]: '1' } }, 'content');
         lifetime = responseSignal(response, signal);
         assertCurrent();
         assertResponsePrincipal(response, userId, onPrincipalMismatch);
@@ -123,7 +121,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', rawBytes)), b => b.toString(16).padStart(2, '0')).join('');
           assertCurrent();
           if (rawBytes.byteLength > SESSION_ARCHIVE_MANIFEST_MAX_BYTES || status.state !== 'ready' || status.schemaVersion !== 3 || status.completeness !== archive.completeness || status.byteLength !== String(rawBytes.byteLength) || status.sha256 !== digest) throw new ApiError('protocol');
-          const timelineResponse = await request(`${sessionRoot(id)}/archive/files/${requestId(archive.timeline.fileId)}`, lifetime, { headers: { Accept: 'application/json' } });
+          const timelineResponse = await retry.get(`${sessionRoot(id)}/archive/files/${requestId(archive.timeline.fileId)}`, { headers: { Accept: 'application/json' } }, 'timeline');
           assertCurrent();
           lifetime = responseSignal(timelineResponse, lifetime);
           assertCurrent();

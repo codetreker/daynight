@@ -1318,7 +1318,10 @@ permissions and provide read-only terminal playback. Reading does not connect to
 Herdr or the old Worker, acquire a control lease, send input or resume recording.
 Existing Herdr tasks, processes and resources remain the user's responsibility.
 Task completion does not imply archive readiness: pending, failed and unavailable
-archives retain their status and recovery action. Opening, refreshing or
+archives retain their status and recovery action. Archive content reads retry
+capacity refusals within a bounded loading budget; exhaustion retains the existing
+load failure and refresh action. Cancellation or an account change stops retries.
+Opening, refreshing or
 reconnecting the page does not launch a native conversation or resend input.
 
 With no claim, the tab may show the latest actual Session as read-only history.

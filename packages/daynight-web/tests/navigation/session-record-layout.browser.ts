@@ -41,7 +41,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
   const archive = (item: SessionHistoryItem): SessionArchive => ({ schemaVersion: 1, sessionId: item.sessionId, claimId: item.claimId, executionGeneration: item.executionGeneration,
     controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
     provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId, entries: entries(item.sessionId), resources: [] });
-  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, receiptPosts: [] as string[], items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
+  const state = { busyContent: false, contentReads: 0, historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdHistory: null as Promise<void> | null, receiptPosts: [] as string[], items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
   await page.addInitScript(({ locale, key, item }) => { localStorage.setItem('daynight.web.locale', locale); sessionStorage.setItem(key, JSON.stringify(item)); sessionStorage.setItem('unrelated-session-key', 'preserve'); }, { locale, key: `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`, item: other });
   await page.routeWebSocket('**/channel*', socket => { state.channels++; socket.onMessage(message => state.sent.push(String(message))); socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })); });
   await page.route('**/api/v1/**', async route => {
@@ -72,7 +72,11 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
       const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
       const status = { ...v2('valid-status', url.origin), payload: { ...v2('valid-status', url.origin).payload, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness, finalizationId: terminalArchive.finalizationId } };
       if (path === `${root}/sessions/${source.sessionId}/archive`) { state.archiveReads++; return send(state.archiveState === 'pending' ? v2('valid-status-pending', url.origin) : status); }
-      if (path === `${root}/sessions/${source.sessionId}/archive/content`) return send(terminalArchive);
+      if (path === `${root}/sessions/${source.sessionId}/archive/content`) {
+        state.contentReads++;
+        if (state.busyContent && state.contentReads === 1) return route.fulfill({ status: 429, json: { error: { code: 'resource_busy', message: 'busy', requestId: source.sessionId } } });
+        return send(terminalArchive);
+      }
     }
     if (path === `${root}/sessions/current`) { state.currentReads++; if (state.currentError) return failure(state.currentError); return send(state.registered ? { status: 'registered', session: snapshot } : { status: 'not_registered', claimId: source.claimId, agentControlMode: 'web' }); }
     if (path === `${root}/sessions/${source.sessionId}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries(source.sessionId), resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
@@ -307,4 +311,13 @@ for (const [width, height] of [[320, 640], [1360, 900]]) test(`Task Session pres
   expect(await page.locator('.session-receipts').evaluate(node => node.scrollHeight <= node.clientHeight)).toBe(true);
   await input.focus(); await send.focus(); await expect(send).toBeFocused(); await expect(send).toBeInViewport({ ratio: 1 });
   await page.keyboard.press('Escape'); await expect(input).toHaveValue('Retained draft');
+});
+
+
+test('Herdr archive retries a headerless capacity rejection in Chromium', async ({ page }) => {
+  const state = await install(page, 'herdr'); state.busyContent = true;
+  await navigate(page);
+  await expect(page.locator('.terminal-recording')).toBeVisible();
+  expect(state.contentReads).toBe(2); expect(state.archiveReads).toBe(1);
+  expect(state.writes).toEqual([]);
 });
