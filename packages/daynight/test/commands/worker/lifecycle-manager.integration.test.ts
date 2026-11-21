@@ -208,10 +208,9 @@ describe("Worker lifecycle management with real local authority", () => {
     });
     const resume = f.manager.resume(id(22));
     if (lostResponse) await expect(resume).rejects.toThrow(); else await resume;
-    await f.manager.reconcile();
+    await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
     expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed", receipt: { intentVersion: "3", admission: "open" } });
     expect(f.store.readState()).toMatchObject({ admission: "closed", desired: "disabled", intentVersion: "4", phase: "disabled", activation: null, localEpoch: "2", localVeto: true });
-    expect(f.cloud().observation).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
     expect(owner.rebuild).not.toHaveBeenCalled();
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
     await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
