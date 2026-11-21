@@ -39,6 +39,12 @@ export type WorkerCleanupPolicy = { readonly enableSudoCleanup: boolean; readonl
 /** The Git manager and execution backends share the selected task target. */
 export const selectedWorktreePath = (repositoryRoot: string, worktreeId: string): string => path.join(managedNamespace(repositoryRoot), uuid(worktreeId, "Worktree ID"));
 const removing = new Set<string>();
+// EBUSY is what Windows answers for the nonrecursive `rmdir` the content walk
+// and the empty-directory removal both use, and it is the only code that
+// reaches the Windows process recovery below. Node's recursive `rm` reports the
+// same obstacle as EPERM, which the walk converts into a permission error: a
+// refactor to recursive removal would route a held worktree to the sudo path
+// instead and leave the holders running.
 const busy = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "EBUSY";
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");

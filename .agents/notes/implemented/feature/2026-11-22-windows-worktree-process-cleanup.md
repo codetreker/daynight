@@ -127,6 +127,27 @@ therefore the strong form this action needs. The inaccessible-worktree branch
 is deliberately not included: it recovers permission obstacles, which this
 target does not authorize.
 
+### Why the trigger is EBUSY, and what would silently remove it
+
+The recovery is reached only from an EBUSY failure, and that code is not a
+property of the obstacle. It is a property of the call. Measured on Windows
+against a directory held as a live process's working directory:
+
+| Removal | Result |
+|---|---|
+| `rmdir` of the held directory | `EBUSY` |
+| recursive `rm` of the held directory | `EPERM` |
+| recursive `rm` of any ancestor | `EPERM` |
+
+The content walk and the empty-directory removal both use nonrecursive
+`rmdir`, so the obstacle arrives as EBUSY and the recovery sees it. A refactor
+to recursive removal would report EPERM instead, which the walk converts into
+a permission error — routing a held worktree to the sudo path, where
+elevation cannot help, and leaving the holders running. Nothing in the types
+prevents that change, so an end-to-end test pins it: it drives the real walk
+against a real holder and asserts the code is EBUSY before terminating
+anything.
+
 ## Alternatives
 
 **Use the Restart Manager to find the holders.** `RmStartSession`,
