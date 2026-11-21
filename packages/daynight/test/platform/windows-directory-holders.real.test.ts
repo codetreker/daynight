@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { windowsDirectoryHolders } from "../../src/platform/windows-directory-holders.js";
+import { windowsDirectoryHolders, windowsDirectoryHolderKernel } from "../../src/platform/windows-directory-holders.js";
 
 // SysWOW64\cmd.exe is the 32-bit command processor present on every 64-bit
 // Windows installation, so a WOW64 holder needs no fixture binary.
@@ -76,5 +76,24 @@ describe.skipIf(!windows)("Windows directory holders against real processes", ()
     const inventory = await windowsDirectoryHolders(held, () => {});
     try { expect(inventory.holders.some(entry => entry.pid === pid)).toBe(false); }
     finally { inventory.release(); }
+  });
+
+  it("reads the real parent of a process, which is what the ancestor walk follows", async () => {
+    // An injected kernel proves the walk; it cannot prove that the offset the
+    // parent is read from describes what Windows stores. A wrong one fails
+    // silently: the walk finds nothing and an ancestor holding the worktree
+    // gets terminated along with this process. Node knows both answers here.
+    const api = await windowsDirectoryHolderKernel();
+    const child = spawn(nativeShell, ["/c", "pause"], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    children.push(child);
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+
+    const rows = api.processes(() => {});
+    const self = rows.find(entry => entry.pid === process.pid);
+    expect(self).toBeDefined();
+    expect(self!.parent).toBe(process.ppid);
+    const spawned = rows.find(entry => entry.pid === child.pid);
+    expect(spawned).toBeDefined();
+    expect(spawned!.parent).toBe(process.pid);
   });
 });

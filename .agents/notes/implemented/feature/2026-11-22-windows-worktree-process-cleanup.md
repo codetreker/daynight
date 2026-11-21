@@ -75,6 +75,13 @@ Windows reuses a parent identifier once that parent has exited, so the chain
 can stop early or close on itself; the walk ends on a repeat, and being wrong
 in either direction only declines a termination.
 
+An injected kernel cannot prove the offset that parent is read from. A wrong
+one fails silently in the worst direction: the walk finds nothing, the guard
+disappears, and every synthetic test still passes. A test therefore reads the
+real process table and checks it against the two parents Node already knows —
+this process's `ppid`, and a child it just spawned. Pointing the offset at the
+neighbouring field makes it report 17 instead of the real identifier.
+
 ### Keeping ownership proven
 
 Ownership is verified before the inventory decides which processes to act on,

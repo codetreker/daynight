@@ -132,6 +132,15 @@ const loadKernel = async (): Promise<WindowsDirectoryHolderKernel> => {
   };
 };
 
+/** The kernel this machine's inventory reads through.
+ *
+ * Exported for tests that check the structure layout against the running
+ * system. An injected kernel proves the matching and the ancestor walk; only
+ * the real one can prove that these offsets describe what Windows stores, and
+ * a wrong offset fails silently — the walk would simply find nothing.
+ */
+export const windowsDirectoryHolderKernel = async (): Promise<WindowsDirectoryHolderKernel> => await (kernel ??= loadKernel());
+
 const normalized = (value: string): string => {
   const resolved = path.win32.resolve(value);
   return (resolved.endsWith(path.win32.sep) ? resolved.slice(0, -path.win32.sep.length) : resolved).toLowerCase();
@@ -155,7 +164,7 @@ export const windowsDirectoryHolders = async (
   suppliedKernel?: WindowsDirectoryHolderKernel,
 ): Promise<WindowsDirectoryInventory> => {
   if (process.platform !== "win32" && suppliedKernel === undefined) throw new Error("Windows directory holders are only available on Windows.");
-  const api = suppliedKernel ?? await (kernel ??= loadKernel());
+  const api = suppliedKernel ?? await windowsDirectoryHolderKernel();
   const prefix = normalized(root), boundary = `${prefix}${path.win32.sep}`;
   const holders: WindowsDirectoryHolder[] = [];
   const release = (): void => {
