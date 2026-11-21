@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
-import type { LifecycleResource } from '../src/api/worker-lifecycle';
+import type { LifecycleDiagnostic, LifecycleResource } from '../src/api/worker-lifecycle';
 import { lifecycleFacts, WorkerLifecyclePanel } from '../src/features/workers/WorkerLifecyclePanel';
 import { useWorkerLifecycle } from '../src/features/workers/useWorkerLifecycle';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -39,9 +39,34 @@ describe('Worker lifecycle evidence presentation', () => {
     expect(lifecycleFacts(original, null, false).disabled).toBe(false);
   });
 
-  it('keeps aggregate stop proof when transport details are partial and synchronization fails', () => {
+  it.each<LifecycleDiagnostic>([
+    'identity_mismatch', 'authority_unavailable', 'persistence_failed', 'inventory_incomplete',
+    'stop_timeout', 'stop_unknown', 'save_failed', 'native_unrecoverable', 'ownership_changed',
+    'independent_blocker', 'unsupported_provider',
+  ])('withdraws safety and resume eligibility for %s despite complete stop/save counts', errorCode => {
     const data = resource();
-    state.snapshot = { ...data, observation: { ...data.observation!, observation: { ...data.observation!.observation, detailsComplete: false, sync: 'failed' } } };
+    state.snapshot = { ...data, observation: { ...data.observation!, observation: { ...data.observation!.observation, errorCode } } };
+    expect(lifecycleFacts(state.snapshot, now, false)).toMatchObject({ fresh: true, stopped: false, disabled: false, resumeEligible: false });
+    expect(lifecycleFacts({ ...state.snapshot, desired: 'enabled' }, now, false).resumeEligible).toBe(false);
+    show();
+    expect(screen.queryByText('Disabled', { exact: true })).toBeNull();
+    expect(screen.queryByText(/You can restart this computer/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume service' })).toBeDisabled();
+  });
+
+  it.each(['disabled', 'enabled'] as const)('allows interrupted recovery without safe-restart claims for desired=%s', desired => {
+    const data = resource();
+    state.snapshot = { ...data, desired, observation: { ...data.observation!, observation: { ...data.observation!.observation, errorCode: 'resume_interrupted' } } };
+    expect(lifecycleFacts(state.snapshot, now, false)).toMatchObject({ stopped: false, disabled: false, resumeEligible: true });
+    show();
+    expect(screen.queryByText('Disabled', { exact: true })).toBeNull();
+    expect(screen.queryByText(/You can restart this computer/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume service' })).toBeEnabled();
+  });
+
+  it.each([null, 'upload_failed'] as const)('keeps aggregate stop proof with partial details, failed synchronization and error=%s', errorCode => {
+    const data = resource();
+    state.snapshot = { ...data, observation: { ...data.observation!, observation: { ...data.observation!.observation, detailsComplete: false, sync: 'failed', errorCode } } };
     show();
     expect(screen.getByText('Disabled', { exact: true })).toBeVisible();
     expect(screen.getByText(/You can restart this computer/)).toBeVisible();
@@ -51,9 +76,10 @@ describe('Worker lifecycle evidence presentation', () => {
   });
 
   it('keeps interrupted-resume eligibility separate from disabled presentation and rejects incomplete evidence', () => {
-    const original = { ...resource(), desired: 'enabled' as const };
+    const data = resource();
+    const original: LifecycleResource = { ...data, desired: 'enabled', observation: { ...data.observation!, observation: { ...data.observation!.observation, errorCode: 'resume_interrupted' } } };
     expect(lifecycleFacts(original, now, false)).toMatchObject({ disabled: false, resumeEligible: true, phase: 'blocked' });
-    for (const change of [{ inventoryComplete: false }, { stop: 'unknown' as const }, { save: 'failed' as const }, { phase: 'resuming' as const }, { resourceCount: null }, { pendingCount: 1 }]) {
+    for (const change of [{ inventoryComplete: false }, { stop: 'unknown' as const }, { save: 'failed' as const }, { phase: 'resuming' as const }, { phase: 'blocked' as const }, { resourceCount: null }, { stoppedCount: 1 }, { pendingCount: 1 }, { blockedCount: 1 }]) {
       expect(lifecycleFacts({ ...original, observation: { ...original.observation!, observation: { ...original.observation!.observation, ...change } } }, now, false).resumeEligible).toBe(false);
     }
     expect(lifecycleFacts(original, now + 60_000, false).resumeEligible).toBe(false);

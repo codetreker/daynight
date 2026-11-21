@@ -7,11 +7,13 @@ export const lifecycleFacts = (resource: LifecycleResource | null, now: number |
     && envelope.intentVersion === resource.intentVersion && envelope.operationId === resource.operationId;
   const fresh = current && !stale && now !== null && observation !== null
     && now >= Date.parse(observation.receivedAt) && now < Date.parse(observation.freshUntil);
-  const stopped = fresh && resource?.capability === 'supported' && observation !== null && observation.inventoryComplete && observation.stop === 'confirmed'
+  const stopProof = fresh && resource?.capability === 'supported' && observation !== null && observation.inventoryComplete && observation.stop === 'confirmed'
     && observation.save === 'durable' && observation.resourceCount !== null && observation.stoppedCount === observation.resourceCount
     && observation.pendingCount === 0 && observation.blockedCount === 0;
-  const resumeEligible = stopped && resource?.admission === 'closed' && observation?.phase === 'disabled';
-  const disabled = resumeEligible && resource?.desired === 'disabled';
+  const stopped = stopProof && (observation.errorCode === null || observation.errorCode === 'upload_failed');
+  const resumeEligible = stopProof && (stopped || observation.errorCode === 'resume_interrupted')
+    && resource?.admission === 'closed' && observation?.phase === 'disabled';
+  const disabled = stopped && resumeEligible && resource?.desired === 'disabled';
   const interrupted = resumeEligible && resource?.desired === 'enabled';
   const accepting = fresh && resource?.desired === 'enabled' && resource.admission === 'open' && observation?.phase === 'accepting';
   const phase = disabled ? 'disabled' : accepting ? 'accepting' : interrupted || fresh && observation?.phase === 'blocked' ? 'blocked'

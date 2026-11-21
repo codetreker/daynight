@@ -31,9 +31,14 @@ private-state notice and explicit retry, while other accounts' records remain
 untouched.
 
 Current safe-stop conclusions require fresh matching complete stop and save
-evidence. Resume eligibility uses the same proof in the panel and submission
-path, independently of disabled presentation: a closed admission with a current
-complete disabled observation can recover an interrupted enabled intent. That
+evidence with no diagnostic error except `upload_failed`, which does not negate
+local stopping or durable saving. Resume eligibility uses the same proof in the
+panel and submission path and additionally permits `resume_interrupted`; that
+exception never establishes safe-restart eligibility. All other observation
+errors reject both conclusions even when aggregate counts appear complete.
+A closed admission with a current complete disabled observation and an allowed
+error code can recover an interrupted enabled intent independently of disabled
+presentation. That
 state is blocked, not still resuming or safe to restart. Creating a resume request
 immediately withdraws conclusions from the
 previous stopped observation. Detail truncation remains independent of complete
