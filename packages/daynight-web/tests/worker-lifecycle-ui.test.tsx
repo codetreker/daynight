@@ -119,16 +119,16 @@ describe('Worker lifecycle evidence presentation', () => {
     const opener = screen.getByRole('button', { name: 'Save and disable' });
     opener.focus(); fireEvent.click(opener);
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeFocused();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     expect(within(dialog).getByText(/Task counts are not resource counts/)).toBeVisible();
     expect(within(dialog).getByText(/leases may expire/)).toBeVisible();
     expect(within(dialog).getByText(/does not shut down/)).toBeVisible();
     expect(within(dialog).getByText('Unknown', { exact: true })).toBeVisible();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(opener).toBeFocused();
+    expect(opener).toHaveFocus();
     expect(state.submit).not.toHaveBeenCalled();
-    fireEvent.click(opener); fireEvent.click(screen.getByRole('button', { name: 'Confirm', exact: true }));
+    fireEvent.click(opener); fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     expect(state.submit).toHaveBeenCalledExactlyOnceWith('disable');
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -138,7 +138,7 @@ describe('Worker lifecycle evidence presentation', () => {
     fireEvent.click(screen.getByRole('button', { name: '恢复服务' }));
     expect(screen.getByRole('dialog', { name: '恢复服务' })).toBeVisible();
     expect(screen.getByText(/独立暂停、hold 和审批仍然有效/)).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '确认', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '确认' }));
     expect(state.submit).toHaveBeenCalledExactlyOnceWith('resume');
   });
 
