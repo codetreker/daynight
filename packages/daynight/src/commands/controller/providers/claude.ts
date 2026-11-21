@@ -1,3 +1,4 @@
+import { assertProviderNativeDispatch } from "../native-lifecycle.js";
 import { assertNativeImageAdmission } from "./image-admission.js";
 import { ClaudeBotRecovery } from "./claude-bot-recovery.js";
 import { validateNativeInput, verifyNativeImageFiles, textNativeInput } from "./native-input.js";
@@ -15,7 +16,7 @@ import { ClaudeProjection } from "./claude-image-projection.js";
 import { openClaudeTranscriptHelper } from "./claude-transcript-helper.js";
 import type { ClaudeTranscriptReader, ClaudeTranscriptRecord } from "./claude-transcript.js";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
-import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
+import { record, string, NativeRpcError, NativeDispatchRejectedError, NativeRpcTimeoutError } from "./native-rpc.js";
 import { ControllerStartupError } from "../startup.js";
 import { nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
 import { claudeApprovalDetail } from "./claude-approval-detail.js";
@@ -194,7 +195,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     if (!options.imageRuntime) throw new Error("Claude history storage component is unavailable.");
     const hint = options.imageRuntime.readState(`claude:transcript:${nativeId}`) ?? recovery?.transcriptPath;
     return { nativeHome: options.env?.CLAUDE_CONFIG_DIR ?? path.join(options.env?.HOME ?? homedir(), ".claude"), cwd: options.cwd, nativeSessionId: nativeId,
-      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn };
+      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn, ...(options.assertNativeDispatch === undefined ? {} : { assertNativeDispatch: options.assertNativeDispatch }) };
   };
   if (options.resumeNativeSessionId) {
     usageGap("native_recovery_gap");
@@ -214,7 +215,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       }
     } catch (error) { recovery?.close(); await projection.close(); await historyReader?.close(); throw error; }
   }
-  try { options.assertNativeDispatch?.(); recovery?.markDirty(); native = queryClaudeLive({ prompt: input, options: {
+  try { assertProviderNativeDispatch(options.assertNativeDispatch); recovery?.markDirty(); native = queryClaudeLive({ prompt: input, options: {
     // SDK store-backed resume materializes a partial config home. The validated
     // local transcript must resume under the original account's complete home.
     ...(options.resumeNativeSessionId ? recovery ? { extraArgs: { resume: nativeId } } : { resume: nativeId } : { sessionId: nativeId }), cwd: options.cwd,
@@ -245,7 +246,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   } }, options); } catch (error) { recovery?.close(); await projection.close(); await historyReader?.close(); throw error; }
   controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor,
     () => {
-      options.assertNativeDispatch?.();
+      assertProviderNativeDispatch(options.assertNativeDispatch);
       if (recovery && (closed || disconnected)) throw new NativeRpcError(-32602, "Claude recovery cannot dispatch an unconfirmed setting operation.");
       recovery?.markDirty();
       if (recovery && settingInFlight) settingDispatched = true;
@@ -306,13 +307,19 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     throw failure;
   }
   const submit = async (inputValue: NativeInput, operationId: string, text: string) => {
-    options.assertNativeDispatch?.();
     try {
+      assertProviderNativeDispatch(options.assertNativeDispatch);
       if (inputValue.content.some(part => part.type === "image")) assertNativeImageAdmission(inputValue, imageCapabilities(), null);
       recovery?.markDirty();
       if (native?.submit) await native.submit({ uuid: operationId, sessionId: nativeId, input: inputValue });
       else input.push({ type: "user", uuid: operationId as ReturnType<typeof randomUUID>, session_id: nativeId, message: { role: "user", content: text }, parent_tool_use_id: null });
     } catch (error) {
+      if (error instanceof NativeDispatchRejectedError) {
+        accepted.get(operationId)?.reject(error); accepted.delete(operationId);
+        steered.get(operationId)?.reject(error); steered.delete(operationId);
+        if (currentTurnId === operationId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; }
+        state(); throw error;
+      }
       disconnect(new Error("Claude input submission ended without an execution receipt; its result is unknown.", { cause: error }));
       throw error;
     }
@@ -365,7 +372,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       catch (error) {
         // A control deadline does not cancel the underlying native setter. No
         // later turn can certify a recovery point while that mutation is unknown.
-        if (recovery && settingDispatched) disconnect(new Error("Claude setting result is unknown; recovery cannot accept further operations.", { cause: error }));
+        if (recovery && settingDispatched && !(error instanceof NativeDispatchRejectedError)) disconnect(new Error("Claude setting result is unknown; recovery cannot accept further operations.", { cause: error }));
         throw error;
       }
       finally { settingInFlight = false; settingDispatched = false; }
@@ -379,7 +386,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       let waiter!: { resolve(): void; reject(error: Error): void };
       const stopped = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; cancelWaiters.add(waiter); }); void stopped.catch(() => {});
       const attempt = { turnId: currentTurnId, acknowledged: false, result: undefined as unknown }; cancellation = attempt;
-      try { options.assertNativeDispatch?.(); const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
+      try { assertProviderNativeDispatch(options.assertNativeDispatch); const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
         const result = await deadline(interrupt(capabilities.steer ? { cancelQueued: true } : undefined), "Claude interrupt receipt is unconfirmed.");
         if (closed || disconnected) throw new Error("Native Claude closed before interrupt confirmation.");
         attempt.acknowledged = true;
@@ -390,7 +397,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
       const pending = interactions.get(interactionId); if (!pending || pending.submitted || pending.interaction.revision !== revision) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(pending.interaction, response);
-      options.assertNativeDispatch?.();
+      assertProviderNativeDispatch(options.assertNativeDispatch);
       const confirmation = new Promise<void>((resolve, reject) => { pending.confirm = resolve; pending.rejectConfirmation = reject; });
       pending.submitted = true; pending.resolve(response);
       // A resolved SDK callback is not a native receipt. The matching tool result,

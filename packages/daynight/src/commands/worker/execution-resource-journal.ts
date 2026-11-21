@@ -6,6 +6,7 @@ import { confirmControllerProcessesStopped, type ProcessProof } from "../control
 import type { ControllerJobLease } from "../controller/windows-job.js";
 import { reconcileOwnedCommandBoundary, retainedOwnedCommandBoundaries, type OwnedCommandLifecycleEvent, type OwnedCommandLifecycleSink } from "./owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "./execution-scope.js";
+import { reconcileBotCliProbe, retainedBotCliProbes } from "./bots/cli-probe.js";
 
 export type ExecutionResourceIdentity = { serverOrigin: string; userId: string; workerId: string };
 export type ExecutionResourceRecord = {
@@ -159,21 +160,30 @@ export const openExecutionResourceJournal = async (options: { directory: string;
   return {
     sink, read, drain, assertClosed, reconcile,
     snapshot: () => ({ records: structuredClone([...records.values()]), pending: pending.size, failures: [...failures.keys()] }),
-    /** Producers must join first. Reconcile their original resources without running commands again. */
+    /** Join each original resource owner without waiting for broader producer lifetimes. */
     reconcileRetained: async (settings: { generation: string; deadline: number }): Promise<void> => {
       if (!generationValue(settings.generation)) throw new TypeError("Execution resource generation must be a positive int64 string.");
       // Read joins pending original writes but does not let a historical save
       // rejection prevent observing the retained process and output owners.
       const observed = await withinExecutionDeadline(read(), settings.deadline);
       const live = new Map(retainedOwnedCommandBoundaries().map(entry => [entry.resourceId, entry]));
+      const probes = new Map(retainedBotCliProbes().map(entry => [entry.launchId, entry]));
       const resources = new Map(observed.map(record => [record.event.resourceId, record.generation]));
       for (const [resourceId, generation] of admitted) if (!resources.has(resourceId)) resources.set(resourceId, generation);
       const results = await Promise.allSettled([...resources].filter(([, generation]) => generation === settings.generation).map(async ([resourceId, generation]) => {
         const original = observed.find(record => record.event.resourceId === resourceId);
         const retained = live.get(resourceId);
+        const probe = probes.get(resourceId);
+        if (retained !== undefined && probe !== undefined) throw new Error("Execution resource has conflicting original owners.");
         if (retained !== undefined) {
           if (original !== undefined && original.event.proof !== null && !same(original.event.proof, retained.proof)) throw new Error("Retained execution resource conflicts with its saved birth identity.");
           await reconcileOwnedCommandBoundary(resourceId, sink(generation), settings.deadline);
+        } else if (probe !== undefined) {
+          if (original !== undefined && original.event.proof !== null && !same(original.event.proof, probe.process)) throw new Error("Retained probe resource conflicts with its saved birth identity.");
+          // Probes share the journal but retain their own process, output and
+          // save owners. Their original close joins an in-flight stop; a bare
+          // process observation cannot replace that receipt or its durability.
+          await withinExecutionDeadline(reconcileBotCliProbe(resourceId), settings.deadline);
         } else if (original === undefined || original.event.stage !== "stopped" || failures.has(resourceId)) {
           await withinExecutionDeadline(reconcile(resourceId, settings), settings.deadline);
         }

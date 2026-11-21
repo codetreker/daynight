@@ -75,3 +75,13 @@ test("observe accepts legacy capability absence and rejects unsupported declarat
   capability = 1; expect((await requestController(t, { kind: "observe" })).workerInputProtocol).toBe(1);
   capability = 2; await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
 });
+
+test("version two tickets require the persistent lifecycle capability on every successful IPC result", async () => {
+  const base = { ...ticket(), schemaVersion: 2 as const }; let capability: unknown;
+  const t = await listen(base, req => ({ requestId: req.requestId, ok: true, snapshot: snapshot(base), ...(capability === undefined ? {} : { workerLifecycleProtocol: capability }) }));
+  await expect(requestController(t, { kind: "observe" })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+  capability = 2;
+  await expect(requestController(t, { kind: "stop", deadline: Date.now() + 1000 })).rejects.toBeInstanceOf(ControllerIpcIdentityConflictError);
+  capability = 1;
+  expect((await requestController(t, { kind: "observe" })).workerLifecycleProtocol).toBe(1);
+});

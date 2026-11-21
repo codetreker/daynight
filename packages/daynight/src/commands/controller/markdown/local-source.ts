@@ -56,11 +56,12 @@ const send = (child: ChildProcess, message: object): void => {
 };
 const helperPath = (): string => fileURLToPath(new URL(`./local-source-${process.platform === "win32" ? "windows-helper" : "helper"}.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url));
 
-export async function createLocalImageContext(options: { cwd: string; platform?: NodeJS.Platform; policyRevision: string; nativeReadAllowed: boolean | undefined; expectedRoot?: LocalImageRootIdentity; stoppedRepairAuthorized?: true }): Promise<LocalImageContext> {
+export async function createLocalImageContext(options: { cwd: string; platform?: NodeJS.Platform; policyRevision: string; nativeReadAllowed: boolean | undefined; expectedRoot?: LocalImageRootIdentity; stoppedRepairAuthorized?: true; beforeSpawn?(): void }): Promise<LocalImageContext> {
   const platform = options.platform ?? process.platform;
   const authorized = options.nativeReadAllowed === true || options.stoppedRepairAuthorized === true && options.expectedRoot !== undefined;
   if (!authorized || !options.policyRevision || platform !== process.platform || !["darwin", "linux", "win32"].includes(platform) || !["arm64", "x64"].includes(process.arch) || endianness() !== "LE" || !path.isAbsolute(options.cwd) || Buffer.byteLength(options.cwd) > 8192 || !options.cwd.isWellFormed() || /\p{Cc}/u.test(options.cwd)) refuse("policy_restricted");
   if (options.expectedRoot && [options.expectedRoot.dev, options.expectedRoot.ino].some(value => !/^(?:0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n)) refuse("context_unavailable");
+  options.beforeSpawn?.();
   const child = fork(helperPath(), [], { stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [], env: { ...process.env, NODE_OPTIONS: "" } });
   const internal: InternalContext = { child, closed: new Promise(resolve => child.once("close", () => { internal.dead = true; resolve(); })), dead: false, busy: false, expectedRoot: options.expectedRoot ? { ...options.expectedRoot } : undefined };
   const close = async (): Promise<void> => { internal.dead = true; child.kill("SIGKILL"); await internal.closed; };

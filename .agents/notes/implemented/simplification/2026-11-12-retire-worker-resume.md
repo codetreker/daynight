@@ -11,7 +11,7 @@ paths make those rules inconsistent and complicate source ownership handling.
 
 ## Decision
 
-Remove the dedicated Worker resume command and API. New executions use ordinary
+Remove the dedicated released-Task Worker resume command and API. New executions use ordinary
 claim eligibility and fresh execution identities. Release checks the original owner, claim, version and stopped
 source. It submits one request; only a validated response confirms release and
 permits completion of the original source. Unknown outcomes are not replayed or
@@ -23,7 +23,9 @@ This supersedes the manual resume exception in the archived
 and [self-assigned claim](../../archived/architecture/2026-11-03-worker-self-assigned-claims.md)
 decisions. The [ordinary candidate decision](../bug-fix/2026-11-12-worker-released-candidates.md)
 preserves the scheduling and local resource barriers that make this removal
-possible. Same-claim recovery, native session resume and retry remain separate.
+possible. Same-claim recovery, native session resume and retry remain separate. The
+[whole-Worker lifecycle resume](../architecture/2026-11-21-worker-local-lifecycle.md)
+reopens original Worker admission and grants no Task claim-eligibility exception.
 
 ## Alternatives
 

@@ -1,3 +1,5 @@
+import { LifecycleAdmissionError } from "../../../src/commands/worker/lifecycle-store.js";
+import { NativeDispatchRejectedError } from "../../../src/commands/controller/providers/native-rpc.js";
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { test, expect, vi } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -290,6 +292,18 @@ test("Claude cannot submit input when the working-state callback fences dispatch
   try {
     await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
     expect(fixture.inputs).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test("Claude reports a final lifecycle refusal without retaining an unstarted native turn", async () => {
+  const fixture = nativeFixture(); let fenced = false, finalState: { activity: string; currentTurnId: string | null } | undefined;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline() {}, onSpawn() {}, onState: state => { finalState = state; if (state.activity === "working") fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw new LifecycleAdmissionError(); },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBeInstanceOf(NativeDispatchRejectedError);
+    expect(fixture.inputs).toEqual([]); expect(finalState).toMatchObject({ activity: "idle", currentTurnId: null });
   } finally { await provider.close(); }
 });
 

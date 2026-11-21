@@ -16,6 +16,7 @@ export type CopilotProcessOptions = {
   cwd: string; env?: NodeJS.ProcessEnv; executable?: string; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string;
   unattended?: boolean; resumeNativeSessionId?: string | null;
   observeImageRoute?: boolean;
+  assertNativeDispatch?(): void;
   onSpawn(child: ChildProcess): void;
   onDiagnostic?(line: string): void;
   onNativeReadPolicy?(policy: NativeReadPolicy | null): void;
@@ -55,6 +56,7 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
       const matches = launch.artifacts.filter(item => ["entry", "runtime"].includes(item.role) && item.realPath === launch.executablePath);
       if (matches.length === 1) nativeExecutableSha256 = matches[0]!.sha256;
     }
+    options.assertNativeDispatch?.();
     child = spawn(command.file, command.args, { cwd: options.cwd, env, stdio: profile || artifacts ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
     const owned = child;
     exited = new Promise<void>(resolve => {

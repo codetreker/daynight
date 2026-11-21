@@ -17,7 +17,8 @@ import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { lstat, mkdir } from "node:fs/promises";
+import { lstat, mkdir, chmod } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createReconcileWake } from "./reconcile-wake.js";
@@ -48,7 +49,7 @@ import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
 import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
-import { ensureWorkerIdentity } from "./identity.js";
+import { ensureWorkerIdentity, readWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { buildWorkerPrompt } from "./prompts.js";
@@ -76,6 +77,18 @@ import { createNativeSelectionVerifier } from "./native-selection.js";
 import { createExecutionScopeManager, withinExecutionDeadline, type ExecutionScope, type OwnerStopResult } from "./execution-scope.js";
 import { openExecutionResourceJournal, type ExecutionResourceIdentity } from "./execution-resource-journal.js";
 import { withOwnedCommandLifecycle, retainedOwnedCommandBoundaries, OwnedCommandAdmissionError } from "./owned-command-lifecycle.js";
+import { LifecycleAdmissionError, openLifecycleStore, readLifecycleIdentity, type LifecycleStore, type LifecycleJson } from "./lifecycle-store.js";
+import { createLifecycleManager, type LifecycleManager } from "./lifecycle-manager.js";
+import { createWorkerLifecycleClient } from "../../api/worker-lifecycle-client.js";
+import { readWorkerClaim } from "../../api/task-properties.js";
+import { parseFrozenNative } from "./store.js";
+import { withWorkerLifecycle } from "./lifecycle-context.js";
+import { reconcileLifecycleRequest } from "./lifecycle-request-recovery.js";
+import { reportLifecycleHeartbeat, runLifecycleHeartbeat } from "./lifecycle-heartbeat.js";
+import { collectLifecycleRecovery, selectLifecycleRecoveryResources, type LifecycleRecoverySources } from "./lifecycle-recovery.js";
+import { requireWorkerNetworkToken, workerNetworkUnavailable } from "./management-network.js";
+import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../controller/lifecycle-store.js";
+import { confirmControllerProcessesStopped, type ProcessProof } from "../controller/process-proof.js";
 
 const gitPendingReporter = (emit: (event: WorkerEvent) => void) => (pending: WorkerGitPending): void => {
   emit({ kind: "git-cleanup-pending", message: `Git ${pending.command} local cleanup remains pending; waiting for local close.`, projectId: pending.projectId,
@@ -210,10 +223,10 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string; managementOnly?: boolean }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string | undefined, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
-    const api = createWorkerSessionApi(serverUrl, serverToken);
+    const api = createWorkerSessionApi(serverUrl, serverToken, { managementOnly: options.managementOnly ?? false });
     const jobLeases = createControllerJobLeases();
     const launcher = createWebControllerLauncher({ ...options, jobLeases, ...(tools === undefined ? {} : { selectToolLaunch: tools.selectToolLaunch, toolObservationFor: tools.toolObservationFor }), store: webStore, sessionApi: api, now: Date.now });
     const archive: NonNullable<import("./backends/web.js").WebBackendOptions["archive"]> = async (task, journalPath, signal) => {
@@ -222,7 +235,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
         || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive does not identify the original execution.");
-      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal,
+      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: requireWorkerNetworkToken(serverToken), signal,
         onRetry: event => emit({ kind: "session-archive-retry", component: "archive", phase: "archive-backfill", message: `Session archive capacity ${JSON.stringify(event)}` }),
       });
     };
@@ -241,7 +254,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
         || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId || ticket.workerId !== workerId || ticket.userId !== userId) throw new Error("Usage replay does not identify the original execution.");
-      return replayStoppedControllerUsage({ journalPath, ticket, serverToken, signal });
+      return replayStoppedControllerUsage({ journalPath, ticket, serverToken: requireWorkerNetworkToken(serverToken), signal });
     };
     const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, userId, signal, store, webStore, archive, probeArchive, usage, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
@@ -280,18 +293,320 @@ type WorkerRunOptions = {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
   onExecutionScope?: (control: WorkerExecutionControl) => void;
+  lifecycle?: boolean;
 };
 type WorkerManagementRoot = {
   cancellation: ReturnType<typeof runtimeCancellation>;
   previousScopeFailures: unknown[];
   managementClosed: boolean;
   managementClosing?: Promise<void>;
+  lifecycleReconciliation?: { work: Promise<void>; closed: boolean; retry(deadline: number): Promise<void> };
+  workerDirectory?: string;
+  retirementReady?: boolean;
+  releasing?: Promise<void>;
   lock?: Awaited<ReturnType<typeof acquireWorkerInstanceLock>>;
   store?: ReturnType<typeof openWorkerStore>;
   identity?: ExecutionResourceIdentity;
   journal?: Awaited<ReturnType<typeof openExecutionResourceJournal>>;
+  lifecycle?: LifecycleStore;
+  manager?: LifecycleManager;
+  ipc?: { close(): Promise<void> };
+  heartbeat?: Promise<void>;
+  executionReporterActive?: boolean;
+  recoverySources?: LifecycleRecoverySources;
+  readRecoverySources?: () => LifecycleRecoverySources;
 };
 const retainedManagementRoots = new Set<WorkerManagementRoot>();
+const releaseRetiredManagementRoot = async (root: WorkerManagementRoot): Promise<void> => {
+  if (!root.retirementReady || !root.managementClosed || root.lifecycleReconciliation?.closed === false) return;
+  if (root.releasing !== undefined) return root.releasing;
+  root.releasing = Promise.resolve().then(async () => {
+    try { root.lifecycle?.close(); root.store?.close(); await root.lock?.release(); retainedManagementRoots.delete(root); }
+    catch (error) { retainedManagementRoots.add(root); delete root.releasing; throw error; }
+  });
+  return root.releasing;
+};
+const retireManagementRoot = async (root: WorkerManagementRoot): Promise<void> => {
+  root.retirementReady = true;
+  retainedManagementRoots.add(root);
+  await releaseRetiredManagementRoot(root);
+  if (!retainedManagementRoots.has(root)) return;
+  // A timed-out observer does not own the lifetime of its original writers.
+  void Promise.allSettled([root.managementClosing, root.lifecycleReconciliation?.work]).then(() => releaseRetiredManagementRoot(root))
+    .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
+};
+const reconcileRetiredManagementRoot = async (paths: WorkerPaths, workerId?: string): Promise<void> => {
+  for (const root of retainedManagementRoots) {
+    if (root.workerDirectory !== paths.workerDirectory || !root.retirementReady || root.lifecycleReconciliation === undefined) continue;
+    const local = await readWorkerLocalConfiguration(paths), original = await readWorkerIdentity(paths);
+    if (root.identity?.workerId !== original || workerId !== undefined && workerId !== original || local.serverUrl !== root.identity.serverOrigin)
+      throw new Error("Retained management cleanup does not identify the original Worker.");
+    try { await root.lifecycleReconciliation.retry(Date.now() + 10_000); }
+    finally { await releaseRetiredManagementRoot(root); }
+    if (retainedManagementRoots.has(root)) throw new Error("Original Worker management resources remain owned.");
+  }
+};
+const managementRemote = (serverUrl: string, serverToken: string | undefined) => new Proxy(createWorkerRemote({ serverUrl, ...(serverToken === undefined ? {} : { serverToken }) }), {
+  get(target, key, receiver): unknown {
+    const value: unknown = Reflect.get(target, key, receiver);
+    if (typeof value !== "function") return value;
+    return (...args: unknown[]) => { requireWorkerNetworkToken(serverToken); return Reflect.apply(value, target, args); };
+  },
+});
+const managementLifecycleClient = (serverUrl: string, serverToken: string | undefined, identity: ExecutionResourceIdentity): ReturnType<typeof createWorkerLifecycleClient> =>
+  serverToken === undefined ? { read: workerNetworkUnavailable, register: workerNetworkUnavailable, intent: workerNetworkUnavailable, activate: workerNetworkUnavailable,
+    operation: workerNetworkUnavailable, resolve: workerNetworkUnavailable, report: workerNetworkUnavailable }
+    : createWorkerLifecycleClient({ serverUrl, serverToken, workerId: identity.workerId, userId: identity.userId });
+const retainedResourceId = (identity: readonly (string | null)[]): string => {
+  const bytes = createHash("sha256").update(JSON.stringify(identity)).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 15) | 80; bytes[8] = (bytes[8]! & 63) | 128;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+/** Reuses the normal stop owners without starting their discovery or application loops. */
+const reconcileLifecycleResources = async (options: WorkerRunOptions, root: WorkerManagementRoot, deadline: number): Promise<void> => {
+  const previous = root.lifecycleReconciliation;
+  if (previous !== undefined && !previous.closed) { await previous.retry(deadline); return; }
+  const paths = resolveWorkerPaths(options.homeDirectory), identity = root.identity!, lifecycle = root.lifecycle!;
+  const local = await readWorkerLocalConfiguration(paths, root.cancellation.controller.signal);
+  if (local.serverUrl !== identity.serverOrigin) throw new Error("Original Worker service identity is unavailable for management.");
+  const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+  const emit = (event: WorkerEvent): void => options.log?.(`${event.message}\n`);
+  const git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit) });
+  let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
+  let bots: WorkerBotHost | undefined;
+  let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+  let activeDeadline = deadline;
+  type CloseStep = { start(): Promise<void>; work?: Promise<void>; failed?: boolean };
+  const step = (start: () => Promise<void>): CloseStep => ({ start });
+  const join = (entry: CloseStep, reobserve = false): Promise<void> => {
+    if (entry.work === undefined || reobserve && entry.failed) {
+      entry.failed = false;
+      entry.work = Promise.resolve().then(entry.start).catch(error => { entry.failed = true; throw error; });
+    }
+    return entry.work;
+  };
+  const stopTasks = step(async () => { if (coordinator !== undefined && !await coordinator.shutdown({ deadline: activeDeadline })) throw new Error("Original Task stop inventory remains incomplete."); });
+  const stopBots = step(async () => { await bots?.shutdown({ deadline: activeDeadline }); });
+  const closeBots = step(async () => { await bots?.close(); });
+  const stopJournal = step(async () => {
+    for (const generation of new Set((await root.journal!.read()).map(record => record.generation)))
+      await root.journal!.reconcileRetained({ generation, deadline: activeDeadline });
+  });
+  const stopControllers = step(async () => {
+    for (const resource of lifecycle.listResources()) {
+      if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
+      if (resource.ownerKind !== "controller" || resource.processProof === null || typeof resource.identity.journalFile !== "string") continue;
+      const saved = readControllerSnapshot(resource.identity.journalFile);
+      if (saved === null || saved.controllerProcess === null || saved.executionId !== resource.identity.executionId || saved.controllerInstanceId !== resource.identity.controllerInstanceId) throw new Error("Original lifecycle Controller journal identity is unavailable.");
+      if (process.platform === "win32") {
+        const { readLifecycleControllerTicket } = await import("./lifecycle-controller-ticket.js");
+        const ticket = await readLifecycleControllerTicket(options.homeDirectory, identity, resource);
+        readProvenWindowsStoppedControllerGeneration(resource.identity.journalFile, ticket, activeDeadline);
+      } else if (!await confirmControllerProcessesStopped(resource.processProof as ProcessProof, saved.nativeProcesses, activeDeadline)) throw new Error("Original lifecycle native boundary is not empty.");
+      lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "controller_boundary", executionId: saved.executionId, controllerInstanceId: saved.controllerInstanceId, nativeSessionId: saved.nativeSessionId }, saveState: "durable" });
+    }
+  });
+  const closeArchive = step(async () => { await web?.archiveMaintenance.close(); });
+  const closeLeases = step(async () => { await web?.jobLeases.close(); });
+  const closeInput = step(async () => { web?.webBackend.closeInput(); });
+  const closeStore = step(async () => { web?.webStore.close(); });
+  const closeGit = step(async () => { await git.dispose(); });
+  const cleanup = async (reobserve: boolean): Promise<void> => {
+    const results = await Promise.allSettled([
+      (async () => { await join(stopBots, reobserve); await join(closeBots, reobserve); })(),
+      join(stopJournal, reobserve), join(stopControllers, reobserve),
+      (async () => {
+        await join(stopTasks, reobserve); await join(closeArchive, reobserve); await join(closeLeases, reobserve);
+        await join(closeInput, reobserve); await join(closeStore, reobserve); await join(closeGit, reobserve);
+      })(),
+    ]);
+    throwFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+    retained.closed = true;
+  };
+  const initial = async (): Promise<void> => {
+    const failures: unknown[] = [];
+    try {
+      const remote = managementRemote(local.serverUrl, local.serverToken);
+      const reconcileClaims = async (): Promise<void> => {
+      for (const resource of lifecycle.listResources().filter(resource => resource.identity.kind === "task_claim" && !["confirmed", "stopped", "not_dispatched"].includes(resource.stage))) {
+        const original = resource.identity;
+        if (typeof original.projectId !== "string" || typeof original.taskId !== "string" || typeof original.claimId !== "string" || typeof original.worktreeId !== "string" || typeof original.candidateVersion !== "string") throw new Error("Original claim reservation identity is incomplete.");
+        if (await remote.currentUserId(signal) !== identity.userId) throw new Error("Original claim reconciliation account changed.");
+        const task = await remote.readTask(original.projectId, original.taskId, signal), claim = readWorkerClaim(task.properties);
+        const taskIdentity = { projectId: original.projectId, taskId: original.taskId, claimId: original.claimId };
+        if (claim?.claimId === original.claimId && claim.workerId === identity.workerId && claim.worktreeId === original.worktreeId && claim.state === "active") {
+          if (root.store!.getTask(taskIdentity) === null) {
+            const reserved = root.store!.getClaimToolReservation(taskIdentity);
+            if (reserved !== null) root.store!.acceptClaimToolReservation(task, identity.workerId);
+            else root.store!.registerPending({ ...taskIdentity, agent: claim.agent, agentControlMode: "web", nativeConfiguration: parseFrozenNative(original.frozenConfiguration) });
+          }
+          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "confirmed", saveState: "durable", error: null });
+        } else if (task.version > BigInt(original.candidateVersion)) {
+          const reserved = root.store!.getClaimToolReservation(taskIdentity);
+          if (reserved !== null) root.store!.releaseClaimToolReservation(reserved);
+          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "claim_superseded", taskVersion: String(task.version), originalClaimId: original.claimId }, saveState: "durable" });
+        }
+      }
+      };
+      web = await createWebRuntime({ ...options, managementOnly: true }, paths, root.store!, git, local.serverUrl, local.serverToken, identity.workerId, identity.userId, currentWorkerPlatform(), emit, signal);
+      coordinator = createWorkerCoordinator({ store: root.store!, git, remote, webStore: web.webStore, webBackend: web.webBackend,
+        verifyWebUnregistered: web.verifyWebUnregistered, serverOrigin: identity.serverOrigin, workerId: identity.workerId, userId: identity.userId,
+        platform: currentWorkerPlatform(), machine: machineDescription(currentWorkerPlatform()), repositories: [], globalConfiguration: null, maxConcurrent: 1,
+        preferPlatformSpecificTasks: false, emit });
+      bots = createWorkerBotHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, workingDirectory: options.workingDirectory,
+        paths, owner: { serverOrigin: identity.serverOrigin, ownerUserId: identity.userId, workerId: identity.workerId }, serverToken: local.serverToken, managementOnly: true,
+        configuration: () => null, canAdmitNewExecution: () => false, pollIntervalMs: () => null, recoveryLimit: () => null, emit });
+      const state = lifecycle.readState();
+      const imported: { resourceId: string; group: "task" | "bot" }[] = [];
+      if (state.instanceId !== null && state.instanceEpoch !== null && state.intentVersion !== null) {
+        const binding = { ...identity, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, intentVersion: state.intentVersion, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration };
+        for (const task of root.store!.listUnfinishedTasks()) {
+          const resourceId = retainedResourceId(["task", task.claimId, state.scopeGeneration]);
+          const resource = lifecycle.importResource({ binding, resourceId, operationId: task.claimId, ownerKind: "task", identity: { kind: "retained_task", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId } });
+          if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId: resource.resourceId, group: "task" });
+        }
+        for (const bot of bots.snapshot().resources) {
+          const resourceId = retainedResourceId(["bot", bot.botId, bot.executionId, bot.executionGeneration, state.scopeGeneration]);
+          const resource = lifecycle.importResource({ binding, resourceId, operationId: resourceId, ownerKind: "bot", identity: { kind: "retained_bot", ...bot } });
+          if (!["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) imported.push({ resourceId, group: "bot" });
+        }
+      }
+      const stopped = await Promise.allSettled([
+        join(stopTasks),
+        join(stopBots),
+        join(stopJournal),
+        reconcileClaims(),
+      ]);
+      root.recoverySources = { tasks: coordinator.executionSnapshot().recovery, bots: bots.snapshot().recovery };
+      failures.push(...stopped.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+      for (const item of imported) if (stopped[item.group === "task" ? 0 : 1]?.status === "fulfilled") lifecycle.recordResource({ resourceId: item.resourceId, stage: "stopped", stopProof: { kind: `${item.group}_shutdown`, resourceId: item.resourceId }, saveState: "durable", error: null });
+      // L's original journal is a second witness: it never infers a missing birth as stopped.
+      for (const record of await root.journal!.read()) {
+        const resource = lifecycle.readResource(record.event.resourceId);
+        if (resource !== null && !["stopped", "confirmed", "not_dispatched"].includes(resource.stage) && record.event.stage === "stopped") lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: record.event.sequence }, saveState: "durable" });
+      }
+      for (const resource of lifecycle.listResources()) {
+        if (["stopped", "confirmed", "not_dispatched"].includes(resource.stage)) continue;
+        if (resource.ownerKind === "assistant" && resource.processProof === null) {
+          if (local.serverToken === undefined) continue;
+          const result = await reconcileLifecycleRequest({ resource, identity, serverToken: local.serverToken, signal });
+          if (result.kind === "settled") lifecycle.recordResource({ resourceId: resource.resourceId, stage: result.stage,
+            stopProof: { kind: "external_result", operationId: resource.operationId, receipt: result.receipt }, saveState: "durable", error: null });
+          continue;
+        }
+        if ((resource.identity.kind === "task_advance" && stopped[0]?.status === "fulfilled") || (resource.identity.kind === "bot_advance" && stopped[1]?.status === "fulfilled")) {
+          lifecycle.recordResource({ resourceId: resource.resourceId, stage: "stopped", stopProof: { kind: "producer_recovered", resourceId: resource.resourceId }, saveState: "durable" });
+          continue;
+        }
+        if (resource.identity.kind === "input" && typeof resource.identity.journalFile === "string") {
+          const operation = readControllerOperation(resource.identity.journalFile, resource.operationId);
+          if (operation !== null && operation.executionGeneration === resource.identity.executionGeneration) {
+            if (["confirmed", "failed", "provider_accepted"].includes(operation.state)) lifecycle.recordResource({ resourceId: resource.resourceId, stage: "confirmed", saveState: "durable" });
+            else if (["rejected", "expired"].includes(operation.state)) lifecycle.recordResource({ resourceId: resource.resourceId, stage: "not_dispatched", saveState: "durable" });
+          }
+          continue;
+        }
+      }
+    } catch (error) { failures.push(error); }
+    finally { try { await cleanup(false); } catch (error) { failures.push(error); } }
+    throwFailures(failures);
+  };
+  let settled = false;
+  const observe = (work: Promise<void>): Promise<void> => {
+    const original = work.finally(() => { settled = true; });
+    void original.then(() => releaseRetiredManagementRoot(root), () => releaseRetiredManagementRoot(root))
+      .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
+    return original;
+  };
+  const retained: NonNullable<WorkerManagementRoot["lifecycleReconciliation"]> = {
+    closed: false, work: Promise.resolve(),
+    retry: async nextDeadline => {
+      if (settled && !retained.closed) {
+        settled = false; activeDeadline = nextDeadline; retained.work = observe(cleanup(true));
+      }
+      await withinExecutionDeadline(retained.work, Math.min(nextDeadline, Date.now() + 10_000));
+    },
+  };
+  root.lifecycleReconciliation = retained;
+  retained.work = observe(Promise.resolve().then(initial));
+  await retained.retry(deadline);
+};
+
+const prepareLifecycleManagement = async (options: WorkerRunOptions, root: WorkerManagementRoot, managementWorkerId?: string): Promise<void> => {
+  const paths = resolveWorkerPaths(options.homeDirectory), signal = root.cancellation.controller.signal;
+  root.workerDirectory = paths.workerDirectory;
+  await reconcileRetiredManagementRoot(paths, managementWorkerId);
+  const local = await readWorkerLocalConfiguration(paths, signal);
+  root.lock ??= await acquireWorkerInstanceLock(paths);
+  if (process.platform !== "win32") await chmod(paths.workerDirectory, 0o700);
+  const workerId = managementWorkerId === undefined && local.serverToken !== undefined ? await ensureWorkerIdentity(paths, signal) : await readWorkerIdentity(paths, signal);
+  if (managementWorkerId !== undefined && workerId !== managementWorkerId) throw new Error("Local management does not identify the original Worker.");
+  const remote = managementRemote(local.serverUrl, local.serverToken);
+  const file = path.join(paths.workerDirectory, "lifecycle.sqlite");
+  const userId = existsSync(file) ? readLifecycleIdentity({ file, serverOrigin: local.serverUrl, workerId }).userId : await remote.currentUserId(signal);
+  root.identity = { serverOrigin: local.serverUrl, userId, workerId };
+  root.store = openWorkerStore(paths.databaseFile);
+  root.lifecycle = openLifecycleStore({ file, identity: root.identity, allowCreate: !root.store.lifecycleAdopted() });
+  root.store.adoptLifecycle(root.identity);
+  signal.addEventListener("abort", () => { try { root.lifecycle?.closeForRestart(); } catch (error) { options.log?.(`Worker lifecycle persistence failed: ${String(error)}\n`); } }, { once: true });
+  root.journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity: root.identity });
+  let heartbeatReport: Promise<Awaited<ReturnType<typeof remote.report>>> | undefined;
+  let workerRegistered = false;
+  const heartbeat = { signal, machine: machineDescription(currentWorkerPlatform()), platform: currentWorkerPlatform(),
+    workingDirectory: options.workingDirectory, version: options.version, executionReporterActive: () => root.executionReporterActive === true,
+    send: async (report: Parameters<typeof remote.report>[1], operation: Operation) => {
+      const pending = heartbeatReport ??= (async () => {
+        if (await remote.currentUserId(operation.signal) !== userId) throw new Error("Original Worker management account changed.");
+        return remote.report(workerId, report, operation);
+      })();
+      try { const receipt = await pending; workerRegistered = true; return receipt; } finally { if (heartbeatReport === pending) heartbeatReport = undefined; }
+    }, reportError: (error: unknown) => options.log?.(`Worker management heartbeat: ${String(error)}\n`) };
+  root.manager = createLifecycleManager({ store: root.lifecycle, api: managementLifecycleClient(local.serverUrl, local.serverToken, root.identity),
+    ensureWorkerRegistered: async refresh => { if (refresh || !workerRegistered) await reportLifecycleHeartbeat(heartbeat); },
+    recovery: () => {
+      const sources = root.readRecoverySources?.() ?? root.recoverySources ?? {};
+      const claims = new Set(root.store!.listUnfinishedTasks().map(task => task.claimId));
+      const botIds = new Set(sources.bots?.map(bot => bot.botId) ?? []);
+      const resources = selectLifecycleRecoveryResources(root.lifecycle!.listResources(), { unfinishedClaimIds: claims, ...(sources.bots === undefined ? {} : { currentBotIds: botIds }) });
+      return collectLifecycleRecovery({ resources, ...sources });
+    },
+    platform: currentWorkerPlatform(), signal, reconcileResources: deadline => reconcileLifecycleResources(options, root, deadline), reportError: error => options.log?.(`Worker lifecycle: ${error instanceof Error ? error.message : String(error)}\n`) });
+  if (managementWorkerId === undefined) {
+    const { startLifecycleIpcServer } = await import("./lifecycle-ipc.js");
+    root.ipc = await startLifecycleIpcServer({ workerDirectory: paths.workerDirectory, identity: root.identity,
+      handle: async request => {
+        if (request.kind === "resume") { if (request.operationId === null) throw new Error("Resume requires its original operation ID."); await root.manager!.resume(request.operationId); }
+        else if (request.kind !== "query") await root.manager!.reconcile();
+      },
+    });
+    root.manager.start();
+    root.heartbeat = runLifecycleHeartbeat(heartbeat);
+  }
+};
+
+export const runManagedWorker = (options: Omit<WorkerRunOptions, "lifecycle">): Promise<void> => runWorker({ ...options, lifecycle: true });
+
+export const runLifecycleManagementOnly = async (options: { homeDirectory: string; packageDirectory: string; version: string; workerId: string; operationId: string; kind: "disable" | "reconcile" | "resume"; signal?: AbortSignal }): Promise<void> => {
+  const paths = resolveWorkerPaths(options.homeDirectory), cancellation = runtimeCancellation(options.signal);
+  try { await reconcileRetiredManagementRoot(paths, options.workerId); }
+  catch (error) { cancellation.dispose(); throw error; }
+  const lock = await tryAcquireWorkerInstanceLock(paths);
+  if (lock === null) { cancellation.dispose(); return; }
+  const root: WorkerManagementRoot = { cancellation, lock, managementClosed: true, previousScopeFailures: [] };
+  try {
+    const execution = { ...options, workingDirectory: process.cwd() };
+    await prepareLifecycleManagement(execution, root, options.workerId);
+    if (root.identity?.workerId !== options.workerId) throw new Error("Local management does not identify the original Worker.");
+    if (options.kind === "resume") { root.manager!.start(); await root.manager!.resume(options.operationId); }
+    else await root.manager!.reconcile();
+  } finally {
+    cancellation.controller.abort();
+    try { await root.manager?.close(); await retireManagementRoot(root); }
+    finally { cancellation.dispose(); }
+  }
+};
 
 export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   if (options.signal?.aborted) return;
@@ -299,9 +614,11 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   const root: WorkerManagementRoot = { cancellation, previousScopeFailures: [], managementClosed: true };
   const scopes = createExecutionScopeManager(cancellation.controller.signal);
   try {
+    if (options.lifecycle) await prepareLifecycleManagement(options, root);
     do {
+      const lifecycleBinding = await root.manager?.waitForAdmission();
       await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
-      const scope = scopes.create();
+      const scope = scopes.create(lifecycleBinding?.scopeGeneration);
       const admittedResources = new Set<string>();
       const failures: unknown[] = [];
       const rebuild = await withOwnedCommandLifecycle(async event => {
@@ -313,6 +630,17 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
           // Re-observing this reservation must remain possible after a failed
           // save closes admission; the journal still checks its original fence.
           admittedResources.add(event.resourceId);
+          try {
+            if (root.lifecycle !== undefined && lifecycleBinding !== undefined) root.lifecycle.reserveExecution({ binding: lifecycleBinding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId });
+          } catch (error) {
+            // Admission rejection precedes the reservation write. Other failures
+            // retain responsibility because their persistence outcome is unknown.
+            if (error instanceof LifecycleAdmissionError) {
+              admittedResources.delete(event.resourceId);
+              throw new OwnedCommandAdmissionError(error);
+            }
+            throw error;
+          }
         }
         if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
         try { await root.journal.sink(scope.generation)(event); }
@@ -322,26 +650,28 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
           if (!failures.includes(error)) failures.push(error);
           scope.closeAdmission(error); throw error;
         }
+        if (root.lifecycle !== undefined) {
+          if (event.stage === "bound") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) as LifecycleJson });
+          if (event.stage === "stopped") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: event.sequence }, saveState: "durable" });
+          if (event.stage === "unknown") root.lifecycle.recordResource({ resourceId: event.resourceId, stage: "unknown", error: "Original command boundary is unconfirmed." });
+        }
         if (event.stage === "unknown") scope.closeAdmission(new Error("Original command boundary is unconfirmed."));
-      }, () => runWorkerScope(options, root, scope, failures));
+      }, () => {
+        const run = () => runWorkerScope(root.manager === undefined ? options : { ...options, onExecutionScope: control => { root.manager!.attach(control); options.onExecutionScope?.(control); } }, root, scope, failures);
+        return root.lifecycle !== undefined && lifecycleBinding !== undefined ? withWorkerLifecycle({ store: root.lifecycle, binding: lifecycleBinding, failed: error => { scope.closeAdmission(error); try { root.lifecycle!.markBlocked("persistence_failed"); } catch { /* The original persistence failure remains authoritative. */ } } }, run) : run();
+      });
+      root.manager?.detach();
       if (!rebuild) break;
     }
     while (!cancellation.controller.signal.aborted);
   } finally {
+    cancellation.controller.abort();
+    await root.ipc?.close();
+    await root.manager?.close();
+    await root.heartbeat;
     try {
-      if (scopes.current()?.snapshot().stopped === true) {
-        const release = async (): Promise<void> => {
-          try { root.store?.close(); await root.lock?.release(); retainedManagementRoots.delete(root); }
-          catch (error) { retainedManagementRoots.add(root); throw error; }
-        };
-        if (root.managementClosed) await release();
-        else {
-          // The observation deadline cannot release the lock beneath an old
-          // management writer. Only its original successful close can do so.
-          retainedManagementRoots.add(root);
-          void root.managementClosing?.then(async () => { if (root.managementClosed) await release(); })
-            .catch(error => process.emitWarning(`Worker management cleanup remains unconfirmed: ${String(error)}`));
-        }
+      if (scopes.current() === null || scopes.current() === undefined || scopes.current()?.snapshot().stopped === true) {
+        await retireManagementRoot(root);
       }
     } finally { cancellation.dispose(); }
   }
@@ -366,6 +696,16 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   let promptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let bots: WorkerBotHost | undefined;
+  const captureRecovery = (): LifecycleRecoverySources => {
+    const stale = <T extends { recoverability: string; reasonCode: unknown }>(items: readonly T[] | undefined) => items?.map(item => item.recoverability === "eligible" ? { ...item, recoverability: "unknown" as const, reasonCode: "resume_interrupted" as const } : item);
+    let tasks = root.recoverySources?.tasks, botResults = root.recoverySources?.bots;
+    try { tasks = coordinator?.executionSnapshot().recovery ?? stale(tasks); } catch { tasks = stale(tasks); }
+    try { botResults = bots?.snapshot().recovery ?? stale(botResults); } catch { botResults = stale(botResults); }
+    if (signal.aborted) { tasks = stale(tasks); botResults = stale(botResults); }
+    root.recoverySources = { ...(tasks === undefined ? {} : { tasks }), ...(botResults === undefined ? {} : { bots: botResults }) };
+    return root.recoverySources;
+  };
+  root.readRecoverySources = captureRecovery;
   let botRun: Promise<void> | undefined;
   let reviewerRun: Promise<void> | undefined;
   let reviewerSettled = false;
@@ -396,7 +736,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     if (!failures.includes(error)) failures.push(error);
     try { diagnostics?.emit({ kind: "reconciliation-error", message: "Worker execution stopped after an owner failure; original resources remain for reconciliation.", error }); }
     catch (failure) { failures.push(failure); }
-    finally { scope.closeAdmission(error); }
+    finally { scope.closeAdmission(error); root.lifecycle?.markBlocked("stop_unknown"); }
   };
   const selectionVerifier = createNativeSelectionVerifier();
   const directoryBrowser = createWorkerDirectoryBrowser();
@@ -436,10 +776,25 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     const results = await Promise.allSettled(jobs);
     throwFailures(unresolvedProducerFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : [])));
   };
+  let configurationManagerStop: Promise<void> | undefined;
+  const stopConfigurationManager = (): Promise<void> => {
+    if (configurationManagerStop !== undefined) return configurationManagerStop;
+    const work = Promise.resolve().then(() => configuration?.stop());
+    configurationManagerStop = work;
+    void work.catch(() => { if (configurationManagerStop === work) configurationManagerStop = undefined; });
+    return work;
+  };
   let probeStop: Promise<void> | undefined;
   const stopProbes = (): Promise<void> => {
     if (probeStop !== undefined) return probeStop;
-    const work = join([selectionVerifier.close(), tools?.close()]);
+    const work = (async () => {
+      // Configuration jobs publish their final saved results through the tool
+      // manager. Keep it open until those publishers join; its own owner still
+      // reports any failure, and independent probe cleanup must also proceed.
+      try { await stopConfigurationManager(); }
+      catch (error) { if (!failures.includes(error)) failures.push(error); }
+      await join([selectionVerifier.close(), tools?.close()]);
+    })();
     probeStop = work;
     void work.catch(() => { if (probeStop === work) probeStop = undefined; });
     return work;
@@ -454,7 +809,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   };
   let reportDrain: Promise<void> | undefined;
   let reportFailure: unknown;
-  const stopReporter = (): Promise<void> => reportDrain ??= Promise.resolve().then(() => reporter?.stop()).catch(error => { reportFailure = error; });
+  const stopReporter = (): Promise<void> => reportDrain ??= Promise.resolve().then(() => reporter?.stop()).then(() => { root.executionReporterActive = false; }).catch(error => { reportFailure = error; });
   const drainReport = (): Promise<void> => {
     if (!managementSignal.aborted) return Promise.resolve();
     return stopReporter();
@@ -474,7 +829,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     if (configurationStop !== undefined) return configurationStop;
     const work = (async () => {
       await drainReport();
-      await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
+      await join([stopConfigurationManager(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
       promptSource?.close();
     })();
     configurationStop = work;
@@ -496,7 +851,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     stop: ({ deadline }) => stopTasks(deadline) });
   registerOwner({ resourceId: "bots", ownerKind: "bot",
     closeAdmission: reason => bots?.closeAdmission(reason), snapshot: () => bots?.snapshot(),
-    stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; await bots?.close(); } });
+    stop: async ({ deadline }) => { await bots?.shutdown({ deadline }); await botRun; captureRecovery(); await bots?.close(); } });
   registerOwner({ resourceId: "reviewer", ownerKind: "assistant",
     snapshot: () => ({ started: reviewerRun !== undefined, settled: reviewerSettled }),
     stop: stopReviewer });
@@ -521,6 +876,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     await stopTasks(deadline);
     await stopConfiguration();
     await stopArchive();
+    captureRecovery();
     await web?.jobLeases.close();
     web?.webBackend.closeInput();
     web?.webStore.close();
@@ -1005,6 +1361,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       if (report.machine.id === machine.id && report.machine.name === machine.name) bots!.confirmMachineReport();
       return receipt;
     }, emit, configuration: exchange });
+    root.executionReporterActive = true;
     reviewerRun = runReviewerHost({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, serverOrigin: serverUrl,
       serverToken, userId, workerId, signal, emit }).finally(() => { reviewerSettled = true; });
     void reviewerRun.catch(executionFailure);
@@ -1209,6 +1566,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       }
       failures.push(...configurationDiagnostics?.errors() ?? []);
       root.managementClosed = managementFailures.length === 0;
+      delete root.readRecoverySources;
     };
     root.managementClosed = false;
     root.managementClosing = finishManagement();
@@ -1241,6 +1599,8 @@ export const runWorkerControl = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   const configurationExchanges: ReturnType<typeof createWorkerConfigurationExchange>[] = [];
+  let controlLifecycle: LifecycleStore | undefined;
+  let controlLifecycleManager: LifecycleManager | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
   let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
@@ -1258,6 +1618,7 @@ export const runWorkerControl = async (options: {
     store = openWorkerStore(paths.databaseFile);
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const userId = await remote.currentUserId(signal);
+    const runControl = async (store: ReturnType<typeof openWorkerStore>): Promise<void> => {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
@@ -1421,9 +1782,42 @@ export const runWorkerControl = async (options: {
       request: options.request, signal, coordinator: controlCoordinator,
     });
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
+    };
+    const lifecycleFile = path.join(paths.workerDirectory, "lifecycle.sqlite");
+    if (options.request.kind === "retry" && (store.lifecycleAdopted() || existsSync(lifecycleFile))) {
+      const lifecycle = controlLifecycle = openLifecycleStore({ file: lifecycleFile, identity: { serverOrigin: serverUrl, userId, workerId }, allowCreate: false });
+      try {
+        const journal = await openExecutionResourceJournal({ directory: path.join(paths.workerDirectory, "execution-resources"), identity: { serverOrigin: serverUrl, userId, workerId } });
+        const root: WorkerManagementRoot = { cancellation, lock, store, identity: { serverOrigin: serverUrl, userId, workerId }, lifecycle, journal, managementClosed: true, previousScopeFailures: [] };
+        const manager = controlLifecycleManager = createLifecycleManager({ store: lifecycle,
+          api: createWorkerLifecycleClient({ serverUrl, serverToken, userId, workerId }), platform, signal,
+          reconcileResources: deadline => reconcileLifecycleResources({ ...options, workingDirectory: options.homeDirectory }, root, deadline),
+          reportError: error => options.log?.(`Worker retry lifecycle: ${String(error)}\n`) });
+        const binding = await manager.initializeForControl();
+        const stopControl = async (): Promise<OwnerStopResult[]> => {
+          cancellation.controller.abort(new Error("Worker retry admission closed."));
+          // The control command's finally block owns the eventual join and save;
+          // waking it is not itself a stop receipt.
+          return [{ resourceId: "retry", ownerKind: "task", generation: binding.scopeGeneration, stop: "unknown", save: "failed" }];
+        };
+        manager.attach({ stop: stopControl, reconcile: stopControl, rebuild: () => { throw new Error("An independent retry cannot rebuild a foreground Worker scope."); } });
+        manager.start();
+        const reserved = new Set<string>();
+        await withWorkerLifecycle({ store: lifecycle, binding, failed: error => { cancellation.controller.abort(error); lifecycle.markBlocked("persistence_failed"); } }, () => withOwnedCommandLifecycle(async event => {
+          if (event.stage === "prepared" && !reserved.has(event.resourceId)) {
+            lifecycle.reserveExecution({ binding, resourceId: event.resourceId, ownerKind: "repository", identity: { kind: "owned_command" }, operationId: event.resourceId }); reserved.add(event.resourceId);
+          }
+          await journal.sink(binding.scopeGeneration)(event);
+          if (event.stage === "bound") lifecycle.recordResource({ resourceId: event.resourceId, stage: "running", processProof: JSON.parse(JSON.stringify(event.proof)) as LifecycleJson });
+          if (event.stage === "stopped") lifecycle.recordResource({ resourceId: event.resourceId, stage: "stopped", stopProof: { kind: "owned_boundary", sequence: event.sequence }, saveState: "durable" });
+          if (event.stage === "unknown") lifecycle.recordResource({ resourceId: event.resourceId, stage: "unknown", error: "Retry command boundary remains unconfirmed." });
+        }, () => runControl(store!)));
+      } finally { lifecycle.closeForRestart(); }
+    } else await runControl(store);
   } catch (error) { failures.push(error); }
   finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker management is closing."));
+    try { await controlLifecycleManager?.close(); } catch (error) { failures.push(error); }
     configurationManager?.beginDrain();
     const bootstrapStopped = controlBootstrap?.stop().catch(error => { failures.push(error); });
     controlPromptSource?.close();
@@ -1434,6 +1828,7 @@ export const runWorkerControl = async (options: {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
+    try { controlLifecycle?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     failures.push(...(configurationDiagnostics?.errors() ?? []));

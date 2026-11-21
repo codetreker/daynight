@@ -25,7 +25,9 @@ const fixture = async () => {
   const homeDirectory = await mkdtemp(path.join(base, "h-")); roots.push(homeDirectory);
   const executionId = randomUUID(), sessionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
   await mkdir(controllerExecutionDirectory(homeDirectory, executionId), { recursive: true });
-  const ticket = { launchId, executionId, sessionId, controllerInstanceId, testExecutionId: executionId, executionGeneration: "1", cwd: homeDirectory, provider: "codex" } as ControllerLaunchTicket;
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId, executionId, sessionId, controllerId: randomUUID(), controllerInstanceId, testExecutionId: executionId, executionGeneration: "1", cwd: homeDirectory, provider: "codex",
+    serverOrigin: "https://daynight.example", ownerUserId: randomUUID(), nativeHome: path.join(homeDirectory, "native"), initialInput: "none", initialPrompt: "", initialOperationId: randomUUID(), resumeNativeSessionId: null,
+    configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, credentialFile: path.join(homeDirectory, "grant.json"), ipcEndpoint: path.join(homeDirectory, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const snapshot: ControllerSnapshot = { executionId, sessionId, controllerInstanceId, testExecutionId: executionId, executionGeneration: "1", lifecycle: "starting", nativeProcesses: [], nativeSessionId: null, initialInputState: "not_required", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeStopped: false, stoppedAt: null, error: null };
   const proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
   const child = Object.assign(new EventEmitter(), { pid: 987, exitCode: null, signalCode: null, connected: true,

@@ -1,3 +1,4 @@
+import { executionRecoveryResult, type LifecycleTaskRecoveryEvidence } from "./lifecycle-recovery.js";
 import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim, readSessionStartupReport, readTaskBlocked } from "../../api/task-properties.js";
@@ -20,6 +21,7 @@ import { OperationError } from "../../api/operation.js";
 import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerClaim, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
+import { assertWorkerLifecycleAdmission, withLifecycleProducer, withLifecycleReservation } from "./lifecycle-context.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createExecutionCapacity } from "./execution-capacity.js";
 import type { CleanupTarget, TerminalCleanupContext } from "./execution-stop.js";
@@ -184,6 +186,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const monitoringLimitRetries = new Set<string>();
   const recoveredLimitNames = new Map<string, Set<string>>();
   const pausedClaims = new Set<string>();
+  const lifecycleRecovery = new Map<string, LifecycleTaskRecoveryEvidence>();
+  const lifecycleAuthority = new Map<string, "ownership_changed" | "independent_blocker">();
   const webMonitoringState = new Map<string, string>();
   const webRecoveryFailures = new Map<string, { id: string; reason: "native_identity_missing" | "recovery_limit" | "recovery_blocked" }>();
   const controllers = new Map<string, { controller: AbortController; terminal: boolean; webClaim?: WorkerClaim }>();
@@ -837,9 +841,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   // An adoption can replace at most one legacy generation during this Worker run.
   const webUpgradeAttempts = new Set<string>();
   const checkWebAuthority = async (original: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, inputSignal: AbortSignal, explicitRetry: boolean, allowShutdown = false): Promise<"task_paused" | "claim_invalid" | null> => {
+    lifecycleAuthority.delete(key(original));
     const fresh = await options.remote.readTask(original.projectId, original.taskId, inputSignal);
     const claim = readWorkerClaim(fresh.properties);
     const latest = options.webStore.getTask(original);
+    if (fresh.projectId !== original.projectId || fresh.id !== original.taskId || claim?.claimId !== original.claimId || claim.workerId !== original.workerId || claim.worktreeId !== original.worktreeId || claim.userId !== original.userId)
+      lifecycleAuthority.set(key(original), "ownership_changed");
+    else if (fresh.status !== "in_progress" || !fresh.allowAgents || readTaskBlocked(fresh.properties) || (explicitRetry ? projectStops.has(original.projectId) : !canAdvanceProject(original.projectId)))
+      lifecycleAuthority.set(key(original), "independent_blocker");
     if ((explicitRetry ? projectStops.has(original.projectId) : !canAdvanceProject(original.projectId)) || fresh.projectId !== original.projectId || fresh.id !== original.taskId
       || fresh.status !== "in_progress" || !fresh.allowAgents || claim?.state !== "active"
       || claim.claimId !== original.claimId || claim.workerId !== original.workerId || claim.worktreeId !== original.worktreeId
@@ -849,10 +858,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       || (claim.nativeSessionId !== null && latest.resources.nativeSession !== null && claim.nativeSessionId !== latest.resources.nativeSession.sessionId)) return "claim_invalid";
     return readTaskBlocked(fresh.properties) ? "task_paused" : null;
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry = false, allowWorktreeRestore = true): Promise<WorkerInputWait | undefined> => {
+  const ensure = (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry = false, allowWorktreeRestore = true): Promise<WorkerInputWait | undefined> => withLifecycleProducer("task", { kind: "task_advance", projectId: task.projectId, taskId: task.taskId, claimId: task.claimId }, () => ensureAdmitted(task, remoteTask, signal, explicitRetry, allowWorktreeRestore));
+  const ensureAdmitted = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry: boolean, allowWorktreeRestore: boolean): Promise<WorkerInputWait | undefined> => {
+    assertWorkerLifecycleAdmission();
+    lifecycleRecovery.delete(key(task));
+    lifecycleAuthority.delete(key(task));
     if (ending.has(key(task))) return;
     const owner = remoteOwner(remoteTask);
-    if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== "web") throw new Error("The local execution does not match the observed original worker claim.");
+    if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== "web") {
+      lifecycleAuthority.set(key(task), "ownership_changed");
+      throw new Error("The local execution does not match the observed original worker claim.");
+    }
     {
       let configuration = configurationFor(task);
       if (configuration === null) return;
@@ -926,6 +942,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       } finally {
         // Summary transport is independent of native recovery and must remain live while paused.
         record = options.webStore.getTask(task);
+        if (record !== null) {
+          const execution = record.webExecution;
+          lifecycleRecovery.set(key(task), { projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+            executionId: execution?.executionId ?? null, sessionId: execution?.sessionId ?? null, executionGeneration: execution?.executionGeneration ?? null,
+            ...executionRecoveryResult({ ownershipChanged: lifecycleAuthority.get(key(task)) === "ownership_changed" || waitingInput?.reason === "claim_invalid" && lifecycleAuthority.get(key(task)) !== "independent_blocker",
+              independentBlocker: lifecycleAuthority.get(key(task)) === "independent_blocker" || waitingInput?.reason === "task_paused" || readTaskBlocked(remoteTask.properties) === true || pausedClaims.has(key(task)) || options.webStore.getOrchestrationBlocker(record) !== null || record.recovery.reasonCode === "recovery_limit",
+              nativeBlocked: record.recovery.pauseReason !== null && record.recovery.reasonCode !== "recovery_limit",
+              outcomeUnknown: signal.aborted || waitingInput !== undefined || execution?.launchSubmission === "unknown" || ["unknown", "dispatching"].includes(execution?.initialInputState ?? ""),
+              verified: observed && execution !== null && execution.sessionId !== null && record.resources.nativeSession !== null && ["confirmed", "provider_accepted"].includes(execution.initialInputState) && execution.activity !== "initializing" && execution.activity !== "unknown" }),
+          });
+        }
         if (!signal.aborted && (observed || record !== null || waitingInput !== undefined)) {
           const nativeSessionId = record?.resources.nativeSession?.sessionId ?? task.sessionId ?? worker.nativeSessionId;
           if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
@@ -1019,6 +1046,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
     || [...owners, ...ending.values()].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
   const schedule = (task: LocalTask, remoteTask: Task): void => {
+    assertWorkerLifecycleAdmission();
     if (!canAdvance(task) || jobs.has(key(task)) || ending.has(key(task))) return;
     updatePromptDemand();
     const owner = remoteOwner(remoteTask);
@@ -1573,9 +1601,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           observe(m => m.setPhase("claim-request"));
           try {
             const descriptor = { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, agentControlMode: "web" as const, worktreeId };
-            const granted = typeof claimConfiguration.taskTagFilterKey === "string"
+            const granted = await withLifecycleReservation("task", { kind: "task_claim", projectId: candidate.projectId, taskId: candidate.id, claimId, worktreeId, candidateVersion: String(candidate.version), frozenConfiguration }, async () => {
+              const result = typeof claimConfiguration.taskTagFilterKey === "string"
               ? await options.remote.claim(candidate, descriptor, normalSignal, claimConfiguration.taskTagFilterKey)
               : await options.remote.claim(candidate, descriptor, normalSignal);
+              const claim = readWorkerClaim(result.properties);
+              if (claim === undefined || claim.claimId !== claimId) throw new Error("Original claim receipt identity changed.");
+              options.store.registerPending({ projectId: result.projectId, taskId: result.id, claimId, agent: claim.agent, agentControlMode: "web", nativeConfiguration: frozenConfiguration });
+              return result;
+            }, claimId);
             const owner = remoteOwner(granted);
             if (readWorkerClaim(granted.properties)?.agentControlMode !== "web") throw new Error("The granted claim is not a Web execution.");
             const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: "web", nativeConfiguration: frozenConfiguration });
@@ -1616,6 +1650,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const assertCanAcquire = (target: Pick<ClaimIdentity, "projectId" | "taskId">): void => {
+    assertWorkerLifecycleAdmission();
     normalSignal.throwIfAborted();
     if (options.store.listClaimToolReservations().some(reservation => reservation.projectId === target.projectId && reservation.taskId === target.taskId)) throw new Error("The original claim request remains unconfirmed; its frozen selection is reserved.");
     // A Git mutation may have removed its visible worktree before its owned
@@ -1667,6 +1702,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         projectId, taskId, claimId, worktreeId, executionId: webExecution?.executionId ?? null,
         sessionId: webExecution?.sessionId ?? null, executionGeneration: webExecution?.executionGeneration ?? null,
       })),
+      recovery: options.webStore.listUnfinishedTasks().map((record): LifecycleTaskRecoveryEvidence => {
+        const execution = record.webExecution, previous = lifecycleRecovery.get(key(record));
+        const same = previous !== undefined && previous.executionId === (execution?.executionId ?? null) && previous.sessionId === (execution?.sessionId ?? null) && previous.executionGeneration === (execution?.executionGeneration ?? null);
+        const result = executionRecoveryResult({ ownershipChanged: lifecycleAuthority.get(key(record)) === "ownership_changed" || ending.has(key(record)) || same && previous.reasonCode === "ownership_changed",
+          independentBlocker: lifecycleAuthority.get(key(record)) === "independent_blocker" || pausedClaims.has(key(record)) || options.webStore.getOrchestrationBlocker(record) !== null || record.recovery.reasonCode === "recovery_limit" || same && previous.reasonCode === "independent_blocker",
+          nativeBlocked: record.recovery.pauseReason !== null && record.recovery.reasonCode !== "recovery_limit",
+          outcomeUnknown: shuttingDown || execution?.launchSubmission === "unknown" || ["unknown", "dispatching"].includes(execution?.initialInputState ?? ""),
+          verified: same && previous.recoverability === "eligible" });
+        return { projectId: record.projectId, taskId: record.taskId, claimId: record.claimId,
+          executionId: execution?.executionId ?? null, sessionId: execution?.sessionId ?? null, executionGeneration: execution?.executionGeneration ?? null, ...result };
+      }),
       ending: [...ending.values()].map(owner => ({ ...owner })),
     }),
     tick: async (): Promise<void> => {
