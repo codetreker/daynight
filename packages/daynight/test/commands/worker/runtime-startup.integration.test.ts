@@ -665,6 +665,7 @@ describe("worker cloud-first startup", () => {
       release.resolve();
       await vi.waitFor(() => expect(stopManager).toHaveBeenCalledOnce());
       expect((await controls[0]!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(stopManager).toHaveBeenCalledOnce();
       expect(mocks.bots).not.toHaveBeenCalled();
       controls[0]!.rebuild();
       await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalled(); });

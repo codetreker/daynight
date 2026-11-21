@@ -129,9 +129,10 @@ describe("execution resource responsibility journal", () => {
     });
     cancellation.abort();
     const originalClose = probe.close();
+    void originalClose.catch(() => {});
     let reconciled: Promise<void> | undefined;
     try {
-      await closing.promise;
+      await Promise.race([closing.promise, originalClose]);
       await expect(runLifecycleOwnedCommand({ file: process.execPath, args: ["-e", "throw Error('must not dispatch')"], environment: process.env }, operation, async event => {
         commandId = event.resourceId;
         await save(event);
@@ -173,7 +174,7 @@ describe("execution resource responsibility journal", () => {
     void creating.catch(() => {});
     let reconciling: Promise<void> | undefined;
     try {
-      await entered.promise;
+      await Promise.race([entered.promise, creating]);
       cancellation.abort();
       reconciling = journal.reconcileRetained({ generation: "1", deadline: Date.now() + 20_000 });
       void reconciling.catch(() => {});

@@ -19,8 +19,8 @@ export type BotCliProbeOwnership = {
 };
 
 export class BotCliProbeCleanupError extends Error {
-  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>, readonly failure?: { stage: string; nativeStage?: string; win32Code?: number }) {
-    super("Bot CLI probe process cleanup is unconfirmed; retain its ownership and retry cleanup before releasing aliases.");
+  constructor(readonly ownership: BotCliProbeOwnership, readonly retryCleanup: () => Promise<void>, readonly failure?: { stage: string; nativeStage?: string; win32Code?: number }, options?: ErrorOptions) {
+    super("Bot CLI probe process cleanup is unconfirmed; retain its ownership and retry cleanup before releasing aliases.", options);
     this.name = "BotCliProbeCleanupError";
   }
 }
@@ -159,7 +159,7 @@ export const createBotCliProbe = async (
     } catch (error) {
       if (retireRejectedPreparation()) return;
       try { await save("unknown"); } catch { /* The original save and cleanup remain strongly owned for reconciliation. */ }
-      throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) });
+      throw new BotCliProbeCleanupError(ownership(), close, { stage, ...(error instanceof WindowsBotJobError ? { nativeStage: error.stage, win32Code: error.win32Code } : {}) }, { cause: error });
     }
   };
   const close = async (): Promise<void> => {

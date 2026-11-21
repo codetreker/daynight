@@ -766,6 +766,14 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     const results = await Promise.allSettled(jobs);
     throwFailures(unresolvedProducerFailures(results.flatMap(result => result.status === "rejected" ? [result.reason] : [])));
   };
+  let configurationManagerStop: Promise<void> | undefined;
+  const stopConfigurationManager = (): Promise<void> => {
+    if (configurationManagerStop !== undefined) return configurationManagerStop;
+    const work = Promise.resolve().then(() => configuration?.stop());
+    configurationManagerStop = work;
+    void work.catch(() => { if (configurationManagerStop === work) configurationManagerStop = undefined; });
+    return work;
+  };
   let probeStop: Promise<void> | undefined;
   const stopProbes = (): Promise<void> => {
     if (probeStop !== undefined) return probeStop;
@@ -773,7 +781,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
       // Configuration jobs publish their final saved results through the tool
       // manager. Keep it open until those publishers join; its own owner still
       // reports any failure, and independent probe cleanup must also proceed.
-      try { await configuration?.stop(); }
+      try { await stopConfigurationManager(); }
       catch (error) { if (!failures.includes(error)) failures.push(error); }
       await join([selectionVerifier.close(), tools?.close()]);
     })();
@@ -811,7 +819,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     if (configurationStop !== undefined) return configurationStop;
     const work = (async () => {
       await drainReport();
-      await join([configuration?.stop(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
+      await join([stopConfigurationManager(), configurationBootstrap?.stop(), initialRemovalReconciliation?.catch(error => { if (!isWorkerCancellation(error, signal)) throw error; }), ...localMappingJobs.values(), readOnly?.join(), modelDiscovery?.join(), directoryBrowser.join()]);
       promptSource?.close();
     })();
     configurationStop = work;

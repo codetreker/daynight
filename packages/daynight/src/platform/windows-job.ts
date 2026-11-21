@@ -122,10 +122,15 @@ export const loadWindowsJobKernel = async (): Promise<WindowsNamedJobKernel> => 
     inspect: handle => {
       const data = Buffer.alloc(262_144);
       if (query(handle, 3, data, data.length, null) === 0) throw failure("query-members");
-      const count = data.readUInt32LE(4);
-      if (data.readUInt32LE(0) < count || 8 + count * pointerSize > data.length) throw new Error("Invalid Windows Job Object inventory.");
+      const assigned = data.readUInt32LE(0), count = data.readUInt32LE(4);
+      const detail = `assigned=${assigned}, returned=${count}, pointerSize=${pointerSize}`;
+      if (assigned < count || 8 + count * pointerSize > data.length) throw new Error(`Invalid Windows Job Object inventory (${detail}, bufferBytes=${data.length}).`);
       const pids = Array.from({ length: count }, (_, index) => pointerSize === 8 ? Number(data.readBigUInt64LE(8 + index * pointerSize)) : data.readUInt32LE(8 + index * pointerSize));
-      if (pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error("Invalid Windows Job Object process identity.");
+      const invalid = pids.flatMap((pid, index) => !Number.isSafeInteger(pid) || pid <= 0 ? [index] : []);
+      if (invalid.length > 0) {
+        const values = invalid.slice(0, 8).map(index => pointerSize === 8 ? data.readBigUInt64LE(8 + index * pointerSize).toString() : String(data.readUInt32LE(8 + index * pointerSize)));
+        throw new Error(`Invalid Windows Job Object process identity (${detail}, invalidCount=${invalid.length}, invalidPids=[${values.join(",")}]).`);
+      }
       return pids;
     },
     terminate: handle => { if (terminate(handle, 1) === 0) throw failure("terminate-members"); },
