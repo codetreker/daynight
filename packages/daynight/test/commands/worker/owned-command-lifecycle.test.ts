@@ -23,6 +23,65 @@ const command = (source: string) => ({ file: process.execPath, args: ["--input-t
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe("owned command birth handshake", () => {
+  it.skipIf(process.platform === "win32").each(["spawn", "birth-message"] as const)("joins the original birth before stopping when cancellation arrives at %s", async phase => {
+    const directory = await root(), marker = path.join(directory, "must-not-run");
+    const cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
+    const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const original = childProcesses.spawn;
+    let cancelledBeforeProof = false;
+    vi.spyOn(childProcesses, "spawn").mockImplementationOnce((...args: Parameters<typeof original>) => {
+      const child = original(...args);
+      child.once(phase === "spawn" ? "spawn" : "message", () => {
+        cancelledBeforeProof = events.every(event => event.stage !== "bound");
+        cancellation.abort(new Error(`cancel at ${phase}`));
+      });
+      return child;
+    });
+    try {
+      const error = await runLifecycleOwnedCommand(command(`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');`), operation,
+        async event => { events.push(event); }).catch(cause => cause);
+      expect(error).toBe(operation.signal.reason);
+      expect(cancelledBeforeProof).toBe(true);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(events[1]!.proof?.processGroupId).toBe(events[1]!.proof?.pid);
+      expect(events[2]!.proof).toEqual(events[1]!.proof);
+      expect(await inspectProcessProof(events[1]!.proof!)).toBe("stopped");
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+    } finally { cancellation.abort(); operation.dispose(); }
+  }, 35_000);
+
+  it.skipIf(process.platform === "win32")("retains the original pending birth when a reconciliation observation expires", async () => {
+    const directory = await root(), marker = path.join(directory, "must-not-run");
+    const cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
+    const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000, requestMs: 30_000 } });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const original = processProof.captureProcessProof;
+    const capture = vi.spyOn(processProof, "captureProcessProof").mockImplementationOnce(async (pid, budget) => {
+      const proof = await original(pid, budget);
+      entered.resolve(); await release.promise; return proof;
+    });
+    const pending = runLifecycleOwnedCommand(command(`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');`), operation,
+      async event => { events.push(event); }).catch(cause => cause);
+    try {
+      await Promise.race([entered.promise, pending.then(result => { throw new Error("Owned command ended before its birth observation barrier.", { cause: result }); })]);
+      cancellation.abort(new Error("cancel during native birth capture"));
+      const resourceId = events[0]!.resourceId;
+      await expect(reconcileOwnedCommandBoundary(resourceId, async event => { events.push(event); }, Date.now() + 25)).rejects.toThrow();
+      expect(events.map(event => event.stage)).toEqual(["prepared"]);
+      expect(retainedOwnedCommandBoundaries()).toEqual([{ resourceId, proof: null }]);
+      expect(capture).toHaveBeenCalledOnce();
+      release.resolve();
+      expect(await pending).toBe(operation.signal.reason);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(events.every(event => event.resourceId === resourceId)).toBe(true);
+      expect(await inspectProcessProof(events[1]!.proof!)).toBe("stopped");
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(retainedOwnedCommandBoundaries()).toHaveLength(0);
+      expect(capture).toHaveBeenCalledOnce();
+    } finally { release.resolve(); cancellation.abort(); await pending; operation.dispose(); }
+  }, 35_000);
+
   it.skipIf(process.platform === "win32").each(["birth-probe-failed", "budget-cancelled"])("retains unknown POSIX boundary responsibility after %s and a runnable launcher closes", async mode => {
     const directory = await root();
     // Isolate the intentionally unresolved receipt in its owning test process.

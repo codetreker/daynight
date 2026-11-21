@@ -95,6 +95,12 @@ responsibility. A failed or pending write cannot discard that evidence: recovery
 joins the original write and completes the same resource's terminal persistence
 without dispatch. This in-process evidence does not authorize clearing recovered
 null-proof records after the producer has been lost.
+Cancellation before the POSIX birth message closes command dispatch while the
+original private IPC handshake and independent proof capture continue within
+the cleanup deadline. Killing the direct launcher first would lose the witness
+needed to stop its proof helpers. Closure joins admitted handshake work before
+terminal persistence; genuinely missing or conflicting proof stays unknown.
+
 Original resource closure also settles dependent Git handles when inventory
 reconciliation finishes first. Consumers subscribe to the original closure
 receipt rather than interpreting a missing inventory entry as proof. An

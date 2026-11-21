@@ -1,6 +1,7 @@
 import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { execFileSync } from "node:child_process";
+import * as childProcesses from "node:child_process";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
@@ -18,7 +19,8 @@ import * as configurationCache from "../../../src/commands/worker/configuration-
 import * as workerIdentity from "../../../src/commands/worker/identity.js";
 import * as atomicFiles from "../../../src/platform/files.js";
 import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
-import { currentOwnedCommandLifecycle, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import * as reviewerHost from "../../../src/commands/worker/reviewer-host.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
@@ -51,6 +53,10 @@ vi.mock("../../../src/commands/worker/reviewer-host.js", async original => ({ ..
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
+vi.mock("node:child_process", async original => {
+  const actual = await original<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
@@ -1836,6 +1842,57 @@ it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdow
 
 
 describe("real runtime resource isolation", () => {
+  it.skipIf(process.platform === "win32")("closes the original Git boundary when Worker cancellation precedes its launcher birth message", async () => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    // A missing configured repository enters the real owned clone path. The
+    // target command must never be dispatched after its launcher's spawn.
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async () => { throw new Error("Cancelled cloning must not prepare a repository format."); } });
+    mocks.git.mockReturnValue(git);
+    const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    let original: { resourceId: string; pid: number } | undefined;
+    let sending: ReturnType<typeof vi.spyOn> | undefined;
+    let birthMessageReceived = false, cancelledBeforeBirth = false;
+    const spawning = vi.spyOn(childProcesses, "spawn").mockImplementation((...args) => {
+      const child = Reflect.apply(spawn, childProcesses, args) as ReturnType<typeof spawn>;
+      const command = args[1];
+      if (Array.isArray(command) && typeof command[0] === "string" && command[0].endsWith("owned-command-helper.js")) {
+        child.on("message", () => { birthMessageReceived = true; });
+        child.once("spawn", () => {
+          if (original !== undefined || child.pid === undefined) return;
+          original = { resourceId: command[1]!, pid: child.pid };
+          sending = vi.spyOn(child, "send");
+          cancelledBeforeBirth = !birthMessageReceived && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === original!.resourceId && boundary.proof === null);
+          cancellation.abort();
+        });
+      }
+      return child;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { running } = start(f, { signal: cancellation.signal, onExecutionScope: control => { controls.push(control); } });
+    try {
+      try { await vi.waitFor(() => expect(original).toBeDefined(), { timeout: 5000 }); }
+      catch (cause) {
+        throw new Error(`Runtime Git launcher was not observed: ${JSON.stringify({ generation: controls[0]?.generation, spawns: spawning.mock.calls.length,
+          executables: [...new Set(spawning.mock.calls.map(([file]) => file))], lastError: String(mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).at(-1)?.[0].error) })}`, { cause });
+      }
+      await running;
+      expect(cancelledBeforeBirth).toBe(true);
+      expect(original).toBeDefined();
+      expect(sending).not.toHaveBeenCalled();
+      expect(controls).toHaveLength(1); expect(controls[0]!.snapshot().stopped).toBe(true);
+      expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      const record = JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", `${original!.resourceId}.json`), "utf8"));
+      expect(record).toMatchObject({ generation: "1", event: { resourceId: original!.resourceId, stage: "stopped", proof: { pid: original!.pid } } });
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally {
+      cancellation.abort(); await Promise.allSettled([running]);
+      try { await withinExecutionDeadline(git.dispose(), Date.now() + 10_000); }
+      finally { sending?.mockRestore(); spawning.mockRestore(); }
+    }
+  }, 35_000);
+
   it.each(["unproven", "foreign", "invalid"])("reconciles an unbound mapping and its damaged registration: %s", async scenario => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { projectId: _projectId, ...legacy } = f.repository;

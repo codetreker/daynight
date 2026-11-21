@@ -175,7 +175,17 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   let joinOutput: (() => Promise<void>) | undefined;
   const remember = () => retained.set(resourceId, { proof, lease, sequence, neverSpawned, unstartedClosed, closure, save, joinSave: () => saves, ...(joinOutput === undefined ? {} : { joinOutput }), ...(suspended === undefined ? {} : { closeHandles: suspended.closeHandles }) });
   remember();
-  let closed = false, dispatchClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
+  let closed = false, dispatchClosed = false, birthClosed = false, stopped = false, failure: unknown, result: { code: number | null; signal: string | null } | undefined;
+  const birth = Promise.withResolvers<void>();
+  void birth.promise.catch(() => {});
+  let cleanupBoundaryDeadline: number | undefined;
+  const cleanupBoundaryLimit = (): number => cleanupBoundaryDeadline ??= cleanupDeadline === undefined ? Date.now() + 10_000 : Math.ceil(cleanupDeadline);
+  const birthBudget = (): number => {
+    if (!dispatchClosed && !operation.signal.aborted) {
+      try { return budget(15_000); } catch { /* Birth evidence is still required after operation expiry. */ }
+    }
+    return Math.max(1, Math.ceil(Math.min(15_000, cleanupBoundaryLimit() - Date.now())));
+  };
   const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
   let bytes = 0, stdoutBytes = 0, stderrBytes = 0;
   const accept = (target: Buffer[], chunk: Buffer) => {
@@ -211,6 +221,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   });
   child.once("close", () => {
     closed = true;
+    birth.reject(new Error("Owned launcher closed before its original birth handshake completed."));
     // POSIX spawn returns a ChildProcess even when native creation fails. Its
     // own error, absent PID and close prove no process was created; null proof
     // alone does not. Stream writers still have their independent join below.
@@ -220,15 +231,18 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
   const handshake = async (message: unknown): Promise<void> => {
     if (typeof message !== "object" || message === null || !("kind" in message)) throw new Error("Invalid owned launcher message.");
     if (message.kind === "bound") {
+      if (birthClosed) return;
       if (bound || !("launchId" in message) || message.launchId !== resourceId || !("proof" in message)) throw new Error("Owned launcher identity conflict.");
       bound = true;
       const observed = message.proof as ProcessProof;
       if (observed.pid !== child.pid) throw new Error("Owned launcher process identity conflict.");
       // Capture independently rather than trusting a serialized proof alone.
-      const current = await captureProcessProof(child.pid!, budget(15_000));
+      const current = await captureProcessProof(child.pid!, birthBudget());
       if (current.startedAt !== observed.startedAt || current.commandHash !== observed.commandHash || current.processGroupId !== observed.processGroupId) throw new Error("Owned launcher birth identity conflict.");
       if (suspended === undefined) { proof = current; remember(); await event("bound"); }
       if (proof === null) throw new Error("Owned launcher has no committed process identity.");
+      birth.resolve();
+      if (dispatchClosed) return;
       operation.check();
       if (dispatchClosed || failure !== undefined) throw new Error("Owned launcher dispatch was cancelled.");
       if (await inspectProcessProof(proof, budget(5000)) !== "running" || !child.connected) throw new Error("Owned launcher ended before dispatch.");
@@ -247,7 +261,7 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     else throw new Error("Unknown owned launcher message.");
   };
   let messages = Promise.resolve();
-  child.on("message", message => { messages = messages.then(() => handshake(message)).catch(error => { failure ??= error; }); });
+  child.on("message", message => { messages = messages.then(() => handshake(message)).catch(error => { failure ??= error; birth.reject(error); }); });
   if (suspended !== undefined) {
     try {
       proof = { ...await captureProcessProof(child.pid!, budget(15_000)), jobObjectName: `Local\\Daynight-${resourceId}` };
@@ -275,9 +289,17 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
     if (operation.signal.aborted) failure ??= operation.signal.reason;
     if (!closed && result === undefined && failure === undefined) failure = new Error("The owned prerequisite command deadline elapsed.");
     dispatchClosed = true;
-    // Never release a boundary while the proof commit or dispatch continuation is pending.
+    const deadline = cleanupBoundaryLimit();
+    // Cancellation closes dispatch, not the original birth handshake. A trusted
+    // POSIX launcher may still own proof helpers before sending its first message.
+    if (suspended === undefined && proof === null && !neverSpawned && !closed && !failedSpawn) {
+      try { await withinExecutionDeadline(birth.promise, deadline); }
+      catch (error) { failure ??= error; }
+    }
+    // Seal birth admission and join the original message chain before native
+    // stopping. A queued late bound cannot publish after the terminal event.
+    birthClosed = true;
     await messages;
-    const deadline = cleanupDeadline === undefined ? Date.now() + 10_000 : Math.ceil(cleanupDeadline);
     if (proof !== null && (suspended === undefined || lease !== undefined)) {
       if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) await stopControllerProcesses(proof, [], deadline, lease, { guardian: true });
       if (!await confirmControllerProcessesStopped(proof, [], deadline, lease)) throw new Error("Owned command boundary remains occupied.");
