@@ -26,6 +26,7 @@ import * as webStores from "../../../src/commands/worker/backends/web-store.js";
 import * as monitoringObservers from "../../../src/commands/worker/monitoring/observer.js";
 import * as workerDiagnostics from "../../../src/commands/worker/diagnostics.js";
 import * as reconcileWake from "../../../src/commands/worker/reconcile-wake.js";
+import * as grantRenewal from "../../../src/commands/worker/backends/grant-renewal.js";
 import { createNativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
 import { BotCliProbeCleanupError, createBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ApiError } from "../../../src/api/client.js";
@@ -186,6 +187,114 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("does not implicitly rebuild after an ordinary run settles its original journal boundary", async () => {
+    const f = await fixture();
+    mocks.reviewer.mockImplementationOnce(async () => {
+      const sink = currentOwnedCommandLifecycle()!;
+      await sink({ resourceId: uuid(90), sequence: 1, stage: "prepared", proof: null });
+      await sink({ resourceId: uuid(90), sequence: 2, stage: "unknown", proof: null });
+      await sink({ resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null });
+    });
+    const { cancellation, running } = start(f);
+    let joined = false;
+    void running.then(() => { joined = true; }, () => { joined = true; });
+    try {
+      await vi.waitFor(() => expect(joined).toBe(true));
+      await running;
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(mocks.reviewer).toHaveBeenCalledOnce();
+      const files = await readdir(path.join(f.paths.workerDirectory, "execution-resources"));
+      const records = await Promise.all(files.filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", file), "utf8"))));
+      expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } })]);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
+  it("joins a Bot's ordinary cancellation without recording it as a background failure", async () => {
+    const f = await fixture(false, false);
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const run = vi.fn(async (signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw signal.reason;
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run, shutdown: async () => {} });
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      cancellation.abort();
+      await running;
+      expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("stopped after an owner failure"))).toBe(false);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
+  it("preserves the original journal save failure when a joined Bot rejects with the scope cancellation reason", async () => {
+    const f = await fixture(false, false), failure = new Error("The original Bot reservation write failed.");
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let failed = false, sameReason = false;
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && !failed) { failed = true; throw failure; }
+      await replace(file, text, ...rest);
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: async (signal: AbortSignal) => {
+      const sink = currentOwnedCommandLifecycle()!;
+      const prepared = { resourceId: uuid(91), sequence: 1, stage: "prepared" as const, proof: null };
+      try { await sink(prepared); }
+      catch (error) {
+        sameReason = signal.aborted && signal.reason === error;
+        await sink(prepared);
+        await sink({ ...prepared, sequence: 2, stage: "stopped" });
+        throw error;
+      }
+    }, shutdown: async () => {} });
+    const { cancellation, running } = start(f);
+    try {
+      await expect(running).rejects.toBe(failure);
+      expect(sameReason).toBe(true);
+      expect(mocks.bots).toHaveBeenCalledOnce();
+      const files = await readdir(directory);
+      const records = await Promise.all(files.filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(91), sequence: 2, stage: "stopped", proof: null } })]);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); saving.mockRestore(); }
+  });
+
+  it.each([false, true])("preserves a real grant inventory failure and rebuilds only when explicitly requested (rebuild: %s)", async rebuild => {
+    const f = await fixture(), failure = new Error("The original Controller grant inventory could not be read.");
+    const maintain = grantRenewal.maintainWorkerControllerGrants;
+    const renewal = vi.spyOn(grantRenewal, "maintainWorkerControllerGrants").mockImplementationOnce(options => maintain({
+      ...options, store: { listUnfinishedTasks: () => { throw failure; } },
+    }));
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, rebuild ? { onExecutionScope: control => { controls.push(control); } } : {});
+    let result: { error: unknown } | { completed: true } | undefined;
+    void running.then(() => { result = { completed: true }; }, error => { result = { error }; });
+    try {
+      if (rebuild) {
+        await vi.waitFor(() => expect(controls[0]?.snapshot().stopped).toBe(true));
+        expect(result).toBeUndefined();
+        expect(renewal).toHaveBeenCalledOnce();
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+        const lock = await readFile(f.paths.lockFile, "utf8");
+        controls[0]!.rebuild();
+        await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(renewal).toHaveBeenCalledTimes(2); });
+        expect(controls[1]!.generation).toBe("2");
+        expect(renewal.mock.calls[1]![0].signal).not.toBe(renewal.mock.calls[0]![0].signal);
+        expect(await readFile(f.paths.lockFile, "utf8")).toBe(lock);
+        cancellation.abort();
+      }
+      await vi.waitFor(() => expect(result).toEqual({ error: failure }));
+      expect(renewal).toHaveBeenCalledTimes(rebuild ? 2 : 1);
+      await expect(running).rejects.toBe(failure);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); renewal.mockRestore(); }
+  });
+
   it("rebuilds after a joined initialization failure while retaining the lock and the original exit error", async () => {
     const f = await fixture(), failure = new Error("Worker identity read was temporarily unavailable.");
     let originalSignal: AbortSignal | undefined, originalLock: string | undefined;
@@ -383,6 +492,7 @@ describe("worker cloud-first startup", () => {
 
   it("reconciles the original non-Git command through management control before rebuilding", async () => {
     const f = await fixture(), marker = path.join(f.homeDirectory, "command-runs");
+    const saveFailure = new Error("Original command stop receipt could not be saved.");
     const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
     let rejectStop = true;
     let originalSink: OwnedCommandLifecycleSink | undefined;
@@ -392,7 +502,7 @@ describe("worker cloud-first startup", () => {
       if (hasUnconfirmedOwnedCommandCleanup(error)) throw error;
     });
     const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
-      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "stopped" && rejectStop) throw new Error("Original command stop receipt could not be saved.");
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "stopped" && rejectStop) throw saveFailure;
       return replace(file, text, ...rest);
     });
     mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
@@ -428,16 +538,18 @@ describe("worker cloud-first startup", () => {
       expect(await readFile(marker, "utf8")).toBe("once\n");
     } finally {
       rejectStop = false; cancellation.abort();
-      try { await expect(running).rejects.toMatchObject({ name: "OwnedCommandCleanupError" }); } finally { saving.mockRestore(); reviewerClosure.mockRestore(); }
+      try { await expect(running).rejects.toMatchObject({ errors: expect.arrayContaining([saveFailure, expect.objectContaining({ name: "OwnedCommandCleanupError" })]) }); }
+      finally { saving.mockRestore(); reviewerClosure.mockRestore(); }
     }
   }, 30_000);
 
   it("reconciles a probe's original prepared reservation after scope admission closes", async () => {
     const f = await fixture(), verifier = createNativeSelectionVerifier();
+    const saveFailure = new Error("Original probe reservation could not be saved.");
     const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
     let failPrepared = true, originalFailure: unknown, originalSink: OwnedCommandLifecycleSink | undefined;
     const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
-      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "prepared" && failPrepared) throw new Error("Original probe reservation could not be saved.");
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "prepared" && failPrepared) throw saveFailure;
       await replace(file, text, ...rest);
     });
     const reviewerClosure = vi.spyOn(reviewerHost, "reconcileReviewerHostFailure").mockImplementation(async () => {
@@ -480,7 +592,7 @@ describe("worker cloud-first startup", () => {
       expect(controls[1]!.generation).toBe("2");
     } finally {
       failPrepared = false; cancellation.abort();
-      try { await expect(running).rejects.toBe(originalFailure); }
+      try { await expect(running).rejects.toMatchObject({ errors: expect.arrayContaining([saveFailure, originalFailure]) }); }
       finally { await verifier.close(); saving.mockRestore(); reviewerClosure.mockRestore(); }
     }
   });
@@ -558,6 +670,7 @@ describe("worker cloud-first startup", () => {
     const f = await fixture(false, false);
     mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
     let known = false;
+    const runFailures: Error[] = [];
     const createObserver = monitoringObservers.createMonitoringObserver;
     const lifecycle = vi.fn();
     const observation = vi.spyOn(monitoringObservers, "createMonitoringObserver").mockImplementation((...args) => {
@@ -567,7 +680,8 @@ describe("worker cloud-first startup", () => {
     });
     mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: async (signal: AbortSignal) => {
       if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
-      throw new Error("Bot run joined after a failed stop observation.");
+      const failure = new Error("Bot run joined after a failed stop observation.");
+      runFailures.push(failure); throw failure;
     }, shutdown: async () => { if (!known) throw new Error("Original Bot boundary is unknown."); } });
     let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
     const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
@@ -585,7 +699,14 @@ describe("worker cloud-first startup", () => {
       expect((await control!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
       control!.rebuild();
       await vi.waitFor(() => expect(control!.generation).toBe("2"));
-    } finally { known = true; cancellation.abort(); try { await running; } finally { observation.mockRestore(); } }
+    } finally {
+      known = true; cancellation.abort();
+      try {
+        const failure = await running.catch(error => error);
+        expect(runFailures.length).toBeGreaterThan(0);
+        expect(failure instanceof AggregateError ? failure.errors : [failure]).toEqual(runFailures);
+      } finally { observation.mockRestore(); }
+    }
   });
 
   it("rebuilds execution scopes twice under the original management lock and database", async () => {

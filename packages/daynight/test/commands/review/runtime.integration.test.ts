@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6,8 +6,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConfiguration } from "../../../src/commands/review/config.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
-import { createGitManager } from "../../../src/commands/review/adapters/worktrees.js";
-import { createGitHubClient } from "../../../src/commands/review/adapters/github.js";
+import { createGitManager, gitCommandCleanupState } from "../../../src/commands/review/adapters/worktrees.js";
+import { createGitHubClient, executeCommand } from "../../../src/commands/review/adapters/github.js";
+import { runCoordinator } from "../../../src/commands/review/coordinator.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
 import { acquireInstanceLock, hasRetainedWorkerReviewFailure, isConfirmedWorkerReviewFailure, reconcileWorkerReviewFailure, runForegroundReview } from "../../../src/commands/review/runtime.js";
 import { openStore } from "../../../src/commands/review/store.js";
@@ -15,7 +16,7 @@ import { prepareReviewSkill } from "../../../src/commands/review/skill.js";
 import type { RuntimeDependencies } from "../../../src/commands/review/runtime.js";
 import { createOperation } from "../../../src/api/operation.js";
 import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
-import { runLifecycleOwnedCommand } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { runLifecycleOwnedCommand, withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { hasUnconfirmedOwnedCommandCleanup } from "../../../src/commands/worker/owned-command.js";
 import * as files from "../../../src/platform/files.js";
 import type { AssignmentSource } from "../../../src/commands/review/assignment.js";
@@ -37,6 +38,59 @@ const input = (name: string) => {
 const source: AssignmentSource = { snapshot: () => ({ kind: "disabled" }), subscribe: () => () => {}, capturePrompt: async () => { throw new Error("No review is assigned."); } };
 
 describe("foreground runtime ownership", () => {
+  it("releases the original Reviewer after its initial read-only Git reservation reconciles through the real coordinator", async () => {
+    const { configuration, paths } = input("worker-readonly-git"), controller = new AbortController();
+    const repository = { host: "github.com", githubId: "42", owner: "o", name: "r" };
+    const root = path.join(paths.stateDirectory, "repositories", repository.githubId);
+    await mkdir(root, { recursive: true });
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: root, timeout: 10_000, stdio: "ignore" });
+    const journalDirectory = path.join(paths.stateDirectory, "journal");
+    const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity: {
+      serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002",
+    } });
+    const replace = files.replaceFileAtomically;
+    let rejectSave = true, wrapped: unknown, coordination: Awaited<ReturnType<typeof runCoordinator>> | undefined;
+    const replacement = vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (rejectSave && path.dirname(file) === journalDirectory) throw new Error("initial prepared save failed");
+      return replace(file, text, ...rest);
+    });
+    const execute = vi.fn(executeCommand), deps = dependencies(async options => { coordination = await runCoordinator(options); return coordination; });
+    deps.createClient = () => ({ ...createGitHubClient({ execute: async () => { throw new Error("Unexpected GitHub request."); } }), resolveRepository: async () => repository });
+    deps.createGit = options => createGitManager({ ...options, execute });
+    const assignment: AssignmentSource = { ...source, snapshot: () => ({ kind: "enabled", pullRequests: [{ projectId: "project", repositoryId: repository.githubId, repositoryUrl: "https://github.com/o/r", number: 1 }] }) };
+    let failure: unknown, testFailure: unknown;
+    try {
+      failure = await withOwnedCommandLifecycle(journal.sink("1"), () => runForegroundReview({ ...configuration, repositories: [] }, paths, {
+        packageDirectory, dependencies: deps, source: assignment, signal: controller.signal,
+        log: event => { if (event.phase === "poll" && event.error !== undefined) { wrapped = event.error; controller.abort(); } },
+      })).catch(error => error);
+      expect(wrapped).toMatchObject({ name: "GitCommandError", completed: false, cause: { name: "OwnedCommandCleanupError" } });
+      expect(execute).toHaveBeenCalledOnce(); expect(execute.mock.calls[0]![1]).toContain("rev-parse");
+      expect(gitCommandCleanupState(wrapped)).toBe("unconfirmed");
+      expect(coordination?.safeToReleaseLock).toBe(false);
+      expect(hasRetainedWorkerReviewFailure(failure)).toBe(true);
+      await expect(acquireInstanceLock(paths.lockFile)).rejects.toThrow("Cannot acquire instance lock");
+      await expect(reconcileWorkerReviewFailure(failure)).rejects.toThrow("processes remain unconfirmed");
+      rejectSave = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 1000 });
+      expect(gitCommandCleanupState(wrapped)).toBe("confirmed");
+      expect(coordination?.safeToReleaseLock).toBe(true);
+      await reconcileWorkerReviewFailure(failure);
+      expect(hasRetainedWorkerReviewFailure(failure)).toBe(false);
+      await expect(readFile(paths.lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(execute).toHaveBeenCalledOnce();
+      expect((await journal.read())[0]!.event).toMatchObject({ stage: "stopped", proof: null });
+    } catch (error) { testFailure = error; throw error; }
+    finally {
+      rejectSave = false; controller.abort(); replacement.mockRestore();
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 1000 });
+      if (hasRetainedWorkerReviewFailure(failure)) {
+        try { await reconcileWorkerReviewFailure(failure); }
+        catch (error) { throw new AggregateError([...(testFailure === undefined ? [] : [testFailure]), error], "Reviewer test and original cleanup failed."); }
+      }
+    }
+  }, 20_000);
+
   it("releases the original Worker Reviewer lock only after its command output and stop save reconcile", async () => {
     const { configuration, paths } = input("worker-native-reconcile");
     const journal = await openExecutionResourceJournal({ directory: path.join(paths.stateDirectory, "journal"), identity: {

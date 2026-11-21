@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type { ReviewConfiguration, RepositoryConfiguration } from "./config.js";
 import type { CopilotAttemptOutcome, CopilotProcessOutcome, CopilotRunOptions, createCopilotRunner } from "./adapters/copilot.js";
-import { GitCommandError } from "./adapters/worktrees.js";
+import { GitCommandError, gitCommandCleanupState } from "./adapters/worktrees.js";
 import type { LocalRepository, createGitManager } from "./adapters/worktrees.js";
 import { GitHubApiError } from "./adapters/github.js";
 import { findReviewPublication, findLegacyReviewPublication, hasOpenReviewConversations, hasPendingReviewPublication, findLegacyReviewPublisher } from "./publication.js";
@@ -65,8 +65,13 @@ const stopped = { operationsStopped: true } as const;
 const excluded = { processesExcluded: true } as const;
 const retryDelay = (configuration: ReviewConfiguration, attempts: number): number => Math.min(600_000, configuration.retryDelayMs * 2 ** Math.min(30, Math.max(0, attempts - 1)));
 const ownedCleanupOnly = (error: unknown): boolean => error instanceof OwnedCommandCleanupError ||
+  gitCommandCleanupState(error) !== undefined ||
   error instanceof AggregateError && error.errors.length > 0 && error.errors.every(ownedCleanupOnly) &&
     (error.cause === undefined || ownedCleanupOnly(error.cause));
+const ownedCleanupConfirmed = (error: unknown): boolean => error instanceof OwnedCommandCleanupError
+  ? !hasUnconfirmedOwnedCommandCleanup(error)
+  : gitCommandCleanupState(error) === "confirmed" || error instanceof AggregateError && error.errors.length > 0 &&
+    error.errors.every(ownedCleanupConfirmed) && (error.cause === undefined || ownedCleanupConfirmed(error.cause));
 
 /** Owns one foreground scheduling lifetime; dependencies retain command and process ownership. */
 export const runCoordinator = async (options: CoordinatorOptions): Promise<{ safeToReleaseLock: boolean }> => {
@@ -88,6 +93,11 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
   let safeToReleaseLock = true;
   let permanentUncertainty = false;
   const ownedCleanupFailures: unknown[] = [];
+  const retainUncertainty = (error: unknown): void => {
+    safeToReleaseLock = false;
+    if (ownedCleanupOnly(error)) ownedCleanupFailures.push(error);
+    else permanentUncertainty = true;
+  };
   let wake: (() => void) | undefined;
   const notify = (): void => { wake?.(); };
   const selectedAssignment = (pr: PullRequestIdentity): AssignedPullRequest | undefined => {
@@ -136,9 +146,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
   };
   const interrupt = (review: ReviewState, error: unknown): void => {
     blocked.add(key(review));
-    safeToReleaseLock = false;
-    if (ownedCleanupOnly(error)) ownedCleanupFailures.push(error);
-    else permanentUncertainty = true;
+    retainUncertainty(error);
     const current = store.getReview(review.id)!;
     if (current.status === "preparing" || current.status === "running" || current.status === "interrupted") store.markInterrupted(current.id, message(error), now());
     report(current, "interrupted", "The PR is blocked until its previous operations and processes are explicitly excluded.", error);
@@ -341,7 +349,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
       cancelIneligible();
       repository.nextPollAt = now() + configuration.pollIntervalMs;
     } catch (error) {
-      if (uncertainGit(error)) { repository.blocked = true; safeToReleaseLock = false; permanentUncertainty = true; }
+      if (uncertainGit(error)) { repository.blocked = true; retainUncertainty(error); }
       const retryAt = Math.max(now() + configuration.pollIntervalMs, error instanceof GitHubApiError && error.retryAt !== null ? error.retryAt : 0);
       repository.nextPollAt = retryAt;
       if (!signal.aborted || uncertainGit(error)) log({ level: "error", phase: "poll", repository: repository.configuration.coordinate,
@@ -494,7 +502,7 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
       log({ level: "info", phase: "cleanup", repository: repository.configuration.coordinate, number: pr.number,
         message: outcome.kind === "cleaned" ? "The closed PR's worktree was removed." : "The PR reopened; its worktree is retained for the next review." });
     } catch (error) {
-      if (uncertainGit(error)) { blocked.add(key(pr)); safeToReleaseLock = false; permanentUncertainty = true; }
+      if (uncertainGit(error)) { blocked.add(key(pr)); retainUncertainty(error); }
       const retryAt = now() + configuration.retryDelayMs;
       cleanupRetryAt.set(key(pr), retryAt);
       log({ level: "error", phase: "cleanup", repository: repository.configuration.coordinate, number: pr.number,
@@ -628,6 +636,6 @@ export const runCoordinator = async (options: CoordinatorOptions): Promise<{ saf
   // native boundaries that caused interruption, without replaying this round.
   return { get safeToReleaseLock() {
     return safeToReleaseLock || !permanentUncertainty && ownedCleanupFailures.length > 0 &&
-      ownedCleanupFailures.every(error => !hasUnconfirmedOwnedCommandCleanup(error));
+      ownedCleanupFailures.every(ownedCleanupConfirmed);
   } };
 };

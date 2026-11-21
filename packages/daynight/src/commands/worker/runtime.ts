@@ -301,7 +301,8 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
       await withinExecutionDeadline(root.journal?.assertClosed() ?? Promise.resolve(), Date.now() + 10_000);
       const scope = scopes.create();
       const admittedResources = new Set<string>();
-      await withOwnedCommandLifecycle(async event => {
+      const failures: unknown[] = [];
+      const rebuild = await withOwnedCommandLifecycle(async event => {
         if (event.stage === "prepared" && !admittedResources.has(event.resourceId)) {
           try {
             scope.signal.throwIfAborted();
@@ -313,9 +314,15 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
         }
         if (root.journal === undefined) throw new Error("Worker execution resource journal is not initialized.");
         try { await root.journal.sink(scope.generation)(event); }
-        catch (error) { scope.closeAdmission(error); throw error; }
+        catch (error) {
+          // Preserve the failure before it becomes the scope cancellation
+          // reason and later producer callbacks recognize that cancellation.
+          if (!failures.includes(error)) failures.push(error);
+          scope.closeAdmission(error); throw error;
+        }
         if (event.stage === "unknown") scope.closeAdmission(new Error("Original command boundary is unconfirmed."));
-      }, () => runWorkerScope(options, root, scope));
+      }, () => runWorkerScope(options, root, scope, failures));
+      if (!rebuild) break;
     }
     while (!cancellation.controller.signal.aborted);
   } finally {
@@ -338,7 +345,7 @@ export const runWorker = async (options: WorkerRunOptions): Promise<void> => {
   }
 };
 
-const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementRoot, scope: ExecutionScope): Promise<void> => {
+const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementRoot, scope: ExecutionScope, failures: unknown[]): Promise<boolean> => {
   const platform = currentWorkerPlatform();
   const paths = resolveWorkerPaths(options.homeDirectory);
   const cancellation = root.cancellation;
@@ -381,9 +388,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   });
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
-  const failures: unknown[] = [];
   const managementFailures: unknown[] = [];
   const executionFailure = (error: unknown): void => {
+    if (isWorkerCancellation(error, signal)) return;
+    if (!failures.includes(error)) failures.push(error);
     try { diagnostics?.emit({ kind: "reconciliation-error", message: "Worker execution stopped after an owner failure; original resources remain for reconciliation.", error }); }
     catch (failure) { failures.push(failure); }
     finally { scope.closeAdmission(error); }
@@ -1204,9 +1212,10 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     // A confirmed stop permits the requested new generation. Preserve earlier
     // execution errors for ordinary exit without treating them as live owners.
     root.previousScopeFailures.push(...currentFailures);
-    return;
+    return true;
   }
   throwFailures([...root.previousScopeFailures, ...currentFailures, ...managementFailures]);
+  return false;
 };
 
 export const runWorkerControl = async (options: {

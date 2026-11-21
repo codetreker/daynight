@@ -1224,6 +1224,7 @@ describe("worker runtime configuration reporting", () => {
     // report scheduling would also prevent its streams and handles from joining.
     vi.useRealTimers();
     const f = await fixture(), marker = path.join(f.homeDirectory, "report-command-runs");
+    const saveFailure = new Error("Original telemetry command stop receipt could not be saved.");
     const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
     const reconciling = deferred<void>(), release = deferred<void>(), reportStopped = deferred<void>();
     let store: ReturnType<typeof openWorkerStore> | undefined;
@@ -1243,7 +1244,7 @@ describe("worker runtime configuration reporting", () => {
         if (receipt.event.stage === "stopped") {
           if (!rejectedStop) {
             rejectedStop = true; firstReceipt = receipt; f.signal.abort();
-            throw new Error("Original telemetry command stop receipt could not be saved.");
+            throw saveFailure;
           }
           reconciling.resolve(); await release.promise;
         }
@@ -1284,7 +1285,7 @@ describe("worker runtime configuration reporting", () => {
       expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
       expect(store!.listTasks()).toEqual([]);
       release.resolve();
-      await phase("runtime shutdown", expect(running).rejects.toBe(failure), 5_000);
+      await phase("runtime shutdown", expect(running).rejects.toMatchObject({ errors: [saveFailure, failure] }), 5_000);
       expect(stop).toHaveBeenCalledTimes(2);
       expect(collect).toHaveBeenCalledOnce();
       expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);

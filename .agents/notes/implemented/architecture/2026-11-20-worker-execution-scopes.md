@@ -39,8 +39,11 @@ launch identity and boundary without changing cleanup state or releasing leases;
 the producer still prevents storage closure and scope reconstruction.
 Management-controlled stopped and blocked scopes retain reporting and the
 original lock; closed scopes report cached telemetry without spawning probes.
-Historical initialization and joined archive failures remain diagnostics rather
-than active resource claims. Once closure is confirmed, an accepted rebuild may
+Historical initialization, background-loop and joined archive failures remain
+diagnostics rather than active resource claims. Journal save errors are retained
+before closing admission, so later cancellation with that same cause cannot erase
+the failure. Only an explicitly accepted rebuild permits the outer runtime to
+create another generation; successful cleanup is not a rebuild request. Once closure is confirmed, an accepted rebuild may
 start the next generation without rethrowing those historical failures. Ordinary
 exit still reports them, and unjoined management cleanup remains a separate
 barrier to replacement.
@@ -56,6 +59,12 @@ The Reviewer retains its original close operation when command cleanup cannot
 be confirmed. Reconciliation must prove every retained stop cause and complete
 that close operation before releasing its lock; a settled host Promise or one
 confirmed cause in a mixed failure cannot establish closure.
+The Git adapter privately retains original cleanup evidence across sanitized
+read-only command wrappers, and the coordinator keeps those wrappers alive for
+reconciliation. This provenance supplements the original owner and durable
+journal; it does not own resource cleanup by itself. Mutation uncertainty,
+semantic verification failures and mixed causes remain blocking, and local
+closure never changes the Git command completion or business outcome.
 
 A controlled Node launcher establishes and reports its native boundary before
 receiving permission to execute a command. POSIX uses a private IPC gate in the
