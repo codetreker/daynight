@@ -106,12 +106,12 @@ test("a real Copilot bridge independently rejects business calls after disable a
   value.disable();
   await expect(session.send({ prompt: "must not run" })).rejects.toMatchObject({ errorClass: "native_dispatch_rejected" });
   await expect(session.rpc.mode.set({ mode: "autopilot" })).rejects.toMatchObject({ errorClass: "native_dispatch_rejected" });
-  await session.rpc.interruptMainTurn({});
+  await expect(session.rpc.interruptMainTurn({})).resolves.toEqual({ interrupted: true });
   await runtime.close();
   expect(children).toHaveLength(2);
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true);
   const methods = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line).method);
-  expect(methods).not.toContain("session.send"); expect(methods).not.toContain("session.mode.set"); expect(methods).toContain("runtime.shutdown");
+  expect(methods).not.toContain("session.send"); expect(methods).not.toContain("session.mode.set"); expect(methods).toContain("session.interruptMainTurn"); expect(methods).toContain("runtime.shutdown");
 }, 25_000);
 
 test("Copilot does not spawn a late SDK bridge after its native process birth closes admission", async () => {

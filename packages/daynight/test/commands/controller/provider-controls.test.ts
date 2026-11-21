@@ -75,7 +75,7 @@ test("Codex does not issue future-turn settings after a fence during a live upda
   const pending = f.controls.set("model", "model-b", randomUUID(), f.controls.store.value.revision);
   await vi.waitFor(() => expect(release).toBeTypeOf("function"));
   fenced = true; release({ status: "applied" });
-  await expect(pending).rejects.toBe(failure);
+  await expect(pending).rejects.toThrow("Codex applied this setting to the current turn, but future-turn settings are unconfirmed: accounting failure");
   expect(f.request.mock.calls.filter(([method]) => method === "turn/settings/update")).toHaveLength(1);
   expect(f.request.mock.calls.some(([method]) => method === "thread/settings/update")).toBe(false);
   expect(f.confirmed).not.toHaveBeenCalled();

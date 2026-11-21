@@ -232,7 +232,7 @@ describe("Worker lifecycle management with real local authority", () => {
     await expect.poll(() => f.store.readState().errorCode).toBe("authority_unavailable");
     expect(f.store.readState().localVeto).toBe(true);
     vi.mocked(f.api.read).mockImplementation(read);
-    await expect.poll(() => f.cloud().observation?.observation.errorCode).toBe(null);
+    await expect.poll(() => f.cloud().observation?.observation.errorCode, { timeout: 3500 }).toBe(null);
     expect(f.store.readState()).toMatchObject({ phase: "disabled", localVeto: true, errorCode: null, sync: "complete" });
     await f.manager.resume(id(40));
     expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false });

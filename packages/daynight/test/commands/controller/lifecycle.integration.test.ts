@@ -315,8 +315,9 @@ it("publishes the first generation and its Controller proof in one visible commi
     }
     return execute.call(this, sql);
   });
-  const store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
+  let store: ReturnType<typeof openControllerLifecycleStore> | undefined;
   try {
+    store = openControllerLifecycleStore(file, ticket, { controllerProcess, onMigration: () => {} });
     expect(observedInitialCommit).toBe(true);
     const observer = new Database(file, { readonly: true });
     try {
@@ -325,7 +326,7 @@ it("publishes the first generation and its Controller proof in one visible commi
       expect(row.owner_pid).toBe(process.pid);
       expect(row.ticket_hash).toBe(controllerPayloadHash(ticket));
     } finally { observer.close(); }
-  } finally { spy.mockRestore(); store.close(); }
+  } finally { spy.mockRestore(); store?.close(); }
 });
 
 it("holds writer ownership until close and keeps a supplied permit with its caller", async () => {

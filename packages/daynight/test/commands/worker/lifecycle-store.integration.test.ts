@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import * as filesystem from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LifecycleAdmissionError, openLifecycleStore, readLifecycleSnapshot, type LifecycleActivation, type LifecycleBinding, type LifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
 
 const root = fileURLToPath(new URL("../../../../../.tmp/lifecycle-store-tests/", import.meta.url));
@@ -44,6 +45,29 @@ afterEach(() => {
 });
 
 describe("persistent Worker lifecycle authority", () => {
+  it("preserves large filesystem identifiers and rejects a replacement with the same rounded Number", () => {
+    const f = fixture(); close(f.store);
+    const lstat = filesystem.lstatSync;
+    let inode = 9007199254740992n;
+    const stat = vi.spyOn(filesystem, "lstatSync").mockImplementation(((file: filesystem.PathLike, options?: filesystem.StatOptions) => {
+      const info = lstat(file, options);
+      if (file !== f.file || info === undefined) return info;
+      return new Proxy(info, { get: (target, key, receiver) => key === "ino"
+        ? options?.bigint ? inode : Number(inode)
+        : Reflect.get(target, key, receiver) });
+    }) as typeof filesystem.lstatSync);
+    try {
+      const original = open(f.file);
+      expect(original.readState().admission).toBe("closed");
+      expect(() => original.prepareOperation({ operationId: id(70), kind: "instance", request: { unsafe: Number(inode) } })).toThrow("unsupported value");
+      expect(() => original.prepareOperation({ operationId: id(71), kind: "instance", request: { unsupported: inode } as never })).toThrow("unsupported value");
+      inode++;
+      expect(Number(inode)).toBe(Number(inode - 1n));
+      expect(() => original.readState()).toThrow("authority file was replaced");
+      close(original);
+    } finally { stat.mockRestore(); }
+  });
+
   it("creates a private closed authority and leaves missing reads uninitialized", () => {
     const f = fixture();
     expect(f.store.readState()).toMatchObject({ localEpoch: "1", scopeGeneration: "1", inventoryRevision: "1", admission: "closed", localVeto: false, bootstrapConsumed: false });

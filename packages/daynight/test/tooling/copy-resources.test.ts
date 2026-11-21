@@ -18,6 +18,7 @@ const bundles = ["commands/review/skills/daynight-review", "commands/skill/skill
 const sqlDirectories = [
   "commands/review/sqlite",
   "commands/worker/sqlite",
+  "commands/worker/lifecycle-sqlite",
   "commands/worker/backends/sqlite",
   "commands/controller/sqlite/journal",
   "commands/controller/sqlite/resume-lease",

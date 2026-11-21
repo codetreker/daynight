@@ -172,18 +172,19 @@ const privateDirectory = (file: string): void => {
   if (realpathSync(parent) !== parent || directory.isSymbolicLink() || !directory.isDirectory()) invalid("database requires a physical private directory");
   if (process.platform !== "win32" && (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0)) invalid("database directory must be private to the current user");
 };
-const privateFile = (file: string): { dev: number; ino: number } => {
+const privateFile = (file: string): { dev: string; ino: string } => {
   privateDirectory(file);
-  const info = lstatSync(file);
+  const info = lstatSync(file, { bigint: true });
   if (info.isSymbolicLink() || !info.isFile()) invalid("database requires a regular physical file");
-  if (process.platform !== "win32" && (info.uid !== process.getuid!() || (info.mode & 0o077) !== 0)) invalid("database permissions must be private to the current user");
+  if (process.platform !== "win32" && (info.uid !== BigInt(process.getuid!()) || (info.mode & 0o077n) !== 0n)) invalid("database permissions must be private to the current user");
   for (const suffix of ["-wal", "-shm"]) {
     try {
-      const sidecar = lstatSync(file + suffix);
-      if (!sidecar.isFile() || sidecar.isSymbolicLink() || process.platform !== "win32" && (sidecar.uid !== process.getuid!() || (sidecar.mode & 0o077) !== 0)) invalid("database sidecar is not private");
+      const sidecar = lstatSync(file + suffix, { bigint: true });
+      if (!sidecar.isFile() || sidecar.isSymbolicLink() || process.platform !== "win32" && (sidecar.uid !== BigInt(process.getuid!()) || (sidecar.mode & 0o077n) !== 0n)) invalid("database sidecar is not private");
     } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
   }
-  return { dev: info.dev, ino: info.ino };
+  // File identifiers may exceed the safe Number range on NTFS. Keep their exact bits.
+  return { dev: String(info.dev), ino: String(info.ino) };
 };
 
 /** Pure local query: it neither initializes nor migrates an authority. */
