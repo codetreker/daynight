@@ -46,7 +46,13 @@ Explicit management owners can stop original local resources without a saved
 service token. Their network methods refuse before dispatch; missing credentials
 cannot settle a cloud request or authorize recovery.
 
-Explicit resume consumes complete original stop/save evidence and online service
+Explicit resume freezes the local epoch when accepted, before entering the
+management queue. It validates that epoch after initialization, original-operation
+reconciliation, stopping, authority reads and reporting, before submitting intent.
+Activation also validates its frozen epoch after result reconciliation and before
+dispatch following a report. A later local disable invalidates the original
+resume; reading a newer binding cannot authorize it to consume the newer veto.
+Resume consumes complete original stop/save evidence and online service
 activation before opening local admission. Original requests are queried or
 resolved under their original identity; activation has its own child phase.
 The current management instance retains the resume continuation independently of
@@ -103,6 +109,13 @@ version can succeed before its operation query or local stopping fails. Later
 polls then see no version change and cannot finish the accepted resume. Keeping
 the continuation within the current manager permits result reconciliation without
 turning an old enabled cloud intent into restart authorization.
+
+**Read the local epoch only when sending resume intent.** Initialization, stop
+verification and reporting can span a newer local disable. Using that later epoch
+would let an older resume erase a veto it never accepted. Freezing before queueing
+also prevents time spent behind another management operation from granting that
+authority. Requests already sent retain their original result reconciliation and
+unknown outcomes; invalidation does not prove they were never committed.
 
 **Wait for every producer before reconciling native inventory.** A configuration
 Git job can be waiting for the inventory to confirm its original command closure.

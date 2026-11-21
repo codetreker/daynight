@@ -299,6 +299,126 @@ describe("Worker lifecycle management with real local authority", () => {
     } finally { release.resolve(); }
   }, 5000);
 
+  it.each(["initialization", "operation lookup", "owner stop", "resource reconciliation", "authority read", "second stop", "report reconciliation", "report upload"] as const)("rejects a resume superseded during %s before sending intent", async boundary => {
+    const f = fixture();
+    if (boundary === "initialization") f.store.closeAdmission({ operationId: id(20), local: true });
+    else { await f.manager.initializeForControl(); await disable(f); }
+    const owner = control(); f.manager.attach(owner);
+    const entered = deferred<void>(), release = deferred<void>();
+    const pause = async () => { entered.resolve(); await waitSignal(release.promise, f.cancellation.signal); };
+    if (boundary === "initialization") {
+      const register = vi.mocked(f.api.register).getMockImplementation()!;
+      vi.mocked(f.api.register).mockImplementationOnce(async request => { await pause(); return register(request); });
+    } else if (boundary === "operation lookup") {
+      const request = { protocolVersion: 1, operationId: id(21), action: "disable", expectedVersion: "1", source: "local", localEpoch: "2", originOperationId: id(20) };
+      f.store.prepareOperation({ operationId: id(21), kind: "intent", request });
+      f.store.recordOperation({ operationId: id(21), status: "submitted" });
+      f.store.recordOperation({ operationId: id(21), status: "unknown" });
+      const operation = vi.mocked(f.api.operation).getMockImplementation()!;
+      vi.mocked(f.api.operation).mockImplementationOnce(async operationId => { await pause(); return operation(operationId); });
+    } else if (boundary === "owner stop" || boundary === "resource reconciliation") {
+      f.store.closeAdmission({ operationId: id(23), local: true });
+      if (boundary === "owner stop") vi.mocked(owner.reconcile).mockImplementationOnce(async () => { await pause(); return stopped; });
+      else f.resources.mockImplementationOnce(pause);
+    } else if (boundary === "authority read") {
+      const read = vi.mocked(f.api.read).getMockImplementation()!;
+      vi.mocked(f.api.read).mockImplementationOnce(async () => { const cloud = await read(); await pause(); return cloud; });
+    } else if (boundary === "second stop") {
+      const read = vi.mocked(f.api.read).getMockImplementation()!;
+      vi.mocked(f.api.read).mockImplementationOnce(async () => {
+        const cloud = await read();
+        f.store.markBlocked("authority_unavailable");
+        return cloud;
+      });
+      f.resources.mockImplementationOnce(pause);
+    } else if (boundary === "report reconciliation") {
+      const envelope = vi.mocked(f.api.report).mock.calls[0]![0];
+      f.store.appendOutbox({ id: id(26), instanceEpoch: envelope.instanceEpoch, intentVersion: envelope.intentVersion, reportSequence: "10", payload: { ...envelope, reportSequence: "10" } });
+      const read = vi.mocked(f.api.read).getMockImplementation()!;
+      vi.mocked(f.api.read).mockImplementationOnce(read).mockImplementationOnce(async () => { const cloud = await read(); await pause(); return cloud; });
+    } else f.onReport(pause);
+    const originalEpoch = f.store.readState().localEpoch;
+    const local = openLifecycleStore({ file: f.file, identity });
+    const result = f.manager.resume(id(22)).then(() => null, error => error);
+    try {
+      await waitSignal(entered.promise, AbortSignal.timeout(2000));
+      const veto = local.closeAdmission({ operationId: id(24), local: true });
+      expect(veto.localEpoch).toBe(String(BigInt(originalEpoch) + 1n));
+      release.resolve();
+      expect(await result).toMatchObject({ message: "Worker lifecycle execution binding is stale." });
+      expect(local.readState()).toMatchObject({ localEpoch: veto.localEpoch, localVeto: true, admission: "closed", activation: null });
+      expect(local.readOperation(id(22))).toBeNull();
+      expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+      expect(owner.rebuild).not.toHaveBeenCalled();
+      if (boundary === "operation lookup") expect(local.readOperation(id(21))).toMatchObject({ status: "confirmed", localEpoch: originalEpoch });
+    } finally { release.resolve(); await result; local.close(); }
+  });
+
+  it("freezes resume's epoch before waiting behind another management action", async () => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const entered = deferred<void>(), release = deferred<void>();
+    const read = vi.mocked(f.api.read).getMockImplementation()!;
+    vi.mocked(f.api.read).mockImplementationOnce(async () => { const cloud = await read(); entered.resolve(); await waitSignal(release.promise, f.cancellation.signal); return cloud; });
+    const first = f.manager.resume(id(23)).then(() => null, error => error);
+    const local = openLifecycleStore({ file: f.file, identity });
+    let result: Promise<unknown> | undefined;
+    try {
+      await waitSignal(entered.promise, AbortSignal.timeout(2000));
+      result = f.manager.resume(id(22)).then(() => null, error => error);
+      const veto = local.closeAdmission({ operationId: id(24), local: true });
+      release.resolve();
+      expect(await first).toMatchObject({ message: "Worker lifecycle execution binding is stale." });
+      expect(await result).toMatchObject({ message: "Worker lifecycle execution binding is stale." });
+      expect(local.readState()).toMatchObject({ localEpoch: veto.localEpoch, localVeto: true, admission: "closed" });
+      expect(local.readOperation(id(22))).toBeNull();
+      expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+    } finally { release.resolve(); await first; await result; local.close(); }
+  });
+
+  it.each(["activation report", "activation lookup", "final authority read"] as const)("preserves a newer veto during %s without rebuilding execution", async boundary => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const entered = deferred<void>(), release = deferred<void>();
+    if (boundary === "activation report") f.onReport(async envelope => {
+      if (envelope.observation.phase === "resuming") { entered.resolve(); await waitSignal(release.promise, f.cancellation.signal); }
+    });
+    else if (boundary === "activation lookup") {
+      const failure = unknown();
+      f.onActivation(() => { throw failure; });
+      await expect(f.manager.resume(id(22))).rejects.toBe(failure);
+      expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "unknown" });
+      const operation = vi.mocked(f.api.operation).getMockImplementation()!;
+      vi.mocked(f.api.operation).mockImplementationOnce(async operationId => {
+        expect(operationId).toBe(id(22));
+        entered.resolve(); await waitSignal(release.promise, f.cancellation.signal);
+        return operation(operationId);
+      });
+    } else f.onActivation(() => {
+      const read = vi.mocked(f.api.read).getMockImplementation()!;
+      vi.mocked(f.api.read).mockImplementationOnce(async () => { const cloud = await read(); entered.resolve(); await waitSignal(release.promise, f.cancellation.signal); return cloud; });
+    });
+    const local = openLifecycleStore({ file: f.file, identity });
+    const result = (boundary === "activation lookup" ? f.manager.reconcile() : f.manager.resume(id(22))).then(() => null, error => error);
+    try {
+      await waitSignal(entered.promise, AbortSignal.timeout(2000));
+      const veto = local.closeAdmission({ operationId: id(24), local: true });
+      release.resolve();
+      expect(await result).toBeInstanceOf(Error);
+      expect(local.readState()).toMatchObject({ localEpoch: veto.localEpoch, localVeto: true, admission: "closed", activation: null });
+      expect(local.readOperation(id(22))).toMatchObject({ status: "confirmed", localEpoch: "2", request: { localEpoch: "2" } });
+      const activations = vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22));
+      if (boundary === "activation report") {
+        expect(activations).toHaveLength(0);
+        expect(local.readOperation(id(22), "activation")).toBeNull();
+      } else {
+        expect(activations).toHaveLength(1);
+        expect(local.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed", request: { localEpoch: "2" } });
+      }
+      expect(owner.rebuild).not.toHaveBeenCalled();
+    } finally { release.resolve(); await result; local.close(); }
+  });
+
   it("settles a lost local resume while preserving a newer local veto", async () => {
     const f = fixture(); await start(f); await disable(f);
     const intent = vi.mocked(f.api.intent).getMockImplementation()!;

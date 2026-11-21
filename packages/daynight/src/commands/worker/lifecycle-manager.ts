@@ -52,6 +52,9 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (state.instanceId === null || state.instanceEpoch === null || state.intentVersion === null) throw new Error("Worker lifecycle has no registered instance authority.");
     return { serverOrigin: state.serverOrigin, userId: state.userId, workerId: state.workerId, instanceId: state.instanceId, instanceEpoch: state.instanceEpoch, localEpoch: state.localEpoch, intentVersion: state.intentVersion, scopeGeneration: state.scopeGeneration };
   };
+  const assertLocalEpoch = (localEpoch: string): void => {
+    if (store.readState().localEpoch !== localEpoch) throw new Error("Worker lifecycle execution binding is stale.");
+  };
   const readAuthority = async (): Promise<CloudResource> => {
     const authority = await api.read(signal); authorityOperationId = authority.operationId; return authority;
   };
@@ -172,7 +175,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const current = store.readState(), { operationId, action } = activation, phase = action === "resume" ? "activation" : "primary";
     if (current.phase !== "resuming" || !isDeepStrictEqual(current.activation, activation)) throw new Error("Original activation was superseded locally.");
     let original = store.readOperation(operationId, phase);
-    if (original !== null && ["submitted", "unknown"].includes(original.status)) { await resolveOriginal(original); original = store.readOperation(operationId, phase); }
+    if (original !== null && ["submitted", "unknown"].includes(original.status)) {
+      await resolveOriginal(original);
+      assertLocalEpoch(activation.binding.localEpoch);
+      original = store.readOperation(operationId, phase);
+    }
     let receipt;
     if (original === null || original.status === "prepared") {
       let request: LifecycleActivationRequest;
@@ -181,6 +188,8 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
         request = { protocolVersion: 1, operationId, instanceId: activation.binding.instanceId, instanceEpoch: activation.binding.instanceEpoch, intentVersion: activation.binding.intentVersion, localEpoch: activation.binding.localEpoch,
           scopeGeneration: activation.binding.scopeGeneration, reportSequence: observation.reportSequence, ...(action === "resume" ? {} : { action }) };
       } else request = parseLifecycleActivationRequest(original.request);
+      // Reporting can outlive a local disable; do not dispatch its old activation.
+      assertLocalEpoch(activation.binding.localEpoch);
       receipt = await send({ protocolVersion: 1, requestKind: "activation", request }, () => api.activate(request, signal), phase);
     } else if (original.status === "confirmed") receipt = parseLifecycleActivationReceipt(original.receipt);
     else { store.markBlocked("resume_interrupted"); throw new Error("Original activation did not commit; an explicit new resume is required."); }
@@ -405,20 +414,30 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       if (current.phase === "resuming" && current.activation !== null) { await finishPreparedActivation(current.activation); await report(); return; }
       await stop(); if (initialized) { await reconcileOperations(); await report(); }
     }),
-    resume: (operationId: string): Promise<void> => serialize(async () => {
-      if (store.readState().admission !== "closed") throw new Error("Resume requires an already disabled Worker.");
-      if (!initialized) await initialize();
-      await reconcileOperations(); await stop();
-      const cloud = await readAuthority(); authorityOperationId = cloud.operationId;
-      if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
-      store.observeAuthority(cloud); store.confirmManagementAuthority(binding()); await stop(); await report();
-      const current = binding();
-      const request = { protocolVersion: 1 as const, operationId, action: "resume" as const, expectedVersion: cloud.intentVersion, source: "local" as const, localEpoch: current.localEpoch, instanceEpoch: current.instanceEpoch };
-      pendingResume = { operationId, binding: { ...current, intentVersion: String(BigInt(cloud.intentVersion) + 1n) } };
-      const receipt: LifecycleIntentReceipt = await send({ protocolVersion: 1, requestKind: "intent", request }, () => api.intent(request, signal));
-      authorityOperationId = receipt.operationId; store.observeAuthority(receipt);
-      await continueResume({ ...cloud, ...receipt });
-    }),
+    resume: async (operationId: string): Promise<void> => {
+      // Freeze before queueing: initialization and network waits cannot adopt a later veto.
+      const localEpoch = store.readState().localEpoch;
+      return serialize(async () => {
+        assertLocalEpoch(localEpoch);
+        if (store.readState().admission !== "closed") throw new Error("Resume requires an already disabled Worker.");
+        if (!initialized) await initialize();
+        assertLocalEpoch(localEpoch);
+        await reconcileOperations(); assertLocalEpoch(localEpoch);
+        await stop(); assertLocalEpoch(localEpoch);
+        const cloud = await readAuthority(); authorityOperationId = cloud.operationId;
+        assertLocalEpoch(localEpoch);
+        if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
+        store.observeAuthority(cloud); store.confirmManagementAuthority(binding());
+        await stop(); assertLocalEpoch(localEpoch);
+        await report(); assertLocalEpoch(localEpoch);
+        const current = binding();
+        const request = { protocolVersion: 1 as const, operationId, action: "resume" as const, expectedVersion: cloud.intentVersion, source: "local" as const, localEpoch, instanceEpoch: current.instanceEpoch };
+        pendingResume = { operationId, binding: { ...current, localEpoch, intentVersion: String(BigInt(cloud.intentVersion) + 1n) } };
+        const receipt: LifecycleIntentReceipt = await send({ protocolVersion: 1, requestKind: "intent", request }, () => api.intent(request, signal));
+        authorityOperationId = receipt.operationId; store.observeAuthority(receipt);
+        await continueResume({ ...cloud, ...receipt });
+      });
+    },
     async close(): Promise<void> { active = false; await polling; await localWatch; await localStop; await tail; },
   };
 };
