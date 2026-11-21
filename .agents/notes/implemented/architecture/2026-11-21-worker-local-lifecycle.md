@@ -49,6 +49,13 @@ cannot settle a cloud request or authorize recovery.
 Explicit resume consumes complete original stop/save evidence and online service
 activation before opening local admission. Original requests are queried or
 resolved under their original identity; activation has its own child phase.
+The current management instance retains the resume continuation independently of
+its observed intent version. A lost intent response or a failed stop/report does
+not erase the next activation step. Local intents retain their frozen request;
+only an operation first observed remotely gets a requestless ledger entry.
+Continuations bind the original local epoch and management instance, so a later
+veto invalidates them. They are not reconstructed after process restart: an
+interrupted resume still requires a new explicit request.
 Management instance registration follows a confirmed lightweight Worker report,
 which establishes the server-side Worker prerequisite without native probes. A
 registration refused because the Worker record was absent remains in the ledger;
@@ -86,6 +93,12 @@ native boundary bind that dispatch to the same closed gate and generation.
 can finish after losing a write response, and an existing object need not have
 been created by that operation. Keeping the child request independently unknown
 prevents false stopping and unsafe recovery.
+
+**Use intent-version changes as the only activation trigger.** Observing a new
+version can succeed before its operation query or local stopping fails. Later
+polls then see no version change and cannot finish the accepted resume. Keeping
+the continuation within the current manager permits result reconciliation without
+turning an old enabled cloud intent into restart authorization.
 
 **Wait for every producer before reconciling native inventory.** A configuration
 Git job can be waiting for the inventory to confirm its original command closure.

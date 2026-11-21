@@ -86,6 +86,8 @@ Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁�
 
 `daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 与首次 bootstrap 各有独立资格，不能清除本机否决。 注册和原请求核对跨越异步等待后，激活选择还须核对当前持久 veto、desired 与 intentVersion；开始初始化时的快照不能抵消等待期间新增的停用意图。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
 
+当前管理实例独立保留恢复的后续激活责任，不以 `intentVersion` 是否再次变化作为唯一入口。恢复意图响应丢失时，先查询或 resolve 原 operationId；已有本地账本保留完整冻结请求，仅首次从远端发现的操作使用无请求账本。操作查询、停止或观察上报暂时失败后，仍可核对同一恢复并继续激活。该责任绑定接受时的本地 epoch 和管理实例，新的本机停用使旧责任失效；进程重启不重建这一自动续接资格，中断的恢复仍须再次显式请求。
+
 未知外部写入按原请求身份恢复。assistant claim/inbox 需要原请求指纹，事件确认需要原事件和 ack operation，Session 操作需要原 Session、绑定与执行代次。只有原回执才能结算派发结果，已受理仍不证明 native 停止。普通 assistant `addEvent`、`addRecord`、`saveItem`、`answer`、`clearAttention` 没有原操作结果查询协议时保留未知责任；相同正文、对象存在、404、权限失败或旧 fence 均不能证明原写成功或从未提交。该限制会阻止完整停止与恢复资格，必须保留原证据。取舍见[本机生命周期决策](../../.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md)。
 
 逐执行 `recovery` 来自 Task/Bot owner 的原 claim、Session 和执行代次观察，独立记录 `eligible`、`blocked` 或 `unknown`，随同观测正文持久化到 outbox。Worker 开门本身不证明原执行已恢复；暂停、所有权变化、原生材料或预算阻塞仍可形成部分恢复。完整结束的历史执行不占未来恢复清单，未结责任及尚未恢复的原执行继续保留。旧代完整终态以原 canonical JSON 和 SHA-256 压缩保存，不计未来作用域的资源总数；历史证据不授权重用旧资源 ID。

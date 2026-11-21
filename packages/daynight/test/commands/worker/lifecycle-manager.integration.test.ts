@@ -181,6 +181,100 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]: Parameters<WorkerLifecycleClient["activate"]>) => request.operationId === id(22))).toHaveLength(1);
   });
 
+  it("continues a committed resume after losing its intent response without replacing or resending the request", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => { const receipt = await intent(request); if (request.operationId === id(22)) throw unknown(); return receipt; });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const original = f.store.readOperation(id(22))!;
+    expect(original).toMatchObject({ status: "unknown", request: { action: "resume", localEpoch: "2", expectedVersion: "2" } });
+    expect(f.store.readState().admission).toBe("closed");
+    await f.manager.waitForAdmission();
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: original.request, requestHash: original.requestHash });
+    expect(f.store.readOperation(id(22), "activation")).toMatchObject({ status: "confirmed" });
+    expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    expect(owner.rebuild).toHaveBeenCalledOnce();
+  }, 5000);
+
+  it("retries a remote resume lookup after observing its version without inventing a local request", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    await f.manager.reconcile();
+    await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    const operation = vi.mocked(f.api.operation).getMockImplementation()!;
+    vi.mocked(f.api.operation).mockRejectedValueOnce(unknown()).mockImplementation(operation);
+    await expect.poll(() => f.errors.length).toBeGreaterThan(0);
+    expect(f.store.readState()).toMatchObject({ admission: "closed", intentVersion: "3" });
+    await f.manager.waitForAdmission();
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, localEpoch: "2" });
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+  }, 5000);
+
+  it("retains an accepted resume when preparing its activation fails before the durable continuation", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    const failure = new Error("Activation preparation unavailable"), prepare = vi.spyOn(f.store, "prepareActivation");
+    prepare.mockImplementationOnce(() => { throw failure; });
+    await expect(f.manager.resume(id(22))).rejects.toBe(failure);
+    expect(f.store.readState()).toMatchObject({ admission: "closed", intentVersion: "3", activation: null });
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed" });
+    await f.manager.waitForAdmission();
+    expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    expect(f.store.readState()).toMatchObject({ admission: "open", scopeGeneration: "2" });
+  }, 5000);
+
+  it("does not apply a remote resume to a local veto added during its operation lookup", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    await f.manager.reconcile();
+    await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    const lookup = deferred<void>(), release = deferred<void>(), operation = vi.mocked(f.api.operation).getMockImplementation()!;
+    vi.mocked(f.api.operation).mockImplementation(async operationId => { if (operationId === id(22)) { lookup.resolve(); await release.promise; } return operation(operationId); });
+    try {
+      await lookup.promise;
+      f.store.closeAdmission({ operationId: id(24), local: true });
+      release.resolve();
+      await expect.poll(() => f.cloud().desired).toBe("disabled");
+      expect(f.store.readState()).toMatchObject({ admission: "closed", localEpoch: "3", localVeto: true });
+      expect(f.store.readOperation(id(22))).toBeNull();
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+    } finally { release.resolve(); }
+  }, 5000);
+
+  it("settles a lost local resume while preserving a newer local veto", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => {
+      const receipt = await intent(request);
+      if (request.operationId === id(22)) { f.store.closeAdmission({ operationId: id(24), local: true }); throw unknown(); }
+      return receipt;
+    });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    await expect.poll(() => f.cloud().desired).toBe("disabled");
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", localEpoch: "2", request: { localEpoch: "2" } });
+    expect(f.store.readState()).toMatchObject({ admission: "closed", localEpoch: "3", localVeto: true });
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+  }, 5000);
+
+  it("requires a new explicit resume after restarting with a lost intent response", async () => {
+    const f = fixture(); await start(f); await disable(f);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => { const receipt = await intent(request); if (request.operationId === id(22)) throw unknown(); return receipt; });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    f.cancellation.abort(new Error("Management process ended after intent submission")); await f.manager.close();
+    const cancellation = new AbortController();
+    const replacement = createLifecycleManager({ store: f.store, api: f.api, platform: "macos", signal: cancellation.signal, reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+    try {
+      replacement.start();
+      await expect.poll(() => f.cloud().observation?.instanceEpoch).toBe("2");
+      await replacement.reconcile();
+      expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: { instanceEpoch: "1" } });
+      expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, instanceEpoch: "2", intentVersion: "3" });
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(0);
+      await replacement.resume(id(25));
+      expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false, instanceEpoch: "2" });
+    } finally { cancellation.abort(); await replacement.close(); }
+  }, 5000);
+
   it("preserves a later local veto when the remote resume activation returns", async () => {
     const f = fixture(); await start(f); await disable(f);
     f.onActivation(request => { if (!("action" in request)) f.store.closeAdmission({ operationId: id(24), local: true }); });

@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ApiError } from "../../api/client.js";
 import type { WorkerLifecycleClient } from "../../api/worker-lifecycle-client.js";
 import type { LifecycleActivationRequest, LifecycleIntentReceipt, LifecycleObservationEnvelope, LifecycleOperationResult, LifecycleResource as CloudResource, LifecycleResolveRequest, LifecycleRecoveryObservation, LifecycleInstanceRequest, LifecycleInstanceReceipt } from "../../api/worker-lifecycle.js";
-import { lifecycleRequestHash, parseLifecycleActivationReceipt, parseLifecycleInstanceReceipt, parseLifecycleActivationRequest, parseLifecycleObservationEnvelope } from "../../api/worker-lifecycle.js";
+import { lifecycleRequestHash, parseLifecycleActivationReceipt, parseLifecycleInstanceReceipt, parseLifecycleActivationRequest, parseLifecycleIntentReceipt, parseLifecycleObservationEnvelope } from "../../api/worker-lifecycle.js";
 import type { OwnerStopResult } from "./execution-scope.js";
 import type { LifecycleActivation, LifecycleBinding, LifecycleJson, LifecycleOperation, LifecycleStore, LifecycleState } from "./lifecycle-store.js";
 
@@ -34,6 +34,9 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
   let localStop: Promise<unknown> | undefined;
   let initialized = false;
   let initialization: { before: LifecycleState; request: LifecycleInstanceRequest; receipt?: LifecycleInstanceReceipt } | undefined;
+  // Only this management instance may continue an observed resume. A restart
+  // still requires a new explicit resume after reconciling the original result.
+  let pendingResume: { operationId: string; binding: LifecycleBinding } | undefined;
   const normalReconnect = (state: LifecycleState): boolean => state.bootstrapConsumed && !state.localVeto && state.activation !== null
     && state.phase !== "resuming" && (state.errorCode === null || state.errorCode === "authority_unavailable")
     && state.activation.binding.localEpoch === state.localEpoch && state.activation.binding.intentVersion === state.intentVersion
@@ -194,7 +197,42 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const activation: LifecycleActivation = { binding: { ...binding(), scopeGeneration: next }, operationId, action };
     store.compactHistory({ beforeScopeGeneration: next });
     store.prepareActivation(activation);
+    if (action === "resume" && pendingResume?.operationId === operationId) pendingResume = undefined;
     await finishPreparedActivation(activation);
+  };
+  const continueResume = async (cloud: CloudResource): Promise<void> => {
+    const pending = pendingResume;
+    if (pending === undefined) return;
+    const matches = (): boolean => {
+      const current = binding();
+      return current.instanceId === pending.binding.instanceId && current.instanceEpoch === pending.binding.instanceEpoch
+        && current.localEpoch === pending.binding.localEpoch && current.intentVersion === pending.binding.intentVersion;
+    };
+    if (!matches() || cloud.operationId !== pending.operationId || cloud.intentVersion !== pending.binding.intentVersion || cloud.desired !== "enabled") {
+      pendingResume = undefined; return;
+    }
+    let original = store.readOperation(pending.operationId);
+    if (original !== null) {
+      await resolveOriginal(original);
+      original = store.readOperation(pending.operationId)!;
+      if (original.localEpoch !== pending.binding.localEpoch) { pendingResume = undefined; return; }
+      if (original.kind !== "intent" || original.status !== "confirmed") throw new Error("Original resume intent remains unresolved or was refused.");
+    } else {
+      const result = await api.operation(pending.operationId, signal);
+      if (result.kind !== "intent") throw new Error("Remote resume intent has no matching operation.");
+      const receipt = result.receipt;
+      if (receipt.operationId !== pending.operationId || receipt.action !== "resume" || receipt.intentVersion !== pending.binding.intentVersion) throw new Error("Remote resume intent has no matching operation.");
+      // A local veto can advance while the operation lookup is in flight.
+      if (!matches()) { pendingResume = undefined; return; }
+      store.prepareOperation({ operationId: pending.operationId, kind: "intent", request: null, localEpoch: pending.binding.localEpoch });
+      original = store.recordOperation({ operationId: pending.operationId, status: "confirmed", receipt: json(receipt) });
+    }
+    const receipt = parseLifecycleIntentReceipt(original.receipt);
+    if (receipt.operationId !== pending.operationId || receipt.action !== "resume" || receipt.intentVersion !== pending.binding.intentVersion) throw new Error("Original resume receipt does not match the observed intent.");
+    await stop();
+    if (!matches()) { pendingResume = undefined; return; }
+    await activate(pending.operationId, "resume");
+    pendingResume = undefined;
   };
   const disableCloud = async (cloud: CloudResource): Promise<void> => {
     const state = store.readState();
@@ -279,6 +317,10 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (local.phase === "resuming" && local.activation !== null) { await finishPreparedActivation(local.activation); await report(); return; }
     // Local closure must stop work before any network request can consume its budget.
     if (local.admission === "closed" && local.phase !== "disabled" && local.phase !== "resuming") await stop();
+    if (pendingResume !== undefined) {
+      const original = store.readOperation(pendingResume.operationId);
+      if (original !== null) await resolveOriginal(original);
+    }
     const cloud = await readAuthority();
     authorityOperationId = cloud.operationId;
     if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
@@ -292,18 +334,12 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     }
     if (cloud.desired === "disabled" && (cloud.intentVersion !== current.intentVersion || current.admission !== "closed" || !current.inventoryComplete || current.stop !== "confirmed")
       || cloud.desired !== "disabled" && cloud.intentVersion !== current.intentVersion && cloud.operationId !== null) {
+      pendingResume = cloud.desired === "enabled" && cloud.operationId !== null
+        ? { operationId: cloud.operationId, binding: { ...binding(), intentVersion: cloud.intentVersion } } : undefined;
       store.observeAuthority(cloud);
       if (cloud.desired === "disabled") { store.closeAdmission({ operationId: cloud.operationId ?? randomUUID(), local: false }); await stop(); }
-      else {
-        // A remote resume is consumed only when it names this freshly stopped epoch.
-        const original = await api.operation(cloud.operationId!, signal);
-        if (original.kind !== "intent" || original.receipt.action !== "resume") throw new Error("Remote resume intent has no matching operation.");
-        store.prepareOperation({ operationId: original.receipt.operationId, kind: "intent", request: null });
-        store.recordOperation({ operationId: original.receipt.operationId, status: "confirmed", receipt: json(original.receipt) });
-        await stop();
-        await activate(original.receipt.operationId, "resume");
-      }
     }
+    await continueResume(cloud);
     await disableCloud(cloud);
     await report();
   };
@@ -365,8 +401,10 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       store.observeAuthority(cloud); store.confirmManagementAuthority(binding()); await stop(); await report();
       const current = binding();
       const request = { protocolVersion: 1 as const, operationId, action: "resume" as const, expectedVersion: cloud.intentVersion, source: "local" as const, localEpoch: current.localEpoch, instanceEpoch: current.instanceEpoch };
+      pendingResume = { operationId, binding: { ...current, intentVersion: String(BigInt(cloud.intentVersion) + 1n) } };
       const receipt: LifecycleIntentReceipt = await send({ protocolVersion: 1, requestKind: "intent", request }, () => api.intent(request, signal));
-      authorityOperationId = receipt.operationId; store.observeAuthority(receipt); await stop(); await activate(operationId, "resume");
+      authorityOperationId = receipt.operationId; store.observeAuthority(receipt);
+      await continueResume({ ...cloud, ...receipt });
     }),
     async close(): Promise<void> { active = false; await polling; await localWatch; await localStop; await tail; },
   };
