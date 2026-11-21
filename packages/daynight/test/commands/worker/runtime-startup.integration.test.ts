@@ -195,17 +195,34 @@ afterEach(async () => {
 describe("worker cloud-first startup", () => {
   it("does not implicitly rebuild after an ordinary run settles its original journal boundary", async () => {
     const f = await fixture();
-    mocks.reviewer.mockImplementationOnce(async () => {
+    const boundary = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>();
+    const started = performance.now();
+    let phase = "starting", joined = false;
+    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
       const sink = currentOwnedCommandLifecycle()!;
       await sink({ resourceId: uuid(90), sequence: 1, stage: "prepared", proof: null });
       await sink({ resourceId: uuid(90), sequence: 2, stage: "unknown", proof: null });
       await sink({ resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null });
+      phase = "original journal stopped; reviewer still joining";
+      boundary.resolve(signal);
+      await release.promise;
+      phase = "original journal stopped; joining runtime";
     });
     const { cancellation, running } = start(f);
-    let joined = false;
     void running.then(() => { joined = true; }, () => { joined = true; });
     try {
-      await vi.waitFor(() => expect(joined).toBe(true));
+      const reviewerSignal = await withinExecutionDeadline(boundary.promise, Date.now() + 5_000);
+      expect(reviewerSignal.aborted).toBe(true);
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", `${uuid(90)}.json`), "utf8")))
+        .toMatchObject({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } });
+      // The original owner remains responsible beyond Vitest's one-second default.
+      await expect(vi.waitFor(() => expect(joined).toBe(true), { timeout: 1_000 })).rejects.toThrow();
+      expect(joined).toBe(false);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      release.resolve();
+      // Owners have up to 20 seconds to stop, followed by a 10-second management close.
+      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 35_000, interval: 10 });
       await running;
       expect(cancellation.signal.aborted).toBe(false);
       expect(mocks.reviewer).toHaveBeenCalledOnce();
@@ -214,8 +231,12 @@ describe("worker cloud-first startup", () => {
       expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } })]);
       const lock = await tryAcquireWorkerInstanceLock(f.paths);
       expect(lock).not.toBeNull(); await lock?.release();
-    } finally { cancellation.abort(); await Promise.allSettled([running]); }
-  });
+    } catch (cause) {
+      throw new Error(`Ordinary Worker closure failed: ${JSON.stringify({ phase, elapsedMs: Math.round(performance.now() - started), joined,
+        parentAborted: cancellation.signal.aborted, reviewerCalls: mocks.reviewer.mock.calls.length,
+        errors: mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).map(([event]) => String(event.error)) })}`, { cause });
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); }
+  }, 45_000);
 
   it("joins a Bot's ordinary cancellation without recording it as a background failure", async () => {
     const f = await fixture(false, false);
