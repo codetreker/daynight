@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFi
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { removeOwnedSourceDirectory } from "../../../src/commands/worker/owned-source-directory.js";
+import { skipWithoutSymbolicLinks } from "../../helpers/symlink-support.js";
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -16,20 +17,28 @@ afterEach(async () => {
 });
 
 describe("owned source directory deletion", () => {
-  it("removes only the selected source directory and rejects symlinks and root deletion", async () => {
+  it("removes only the selected source directory and rejects root deletion", async () => {
     const base = path.resolve("../../.tmp/resource-disposal-tests"); await mkdir(base, { recursive: true });
     const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
     const source = path.join(root, "recordings", uuid(41)), other = path.join(root, "other");
     await mkdir(source, { recursive: true }); await mkdir(other); await writeFile(path.join(other, "keep"), "keep");
     await writeFile(path.join(source, "frame.json"), "frame");
     await expect(removeOwnedSourceDirectory(path.join(root, "recordings"), path.join(root, "recordings"))).rejects.toThrow();
-    await symlink(other, path.join(source, "linked"));
-    await expect(removeOwnedSourceDirectory(path.join(root, "recordings"), source)).rejects.toThrow(/symbolic/);
-    expect(await readFile(path.join(other, "keep"), "utf8")).toBe("keep");
-    await rm(path.join(source, "linked"));
     await removeOwnedSourceDirectory(path.join(root, "recordings"), source);
     expect(await readFile(path.join(other, "keep"), "utf8")).toBe("keep");
     await expect(readFile(path.join(source, "frame.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(skipWithoutSymbolicLinks)("refuses a source containing a symbolic link and leaves its target untouched", async () => {
+    const base = path.resolve("../../.tmp/resource-disposal-tests"); await mkdir(base, { recursive: true });
+    const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
+    const source = path.join(root, "recordings", uuid(41)), other = path.join(root, "other");
+    await mkdir(source, { recursive: true }); await mkdir(other); await writeFile(path.join(other, "keep"), "keep");
+    await writeFile(path.join(source, "frame.json"), "frame");
+    await symlink(other, path.join(source, "linked"));
+    await expect(removeOwnedSourceDirectory(path.join(root, "recordings"), source)).rejects.toThrow(/symbolic/);
+    expect(await readFile(path.join(other, "keep"), "utf8")).toBe("keep");
+    expect(await readFile(path.join(source, "frame.json"), "utf8")).toBe("frame");
   });
 
   it("rechecks the original recording source before each mutation", async () => {
