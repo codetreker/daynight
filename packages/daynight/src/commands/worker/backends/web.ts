@@ -191,7 +191,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     return ticket;
   };
   const request = options.request ?? requestController;
-  const observeExecutionStop = createWebStopObserver(options);
+  const observeExecutionStop = createWebStopObserver({ ...options, confirmStopped: confirmWithLease });
   const waiting = new Map<string, WebInputWaitingReason>();
   const upgrades = new Set<string>();
   const rejected = new Map<string, string>();
@@ -654,6 +654,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       try {
         const startedAt = options.now();
         let task = current(input);
+        if (task.webExecution !== null) await jobLeases.cleanupBirth(task.webExecution.launchId, Date.now() + 5000);
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.retryAuthorized && task.recovery.pauseReason === null) task = options.store.pauseRecovery(task, "The explicit recovery attempt stopped before a successful observation.", options.now());
         if (task.status !== "done" && kind === "shutdown" && task.cleanup === null && task.recovery.pauseReason === null && task.configuration !== null && task.recovery.count >= task.configuration.recoveryLimit && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted") {
           // Shutdown provenance must not turn an already exhausted writer into a healthy orderly restart.
@@ -920,6 +921,32 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   return {
     ...backend,
     observeExecutionStop,
+    // Native cancellation is independent of the serialized Task writer. It must
+    // neither persist cleanup state nor release the writer's original leases.
+    requestExecutionStop: async (input: LocalTask, deadline: number): Promise<void> => {
+      const execution = input.webExecution;
+      if (execution === null || execution.launchSubmission === "not-submitted" || execution.controllerProcess === null) throw new Error("The original submitted Web native boundary is unavailable.");
+      const assertOriginal = (): void => {
+        const latest = current(input);
+        if (latest.worktreeId !== input.worktreeId || latest.serverOrigin !== input.serverOrigin || latest.workerId !== input.workerId || latest.userId !== input.userId
+          || latest.webExecution === null || latest.webExecution.executionId !== execution.executionId || latest.webExecution.launchId !== execution.launchId
+          || latest.webExecution.controllerId !== execution.controllerId || latest.webExecution.controllerInstanceId !== execution.controllerInstanceId
+          || latest.webExecution.sessionId !== execution.sessionId || latest.webExecution.executionGeneration !== execution.executionGeneration) throw new Error("The original Web execution changed before native cancellation.");
+        if (Date.now() >= deadline) throw new Error("Web native cancellation exceeded its deadline.");
+      };
+      assertOriginal();
+      const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+      if (ticket.launchId !== execution.launchId || ticket.executionId !== execution.executionId || ticket.controllerId !== execution.controllerId
+        || ticket.sessionId !== execution.sessionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId
+        || ticket.serverOrigin !== input.serverOrigin || ticket.projectId !== input.projectId || ticket.taskId !== input.taskId || ticket.claimId !== input.claimId
+        || ticket.workerId !== input.workerId || ticket.worktreeId !== input.worktreeId || ticket.userId !== input.userId) throw new Error("Web native cancellation ticket conflicts with the original execution.");
+      const saved = readControllerSnapshot(journal(input));
+      if (saved === null || saved.testExecutionId !== undefined || !matchesGeneration(input, saved) || saved.controllerProcess === null
+        || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, execution.launchId)
+        || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Web native cancellation journal conflicts with the original process boundary.");
+      assertOriginal();
+      await stopWithLease(execution.launchId, saved.controllerProcess, saved.nativeProcesses, deadline);
+    },
     closeInput: autoInput.close,
     confirmUpgrade: async (original: LocalTask, authority: WebInputAuthority, signal: AbortSignal): Promise<WebAdvanceResult> => {
       let task = current(original);

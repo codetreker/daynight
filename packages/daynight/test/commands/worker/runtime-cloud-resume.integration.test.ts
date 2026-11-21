@@ -93,7 +93,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
-  mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
+  mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({

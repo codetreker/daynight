@@ -7,6 +7,7 @@ import { executeCommand, prepareGitHubAuthentication, sanitizedProcessError } fr
 import type { CommandExecutor, GitHubClient, GitHubRepository } from "./github.js";
 import type { Store } from "../store.js";
 import type { OperationsStopped, ProcessesExcluded, PullRequestIdentity, PullRequestState, RepositoryState, ReviewState } from "../model.js";
+import { OwnedCommandCleanupError, hasUnconfirmedOwnedCommandCleanup } from "../../worker/owned-command.js";
 
 export type LocalRepository = {
   configuration: RepositoryConfiguration;
@@ -32,6 +33,16 @@ export class GitCommandError extends Error {
     this.completed = completed;
   }
 }
+const cleanupSources = new WeakMap<GitCommandError, { source: unknown; readOnly: boolean }>();
+const cleanupOnly = (error: unknown): boolean => error instanceof OwnedCommandCleanupError ||
+  error instanceof AggregateError && error.errors.length > 0 && error.errors.every(cleanupOnly) &&
+    (error.cause === undefined || cleanupOnly(error.cause));
+/** Local closure evidence never confirms a Git mutation's independent effects. */
+export const gitCommandCleanupState = (error: unknown): "confirmed" | "unconfirmed" | undefined => {
+  const original = error instanceof GitCommandError ? cleanupSources.get(error) : undefined;
+  if (original === undefined || !original.readOnly) return undefined;
+  return hasUnconfirmedOwnedCommandCleanup(original.source) ? "unconfirmed" : "confirmed";
+};
 type WorktreeEntry = { path: string; locked: string | null };
 type OwnedWorktree = { target: string; exists: boolean; entry: WorktreeEntry | null; administrativeDirectory: string | null };
 const localGitEnvironment = new Set([
@@ -128,7 +139,7 @@ export const createGitManager = (options: {
     })();
     return context;
   };
-  const run = async (args: readonly string[], signal?: AbortSignal, host?: string): Promise<string> => {
+  const run = async (args: readonly string[], signal?: AbortSignal, host?: string, readOnly = false): Promise<string> => {
     signal?.throwIfAborted();
     const context = await gitContext();
     const environment = isolatedGitEnvironment(process.env, context.gitEnvironment);
@@ -139,20 +150,28 @@ export const createGitManager = (options: {
       Object.assign(environment, authentication.environment);
       prefix.push("-c", `credential.https://${host}.helper=`, "-c", `credential.https://${host}.helper=!\"gh\" auth git-credential`);
     }
+    const failed = (message: string, cause: unknown, completed: boolean): GitCommandError => {
+      const error = new GitCommandError(message, host === undefined ? cause : sanitizedProcessError(cause), completed);
+      // Retain the source privately: hosted Git diagnostics may contain secrets.
+      // Only this command wrapper has no additional semantic failure of its own.
+      if (!completed && cleanupOnly(cause)) cleanupSources.set(error, { source: cause, readOnly });
+      return error;
+    };
     let result;
     try { result = await execute("git", [...prefix, ...args], { timeoutMs, maxBufferBytes, environment, ...(signal === undefined ? {} : { signal }) }); }
-    catch (cause) { throw new GitCommandError("Git command did not complete; its effects must be reconciled before retry.", host === undefined ? cause : sanitizedProcessError(cause), false); }
+    catch (cause) { throw failed("Git command did not complete; its effects must be reconciled before retry.", cause, false); }
     if (result.error !== null || signal?.aborted) {
       const failure = result.error;
       const completed = !signal?.aborted && failure !== null && "code" in failure && typeof failure.code === "number" &&
         !("killed" in failure && failure.killed === true) && !("signal" in failure && failure.signal !== null && failure.signal !== undefined);
-      throw new GitCommandError("Git operation failed; its effects must be reconciled before retry.",
-        host === undefined ? failure ?? signal?.reason : sanitizedProcessError(failure ?? signal?.reason), completed);
+      throw failed("Git operation failed; its effects must be reconciled before retry.", failure ?? signal?.reason, completed);
     }
     return result.stdout;
   };
-  const git = (root: string, args: readonly string[], signal?: AbortSignal): Promise<string> => run(["-C", root, ...args], signal);
-  const command = async (root: string, args: readonly string[], signal?: AbortSignal): Promise<string> => (await git(root, args, signal)).replace(/\r?\n$/, "");
+  const git = (root: string, args: readonly string[], signal?: AbortSignal, readOnly = false): Promise<string> => run(["-C", root, ...args], signal, undefined, readOnly);
+  // Scalar inspection commands do not mutate repository state. Mutations use
+  // git/run without this evidence; semantic verification failures stay separate.
+  const command = async (root: string, args: readonly string[], signal?: AbortSignal): Promise<string> => (await git(root, args, signal, true)).replace(/\r?\n$/, "");
   const rootAndCommon = async (root: string, signal?: AbortSignal): Promise<{ root: string; commonDirectory: string }> => {
     const requested = await existingDirectory(root);
     const top = await command(requested.ancestorPath, ["rev-parse", "--show-toplevel"], signal);
@@ -233,7 +252,7 @@ export const createGitManager = (options: {
       throw new Error("The local Git repository does not match its durable repository registration.");
     }
   };
-  const worktreeEntries = async (local: LocalRepository, signal?: AbortSignal): Promise<WorktreeEntry[]> => parseWorktrees(await git(local.root, ["worktree", "list", "--porcelain", "-z"], signal));
+  const worktreeEntries = async (local: LocalRepository, signal?: AbortSignal): Promise<WorktreeEntry[]> => parseWorktrees(await git(local.root, ["worktree", "list", "--porcelain", "-z"], signal, true));
   const worktreePath = (local: LocalRepository, number: number): string => path.join(local.root, ".worktrees", `pr-${number}`);
   const entryFor = async (entries: readonly WorktreeEntry[], target: string, exists: boolean): Promise<WorktreeEntry | null> => {
     for (const entry of entries) {
@@ -299,14 +318,14 @@ export const createGitManager = (options: {
     }
     return directory;
   };
-  const ownedGit = (owned: OwnedWorktree, args: readonly string[], signal?: AbortSignal): Promise<string> => {
+  const ownedGit = (owned: OwnedWorktree, args: readonly string[], signal?: AbortSignal, readOnly = false): Promise<string> => {
     if (owned.administrativeDirectory === null || !owned.exists) throw new Error("An existing bound worktree is required for Git worktree operations.");
-    return run(["--git-dir", owned.administrativeDirectory, "--work-tree", owned.target, "-C", owned.target, ...args], signal);
+    return run(["--git-dir", owned.administrativeDirectory, "--work-tree", owned.target, "-C", owned.target, ...args], signal, undefined, readOnly);
   };
   const emptyTrackedSubmodules = async (owned: OwnedWorktree, signal?: AbortSignal): Promise<void> => {
     const target = owned.target;
     const leaf = await existingDirectory(target);
-    const tracked = await ownedGit(owned, ["ls-files", "--stage", "-z"], signal);
+    const tracked = await ownedGit(owned, ["ls-files", "--stage", "-z"], signal, true);
     for (const entry of tracked.split("\0")) {
       const match = /^160000 [a-f\d]+ [0-3]\t([\s\S]+)$/.exec(entry);
       if (match === null) continue;
@@ -385,7 +404,7 @@ export const createGitManager = (options: {
       if (existingHead !== null && existingHead !== review.headSha) throw new Error("The immutable head reference does not match this review.");
       let baseSha = existingBase;
       if (baseSha === null) {
-        await git(local.root, ["check-ref-format", `refs/heads/${review.baseRef}`], signal);
+        await git(local.root, ["check-ref-format", `refs/heads/${review.baseRef}`], signal, true);
         const shallow = await command(local.root, ["rev-parse", "--is-shallow-repository"], signal);
         const headRef = `refs/daynight/incoming/${review.id}/head`;
         const baseRef = `refs/daynight/incoming/${review.id}/base`;
@@ -444,8 +463,8 @@ export const createGitManager = (options: {
       await ownedGit(owned, ["clean", "-ffdx"], signal);
     }
     owned = await inspectOwned(local, store.getPullRequest(pullRequest)!, signal);
-    const actualHead = (await ownedGit(owned, ["rev-parse", "HEAD"], signal)).replace(/\r?\n$/, "");
-    const symbolicHead = (await ownedGit(owned, ["rev-parse", "--symbolic-full-name", "HEAD"], signal)).replace(/\r?\n$/, "");
+    const actualHead = (await ownedGit(owned, ["rev-parse", "HEAD"], signal, true)).replace(/\r?\n$/, "");
+    const symbolicHead = (await ownedGit(owned, ["rev-parse", "--symbolic-full-name", "HEAD"], signal, true)).replace(/\r?\n$/, "");
     if (review.attemptCount === 0 && (actualHead !== headSha || symbolicHead !== "HEAD")) throw new Error("The prepared worktree is not detached at the captured PR head.");
     return { kind: "prepared", path: owned.target, headSha, baseSha, mergeBaseSha, gitEnvironment: { ...(await gitContext()).gitEnvironment } };
   };

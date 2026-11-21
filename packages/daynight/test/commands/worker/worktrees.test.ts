@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { cpSync } from "node:fs";
+import { cpSync, realpathSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -13,6 +13,10 @@ import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/m
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
+import { openExecutionResourceJournal } from "../../../src/commands/worker/execution-resource-journal.js";
+import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as files from "../../../src/platform/files.js";
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -156,8 +160,15 @@ const prepareCleanupFixture = async (f: RepositoryFixture, adapter: ReturnType<t
   const { commonDirectory } = await adapter.prepareRepository(f.project, operation());
   return addRegisteredFixtureWorktree(f, commonDirectory, f.owner);
 };
-const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
-const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
+// Git expands Windows drive aliases. Translate only that drive's physical root;
+// resolving a junction or symlink within cwd must not remap unrelated paths.
+const fixtureGitPath = (cwd: string, value: string): string => {
+  const root = path.parse(cwd).root, observed = path.normalize(value);
+  const relative = path.relative(realpathSync.native(root), observed);
+  return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? observed : path.resolve(root, relative);
+};
+const administrativeDirectory = (cwd: string): string => fixtureGitPath(cwd, git(cwd, ["rev-parse", "--absolute-git-dir"]));
+const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => fixtureGitPath(cwd, field.slice(9)));
 const privateBases = (cwd: string): string => git(cwd, ["for-each-ref", "--format=%(refname)", "refs/daynight/worker-bases/"]);
 const commitForOrigin = (repository: string, bare: string, branch: string, message: string): string => {
   const commit = git(repository, ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", message]);
@@ -805,7 +816,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     await writeFile(path.join(f.repository, "tracked.txt"), "uncommitted\n"); await writeFile(path.join(f.repository, "untracked.txt"), "retained\n");
     const actual = await adapter.prepareRepository(f.project, operation());
-    expect(actual.root).toBe(f.repository); expect(actual.commonDirectory).toBe(path.join(f.repository, ".git"));
+    expect(actual.root).toBe(f.repository); expect(actual.commonDirectory).toBe(await realpath(path.join(f.repository, ".git")));
     expect(git(f.repository, ["status", "--porcelain"])).toContain(" M tracked.txt");
     expect(await readFile(path.join(f.repository, "untracked.txt"), "utf8")).toBe("retained\n");
   });
@@ -1893,6 +1904,47 @@ exec "$@"
     } finally { release.resolve(); await preparation; await adapter.dispose(); }
   });
 
+  it("unblocks the original mutation and manager disposal when inventory confirms its Git closure", async () => {
+    const f = await fixture(), journalDirectory = path.join(f.root, "journal");
+    const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity: {
+      serverOrigin: "https://daynight.example", userId: ids.taskId, workerId: ids.workerId,
+    } });
+    const replace = files.replaceFileAtomically;
+    let rejectStop = true, fetches = 0;
+    const replacement = vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (rejectStop && path.dirname(file) === journalDirectory && JSON.parse(String(text)).event.stage === "stopped") throw new Error("original Git stop save failed");
+      return replace(file, text, ...rest);
+    });
+    const reported = Promise.withResolvers<void>(), settled = vi.fn();
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("fetch")) return startOwnedRepositoryGit(cwd, args, op, options);
+        fetches++;
+        return withOwnedCommandLifecycle(journal.sink("1"), () => startOwnedRepositoryGit(cwd, args, op, options));
+      },
+      reportPending: () => reported.resolve(), reportSettled: settled,
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).catch(error => error);
+    try {
+      await Promise.race([reported.promise, preparation.then(error => { throw error; })]);
+      await expect(withinExecutionDeadline(preparation, Date.now() + 50)).rejects.toThrow();
+      const closing = adapter.dispose();
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      expect(await withinExecutionDeadline(preparation, Date.now() + 1000)).toMatchObject({ code: "repository_git_cleanup_pending" });
+      await withinExecutionDeadline(closing, Date.now() + 1000);
+      expect(settled).toHaveBeenCalledOnce(); expect(fetches).toBe(1);
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+      await journal.assertClosed();
+    } finally {
+      rejectStop = false;
+      await journal.reconcileRetained({ generation: "1", deadline: Date.now() + 10_000 });
+      await withinExecutionDeadline(preparation, Date.now() + 1000);
+      await withinExecutionDeadline(adapter.dispose(), Date.now() + 1000);
+      replacement.mockRestore();
+    }
+  }, 30_000);
+
   it("joins pending mutations and retains command, cleanup and reporting errors on disposal", async () => {
     const f = await fixture();
     const original = new Error("original command failure"), late = new Error("late cleanup failure"), reporting = new Error("pending report failed"), settledReporting = new Error("settled report failed");
@@ -1936,6 +1988,40 @@ exec "$@"
     await Promise.all([adapter.prepareRepository(f.project, operation()), adapter.prepareRepository(f.project, operation())]);
     expect((await readdir(path.join(f.root, "temporary"))).filter((name) => name.startsWith("git-hooks-"))).toHaveLength(1);
     await adapter.dispose(); expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+  });
+
+  it("rechecks disposal after a timed out original Git handle closes late", async () => {
+    const f = await fixture();
+    const pendingError = new RepositoryGitCleanupPendingError([], new Error("Original Git command is awaiting close."));
+    const settlement = Promise.withResolvers<GitSettlement>(), reported = Promise.withResolvers<void>();
+    const requestStop = vi.fn();
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => args.includes("fetch")
+        ? { outcome: Promise.resolve({ kind: "cleanup-pending", error: pendingError }), joined: settlement.promise, requestStop }
+        : startOwnedRepositoryGit(cwd, args, op, options),
+      reportPending: () => { reported.resolve(); },
+    });
+    const preparation = adapter.prepareWorktree(f.project, f.owner, operation()).catch(error => error);
+    try {
+      await reported.promise;
+      // All native fixture preparation has joined. Only the controlled original
+      // handle remains, so advancing this clock cannot bypass a real process.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const first = adapter.dispose().catch(error => error);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await first).toMatchObject({ message: expect.stringContaining("original Git responsibilities are retained") });
+      expect(requestStop).toHaveBeenCalledOnce();
+      expect((await readdir(path.join(f.root, "temporary"))).filter(name => name.startsWith("git-hooks-"))).toHaveLength(1);
+      settlement.resolve({ kind: "local-closed", cleanupErrors: [] });
+      expect(await preparation).toBe(pendingError);
+      await expect(adapter.dispose()).resolves.toBeUndefined();
+      expect(await readdir(path.join(f.root, "temporary"))).toEqual([]);
+      await expect(adapter.prepareRepository(f.project, operation())).rejects.toThrow("closing");
+    } finally {
+      vi.useRealTimers();
+      settlement.resolve({ kind: "local-closed", cleanupErrors: [] });
+      await preparation; await adapter.dispose();
+    }
   });
 
   it("returns the configured repository spelling while validating physical Git identities", async () => {

@@ -1,6 +1,9 @@
 import path from "node:path";
+import { createOperation } from "../../../api/operation.js";
+import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandError } from "../../worker/owned-command.js";
+import { currentOwnedCommandLifecycle, runLifecycleOwnedCommand } from "../../worker/owned-command-lifecycle.js";
 import { lstat, mkdir, mkdtemp, open } from "node:fs/promises";
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, PassThrough, type Writable } from "node:stream";
 import { performance } from "node:perf_hooks";
 import { pipeline } from "node:stream/promises";
 import type { ChildProcess } from "node:child_process";
@@ -219,6 +222,37 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
     };
     const runPhase = async (phase: "skill-list" | "review", args: string[], output: Transform, files: [Awaited<ReturnType<typeof open>>, Awaited<ReturnType<typeof open>>], prompt?: string): Promise<void> => {
       outcome.directProcessClosed = false; outcome.captureComplete = false; outcome.exitCode = null; outcome.signal = null; outcome.launchFailure = null;
+      const lifecycle = currentOwnedCommandLifecycle();
+      if (lifecycle !== undefined) {
+        const stderr = new PassThrough();
+        const captures = [pipeline(output, files[0].createWriteStream()), pipeline(stderr, files[1].createWriteStream())].map(work => work.then(() => true, error => { errors.push(asError(error)); return false; }));
+        const write = (target: Writable, chunk: Buffer): Promise<void> => new Promise((resolve, reject) => {
+          target.write(chunk, error => { if (error) reject(error); else resolve(); });
+        });
+        const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
+        const operation = createOperation({ ...(input.signal === undefined ? {} : { signal: input.signal }),
+          limits: { totalMs: remaining, requestMs: remaining, totalBytes: Number.MAX_SAFE_INTEGER } });
+        try {
+          const result = await runLifecycleOwnedCommand({ file: commandFile, args, cwd: worktree.path, environment }, operation, lifecycle, {
+            timeoutMs: remaining, captureOutput: false, maximumOutputBytes: Number.MAX_SAFE_INTEGER, allowAnyExitCode: true,
+            ...(prompt === undefined ? {} : { stdin: prompt }), onStdout: chunk => write(output, chunk), onStderr: chunk => write(stderr, chunk),
+          });
+          outcome.exitCode = result.exitCode;
+          outcome.directProcessClosed = true;
+        } catch (error) {
+          errors.push(asError(error));
+          if (hasUnconfirmedOwnedCommandCleanup(error)) outcome.processExclusionFailure = asError(error);
+          else outcome.directProcessClosed = true;
+          if (error instanceof OwnedCommandError) { outcome.exitCode = error.exitCode; outcome.signal = error.signal; }
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") outcome.launchFailure = "command-not-found";
+          interrupted();
+        } finally {
+          operation.dispose();
+          output.end(); stderr.end();
+          outcome.captureComplete = (await Promise.all(captures)).every(Boolean);
+        }
+        return;
+      }
       let child;
       let windowsPhase: WindowsReviewPhase | undefined;
       try {

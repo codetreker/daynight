@@ -226,7 +226,9 @@ export const stopControllerBootstrap = async (proof: ProcessProof, deadline: num
     remaining();
     if (state === "replaced") {
       if (mismatch?.sameBirth === false) throw new ControllerBootstrapReplacedError(conflict!.message);
-      if (mismatch?.sameBirth === true && mismatch.sameParent && mismatch.sameGroup) {
+      if (mismatch?.sameBirth === true && mismatch.sameGroup) {
+        // Losing the original Host can reparent this same process before its
+        // exit clears argv. Wait only; signaling still requires full identity.
         uncertainty = conflict;
         return "uncertain";
       }

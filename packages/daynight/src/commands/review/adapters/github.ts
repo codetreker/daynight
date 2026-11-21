@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { createOperation, OperationError } from "../../../api/operation.js";
+import { OwnedCommandError } from "../../worker/owned-command.js";
+import { currentOwnedCommandLifecycle, runLifecycleOwnedCommand } from "../../worker/owned-command-lifecycle.js";
 import { remoteIdentity } from "../config.js";
 import type { RepositoryConfiguration } from "../config.js";
 import type { PullRequestObservation, PullRequestReviewSnapshot, RemoteReview, RemoteReviewThread, RepositoryIdentity } from "../model.js";
@@ -37,14 +40,35 @@ export class GitHubApiError extends Error {
   }
 }
 
-export const executeCommand: CommandExecutor = (file, args, options) => new Promise((resolve) => {
+export const executeCommand: CommandExecutor = async (file, args, options) => {
   const env: NodeJS.ProcessEnv = { ...process.env, GH_PROMPT_DISABLED: "1", GH_FORCE_TTY: "", NO_COLOR: "1", PAGER: "cat", GH_PAGER: "cat", ...options.environment };
   delete env.GH_DEBUG;
-  execFile(file, [...args], {
-    encoding: "utf8", windowsHide: true, timeout: options.timeoutMs, maxBuffer: options.maxBufferBytes,
-    env, ...(options.signal === undefined ? {} : { signal: options.signal }),
-  }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
-});
+  const lifecycle = currentOwnedCommandLifecycle();
+  if (lifecycle !== undefined) {
+    const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }),
+      limits: { totalMs: options.timeoutMs, requestMs: options.timeoutMs, responseBytes: options.maxBufferBytes, totalBytes: 2 * options.maxBufferBytes } });
+    try {
+      const result = await runLifecycleOwnedCommand({ file, args, environment: env }, operation, lifecycle, {
+        timeoutMs: options.timeoutMs, maximumOutputBytes: 2 * options.maxBufferBytes, maximumStreamBytes: options.maxBufferBytes, allowExitOne: true,
+      });
+      // gh returns HTTP error bodies with exit 1; callers still need the complete response.
+      return { stdout: result.stdout, stderr: result.stderr,
+        error: result.exitCode === 0 ? null : Object.assign(new Error("Review command failed."), { code: result.exitCode, signal: null }) };
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error("Review command failed.", { cause });
+      if (error instanceof OwnedCommandError) Object.assign(error, { code: error.exitCode });
+      else if (error instanceof OperationError && error.kind === "cancelled") Object.assign(error, { code: "ABORT_ERR" });
+      else if (error instanceof OperationError && error.kind === "deadline") Object.assign(error, { killed: true });
+      return { stdout: "", stderr: error instanceof OwnedCommandError ? error.stderr : "", error };
+    } finally { operation.dispose(); }
+  }
+  return new Promise(resolve => {
+    execFile(file, [...args], {
+      encoding: "utf8", windowsHide: true, timeout: options.timeoutMs, maxBuffer: options.maxBufferBytes,
+      env, ...(options.signal === undefined ? {} : { signal: options.signal }),
+    }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+  });
+};
 
 type HttpFrame = { status: number; headers: Map<string, string[]>; body: string };
 type HttpResponse = Omit<HttpFrame, "body"> & { body: unknown; bodyBytes: number };

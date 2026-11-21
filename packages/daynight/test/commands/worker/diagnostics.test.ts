@@ -459,6 +459,7 @@ it("joins the default stderr callback and later error event before closing its l
     expect(reported).toContain("diagnostic-sink-blocked");
     await expect(f.sink.close()).rejects.toBe(failure);
     expect(process.stderr.listenerCount("error")).toBe(listenersBefore);
+    expect(f.sink.isClosed()).toBe(true);
   } finally {
     write.mockRestore();
     if (callback !== undefined && process.stderr.listenerCount("error") > listenersBefore) process.stderr.emit("error", outputFailure);
@@ -485,10 +486,12 @@ it("keeps a real append handle owned until its delayed write and close complete"
   await vi.advanceTimersByTimeAsync(60_000);
   expect(completed).toBe(false);
   expect(released).toBe(false);
+  expect(f.sink.isClosed()).toBe(false);
   expect(await readFile(f.sink.filename, "utf8")).toBe("");
   release.release();
   await closing;
   expect(released).toBe(true);
+  expect(f.sink.isClosed()).toBe(true);
   expect((await records(f.sink.filename)).map(record => record.kind)).toEqual(["held-write"]);
 });
 

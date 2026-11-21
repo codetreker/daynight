@@ -2,7 +2,8 @@ import path from "node:path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createGitManager } from "../../../src/commands/review/adapters/worktrees.js";
+import { createGitManager, gitCommandCleanupState } from "../../../src/commands/review/adapters/worktrees.js";
+import { OwnedCommandCleanupError, registerOwnedCommandCleanupConfirmation } from "../../../src/commands/worker/owned-command.js";
 import { executeCommand } from "../../../src/commands/review/adapters/github.js";
 import type { CommandExecutor } from "../../../src/commands/review/adapters/github.js";
 import { commit, createGitTestFixtures, proof, rawGit, uuid } from "../../helpers/git-fixtures.js";
@@ -17,6 +18,23 @@ afterEach(() => {
 afterAll(fixtures.dispose);
 
 describe("local Git repositories and review snapshots", () => {
+  it("keeps hosted mutation effects unknown and its cleanup source out of diagnostics", async () => {
+    const f = fixture();
+    let closed = false;
+    const cleanup = new OwnedCommandCleanupError([new Error("fixture-secret-token")], new Error("fixture-secret-token"));
+    registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
+    f.setIntercept(async () => ({ stdout: "", stderr: "fixture-secret-token", error: cleanup }));
+    const failure = await f.manager.ensureRepository(f.configuration).catch(error => error);
+    const wrapped = failure.cause;
+    expect(wrapped).toMatchObject({ name: "GitCommandError", completed: false, cause: { message: "GitHub CLI did not complete successfully." } });
+    expect(wrapped.cause.cause).toBeUndefined();
+    expect(wrapped.cause.errors).toBeUndefined();
+    expect(gitCommandCleanupState(wrapped)).toBeUndefined();
+    closed = true;
+    expect(gitCommandCleanupState(wrapped)).toBeUndefined();
+    expect(wrapped.completed).toBe(false);
+  });
+
   it("clones missing code, validates identity, and prepares a fixed detached PR worktree", async () => {
     const f = fixture();
     const local = await f.manager.ensureRepository(f.configuration);

@@ -8,7 +8,9 @@ import { createOperation } from "../../../../src/api/operation.js";
 import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lease.js";
 import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
-import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
+import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retainedBotCliProbes, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
+import { OwnedCommandAdmissionError, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../../src/commands/worker/owned-command-lifecycle.js";
+import { openExecutionResourceJournal } from "../../../../src/commands/worker/execution-resource-journal.js";
 import { captureSynchronousDeadline } from "../../../helpers/synchronous-deadline.js";
 import { withProbeGrace, type ExecHook } from "./cli-probe-clock.fixtures.js";
 
@@ -27,6 +29,15 @@ const scopes: BotCliProbe[] = [];
 const observedJobs = new Map<BotCliProbe, windowsJob.ControllerJobLease>();
 const operations: ReturnType<typeof createOperation>[] = [];
 const timingFailures: Error[] = [];
+const journalFixture = async () => {
+  const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
+  await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "bot-probe-events-")); roots.push(root);
+  const journal = await openExecutionResourceJournal({ directory: path.join(root, "events"), identity: {
+    serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002",
+  } });
+  return journal;
+};
 const fixture = async (tail = "console.log('help-result');", signal?: AbortSignal, requestMs = 5_000, descendantReady = false) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
   await mkdir(scratch, { recursive: true });
@@ -106,6 +117,83 @@ afterEach(async () => {
 });
 
 describe("owned Bot CLI capability probes", () => {
+  it("retains a committed preparation when only a later retry is refused admission", async () => {
+    const journal = await journalFixture(), sink = journal.sink("1");
+    const events: OwnedCommandLifecycleEvent[] = [];
+    let first = true, recover = false, failure: BotCliProbeCleanupError | undefined;
+    try {
+      failure = await withOwnedCommandLifecycle(async event => {
+        events.push(event);
+        if (recover) return sink(event);
+        if (first) { first = false; await sink(event); throw new Error("Prepared receipt committed before acknowledgement failed."); }
+        throw new OwnedCommandAdmissionError(new Error("Later scope admission is closed."));
+      }, fixture).then(() => { throw new Error("Expected retained preparation failure."); }, error => error);
+      expect(failure).toBeInstanceOf(BotCliProbeCleanupError);
+      expect(failure!.ownership).toMatchObject({ pid: null, process: null, targetStarted: false });
+      expect(retainedBotCliProbes()).toContainEqual(failure!.ownership);
+      expect(events.every(event => event.stage === "prepared")).toBe(true);
+      expect((await journal.read())[0]!.event.stage).toBe("prepared");
+      await expect(journal.assertClosed()).rejects.toThrow("unconfirmed boundaries");
+      recover = true;
+      await failure!.retryCleanup(); await journal.assertClosed();
+      expect((await journal.read())[0]!.event).toMatchObject({ resourceId: failure!.ownership.launchId, stage: "stopped", proof: null });
+      expect(retainedBotCliProbes()).not.toContainEqual(failure!.ownership);
+    } finally { recover = true; await failure?.retryCleanup(); }
+  });
+
+  it("commits preparation and birth before releasing the reusable probe", async () => {
+    const journal = await journalFixture(), sink = journal.sink("1"), events: OwnedCommandLifecycleEvent[] = [];
+    const preparing = Promise.withResolvers<void>(), bind = Promise.withResolvers<void>();
+    const prepared = Promise.withResolvers<void>(), bound = Promise.withResolvers<void>();
+    let returned = false;
+    const creating = withOwnedCommandLifecycle(async event => {
+      events.push(event);
+      if (event.stage === "prepared") { prepared.resolve(); await preparing.promise; }
+      if (event.stage === "bound") { bound.resolve(); await bind.promise; }
+      await sink(event);
+    }, fixture).then(result => { returned = true; return result; });
+    try {
+      await prepared.promise;
+      expect(retainedBotCliProbes().find(probe => probe.launchId === events[0]!.resourceId)).toMatchObject({ pid: null, targetStarted: false });
+      expect(returned).toBe(false);
+      preparing.resolve(); await bound.promise;
+      expect(returned).toBe(false);
+      const owner = retainedBotCliProbes().find(probe => probe.launchId === events[0]!.resourceId)!;
+      expect(owner.pid).toBeGreaterThan(0); expect(owner.targetStarted).toBe(false);
+      expect((await journal.read())[0]!.event.stage).toBe("prepared");
+      bind.resolve(); const f = await creating;
+      await expect(journal.assertClosed()).rejects.toThrow("unconfirmed boundaries");
+      expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
+      expect((await f.scope.run(process.execPath, [f.file])).stdout).toBe("help-result\n");
+      await f.scope.close(); await checkStopped(f.scope); await journal.assertClosed();
+      expect(events.map(event => [event.sequence, event.stage])).toEqual([[1, "prepared"], [2, "bound"], [3, "stopped"]]);
+      expect(new Set(events.map(event => event.resourceId)).size).toBe(1);
+      expect(retainedBotCliProbes().some(probe => probe.launchId === f.scope.ownership.launchId)).toBe(false);
+    } finally { preparing.resolve(); bind.resolve(); await creating; }
+  }, 120_000);
+
+  it("retains failed cleanup outside the Error and durably re-observes the same probe", async () => {
+    const journal = await journalFixture();
+    let lease: nativeJob.WindowsBotJobLease | undefined;
+    if (process.platform === "win32") {
+      const create = nativeJob.createWindowsBotJobLease;
+      vi.spyOn(nativeJob, "createWindowsBotJobLease").mockImplementation(async (...args) => { lease = await create(...args); return lease; });
+    }
+    const f = await withOwnedCommandLifecycle(journal.sink("1"), fixture);
+    await f.scope.run(process.execPath, [f.file]);
+    if (lease !== undefined) vi.spyOn(lease, "terminate").mockImplementationOnce(() => { throw new nativeJob.WindowsBotJobError("fixture-stop", 5); });
+    else vi.spyOn(processProof, "stopControllerProcesses").mockRejectedValueOnce(new Error("unconfirmed original boundary"));
+    await expect(f.scope.close()).rejects.toBeInstanceOf(BotCliProbeCleanupError);
+    expect(retainedBotCliProbes()).toContainEqual(f.scope.ownership);
+    const [unknown] = await journal.read();
+    expect(unknown!.event).toMatchObject({ resourceId: f.scope.ownership.launchId, stage: "unknown", proof: f.scope.ownership.process });
+    await expect(journal.assertClosed()).rejects.toThrow("unconfirmed boundaries");
+    await reconcileBotCliProbe(f.scope.ownership.launchId);
+    await checkStopped(f.scope); await journal.assertClosed();
+    expect((await journal.read())[0]!.event).toMatchObject({ resourceId: f.scope.ownership.launchId, stage: "stopped", proof: unknown!.event.proof });
+    expect(retainedBotCliProbes().some(probe => probe.launchId === f.scope.ownership.launchId)).toBe(false);
+  }, 120_000);
+
   it("keeps one gated leader across commands and stops detached-stdio descendants after success", async () => {
     const f = await fixture(); const originalPid = f.scope.ownership.pid;
     expect(f.scope.ownership.targetStarted).toBe(false);
@@ -242,12 +330,13 @@ setInterval(() => {}, 1000);`;
     const hook = path.join(root, "hook.cjs");
     await writeFile(hook, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');`);
     const preload = `--require ${JSON.stringify(hook)}`;
+    const environment = testIsolation.guardedEnvironment({ ...process.env, NODE_OPTIONS: preload });
     const operation = createOperation({ limits: { totalMs: 90_000, requestMs: 10_000 } }); operations.push(operation);
-    const scope = await createBotCliProbe({ environment: { ...process.env, NODE_OPTIONS: preload }, cwd: root }, operation); scopes.push(scope);
+    const scope = await createBotCliProbe({ environment, cwd: root }, operation); scopes.push(scope);
     if (process.platform === "win32") observedJobs.set(scope, await windowsJob.acquireControllerJobLease(scope.ownership.launchId, scope.ownership.process!, Date.now() + 15_000));
     await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await scope.run(process.execPath, ["-e", "console.log(process.env.NODE_OPTIONS)"]);
-    expect(result.stdout.trim()).toBe(testIsolation.guardedEnvironment({ NODE_OPTIONS: preload }).NODE_OPTIONS);
+    expect(result.stdout.trim()).toBe(environment.NODE_OPTIONS);
     expect(await readFile(marker, "utf8")).toBe("executed");
     await scope.close(); await checkStopped(scope);
   }, 120_000);

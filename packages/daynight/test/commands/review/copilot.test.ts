@@ -1,4 +1,6 @@
 import path from "node:path";
+import { retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleEvent } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -57,7 +59,12 @@ const session=path.join(process.env.COPILOT_HOME,'session-state',id);
 if(mode!=='no-history') {mkdirSync(session,{recursive:true});writeFileSync(path.join(session,'opaque.jsonl'),'not valid JSONL');}
 writeFileSync(process.env.FIXTURE_REPORT,JSON.stringify({args,prompt,cwd:process.cwd(),env:Object.fromEntries(['COPILOT_SKILLS_DIRS','copilot_skills_dirs','COPILOT_HOME','COPILOT_CACHE_HOME','TMPDIR','TMP','TEMP','HOME','GH_CONFIG_DIR','GIT_DIR','GIT_WORK_TREE','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','GIT_CONFIG_KEY_99','GIT_CONFIG_PARAMETERS','GIT_TRACE','GIT_CURL_VERBOSE','GIT_NO_REPLACE_OBJECTS','GIT_GRAFT_FILE','GH_TOKEN','COPILOT_GITHUB_TOKEN'].map(k=>[k,process.env[k]]))}));
 const marker='PR 101 Review Completed';
-if(mode==='hang') {process.stdout.write(marker+'\\n');setInterval(()=>{},1000);}
+if(mode==='hang-descendant') {
+ const {spawn}=await import('node:child_process');
+ spawn(process.execPath,['-e',"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000);",process.env.FIXTURE_REPORT+'.child'],{stdio:'ignore'});
+ setInterval(()=>{},1000);
+}
+else if(mode==='hang') {process.stdout.write(marker+'\\n');setInterval(()=>{},1000);}
 else if(mode==='stderr') process.stderr.write(marker+'\\n');
 else if(mode==='invalid-utf8') process.stdout.write(Buffer.concat([Buffer.from([0xc3]),Buffer.from('\\n'+marker+'\\n')]));
 else if(mode==='truncated-utf8') process.stdout.write(Buffer.concat([Buffer.from(marker+'\\n'),Buffer.from([0xc3])]));
@@ -122,6 +129,56 @@ afterEach(() => {
   for (const store of stores) store.close();
   stores.clear();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+describe("Worker-owned reviewer processes", () => {
+  it.each(["success", "nonzero"])("keeps streaming logs, stdin and native results through the shared launcher: %s", async mode => {
+    const f = fixture(), events: OwnedCommandLifecycleEvent[] = [];
+    const outcome = await withOwnedCommandLifecycle(async event => { events.push(event); }, () => f.run(mode));
+    expect(outcome).toMatchObject({ completed: mode === "success", directProcessClosed: true, captureComplete: true, exitCode: mode === "success" ? 0 : 7, signal: null });
+    expect(outcome.processExclusionFailure).toBeNull();
+    expect(readFileSync(outcome.stdoutLogPath, "utf8")).toBe("PR 101 Review Completed\n\n");
+    expect(readFileSync(outcome.stderrLogPath, "utf8")).toBe("independent diagnostics\n");
+    expect(JSON.parse(readFileSync(f.report, "utf8")).prompt).toContain("explicitly invoke /daynight-review");
+    expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+    expect(new Set(events.map(event => event.resourceId)).size).toBe(2);
+    expect(f.store.getReview(f.review.id)).toMatchObject({ status: "running", attemptCount: 1, processId: null });
+  }, 35_000);
+
+  it("does not run discovery before boundary persistence and cancellation settles that reservation", async () => {
+    const f = fixture(), cancellation = new AbortController();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const events: OwnedCommandLifecycleEvent[] = [];
+    const pending = withOwnedCommandLifecycle(async event => {
+      events.push(event);
+      if (event.stage === "bound") { entered.resolve(); await release.promise; }
+    }, () => f.run("success", {}, { signal: cancellation.signal }));
+    try {
+      await entered.promise;
+      expect(existsSync(`${f.report}.discovery`)).toBe(false);
+      expect(f.store.getReview(f.review.id)?.status).toBe("running");
+      cancellation.abort(); release.resolve();
+      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, captureComplete: true, interruption: "aborted", processExclusionFailure: null });
+      expect(existsSync(`${f.report}.discovery`)).toBe(false);
+      expect(existsSync(f.report)).toBe(false);
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped"]);
+      expect(retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === events[0]!.resourceId)).toBe(false);
+      await vi.waitFor(async () => expect(await inspectProcessProof(events[1]!.proof!)).toBe("stopped"), { timeout: 5000 });
+    } finally { cancellation.abort(); release.resolve(); await pending; }
+  }, 35_000);
+
+  it("joins the original reviewer group and its child when the scope is cancelled", async () => {
+    const f = fixture(), cancellation = new AbortController(), events: OwnedCommandLifecycleEvent[] = [];
+    const pending = withOwnedCommandLifecycle(async event => { events.push(event); }, () => f.run("hang-descendant", {}, { signal: cancellation.signal }));
+    try {
+      await vi.waitFor(() => expect(existsSync(`${f.report}.child`)).toBe(true), { timeout: 10_000 });
+      const originalChild = await captureProcessProof(Number(readFileSync(`${f.report}.child`, "utf8")));
+      cancellation.abort();
+      expect(await pending).toMatchObject({ completed: false, directProcessClosed: true, captureComplete: true, interruption: "aborted", processExclusionFailure: null });
+      await vi.waitFor(async () => expect(await inspectProcessProof(originalChild)).toBe("stopped"), { timeout: 5000 });
+      expect(events.map(event => event.stage)).toEqual(["prepared", "bound", "stopped", "prepared", "bound", "stopped"]);
+    } finally { cancellation.abort(); await pending; }
+  }, 35_000);
 });
 
 describe("Copilot persisted sessions and direct attempts", () => {

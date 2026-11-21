@@ -34,6 +34,7 @@ import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -536,9 +537,9 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
     diagnostic("launch-observation-unknown", Date.now() - started, error);
   }
   const originalTicket = await f.process.readTicket(f.current());
-  // An interrupted parent can return before the child acquires its own proof,
-  // creates the Windows Job and captures native ownership. Reconciliation waits
-  // for that sequence through the original authenticated ticket.
+  // An interrupted parent can return after releasing the durable birth gate
+  // but before the child initializes its journal and native provider. Observe
+  // that same Controller through its original authenticated ticket.
   await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", activity: "idle", nativeSessionId: f.nativeId, initialInputState: "not_required" }), { timeout: 60_000, interval: 100 });
   expect(await f.process.readTicket(f.current())).toEqual(originalTicket);
 };
@@ -637,7 +638,7 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
   const f = await fixture({ dedicatedStorage: true }), signal = AbortSignal.timeout(60_000);
-  if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  if (interruptedObservation) vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
@@ -654,7 +655,8 @@ test.each([false, true])("launches one real Controller with no user turn after u
   expect(f.browserConnections()).toBe(1);
   if (interruptedObservation) {
     expect((await f.create().advance(f.current(), signal)).controllerProcess).toEqual(first.controllerProcess);
-    await expect(f.create().shutdown(f.current(), signal)).rejects.toThrow(/no original spawn proof/);
+    await f.create().shutdown(f.current(), signal);
+    expect(f.journal()).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
     expect(await f.launches()).toHaveLength(1);
     return;
   }
@@ -687,11 +689,11 @@ test("rejects unsupported Provider arguments before registration or native proce
 
 test("recovers cleanup evidence from the original journal when the parent process observation fails first", async () => {
   const f = await fixture();
-  vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
+  vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await expect(f.process.advance(f.current(), AbortSignal.timeout(30_000))).rejects.toThrow("Fixture parent observation interrupted");
-  expect(f.executions.get(f.current())!.controllerProcess).toBeNull();
-  // afterEach must wait for the child's durable evidence instead of retaining
-  // the empty snapshot taken before its process ownership was captured.
+  expect(f.executions.get(f.current())!.controllerProcess).not.toBeNull();
+  // Birth identity commits before dispatch. Cleanup also joins the child's
+  // journal so descendants published after the failed observation remain owned.
 }, 60_000);
 
 

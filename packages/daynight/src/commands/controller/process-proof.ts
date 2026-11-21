@@ -1,4 +1,4 @@
-import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
+import { adoptOwnedControllerJob, createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -32,7 +32,7 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
 };
 export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {
   const proof = await captureProcessProof(process.pid);
-  return process.platform === "win32" ? { ...proof, jobObjectName: await createOwnedControllerJob(launchId, process.pid) } : proof;
+  return process.platform === "win32" ? { ...proof, jobObjectName: await (process.env.DAYNIGHT_CONTROLLER_ASSIGNED_JOB === launchId ? adoptOwnedControllerJob(launchId) : createOwnedControllerJob(launchId, process.pid)) } : proof;
 };
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
 export class ControllerProcessIdentityConflictError extends Error {
@@ -132,7 +132,7 @@ export const confirmControllerProcessesStopped = async (controller: ProcessProof
   if (controller.processGroupId !== controller.pid) throw new Error("Controller was not launched in its own process group.");
   return (await groupMembers(controller.pid, deadline)).length === 0;
 };
-export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease): Promise<void> => {
+export const stopControllerProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], deadline: number, lease?: ControllerJobLease, options: { guardian?: boolean } = {}): Promise<void> => {
   remaining(deadline);
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
@@ -172,7 +172,14 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   };
   if (!await signal("SIGTERM")) return;
   const graceful = Math.min(deadline, Date.now() + 2000);
-  while (Date.now() < graceful && (await groupMembers(controller.pid, deadline)).length > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(25, graceful - Date.now())));
+  while (Date.now() < graceful) {
+    const members = await groupMembers(controller.pid, deadline);
+    // A trusted command guardian remains alive solely to preserve the original
+    // group identity. With no descendants left it needs no graceful interval;
+    // signal() still authenticates the original proof before the final kill.
+    if (members.length === 0 || options.guardian === true && members.length === 1 && members[0] === controller.pid) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(25, graceful - Date.now()))));
+  }
   if (!await signal("SIGKILL")) return;
   while (Date.now() < deadline && (await groupMembers(controller.pid, deadline)).length > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
   if ((await groupMembers(controller.pid, deadline)).length > 0) throw new Error("Original controller process group did not stop by its deadline.");

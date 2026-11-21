@@ -360,8 +360,12 @@ export const createBotProcess = (options: {
       checkAdmission(record);
       const storageStateDirectory = resolveBotControllerStateDirectory(options.homeDirectory, record);
       return await launch({ ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }), homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,
+        retainBirthCleanup: cleanup => jobLeases.retainBirthCleanup(ticket.launchId, cleanup),
         onSubmitting: () => { checkAdmission(record); options.executions.update(current(record), { launchSubmission: "unknown" }); },
-        onSpawned: proof => { options.executions.update(current(record, true), { controllerProcess: proof }); },
+        onSpawned: (proof, ownership) => {
+          options.executions.update(current(record, true), { controllerProcess: proof });
+          if (ownership !== undefined) jobLeases.adopt(ticket.launchId, proof, ownership.lease, ownership.closeHandles);
+        },
         onObserved: async snapshot => {
           if (jobLeases.enabled) {
             const proof = options.executions.get(current(record, true))?.controllerProcess;
@@ -388,16 +392,23 @@ export const createBotProcess = (options: {
       throw blocked === undefined || blocked === error ? error : new BotAdmissionBlockedError({ cause: error });
     }
   };
+  const releaseEnvironment = async (botId: string): Promise<void> => {
+    const pending = pendingCleanup.get(botId);
+    if (pending !== undefined) { await pending.retryCleanup(); pendingCleanup.delete(botId); }
+    const prepared = environments.get(botId);
+    if (prepared !== undefined) { await prepared.release(); environments.delete(botId); }
+  };
   const shutdown = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
     const retained = options.store.get(input.owner, input.botId);
     if (retained === null) throw new Error("Bot shutdown lost its original inventory record.");
     // Migration required proven stop and fences every launch until takeover.
     if (retained.migration !== undefined) return;
-    if (retained.intent === null) return;
+    if (retained.intent === null) { await releaseEnvironment(retained.botId); return; }
     if (options.canControl?.(retained) === false) throw new Error("Bot hosting is unconfirmed; the original writer and recovery evidence are retained.");
     const record = current(retained, true);
+    await jobLeases.cleanupBirth(record.intent!.launchId, Date.now() + 5000);
     const execution = options.executions.get(record);
-    if (execution === null || execution.launchSubmission === "not-submitted") return;
+    if (execution === null || execution.launchSubmission === "not-submitted") { await releaseEnvironment(record.botId); return; }
     if (execution.controllerProcess === null) throw new Error("Bot shutdown has no original spawn proof; execution evidence is retained.");
     const deadline = Date.now() + 10_000;
     const remaining = () => { const time = deadline - Date.now(); if (time <= 0) throw new Error("Bot cleanup exceeded its deadline; execution evidence is retained."); return time; };
@@ -465,7 +476,7 @@ export const createBotProcess = (options: {
         options.executions.update(record, { snapshot: stopped });
         await jobLeases.release(ticket.launchId);
       } catch (error) { if (replacement) throw new AggregateError([replacement, error], "Bot bootstrap replacement and complete stopping failed.", { cause: error }); throw error; }
-      environments.delete(record.botId);
+      await releaseEnvironment(record.botId);
     } catch (error) {
       const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
       treeEvidenceBlocked ||= hasUnsafeControllerObservationFailure(error);
@@ -543,6 +554,7 @@ export const createBotProcess = (options: {
       // grant response was lost. Never guess which generation owns deletion.
       if (intent.executionGeneration !== "1") throw new Error("Bot deletion server generation is unconfirmed after recovery preparation; original evidence is retained.");
       if (intent.sessionId === null) throw new Error("Bot deletion registration outcome is unconfirmed; the original registration identity is retained.");
+      await releaseEnvironment(record.botId);
       return { protocol: "daynight.session.v1", sessionId: intent.sessionId, testExecutionId: intent.executionId,
         executionGeneration: intent.executionGeneration, controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId,
         stopProof: { kind: "never_started", recordId: intent.launchId, previousControllerInstanceId: intent.controllerInstanceId, stoppedAt: new Date(now()).toISOString() } };
@@ -573,7 +585,10 @@ export const createBotProcess = (options: {
       finally { active = false; }
     }),
     shutdown: (record: BotRecord, signal: AbortSignal) => serialize(record.botId, () => shutdown(record, signal)),
-    close: () => jobLeases.close(),
+    close: async (): Promise<void> => {
+      if (pendingCleanup.size || environments.size) throw new Error("Bot preparation cleanup remains unconfirmed; original resources are retained.");
+      await jobLeases.close();
+    },
     advance: (record: BotRecord, signal: AbortSignal) => serialize(record.botId, async () => {
       try { return await advance(record, signal); }
       catch (cause) {

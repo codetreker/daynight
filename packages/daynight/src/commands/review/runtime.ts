@@ -30,6 +30,32 @@ const defaultDependencies: RuntimeDependencies = {
   prepareSkill: prepareReviewSkill, openStore, createClient: createGitHubClient, createGit: createGitManager,
   createRunner: createCopilotRunner, createProcesses: createProcessSupervisor, coordinate: runCoordinator,
 };
+const closedWorkerFailures = new WeakSet<Error>();
+const retainedWorkerClosures = new Map<Error, { close: () => Promise<void>; pending?: Promise<void> }>();
+export const hasRetainedWorkerReviewFailure = (failure: unknown): boolean => failure instanceof Error && retainedWorkerClosures.has(failure);
+export const isConfirmedWorkerReviewFailure = (failure: unknown): boolean => failure instanceof Error && closedWorkerFailures.has(failure);
+
+/** Joins only a failed Worker's original Reviewer resources; never starts review work. */
+export const reconcileWorkerReviewFailure = async (failure: unknown): Promise<void> => {
+  if (failure instanceof Error && closedWorkerFailures.has(failure)) return;
+  const retained = failure instanceof Error ? retainedWorkerClosures.get(failure) : undefined;
+  if (retained === undefined) {
+    if (failure instanceof AggregateError && failure.errors.length > 0) {
+      await Promise.all([...failure.errors, ...(failure.cause === undefined || failure.errors.includes(failure.cause) ? [] : [failure.cause])].map(reconcileWorkerReviewFailure));
+      return;
+    }
+    throw new Error("Reviewer closure has no original resource confirmation.", { cause: failure });
+  }
+  if (retained.pending === undefined) {
+    const work = retained.close().then(() => {
+      closedWorkerFailures.add(failure as Error);
+      retainedWorkerClosures.delete(failure as Error);
+    });
+    retained.pending = work;
+    void work.catch(() => { if (retained.pending === work) delete retained.pending; });
+  }
+  await retained.pending;
+};
 
 export const formatCoordinatorEvent = (event: CoordinatorEvent): string => {
   const identity = [event.repository, event.number === undefined ? undefined : `PR ${event.number}`,
@@ -54,6 +80,8 @@ export const runForegroundReview = async (
   let lock: Awaited<ReturnType<typeof acquireInstanceLock>> | undefined;
   let store: ReturnType<typeof openStore> | undefined;
   let safe = true;
+  let processClosure = (): boolean => safe;
+  let storeClosed = false, lockReleased = false;
   let failure: unknown;
   try {
     await mkdir(paths.stateDirectory, { recursive: true });
@@ -75,15 +103,33 @@ export const runForegroundReview = async (
     safe = false;
     const result = await dependencies.coordinate({ configuration, store, client, git, runner, processes, signal, log,
       ...(options.source === undefined ? {} : { assignment: { source: options.source, repositoryDirectory: path.join(paths.stateDirectory, "repositories") } }) });
+    processClosure = () => result.safeToReleaseLock && processes.safeToReleaseLock;
     safe = result.safeToReleaseLock && processes.safeToReleaseLock;
     if (!safe) throw new Error(`Review execution could not be confirmed stopped. Instance lock ${paths.lockFile} and interrupted state were retained; confirm the CLI and all review agents have stopped before manually removing the lock.`);
   } catch (error) { failure = error; }
-  try { store?.close(); } catch (error) { safe = false; failure = failure === undefined ? error : new AggregateError([failure, error], "Review execution and database shutdown failed."); }
-  if (lock !== undefined && safe) {
-    try { await lock.release(); } catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], "Review execution and instance-lock release failed."); }
+  // Preserve process evidence separately from storage errors: retrying a failed
+  // close may release the original store, but cannot manufacture process proof.
+  const initialProcessClosure = processClosure();
+  try { store?.close(); storeClosed = true; } catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], "Review execution and database shutdown failed."); }
+  if (lock !== undefined && initialProcessClosure && storeClosed) {
+    try { await lock.release(); lockReleased = true; } catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], "Review execution and instance-lock release failed."); }
   }
   if (options.signal === undefined) for (const signal of signals) process.off(signal, stop);
-  if (failure !== undefined) throw failure;
+  if (failure !== undefined) {
+    if (options.source !== undefined) {
+      // A shared abort reason can be thrown by multiple runtime instances. Each
+      // closure receipt needs a distinct owner identity, retaining that cause.
+      const original = new Error(failure instanceof Error ? failure.message : "Reviewer execution failed.", { cause: failure });
+      if (initialProcessClosure && storeClosed && (lock === undefined || lockReleased)) closedWorkerFailures.add(original);
+      else retainedWorkerClosures.set(original, { close: async () => {
+        if (!processClosure()) throw new Error("Original Reviewer processes remain unconfirmed.", { cause: original });
+        if (!storeClosed) { store?.close(); storeClosed = true; }
+        if (!lockReleased) { await lock?.release(); lockReleased = true; }
+      } });
+      throw original;
+    }
+    throw failure;
+  }
 };
 
 export const runWorkerReview = (paths: ReviewPaths, options: { packageDirectory: string; signal: AbortSignal; source: AssignmentSource; log?: (event: CoordinatorEvent) => void }): Promise<void> =>

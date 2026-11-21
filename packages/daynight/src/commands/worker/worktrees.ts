@@ -739,10 +739,17 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       closing.abort(new Error("Worker Git manager is closing."));
       for (const handle of handles) handle.requestStop();
       disposed = (async () => {
-        await Promise.allSettled([...preparations]);
-        await Promise.all([...handles].map(handle => handle.joined));
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            Promise.allSettled([...preparations]).then(() => Promise.all([...handles].map(handle => handle.joined))),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Worker repository cleanup exceeded its deadline; original Git responsibilities are retained.")), 20_000); }),
+          ]);
+        } finally { clearTimeout(timer); }
         if (hooks !== null) { await rm(await hooks, { recursive: true }); hooks = null; }
       })();
+      const observation = disposed;
+      void observation.catch(() => { if (disposed === observation) disposed = undefined; });
       return disposed;
     },
   };

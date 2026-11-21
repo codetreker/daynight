@@ -31,7 +31,7 @@ export const createWebBackendFixtures = (storage: "memory" | "file") => {
 
   const fixture=async(agent: "codex" | "claude" | "copilot" = "codex", recoveryLimit = 2)=>{
    vi.spyOn(storagePreparation, "prepareControllerStorage").mockReturnValue({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
-   vi.spyOn(jobLeases, "createControllerJobLeases").mockImplementation(() => ({ enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} }));
+   vi.spyOn(jobLeases, "createControllerJobLeases").mockImplementation(() => ({ enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} }));
    const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
    const store=openWebExecutionStore(storage === "memory" ? createMemoryDatabase() : path.join(home,"worker.sqlite"));stores.push(store);
    const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};

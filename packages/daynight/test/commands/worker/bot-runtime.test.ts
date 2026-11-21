@@ -26,6 +26,34 @@ const fixture=(pollIntervalMs: number | (() => number) = 60000, assistantTasks?:
   return {runtime,process,api,remote,records,reconcile,onError,deletion,setAdmission:(value:boolean)=>{admission=value;}};
 };
 
+test("bounds shutdown without forgetting an unjoined launch and stops all original writers", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  let release!: () => void;
+  f.process.advance.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({startup:{state:"ready",reasonCode:"ready"},lifecycle:"ready",initialInputState:"not_required",nativeSessionId:id(7),error:null}); }));
+  const tick = f.runtime.tick(new AbortController().signal);
+  await vi.waitFor(() => expect(f.process.advance).toHaveBeenCalledTimes(2));
+  const stopped = f.runtime.shutdown({ deadline: Date.now() + 100 });
+  const rejected = expect(stopped).rejects.toThrow("Bot shutdown is unconfirmed");
+  await vi.advanceTimersByTimeAsync(100);
+  await rejected;
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
+  expect(f.runtime.snapshot()).toMatchObject({ closed: true, jobs: [id(3)] });
+  release(); await tick;
+  await f.runtime.shutdown();
+  expect(f.runtime.snapshot()).toMatchObject({ jobs: [], ticks: 0 });
+});
+
+test("closes independent assistant producers before joining Bot work", async () => {
+  const closeAdmission = vi.fn(), shutdown = vi.fn(async () => {});
+  const f = fixture(60000, { closeAdmission, shutdown } as never);
+  f.runtime.closeAdmission("disable");
+  expect(closeAdmission).toHaveBeenCalledWith("disable");
+  await f.runtime.shutdown();
+  expect(closeAdmission.mock.invocationCallOrder[0]).toBeLessThan(shutdown.mock.invocationCallOrder[0]!);
+  await expect(f.runtime.tick(new AbortController().signal)).rejects.toThrow("closing");
+});
+
 test("isolates failed Bots and reports ready only after Controller observation",async()=>{
   const f=fixture();f.process.advance.mockRejectedValueOnce(new Error("unavailable"));
   await f.runtime.tick(new AbortController().signal);

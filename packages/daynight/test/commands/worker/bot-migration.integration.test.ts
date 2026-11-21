@@ -246,7 +246,7 @@ describe("legacy Bot storage migration", () => {
     const botProcess = createBotProcess({ homeDirectory: f.homeDirectory, packageDirectory: f.homeDirectory,
       store: local.store, executions: local.executions, recoveryLimit: 3, canAdmitNewExecution: () => true,
       sessionApi: { grant } as never, dependencies: { launch },
-      jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },
+      jobLeases: { enabled: false, retainBirthCleanup: () => () => {}, cleanupBirth: async () => {}, adopt: () => { throw new Error("Unexpected native launch ownership in this fixture."); }, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} },
     });
     try {
       const current = local.store.get(owner, f.botId)!;

@@ -1,11 +1,12 @@
 import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { execFileSync } from "node:child_process";
+import * as childProcesses from "node:child_process";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +16,21 @@ import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
+import * as workerIdentity from "../../../src/commands/worker/identity.js";
+import * as atomicFiles from "../../../src/platform/files.js";
+import { hasUnconfirmedOwnedCommandCleanup, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
+import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as reviewerHost from "../../../src/commands/worker/reviewer-host.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
+import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
+import * as webStores from "../../../src/commands/worker/backends/web-store.js";
+import * as monitoringObservers from "../../../src/commands/worker/monitoring/observer.js";
+import * as workerDiagnostics from "../../../src/commands/worker/diagnostics.js";
+import * as reconcileWake from "../../../src/commands/worker/reconcile-wake.js";
+import * as grantRenewal from "../../../src/commands/worker/backends/grant-renewal.js";
+import { createNativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
+import { BotCliProbeCleanupError, createBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -34,10 +49,14 @@ type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), reviewer: vi.fn<(options: { signal: AbortSignal }) => Promise<void>>(), reviewerStopped: vi.fn(), nextUUID: null as (() => string) | null }));
 // The startup fixture controls Task dependencies; the independent reviewer host has its own tests.
-vi.mock("../../../src/commands/worker/reviewer-host.js", () => ({ runReviewerHost: mocks.reviewer }));
+vi.mock("../../../src/commands/worker/reviewer-host.js", async original => ({ ...await original<object>(), runReviewerHost: mocks.reviewer }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();
   return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
+vi.mock("node:child_process", async original => {
+  const actual = await original<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
@@ -152,7 +171,7 @@ beforeEach(() => {
   });
   mocks.nextUUID = null;
   mocks.emit.mockReset();
-  mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
+  mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
@@ -174,6 +193,639 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("does not implicitly rebuild after an ordinary run settles its original journal boundary", async () => {
+    const f = await fixture();
+    mocks.reviewer.mockImplementationOnce(async () => {
+      const sink = currentOwnedCommandLifecycle()!;
+      await sink({ resourceId: uuid(90), sequence: 1, stage: "prepared", proof: null });
+      await sink({ resourceId: uuid(90), sequence: 2, stage: "unknown", proof: null });
+      await sink({ resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null });
+    });
+    const { cancellation, running } = start(f);
+    let joined = false;
+    void running.then(() => { joined = true; }, () => { joined = true; });
+    try {
+      await vi.waitFor(() => expect(joined).toBe(true));
+      await running;
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(mocks.reviewer).toHaveBeenCalledOnce();
+      const files = await readdir(path.join(f.paths.workerDirectory, "execution-resources"));
+      const records = await Promise.all(files.filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", file), "utf8"))));
+      expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(90), sequence: 3, stage: "stopped", proof: null } })]);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
+  it("joins a Bot's ordinary cancellation without recording it as a background failure", async () => {
+    const f = await fixture(false, false);
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const run = vi.fn(async (signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw signal.reason;
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run, shutdown: async () => {} });
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      cancellation.abort();
+      await running;
+      expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("stopped after an owner failure"))).toBe(false);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); }
+  });
+
+  it("preserves the original journal save failure when a joined Bot rejects with the scope cancellation reason", async () => {
+    const f = await fixture(false, false), failure = new Error("The original Bot reservation write failed.");
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let failed = false, sameReason = false;
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && !failed) { failed = true; throw failure; }
+      await replace(file, text, ...rest);
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: async (signal: AbortSignal) => {
+      const sink = currentOwnedCommandLifecycle()!;
+      const prepared = { resourceId: uuid(91), sequence: 1, stage: "prepared" as const, proof: null };
+      try { await sink(prepared); }
+      catch (error) {
+        sameReason = signal.aborted && signal.reason === error;
+        await sink(prepared);
+        await sink({ ...prepared, sequence: 2, stage: "stopped" });
+        throw error;
+      }
+    }, shutdown: async () => {} });
+    const { cancellation, running } = start(f);
+    try {
+      await expect(running).rejects.toBe(failure);
+      expect(sameReason).toBe(true);
+      expect(mocks.bots).toHaveBeenCalledOnce();
+      const files = await readdir(directory);
+      const records = await Promise.all(files.filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(records).toEqual([expect.objectContaining({ generation: "1", event: { resourceId: uuid(91), sequence: 2, stage: "stopped", proof: null } })]);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); saving.mockRestore(); }
+  });
+
+  it.each([false, true])("preserves a real grant inventory failure and rebuilds only when explicitly requested (rebuild: %s)", async rebuild => {
+    const f = await fixture(), failure = new Error("The original Controller grant inventory could not be read.");
+    const maintain = grantRenewal.maintainWorkerControllerGrants;
+    const renewal = vi.spyOn(grantRenewal, "maintainWorkerControllerGrants").mockImplementationOnce(options => maintain({
+      ...options, store: { listUnfinishedTasks: () => { throw failure; } },
+    }));
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, rebuild ? { onExecutionScope: control => { controls.push(control); } } : {});
+    let result: { error: unknown } | { completed: true } | undefined;
+    void running.then(() => { result = { completed: true }; }, error => { result = { error }; });
+    try {
+      if (rebuild) {
+        await vi.waitFor(() => expect(controls[0]?.snapshot().stopped).toBe(true));
+        expect(result).toBeUndefined();
+        expect(renewal).toHaveBeenCalledOnce();
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+        const lock = await readFile(f.paths.lockFile, "utf8");
+        controls[0]!.rebuild();
+        await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(renewal).toHaveBeenCalledTimes(2); });
+        expect(controls[1]!.generation).toBe("2");
+        expect(renewal.mock.calls[1]![0].signal).not.toBe(renewal.mock.calls[0]![0].signal);
+        expect(await readFile(f.paths.lockFile, "utf8")).toBe(lock);
+        cancellation.abort();
+      }
+      await vi.waitFor(() => expect(result).toEqual({ error: failure }));
+      expect(renewal).toHaveBeenCalledTimes(rebuild ? 2 : 1);
+      await expect(running).rejects.toBe(failure);
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); renewal.mockRestore(); }
+  });
+
+  it("rebuilds after a joined initialization failure while retaining the lock and the original exit error", async () => {
+    const f = await fixture(), failure = new Error("Worker identity read was temporarily unavailable.");
+    let originalSignal: AbortSignal | undefined, originalLock: string | undefined;
+    const identity = vi.spyOn(workerIdentity, "ensureWorkerIdentity").mockImplementationOnce(async (paths, signal) => {
+      originalSignal = signal;
+      originalLock = await readFile(resolveWorkerPaths(f.homeDirectory).lockFile, "utf8");
+      throw failure;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().stopped).toBe(true));
+      expect(originalSignal?.aborted).toBe(true);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
+      const next = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(controls[1]!.generation).toBe("2");
+      expect(next.signal).not.toBe(originalSignal);
+      expect(next.signal!.aborted).toBe(false);
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      cancellation.abort();
+      try { await expect(running).rejects.toBe(failure); } finally { identity.mockRestore(); }
+    }
+    const released = await tryAcquireWorkerInstanceLock(f.paths);
+    expect(released).not.toBeNull(); await released!.release();
+  });
+
+  it.each(["failure", "success"] as const)("joins a pending startup lock after waiter cancellation and retains its original %s", async outcome => {
+    const f = await fixture(), failure = Object.assign(new Error("Worker lock write failed."), { code: "EIO" });
+    const locks = await import("../../../src/commands/worker/instance-lock.js"), acquire = locks.acquireWorkerInstanceLock;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const acquiring = vi.spyOn(locks, "acquireWorkerInstanceLock").mockImplementationOnce(async paths => {
+      entered.resolve();
+      await release.promise;
+      if (outcome === "failure") throw failure;
+      return acquire(paths);
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    let joined = false;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    void running.then(() => { joined = true; }, () => { joined = true; });
+    try {
+      await entered.promise;
+      cancellation.abort();
+      await vi.waitFor(() => expect(control?.snapshot().admission).toBe("closed"));
+      expect(control!.snapshot().resources.find(resource => resource.resourceId === "startup"))
+        .toMatchObject({ result: null, detail: { settled: false } });
+      expect(joined).toBe(false);
+      release.resolve();
+      if (outcome === "failure") await expect(running).rejects.toBe(failure);
+      else await running;
+      expect(control!.snapshot().stopped).toBe(true);
+      expect(acquiring).toHaveBeenCalledOnce();
+      expect(mocks.remote).not.toHaveBeenCalled();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); acquiring.mockRestore(); }
+  });
+
+  it("reports an initialization failure on ordinary exit after releasing its original lock", async () => {
+    const f = await fixture(), failure = new Error("Worker identity read failed.");
+    const identity = vi.spyOn(workerIdentity, "ensureWorkerIdentity").mockImplementationOnce(async () => {
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      throw failure;
+    });
+    try { await expect(runWorker(f)).rejects.toBe(failure); } finally { identity.mockRestore(); }
+    const released = await tryAcquireWorkerInstanceLock(f.paths);
+    expect(released).not.toBeNull(); await released!.release();
+  });
+
+  it("retains the management lock after a close deadline until the original reporter joins", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const stop = vi.fn(async () => { entered.resolve(); await release.promise; });
+    mocks.reporter.mockImplementation(() => ({ ...reporter(), stop }));
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      controls[0]!.rebuild(); await entered.promise;
+      await expect(running).rejects.toThrow("owner stop deadline elapsed");
+      expect(controls).toHaveLength(1);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(stop).toHaveBeenCalledOnce();
+      release.resolve();
+      let released: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>>;
+      await vi.waitFor(async () => { released = await tryAcquireWorkerInstanceLock(f.paths); expect(released).not.toBeNull(); });
+      await released!.release();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); }
+  }, 20_000);
+
+  it.each([false, true])("reports historical diagnostic output failure after releasing the original root (rebuild: %s)", async rebuild => {
+    const f = await fixture(), failure = new Error("Foreground diagnostic output failed.");
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/diagnostics.js")>("../../../src/commands/worker/diagnostics.js");
+    const sinks: Awaited<ReturnType<typeof actual.createWorkerDiagnostics>>[] = [];
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockImplementation(async options => {
+      const sink = await actual.createWorkerDiagnostics(options); sinks.push(sink); return sink;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    let outputFailed = false;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { controls.push(value); }, log: message => {
+      if (!outputFailed && message.includes("Controlled foreground failure.")) { outputFailed = true; throw failure; }
+    } });
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      sinks[0]!.emit({ kind: "foreground-failure", message: "Controlled foreground failure." });
+      const original = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      const lockText = await readFile(f.paths.lockFile, "utf8");
+      expect(outputFailed).toBe(true); expect(sinks[0]!.isClosed()).toBe(false);
+      if (rebuild) {
+        expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+        controls[0]!.rebuild();
+        await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledTimes(2));
+        expect(controls[1]!.generation).toBe("2");
+        expect(sinks[0]!.isClosed()).toBe(true);
+        expect((mocks.coordinator.mock.calls[1]![0] as WorkerCoordinatorOptions).signal).not.toBe(original.signal);
+        expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockText);
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      }
+      cancellation.abort(); await expect(running).rejects.toBe(failure);
+      expect(sinks.every(sink => sink.isClosed())).toBe(true);
+      expect(() => original.store.listTasks()).toThrow();
+      const released = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(released).not.toBeNull(); await released!.release();
+    } finally { cancellation.abort(); await Promise.allSettled([running]); creating.mockRestore(); }
+  });
+
+  it("retains the root through the diagnostic close deadline until its original file handle joins", async () => {
+    const f = await fixture(), release = Promise.withResolvers<void>();
+    const createWake = reconcileWake.createReconcileWake;
+    let polling = false, appending = false;
+    const waking = vi.spyOn(reconcileWake, "createReconcileWake").mockImplementation(() => {
+      const wake = createWake();
+      return { ...wake, waitAfter: async (revision, _delayMs, signal) => {
+        const waiting = wake.waitAfter(revision, 60_000, signal);
+        if (revision === wake.snapshot() && !signal.aborted) polling = true;
+        try { await waiting; } finally { polling = false; }
+      } };
+    });
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/diagnostics.js")>("../../../src/commands/worker/diagnostics.js");
+    let sink: Awaited<ReturnType<typeof actual.createWorkerDiagnostics>> | undefined;
+    let handleClosed = false, close: ReturnType<typeof vi.spyOn> | undefined;
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockImplementation(async options => {
+      sink = await actual.createWorkerDiagnostics({ ...options, files: {
+        ensureDirectory: async directory => { await mkdir(directory, { recursive: true }); },
+        createSegment: async filename => { await writeFile(filename, "", { flag: "wx" }); },
+        appendRecord: async (filename, line) => {
+          const handle = await open(filename, "a");
+          const held = line.includes('"kind":"held-close"');
+          try {
+            if (held) { appending = true; await release.promise; }
+            await handle.writeFile(line);
+          }
+          finally { await handle.close(); if (held) handleClosed = true; }
+        },
+      } });
+      close = vi.spyOn(sink, "close"); return sink;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    let joined = false;
+    void running.then(() => { joined = true; }, () => { joined = true; });
+    try {
+      // The held append must belong to management close, after the running
+      // loop's ordinary flush has joined and its real poll wait has started.
+      await vi.waitFor(() => expect(polling).toBe(true));
+      handleClosed = false;
+      sink!.emit({ kind: "held-close", message: "Hold the original diagnostic append." });
+      const stopping = control!.stop();
+      await vi.waitFor(() => expect(appending).toBe(true));
+      expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
+      control!.rebuild();
+      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 15_000 });
+      await expect(running).rejects.toThrow("owner stop deadline elapsed");
+      expect(sink!.isClosed()).toBe(false); expect(handleClosed).toBe(false);
+      expect(close).toHaveBeenCalledOnce();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      release.resolve();
+      let released: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>>;
+      await vi.waitFor(async () => { released = await tryAcquireWorkerInstanceLock(f.paths); expect(released).not.toBeNull(); });
+      await released!.release();
+      expect(sink!.isClosed()).toBe(true); expect(handleClosed).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve(); cancellation.abort();
+      try {
+        await vi.waitFor(() => expect(joined).toBe(true), { timeout: 5000 });
+        await Promise.allSettled([running]);
+        const closingSink = sink;
+        if (closingSink !== undefined) await vi.waitFor(() => expect(closingSink.isClosed()).toBe(true), { timeout: 5000 });
+      }
+      finally { creating.mockRestore(); waking.mockRestore(); }
+    }
+  }, 20_000);
+
+  it("retains management handles when a rejected diagnostic close has no completed closure receipt", async () => {
+    const f = await fixture(), failure = new Error("Diagnostic writer closure remains unknown.");
+    const close = vi.fn(async () => { throw failure; });
+    const creating = vi.spyOn(workerDiagnostics, "createWorkerDiagnostics").mockResolvedValue({
+      emit: mocks.emit, flush: async () => {}, close, isClosed: () => false, filename: "unconfirmed.jsonl",
+    });
+    const locks = await import("../../../src/commands/worker/instance-lock.js"), acquire = locks.acquireWorkerInstanceLock;
+    let originalLock: Awaited<ReturnType<typeof acquire>> | undefined;
+    const acquiring = vi.spyOn(locks, "acquireWorkerInstanceLock").mockImplementation(async paths => originalLock = await acquire(paths));
+    const { cancellation, running } = start(f);
+    let store: WorkerStore | undefined;
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      store = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store;
+      cancellation.abort(); await expect(running).rejects.toBe(failure);
+      expect(close).toHaveBeenCalledOnce(); expect(store.listTasks()).toEqual([]);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+    } finally {
+      cancellation.abort(); await Promise.allSettled([running]);
+      // The synthetic owner has no close proof; only this fixture releases its
+      // captured handles, after asserting that production retained them.
+      store?.close(); await originalLock?.release(); creating.mockRestore(); acquiring.mockRestore();
+    }
+  });
+
+  it("reconciles the original non-Git command through management control before rebuilding", async () => {
+    const f = await fixture(), marker = path.join(f.homeDirectory, "command-runs");
+    const saveFailure = new Error("Original command stop receipt could not be saved.");
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let rejectStop = true;
+    let originalSink: OwnedCommandLifecycleSink | undefined;
+    const reviewerClosure = vi.spyOn(reviewerHost, "reconcileReviewerHostFailure").mockImplementation(async error => {
+      // This fixture owns only its real command; production Reviewer closure
+      // separately proves its coordinator, database and instance lock.
+      if (hasUnconfirmedOwnedCommandCleanup(error)) throw error;
+    });
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "stopped" && rejectStop) throw saveFailure;
+      return replace(file, text, ...rest);
+    });
+    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
+      originalSink = currentOwnedCommandLifecycle();
+      const operation = createOperation({ signal, limits: { totalMs: 20_000, requestMs: 20_000 } });
+      try {
+        await runOwnedCommand({ file: process.execPath, args: ["--input-type=module", "--eval", `import {appendFileSync} from 'node:fs';appendFileSync(${JSON.stringify(marker)},'once\\n');`], environment: process.env }, operation);
+      } finally { operation.dispose(); }
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().resources.find(entry => entry.resourceId === "native-inventory")?.result?.stop).toBe("unknown"), { timeout: 10_000 });
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      const refused = createOperation();
+      try {
+        await expect(withOwnedCommandLifecycle(originalSink!, () => runOwnedCommand({ file: process.execPath,
+          args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(marker)},'unexpected');`], environment: process.env }, refused))).rejects.toThrow();
+      } finally { refused.dispose(); }
+      rejectStop = false;
+      await controls[0]!.reconcile();
+      // A sibling owner may have observed its old rejection before the native
+      // owner confirmed the same boundary during the first reconciliation.
+      if (!controls[0]!.snapshot().stopped) await controls[0]!.reconcile();
+      expect(controls[0]!.snapshot().stopped).toBe(true);
+      const saved = await Promise.all((await readdir(directory)).filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ generation: "1", identity: { serverOrigin: origin, workerId }, event: { stage: "stopped" } });
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.reviewer).toHaveBeenCalledTimes(2); });
+      expect(await readFile(marker, "utf8")).toBe("once\n");
+    } finally {
+      rejectStop = false; cancellation.abort();
+      try { await expect(running).rejects.toMatchObject({ errors: expect.arrayContaining([saveFailure, expect.objectContaining({ name: "OwnedCommandCleanupError" })]) }); }
+      finally { saving.mockRestore(); reviewerClosure.mockRestore(); }
+    }
+  }, 30_000);
+
+  it("reconciles a probe's original prepared reservation after scope admission closes", async () => {
+    const f = await fixture(), verifier = createNativeSelectionVerifier();
+    const saveFailure = new Error("Original probe reservation could not be saved.");
+    const directory = path.join(f.paths.workerDirectory, "execution-resources"), replace = atomicFiles.replaceFileAtomically;
+    let failPrepared = true, originalFailure: unknown, originalSink: OwnedCommandLifecycleSink | undefined;
+    const saving = vi.spyOn(atomicFiles, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
+      if (path.dirname(file) === directory && JSON.parse(String(text)).event.stage === "prepared" && failPrepared) throw saveFailure;
+      await replace(file, text, ...rest);
+    });
+    const reviewerClosure = vi.spyOn(reviewerHost, "reconcileReviewerHostFailure").mockImplementation(async () => {
+      // This fixture's reviewer owns the real selection verifier only.
+      await verifier.close();
+    });
+    mocks.reviewer.mockImplementationOnce(async ({ signal }) => {
+      originalSink = currentOwnedCommandLifecycle();
+      const operation = createOperation({ signal });
+      try {
+        await verifier.verify({ native: { agent: "codex", model: "model", args: [] }, cwd: f.homeDirectory, environment: process.env }, operation);
+      } catch (error) { originalFailure = error; throw error; }
+      finally { operation.dispose(); }
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: value => { controls.push(value); } });
+    try {
+      await vi.waitFor(() => expect(controls[0]?.snapshot().resources.find(entry => entry.resourceId === "reviewer")?.result?.stop).toBe("unknown"));
+      const [probe] = retainedBotCliProbes();
+      expect(probe).toMatchObject({ pid: null, process: null, targetStarted: false });
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      failPrepared = false;
+      await controls[0]!.reconcile();
+      if (!controls[0]!.snapshot().stopped) await controls[0]!.reconcile();
+      expect(controls[0]!.snapshot().stopped).toBe(true);
+      expect(retainedBotCliProbes()).toEqual([]);
+      const saved = await Promise.all((await readdir(directory)).filter(file => file.endsWith(".json")).map(async file => JSON.parse(await readFile(path.join(directory, file), "utf8"))));
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ generation: "1", event: { resourceId: probe!.launchId, stage: "stopped", proof: null } });
+      const refused = createOperation();
+      try {
+        const error = await withOwnedCommandLifecycle(originalSink!, () => createBotCliProbe({ cwd: f.homeDirectory, environment: process.env }, refused)).catch(error => error);
+        expect(error).toBeInstanceOf(Error); expect(error).not.toBeInstanceOf(BotCliProbeCleanupError);
+        expect(retainedBotCliProbes()).toEqual([]);
+      } finally { refused.dispose(); }
+      controls[0]!.rebuild();
+      await vi.waitFor(() => expect(controls).toHaveLength(2));
+      expect(controls[1]!.generation).toBe("2");
+    } finally {
+      failPrepared = false; cancellation.abort();
+      try { await expect(running).rejects.toMatchObject({ errors: expect.arrayContaining([saveFailure, originalFailure]) }); }
+      finally { await verifier.close(); saving.mockRestore(); reviewerClosure.mockRestore(); }
+    }
+  });
+
+  it("retains a pending startup constructor and cleans its late result before rebuilding", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const createManager = cloudConfiguration.createWorkerConfigurationManager;
+    let stopManager: ReturnType<typeof vi.fn<() => Promise<void>>> | undefined;
+    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async options => {
+      const manager = await createManager(options), stop = manager.stop;
+      stopManager = vi.fn(stop); manager.stop = stopManager;
+      entered.resolve(); await release.promise;
+      return manager;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { cancellation, running } = start(f, { onExecutionScope: control => { controls.push(control); } });
+    try {
+      await entered.promise;
+      expect(controls).toHaveLength(1);
+      const originalLock = await readFile(f.paths.lockFile, "utf8");
+      const results = await controls[0]!.stop({ deadline: Date.now() + 50 });
+      expect(results).toContainEqual(expect.objectContaining({ resourceId: "startup", stop: "unknown", save: "failed" }));
+      expect(stopManager).not.toHaveBeenCalled();
+      expect(mocks.bots).not.toHaveBeenCalled();
+      expect(controls[0]!.snapshot().stopped).toBe(false);
+      expect(() => controls[0]!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      release.resolve();
+      await vi.waitFor(() => expect(stopManager).toHaveBeenCalledOnce());
+      expect((await controls[0]!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(mocks.bots).not.toHaveBeenCalled();
+      controls[0]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalled(); });
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
+      expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+    } finally { release.resolve(); cancellation.abort(); await running; constructing.mockRestore(); }
+  });
+
+  it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {
+    const f = await fixture();
+    const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    const createBrowser = directoryBrowsing.createWorkerDirectoryBrowser;
+    const browser = createBrowser(), joinDirectory = browser.join;
+    vi.spyOn(browser, "join").mockImplementation(async () => { entered.resolve(); await gate.promise; await joinDirectory(); });
+    const browsing = vi.spyOn(directoryBrowsing, "createWorkerDirectoryBrowser").mockReturnValue(browser);
+    const openWeb = webStores.openWebExecutionStore;
+    let closeWeb: ReturnType<typeof vi.fn<() => void>> | undefined;
+    const webStorage = vi.spyOn(webStores, "openWebExecutionStore").mockImplementation((...args) => {
+      const store = openWeb(...args), close = store.close;
+      closeWeb = vi.fn(close); store.close = closeWeb;
+      return store;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const tasks = coordinator(async () => {}); mocks.coordinator.mockReturnValue(tasks);
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => { expect(control).toBeDefined(); expect(mocks.coordinator).toHaveBeenCalled(); });
+      const stopping = control!.stop();
+      await entered.promise;
+      await vi.waitFor(() => expect(tasks.shutdown).toHaveBeenCalledOnce());
+      expect(closeWeb).toBeDefined(); expect(closeWeb).not.toHaveBeenCalled();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).store.listTasks()).toEqual([]);
+      gate.resolve();
+      expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
+      expect(closeWeb).toHaveBeenCalledOnce();
+      cancellation.abort(); await running;
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { gate.resolve(); cancellation.abort(); await running; browsing.mockRestore(); webStorage.mockRestore(); }
+  });
+
+  it("keeps management reporting and the original lock while a stopped scope is blocked", async () => {
+    const f = await fixture(false, false);
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    let known = false;
+    const runFailures: Error[] = [];
+    const createObserver = monitoringObservers.createMonitoringObserver;
+    const lifecycle = vi.fn();
+    const observation = vi.spyOn(monitoringObservers, "createMonitoringObserver").mockImplementation((...args) => {
+      const observer = createObserver(...args), setLifecycle = observer.setLifecycle;
+      observer.setLifecycle = state => { lifecycle(state); setLifecycle(state); };
+      return observer;
+    });
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), run: async (signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      const failure = new Error("Bot run joined after a failed stop observation.");
+      runFailures.push(failure); throw failure;
+    }, shutdown: async () => { if (!known) throw new Error("Original Bot boundary is unknown."); } });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => { expect(control).toBeDefined(); expect(mocks.reporter).toHaveBeenCalled(); });
+      expect((await control!.stop()).some(result => result.stop === "unknown")).toBe(true);
+      expect(lifecycle).not.toHaveBeenCalledWith("stopped");
+      const reportOptions = mocks.reporter.mock.calls[0]![0] as ReporterOptions;
+      expect(reportOptions.signal.aborted).toBe(false);
+      expect(reportOptions.executionActive!()).toBe(false);
+      expect(mocks.reporter.mock.results[0]!.value.stop).not.toHaveBeenCalled();
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect(() => control!.rebuild()).toThrow("original resources");
+      known = true;
+      expect((await control!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      control!.rebuild();
+      await vi.waitFor(() => expect(control!.generation).toBe("2"));
+    } finally {
+      known = true; cancellation.abort();
+      try {
+        const failure = await running.catch(error => error);
+        expect(runFailures.length).toBeGreaterThan(0);
+        expect(failure instanceof AggregateError ? failure.errors : [failure]).toEqual(runFailures);
+      } finally { observation.mockRestore(); }
+    }
+  });
+
+  it("rebuilds execution scopes twice under the original management lock and database", async () => {
+    const f = await fixture();
+    const cancellation = new AbortController(); cancellations.add(cancellation);
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { running } = start(f, { signal: cancellation.signal, onExecutionScope: control => { controls.push(control); } });
+    try {
+      await vi.waitFor(() => expect(controls).toHaveLength(1));
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
+      const firstOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      // The coordinator can recover existing work while repository admission is still pending.
+      await vi.waitFor(() => expect(firstOptions.store.getProject({ projectId: uuid(1) })).toMatchObject({
+        projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path,
+      }), { timeout: 5000, interval: 10 });
+      const originalTask = firstOptions.store.registerPending({ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), agent: "codex", agentControlMode: "web" });
+      expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(cancellation.signal.aborted).toBe(false);
+      expect(firstOptions.signal!.aborted).toBe(true);
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      const lockBefore = await readFile(f.paths.lockFile, "utf8");
+      controls[0]!.rebuild();
+      await vi.waitFor(() => expect(controls).toHaveLength(2));
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledTimes(2));
+      const secondOptions = mocks.coordinator.mock.calls[1]![0] as WorkerCoordinatorOptions;
+      expect(secondOptions.signal).not.toBe(firstOptions.signal);
+      expect(secondOptions.signal!.aborted).toBe(false);
+      expect(secondOptions.store).toBe(firstOptions.store);
+      expect(mocks.reviewer).toHaveBeenCalledTimes(2);
+      expect(mocks.reviewer.mock.calls[0]![0].signal).toBe(firstOptions.signal);
+      expect(mocks.reviewer.mock.calls[1]![0].signal).toBe(secondOptions.signal);
+      expect(mocks.reviewerStopped).toHaveBeenCalledOnce();
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockBefore);
+      expect(secondOptions.store.getTask(originalTask)).toEqual(originalTask);
+      expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(cancellation.signal.aborted).toBe(false);
+      controls[1]!.rebuild();
+      await vi.waitFor(() => { expect(controls).toHaveLength(3); expect(mocks.coordinator).toHaveBeenCalledTimes(3); });
+      const thirdOptions = mocks.coordinator.mock.calls[2]![0] as WorkerCoordinatorOptions;
+      expect(thirdOptions.signal).not.toBe(secondOptions.signal);
+      expect(thirdOptions.signal!.aborted).toBe(false);
+      expect(thirdOptions.store).toBe(firstOptions.store);
+      expect(thirdOptions.store.getTask(originalTask)).toEqual(originalTask);
+      expect(await readFile(f.paths.lockFile, "utf8")).toBe(lockBefore);
+      expect(mocks.reviewer).toHaveBeenCalledTimes(3);
+      expect(mocks.reviewer.mock.calls[2]![0].signal).toBe(thirdOptions.signal);
+      expect((await controls[2]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
+    } finally { cancellation.abort(); await running; }
+  });
+
+  it("retains the management lock and blocks rebuilding until a timed-out reviewer joins", async () => {
+    const f = await fixture();
+    const held = Promise.withResolvers<void>(), aborted = Promise.withResolvers<void>();
+    mocks.reviewer.mockImplementation(async ({ signal }) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      aborted.resolve();
+      await held.promise;
+      mocks.reviewerStopped();
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    try {
+      await vi.waitFor(() => { expect(control).toBeDefined(); expect(mocks.coordinator).toHaveBeenCalledOnce(); });
+      const stopping = control!.stop({ deadline: Date.now() + 100 });
+      await aborted.promise;
+      expect(await stopping).toEqual(expect.arrayContaining([
+        expect.objectContaining({ resourceId: "reviewer", ownerKind: "assistant", stop: "unknown", save: "failed" }),
+      ]));
+      expect(control!.snapshot().stopped).toBe(false);
+      expect(() => control!.rebuild()).toThrow("original resources");
+      expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+      expect((mocks.reporter.mock.calls[0]![0] as ReporterOptions).signal.aborted).toBe(false);
+      expect(mocks.reviewer).toHaveBeenCalledOnce();
+      held.resolve();
+      expect((await control!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      control!.rebuild();
+      await vi.waitFor(() => { expect(control!.generation).toBe("2"); expect(mocks.reviewer).toHaveBeenCalledTimes(2); });
+    } finally { held.resolve(); cancellation.abort(); await running; }
+  });
+
   it("starts the reviewer with the Worker identity and waits for its shutdown", async () => {
     const f = await fixture();
     let release!: () => void, observedAbort!: () => void;
@@ -1134,7 +1786,7 @@ it("blocks Bot and Task admission while Web adoption is pending despite ready na
   let botOptions: { canAdmitNewExecution(): boolean } | undefined;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) };
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) };
   });
   let manager: cloudConfiguration.WorkerConfigurationManager | undefined;
   const create = cloudConfiguration.createWorkerConfigurationManager;
@@ -1173,7 +1825,7 @@ it("starts Bot management with no projects and preserves the Worker lock through
   let botOptions: any;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: vi.fn(async (signal: AbortSignal) => {
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: vi.fn(async (signal: AbortSignal) => {
       if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     }), shutdown: vi.fn(async () => {
       expect(await readFile(f.paths.lockFile, "utf8")).toContain(String(process.pid));
@@ -1204,26 +1856,76 @@ it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdow
   mocks.bots.mockImplementation(options => {
     botOptions = options;
     options.store.observe(options.owner, retained, 1);
-    return { run: async () => {}, shutdown };
+    return { closeAdmission: () => {}, snapshot: () => ({}), run: async () => {}, shutdown };
   });
   const tasks = coordinator(async () => cancellation.abort()); mocks.coordinator.mockReturnValue(tasks);
   try {
-    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toMatchObject({
-      errors: [failure, expect.objectContaining({ message: expect.stringContaining("storage locks are retained") })],
-    });
+    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toBe(failure);
     expect(tasks.shutdown).toHaveBeenCalledOnce();
     expect(shutdown).toHaveBeenCalledOnce();
     expect(botOptions.store.get(botOptions.owner, retained.id)?.observed).toEqual(retained);
     expect(await readFile(path.join(f.paths.stateDirectory, "bots", retained.id, "instance.lock"), "utf8")).toContain(String(process.pid));
-    expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+    expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
   } finally {
     // The controlled runtime never started a writer; release its retained test handle.
     botOptions?.store.close();
+    (mocks.coordinator.mock.calls[0]?.[0] as WorkerCoordinatorOptions | undefined)?.store.close();
   }
 });
 
 
 describe("real runtime resource isolation", () => {
+  it.skipIf(process.platform === "win32")("closes the original Git boundary when Worker cancellation precedes its launcher birth message", async () => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const { createWorkerGitManager } = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+    // A missing configured repository enters the real owned clone path. The
+    // target command must never be dispatched after its launcher's spawn.
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async () => { throw new Error("Cancelled cloning must not prepare a repository format."); } });
+    mocks.git.mockReturnValue(git);
+    const { spawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    let original: { resourceId: string; pid: number } | undefined;
+    let sending: ReturnType<typeof vi.spyOn> | undefined;
+    let birthMessageReceived = false, cancelledBeforeBirth = false;
+    const spawning = vi.spyOn(childProcesses, "spawn").mockImplementation((...args) => {
+      const child = Reflect.apply(spawn, childProcesses, args) as ReturnType<typeof spawn>;
+      const command = args[1];
+      if (Array.isArray(command) && typeof command[0] === "string" && command[0].endsWith("owned-command-helper.js")) {
+        child.on("message", () => { birthMessageReceived = true; });
+        child.once("spawn", () => {
+          if (original !== undefined || child.pid === undefined) return;
+          original = { resourceId: command[1]!, pid: child.pid };
+          sending = vi.spyOn(child, "send");
+          cancelledBeforeBirth = !birthMessageReceived && retainedOwnedCommandBoundaries().some(boundary => boundary.resourceId === original!.resourceId && boundary.proof === null);
+          cancellation.abort();
+        });
+      }
+      return child;
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const { running } = start(f, { signal: cancellation.signal, onExecutionScope: control => { controls.push(control); } });
+    try {
+      try { await vi.waitFor(() => expect(original).toBeDefined(), { timeout: 5000 }); }
+      catch (cause) {
+        throw new Error(`Runtime Git launcher was not observed: ${JSON.stringify({ generation: controls[0]?.generation, spawns: spawning.mock.calls.length,
+          executables: [...new Set(spawning.mock.calls.map(([file]) => file))], lastError: String(mocks.emit.mock.calls.filter(([event]) => event.error !== undefined).at(-1)?.[0].error) })}`, { cause });
+      }
+      await running;
+      expect(cancelledBeforeBirth).toBe(true);
+      expect(original).toBeDefined();
+      expect(sending).not.toHaveBeenCalled();
+      expect(controls).toHaveLength(1); expect(controls[0]!.snapshot().stopped).toBe(true);
+      expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      const record = JSON.parse(await readFile(path.join(f.paths.workerDirectory, "execution-resources", `${original!.resourceId}.json`), "utf8"));
+      expect(record).toMatchObject({ generation: "1", event: { resourceId: original!.resourceId, stage: "stopped", proof: { pid: original!.pid } } });
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally {
+      cancellation.abort(); await Promise.allSettled([running]);
+      try { await withinExecutionDeadline(git.dispose(), Date.now() + 10_000); }
+      finally { sending?.mockRestore(); spawning.mockRestore(); }
+    }
+  }, 35_000);
+
   it.each(["unproven", "foreign", "invalid"])("reconciles an unbound mapping and its damaged registration: %s", async scenario => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     const { projectId: _projectId, ...legacy } = f.repository;
