@@ -382,6 +382,14 @@ describe("Webhook fixed intent controller", () => {
     const intent = controller(), first = await intent.submit(patch()), later = await intent.reconcile();
     expect(later.phase).toBe("confirmed"); expect(later.result).toBe(first.result); expect(later.error).toMatchObject({ kind: "protocol" });
   });
+  it("sends a valid creation key only with a create", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => { bodies.push(JSON.parse(String(options.body)) as Record<string, unknown>); return response({ operation: await submittedReceipt(options, { kind: "endpoint.create" }), endpoint: endpoint("1") }); }));
+    const create = (clientKey: unknown) => ({ kind: "endpoint.create" as const, body: { clientKey, name: "Created", enabled: true, destination: { kind: "http" as const, adapterVersion: "1" as const, configuration: { url: "https://receiver.example/hooks" } }, subscriptions: [] } as never });
+    for (const clientKey of ["", "a b", "x".repeat(201), 7]) expect(() => controller().submit(create(clientKey))).toThrow();
+    expect((await controller().submit(create("assistant-task-inbox:1"))).phase).toBe("confirmed");
+    expect(bodies).toHaveLength(1); expect(bodies[0]).toMatchObject({ clientKey: "assistant-task-inbox:1" });
+  });
   it("does not replace a confirmed creation endpoint ID with another canonical ID", async () => {
     let original!: WebhookReceipt;
     vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => {
@@ -450,7 +458,7 @@ describe("Webhook fixed intent controller", () => {
     expect(() => controller().submit({ ...patch(), body: { name: "汉".repeat(87382) } })).toThrow(); expect(fetch).not.toHaveBeenCalled();
   });
   it.each([
-    { body: { enabled: null } }, { body: { subscriptions: null } }, { body: { operationId: uuid(7) } }, { body: { name: "\ud800" } }, { ifVersion: "01" },
+    { body: { enabled: null } }, { body: { subscriptions: null } }, { body: { operationId: uuid(7) } }, { body: { name: "\ud800" } }, { ifVersion: "01" }, { body: { clientKey: "immutable" } },
     { body: { subscriptions: [{ id: null, projectId: uuid(7), eventTypes: ["task.paused", "task.paused"] }] } },
   ])("rejects malformed input or reserved metadata before dispatch %#", override => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch); expect(() => controller().submit({ ...patch(), ...override } as WebhookIntentInput)).toThrow(); expect(fetch).not.toHaveBeenCalled();

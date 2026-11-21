@@ -1,6 +1,6 @@
 import { ApiError, authRequestsPaused } from "../../api/client";
 import {
-  decodeWebhookJson, getWebhookOperation, isWebhookIssuedAt, parseWebhookEventType, parseWebhookOwner, submitWebhookMutation, webhookVersion,
+  decodeWebhookJson, getWebhookOperation, isWebhookClientKey, isWebhookIssuedAt, parseWebhookEventType, parseWebhookOwner, submitWebhookMutation, webhookVersion,
   type WebhookAdmission, type WebhookConfigurationInput, type WebhookMutationResult, type WebhookOperationKind, type WebhookOwner, type WebhookReceipt,
 } from "../../api/webhooks";
 import { canonicalId, record } from "../../api/validation";
@@ -124,11 +124,12 @@ const inputBody = (input: WebhookIntentInput): Record<string, unknown> => {
   if (!kindChoices.includes(input.kind)) return invalid();
   const body = record(input.body);
   const create = input.kind === "endpoint.create", rotate = input.kind === "signing-secret.rotate", remove = input.kind === "endpoint.delete" || input.kind === "delivery.redeliver";
-  const allowed = rotate ? ["mode"] : remove ? [] : ["name", "enabled", "destination", "subscriptions", ...(create ? [] : ["confirmProjectIds"])];
+  const allowed = rotate ? ["mode"] : remove ? [] : ["name", "enabled", "destination", "subscriptions", ...(create ? ["clientKey"] : ["confirmProjectIds"])];
   if (Object.keys(body).some(field => !allowed.includes(field)) || create && ["name", "enabled", "destination", "subscriptions"].some(field => !Object.hasOwn(body, field)) || input.kind === "endpoint.patch" && Object.keys(body).length === 0) return invalid();
   if (rotate && body.mode !== "overlap" && body.mode !== "immediate") return invalid();
   if (Object.hasOwn(body, "name") && (typeof body.name !== "string" || !body.name.isWellFormed())) return invalid();
   if (Object.hasOwn(body, "enabled") && typeof body.enabled !== "boolean") return invalid();
+  if (Object.hasOwn(body, "clientKey") && !isWebhookClientKey(body.clientKey)) return invalid();
   if (Object.hasOwn(body, "destination")) {
     const destination = record(body.destination), configuration = record(destination.configuration);
     if (Object.keys(destination).length !== 3 || !Object.hasOwn(destination, "kind") || !Object.hasOwn(destination, "adapterVersion") || Object.keys(configuration).length !== 1 || typeof configuration.url !== "string" || !configuration.url.isWellFormed()) return invalid();

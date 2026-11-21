@@ -168,6 +168,32 @@ describe("Webhook authenticated requests", () => {
     await expect(listWebhooks(owner, { cursor: "same" }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
     await expect(listWebhooks(owner, { enabled: false }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
   });
+  it("filters by creation key and rejects items outside the filter", async () => {
+    const key = "assistant-task-inbox:a/b", keyed = { ...summary(), clientKey: key };
+    const fetch = vi.fn().mockResolvedValueOnce(response({ items: [keyed], nextCursor: null })).mockResolvedValueOnce(response({ items: [{ ...summary(), clientKey: null }], nextCursor: null })).mockResolvedValueOnce(response({ items: [summary()], nextCursor: null }));
+    vi.stubGlobal("fetch", fetch);
+    expect((await listWebhooks(owner, { clientKey: key, limit: 100 }, signal(), admission())).items).toEqual([keyed]);
+    expect(fetch.mock.calls[0]![0]).toBe("/api/v1/me/webhooks?clientKey=assistant-task-inbox%3Aa%2Fb&limit=100");
+    await expect(listWebhooks(owner, { clientKey: key }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    // An item without the field cannot be shown to satisfy the filter.
+    await expect(listWebhooks(owner, { clientKey: key }, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    fetch.mockClear();
+    for (const clientKey of ["", "a b", "x".repeat(201), "é"]) expect(() => listWebhooks(owner, { clientKey }, signal(), admission())).toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("accepts the existing endpoint details only on endpoint_exists", async () => {
+    const exists = (code: string, details: unknown) => response({ error: { code, message: "Conflict", requestId: "test-request", details } }, 409);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "4" }))
+      .mockResolvedValueOnce(failure(409, "endpoint_exists"))
+      .mockResolvedValueOnce(exists("version_conflict", { endpointId, configVersion: "4" }))
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "04" }))
+      .mockResolvedValueOnce(exists("endpoint_exists", { endpointId, configVersion: "4", name: "Private" })));
+    const create = () => submitWebhookMutation(owner, "endpoint.create", null, operationId, "{}", signal(), admission(), vi.fn());
+    await expect(create()).rejects.toMatchObject({ kind: "server", status: 409, code: "endpoint_exists" });
+    await expect(create()).rejects.toMatchObject({ kind: "server", status: 409, code: "endpoint_exists" });
+    for (let index = 0; index < 3; index++) await expect(create()).rejects.toMatchObject({ kind: "protocol" });
+  });
   it("reads secrets only through the independent signing-secret route", async () => {
     const value = { endpointId, configVersion: "2", keyId, scheme: "standard-webhooks-v1", secret: `whsec_${btoa("a".repeat(32))}` };
     const fetch = vi.fn().mockResolvedValue(response(value)); vi.stubGlobal("fetch", fetch);
