@@ -459,7 +459,9 @@ export const runIndependentController = async (input: IndependentControllerInput
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
         if (archived) {
           try {
-            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken });
+            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken,
+              onRetry: event => context.stderr(`Session archive capacity ${JSON.stringify(event)}\n`),
+            });
             context.stdout("Test Session stopped and archived. Read-only history is available on its page.\n");
           } catch (error) {
             if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and history archival failed.");

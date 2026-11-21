@@ -15,7 +15,8 @@ import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../
 import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { openSessionContent, readSessionHistoryContentPolicy, retireStoppedOnlineContent } from "./content/session-content.js";
-import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
+import { createArchiveRequest } from "./archive-request.js";
+import { ARCHIVE_ROUND_TIMEOUT_MS, archiveRetryRuntime, type ArchiveRetryEvent, type ArchiveRetryRuntime } from "./archive-retry.js";
 import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
@@ -104,49 +105,17 @@ const withFrozenResource = async <T>(source: Pick<ResourceFiles, "acquireResourc
     catch (close) { throw failed ? new AggregateError([failure, close], "Archive resource operation and lease shutdown failed.", { cause: failure }) : close; }
   }
 };
-const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<void> => {
-  signal.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
-    const abort = (): void => { clearTimeout(timer); reject(signal.reason); };
-    signal.addEventListener("abort", abort, { once: true });
-  });
-};
-
-export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
+export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal; retryRuntime?: ArchiveRetryRuntime; onRetry?(event: ArchiveRetryEvent): void }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
   let bodyOnly = false;
   const fence = { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration };
   const identity = { fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
   const base = ticket.testExecutionId !== undefined ? `/api/v1/test-sessions/${ticket.sessionId}` : `/api/v1/projects/${ticket.projectId}/tasks/${ticket.taskId}/sessions/${ticket.sessionId}`;
   const request = options.request ?? fetch;
-  const roundSignal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
-  const call = async (method: string, suffix: string, replayable: boolean, body?: string | Uint8Array, extra: Record<string,string> = {}, sourceSignal?: AbortSignal): Promise<unknown> => {
-    const operationSignal = sourceSignal ? AbortSignal.any([roundSignal, sourceSignal]) : roundSignal;
-    for (let retries = 0; ; retries++) {
-      operationSignal.throwIfAborted();
-      const signal = AbortSignal.any([operationSignal, AbortSignal.timeout(15_000)]);
-      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}), ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
-      if (bodyOnly && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body archives.");
-      if (response.ok) return response.json();
-      const payload: unknown = await response.json().catch(() => undefined);
-      const detail = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined;
-      const code = detail && typeof detail === "object" && "code" in detail && typeof detail.code === "string" ? detail.code : undefined;
-      const error = new ArchiveRequestError(response.status, code);
-      if (!replayable || !error.busy || retries >= 8) throw error;
-      const retryAfter = response.headers.get("Retry-After");
-      const requestedDelay = retryAfter === null ? NaN : /^\d+$/.test(retryAfter) ? Math.min(Number(retryAfter) * 1000, 60_000) : /^[A-Za-z]/.test(retryAfter) ? Date.parse(retryAfter) - Date.now() : NaN;
-      const waitMs = Number.isFinite(requestedDelay) ? Math.max(0, requestedDelay) : 500 + Math.floor(Math.random() * 4501);
-      try {
-        // The round deadline also bounds Retry-After; never overflow Node's timer range.
-        await waitForArchiveRetry(Math.min(waitMs, 60_000), operationSignal);
-        operationSignal.throwIfAborted();
-      } catch (cause) {
-        if (roundSignal.aborted && !options.signal?.aborted) throw error;
-        throw cause;
-      }
-    }
-  };
+  const runtime = options.retryRuntime ?? archiveRetryRuntime;
+  const deadline = runtime.now() + ARCHIVE_ROUND_TIMEOUT_MS;
+  const roundSignal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(ARCHIVE_ROUND_TIMEOUT_MS)]) : AbortSignal.timeout(ARCHIVE_ROUND_TIMEOUT_MS);
+  const call = createArchiveRequest({ request, url: `${ticket.serverOrigin}${base}/archive`, serverToken: options.serverToken, bodyOnly: () => bodyOnly, signal: roundSignal, ...(options.signal === undefined ? {} : { parentSignal: options.signal }), deadline, sessionId: ticket.sessionId, retryRuntime: runtime, ...(options.onRetry === undefined ? {} : { onRetry: options.onRetry }) });
   const status = async (): Promise<SessionArchiveStatus> => parseSessionArchiveStatus((await call("GET", "", true) as { archive: unknown }).archive);
   let original: Database.Database;
   try { original = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true }); }

@@ -68,7 +68,9 @@ export const retryIndependentArchive = async (input: { provider: SessionProvider
     assertSessionFence(result, ticket);
     if (result.lifecycle !== "archived") throw new Error("Native execution is stopped; server session closure is unconfirmed.");
     writeDurableJson(path.join(execution, "stop-result.json"), { session: result });
-    await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken });
+    await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: config.serverToken,
+      onRetry: event => context.stderr(`Session archive capacity ${JSON.stringify(event)}\n`),
+    });
     context.stdout(`Test Session history archived: ${new URL(`/test-sessions/${ticket.sessionId}`, config.serverUrl).href}\n`);
   } catch (error) {
     if (usageFailure !== undefined) throw new AggregateError([usageFailure, error], "Test Session usage and history retry failed.");

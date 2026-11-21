@@ -354,7 +354,7 @@ PUT `{base}/archive/content` 为原始manifest JSON（application/json、≤4 Mi
 
 complete 表示所有适用条目 imageProjectionError=null、Markdown/reasoning 图片绑定完整有效、没有 ImageUnavailablePart 且所有 ImagePart 原件已提交；partial至少有一个从未成功采集的明确失败项，成功项仍可读。known available 的blob丢失/摘要不符、缺descriptor、未决commit、timeline gap、文件损坏以及非 null imageProjectionError/null reasoning bindings 均不能转换 partial 凑 ready。图片解析错误使出现集合未知，服务在 manifest 发布前再次拒绝未解决错误，不能由完整文字/source 序号或空图片数组推定无图。尚未发布时设failed或保持可协调pending，错误定位实际对象。ready后发现存储损坏是读取完整性失败；不改写已封存manifest/completeness，UI明确“归档图片读取失败”，不沿原ready宣称当前原件都健康。只能从已验证的同摘要备份修复物理对象，不能重新抓源。
 
-PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manifest的ready即核对原结果；pending表示继续原工作；查询失败继续保留原文件及pin。Controller 在创建新文件 intent 前观察当前归档；若旧 schema1 已提交并被迁移为 schema3，即使本地 receipt 未落盘，也只在保留的完整旧源序列化结果与服务持久 migration source SHA/长度精确一致、停止身份及源内容重核通过后保存当前 receipt。完整旧源包含未引用的旧资源和原 bytes，不能只重建当前引用闭包来冒领旧提交。关系缺失、来源不匹配或状态未知均不创建竞争 fileId。不得无条件POST failed覆盖可能成功的结果，不换recordId、fileId或摘要逃避冲突。独立archive retry继续沿原停机证据，不能启动Provider；新generation不得冒用旧写资格。
+终态归档客户端对有界识别的 HTTP 429 `resource_busy` 按[Worker 设计](daynight-worker.md#结束清理与退出)退避，保留原意图、fileId、offset、hash 和内容。prepare/seal 的媒体收尾可能先提交状态，只有既有明确可重放的调用才能重复；容量错误不证明没有持久变化。旧 Server 的早期精确拒绝无 Task body 版本头时仍可等待，成功响应继续核对版本。PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manifest的ready即核对原结果；pending表示继续原工作；查询失败继续保留原文件及pin。Controller 在创建新文件 intent 前观察当前归档；若旧 schema1 已提交并被迁移为 schema3，即使本地 receipt 未落盘，也只在保留的完整旧源序列化结果与服务持久 migration source SHA/长度精确一致、停止身份及源内容重核通过后保存当前 receipt。完整旧源包含未引用的旧资源和原 bytes，不能只重建当前引用闭包来冒领旧提交。关系缺失、来源不匹配或状态未知均不创建竞争 fileId。不得无条件POST failed覆盖可能成功的结果，不换recordId、fileId或摘要逃避冲突。独立archive retry继续沿原停机证据，不能启动Provider；新generation不得冒用旧写资格。
 
 ## 读取、权限与删除
 
