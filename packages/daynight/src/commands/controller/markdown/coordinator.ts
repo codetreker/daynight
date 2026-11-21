@@ -276,7 +276,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     // Local ownership cleanup is independent of service reachability and current
     // source authority, and must precede receipt adoption or attempt replacement.
     await cleanupSource(record);
-    if (stopped || !options.writable() || !options.fence() || !record.request || record.phase === "settled" || !journal.imageOccurrenceAcknowledged(record.occurrence.imageId)) return;
+    if (signal.aborted || stopped || !options.writable() || !options.fence() || !record.request || record.phase === "settled" || !journal.imageOccurrenceAcknowledged(record.occurrence.imageId)) return;
     const request = record.request;
     if (record.submission || record.awaitingRetry || record.resumeReserved) {
       if (record.dispatchPending) { if (Date.now() >= record.cooldownUntil) await submit(record); return; }
@@ -307,12 +307,14 @@ export const createMarkdownCaptureCoordinator = (options: {
     }
     if (Date.now() < record.cooldownUntil) return;
     if (record.phase === "waiting") journal.registerImageCaptureRequest(request);
-    try { await hooks.prepareImageCapture(journal.getImageCaptureRequest(request.captureId)); }
+    try { await hooks.prepareImageCapture(journal.getImageCaptureRequest(request.captureId), signal); }
     catch (error) {
+      if (signal.aborted) return;
       if (isRetryableCaptureRefusal(error)) { record.cooldownUntil = Date.now() + 1000; saved(record); return; }
       else if (settleRefusal(record, error)) return;
       else throw error;
     }
+    if (signal.aborted) return;
     if (request.locator.kind === "resource") { freeze(record, { kind: "resource" }); await submit(record); return; }
     if (record.error) { freeze(record, { kind: "failed", error: record.error }); await submit(record); return; }
     let validated = journal.media().captureStatus(request.captureId, request.attemptId);

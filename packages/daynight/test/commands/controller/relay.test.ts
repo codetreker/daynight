@@ -38,7 +38,7 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
     Object.assign(journal, { media: () => ({ ...(typeof source === "function" ? source() : source), tryAcquireMediaBlock }) });
   };
   setMedia({});
-  const callbacks = { onConnection: vi.fn(), onCommand: vi.fn().mockResolvedValue(undefined), onError: vi.fn(), onRetryCapture: vi.fn<({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => Promise<import("../../../src/session/image-values.js").ValidatedImage>>() };
+  const callbacks = { onConnection: vi.fn(), onCommand: vi.fn().mockResolvedValue(undefined), onError: vi.fn(), beforeImage: vi.fn(async () => {}), onRetryCapture: vi.fn<({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => Promise<import("../../../src/session/image-values.js").ValidatedImage>>() };
   const relay = createControllerRelay(ticket, journal, callbacks); cleanup.push(relay.close);
   await vi.waitFor(() => expect(transport.sockets.length).toBe(1));
   const socket = transport.sockets[0]! as EventEmitter & { sent: Record<string, unknown>[]; close(): void };
@@ -274,6 +274,49 @@ test("media capacity is bounded independently while authorization remains respon
   for (const complete of pending) complete(); await new Promise(resolve => setImmediate(resolve));
   expect(socket.sent).toHaveLength(count);
   expect(socket.sent[0]).toMatchObject({ type: "hello", contentRevision: 2 });
+});
+
+test("prepare deadlines release media blocks while the existing history work continues", async () => {
+  const { relay, socket, emit, frame, callbacks, ticket, setMedia } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  let finish!: () => void, backgroundFinished = false;
+  const background = new Promise<void>(resolve => { finish = resolve; }).then(() => { backgroundFinished = true; });
+  callbacks.beforeImage.mockImplementation(() => background);
+  const prepare = vi.fn(async () => null), status = vi.fn(async () => null);
+  setMedia({ prepare, status });
+  const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: randomUUID(), fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
+  const ids = [randomUUID(), randomUUID()];
+  vi.useFakeTimers();
+  try {
+    for (const requestId of ids) emit(frame("image_request", { requestId, action: "prepare", body: spec }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callbacks.beforeImage).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(socket.sent.filter(value => value.type === "image_response")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.sent.filter(value => value.type === "image_response")).toEqual(ids.map(requestId => expect.objectContaining({ requestId, result: null, error: expect.objectContaining({ code: "image_unavailable" }) })));
+    const statusId = randomUUID();
+    emit(frame("image_request", { requestId: statusId, action: "status", body: { uploadId: spec.uploadId } }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(status).toHaveBeenCalledOnce();
+    expect(backgroundFinished).toBe(false);
+    finish(); await background; await vi.advanceTimersByTimeAsync(0);
+    expect(backgroundFinished).toBe(true); expect(prepare).not.toHaveBeenCalled();
+  } finally { finish(); vi.useRealTimers(); await relay.close(); }
+});
+
+test("disconnect ends prepare waiting without dispatching media work", async () => {
+  const { relay, socket, emit, frame, callbacks, ticket, setMedia } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  let finish!: () => void;
+  callbacks.beforeImage.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const prepare = vi.fn(async () => null); setMedia({ prepare });
+  const spec = { uploadId: randomUUID(), imageId: randomUUID(), target: { serverOrigin: ticket.serverOrigin, actorUserId: randomUUID(), fence: { sessionId: ticket.sessionId, claimId: ticket.claimId!, executionGeneration: ticket.executionGeneration }, expectedNativeSessionId: null }, name: "original.png", mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) };
+  emit(frame("image_request", { requestId: randomUUID(), action: "prepare", body: spec }));
+  await vi.waitFor(() => expect(callbacks.beforeImage).toHaveBeenCalledOnce());
+  socket.close(); await relay.close();
+  finish(); await Promise.resolve();
+  expect(prepare).not.toHaveBeenCalled();
 });
 
 test.each([

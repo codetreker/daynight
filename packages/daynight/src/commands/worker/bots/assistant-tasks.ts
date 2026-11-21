@@ -6,6 +6,7 @@ import { parseSessionCommand, SESSION_PROTOCOL, type SessionCommand, type Sessio
 import { readClaimCredential, recoverClaimOperation, runClaimOperation } from "../../assistant-task/claims.js";
 import { withClaimStorage } from "../../assistant-task/state.js";
 import { AssistantTaskSessionError } from "./assistant-task-session.js";
+import { observeAssistantDelivery, type AssistantTaskClock } from "./assistant-task-delivery.js";
 import { withAssistantRuntimeState } from "./assistant-task-state.js";
 import { assistantTaskPages } from "./assistant-task-pages.js";
 import { INBOUND_EVENT_TYPE } from "./assistant-task-inbound.js";
@@ -16,7 +17,7 @@ import type { BotOwner, BotRecord } from "./types.js";
 import { botStopDeadline, joinBotWork, type BotStopOptions } from "./stop-budget.js";
 
 export const ASSISTANT_TASK_INTERVAL_MS = 60_000;
-export type AssistantTaskClock = { now(): number; wait(ms: number, signal: AbortSignal): Promise<void> };
+export type { AssistantTaskClock } from "./assistant-task-delivery.js";
 export type AssistantApplicationContext = {
   task: AssistantTask; botId: string; signal: AbortSignal;
   /** Revalidate health, state and the original claim immediately before every externally visible action. */
@@ -211,6 +212,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         if (!Array.isArray(value.events) || !value.events.length || value.events.some(event => typeof event.taskId !== "string" || typeof event.id !== "string") || typeof value.confirmed !== "boolean") throw new Error("Invalid assistant delivery journal.");
         delivery = { ...value, command };
       }
+      let operation: SessionOperation | undefined;
       if (!delivery) {
         if (!await healthy(bot, signal) || !await options.idle(bot, signal)) return;
         const notification = createNotificationBatch(), batch = notification.events, admitted: AssistantTaskEvent[] = [];
@@ -247,18 +249,19 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         delivery = { command, events: batch, confirmed: false };
         await save(delivery);
         try {
-          const result = await options.sessions.send(bot, command, signal);
-          if (notDispatched(result)) { await save(null); return; }
-          delivery.confirmed = ["provider_accepted", "confirmed"].includes(result.state);
-          await save(delivery);
+          operation = await options.sessions.send(bot, command, signal);
         } catch (error) {
           if (error instanceof AssistantTaskSessionError && !error.outcomeUnconfirmed) await save(null);
           throw error;
         }
       } else if (!delivery.confirmed) {
-        const result = await options.sessions.readOperation(bot, delivery.command, signal);
-        if (notDispatched(result)) { await save(null); return; }
-        delivery.confirmed = ["provider_accepted", "confirmed"].includes(result.state);
+        operation = await options.sessions.readOperation(bot, delivery.command, signal);
+      }
+      if (operation !== undefined) {
+        const command = delivery.command;
+        operation = await observeAssistantDelivery({ operation, clock, signal, read: querySignal => options.sessions.readOperation(bot, command, querySignal) });
+        if (notDispatched(operation)) { await save(null); return; }
+        delivery.confirmed = ["provider_accepted", "confirmed"].includes(operation.state);
         await save(delivery);
       }
       if (!delivery.confirmed) return;

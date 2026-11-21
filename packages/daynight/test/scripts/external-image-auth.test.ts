@@ -40,7 +40,7 @@ const run: RunCommand = async (command, args, options) => {
   return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
 };
 
-const fixture = async (wrongAppCertificate = false) => {
+const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "session:produce", "session:control"]) => {
   const base = path.resolve(import.meta.dirname, "../../../../.tmp/external-image-auth-tests"); await mkdir(base, { recursive: true });
   const directory = await mkdtemp(path.join(base, "auth-")); roots.push(directory);
   const appCert = await certificate(directory, "daynight"), providerCert = await certificate(directory, "provider");
@@ -111,7 +111,7 @@ const fixture = async (wrongAppCertificate = false) => {
         credentials.push({ path: route, method: request.method!, origin: request.headers.origin, body: body ? JSON.parse(body) : null });
         response.writeHead(route.endsWith("tokens") ? 201 : 200, { "content-type": "application/json" });
         response.end(JSON.stringify(route.endsWith("tokens") ? { token: "synthetic-token", id: "synthetic-token-id", scopePolicy: { scopes: ["session:read", "session:produce"], scopeVersion: "1" } }
-          : route.endsWith("credential-scope-catalog") ? { pat: { catalogRevision: "synthetic-catalog", groups: [{ id: "session", scopeIds: ["session:read", "session:produce", "session:control"] }], defaultScopes: ["session:read", "session:produce", "session:control"] } }
+          : route.endsWith("credential-scope-catalog") ? { pat: { catalogRevision: "synthetic-catalog", groups: [{ id: "session", scopeIds: scopes }], defaultScopes: scopes } }
           : { id: "synthetic-user" }));
       });
     } else { response.writeHead(404); response.end(); }
@@ -143,6 +143,16 @@ test("isolated OAuth rejects an untrusted Daynight TLS certificate before login"
   const f = await fixture(true);
   await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Isolated OAuth HTTP request failed");
   expect(f.counts()).toEqual({ loginRequests: 0, tokenRequests: 0 });
+}, 30_000);
+
+test("isolated OAuth refuses to mint when a required Test Session scope is unavailable", async () => {
+  const f = await fixture(false, ["session:read"]);
+  await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Session production and reads");
+  expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 2 });
+  expect(f.credentials.map(({ path, method }) => ({ path, method }))).toEqual([
+    { path: "/api/v1/me", method: "GET" },
+    { path: "/api/v1/me/credential-scope-catalog", method: "GET" },
+  ]);
 }, 30_000);
 
 test("the namespace forward carries HTTP and WebSocket over verified local TLS", async () => {

@@ -31,6 +31,8 @@ test.each([false, true])("a rebuilt Host reconnects the live original Controller
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "cwd");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
   const paths = resolveWorkerPaths(home), nativeId = randomUUID(), botId = randomUUID();
+  await mkdir(state);
+  await environment.prepareBotStateDirectory(paths, botId);
   const requests = path.join(home, "requests.jsonl"), launches = path.join(home, "launches.jsonl");
   const packageDirectory = path.join(home, "package"), native = path.join(home, "native.mjs");
   const dist = path.resolve(import.meta.dirname, "../../../dist");

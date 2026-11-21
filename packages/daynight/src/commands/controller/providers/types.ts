@@ -86,7 +86,7 @@ export type ProviderOptions = {
   /** Registration is durable; capture must wait until the original position is acknowledged. */
   onImageOccurrence?(occurrence: ImageOccurrence, source: NativeImageSource | null): boolean;
   imageOccurrenceAcknowledged?(imageId: string): boolean;
-  prepareImageCapture?(request: ImageCaptureRequest): Promise<void>;
+  prepareImageCapture?(request: ImageCaptureRequest, signal?: AbortSignal): Promise<void>;
   submitImageCapture?(submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt>;
   registerImageCapture?(request: ImageCaptureRequest): Promise<ImageCaptureReceipt>;
   queryImageCapture?(captureId: string): Promise<ImageCaptureReceipt>;

@@ -9,7 +9,7 @@ import { ImageHistorySyncFailedError } from "./history-sync.js";
 export const createControllerCaptureBridge = (options: {
   journal: ControllerLifecycleStore;
   capture: ReturnType<typeof createControllerRelay>["capture"];
-  beforeCapture(): Promise<void>;
+  beforeCapture(signal?: AbortSignal): Promise<void>;
   provider(): NativeProvider | null;
   writable(): boolean;
   retrySource?(request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage>;
@@ -25,17 +25,19 @@ export const createControllerCaptureBridge = (options: {
     }
     return receipt;
   };
-  const synchronizeHistory = async (): Promise<void> => {
-    try { await options.beforeCapture(); }
+  const synchronizeHistory = async (signal?: AbortSignal): Promise<void> => {
+    try { await options.beforeCapture(signal); }
     catch (error) {
       if (error instanceof ImageCapturePrerequisiteError) throw error;
       if (error instanceof ImageHistorySyncFailedError) throw new ImageCapturePrerequisiteError(error.imageError);
       throw new ImageCaptureNotDispatchedError("Image history synchronization has not completed.", { cause: error });
     }
   };
-  const prepare = async (input: ImageCaptureRequest): Promise<void> => {
+  const prepare = async (input: ImageCaptureRequest, signal?: AbortSignal): Promise<void> => {
+    signal?.throwIfAborted();
     journal.registerImageCaptureRequest(input);
-    await synchronizeHistory();
+    await synchronizeHistory(signal);
+    signal?.throwIfAborted();
   };
   const providerOptions: Pick<ProviderOptions, "prepareImageCapture" | "submitImageCapture" | "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture" | "stageImageCapture"> = {
     prepareImageCapture: prepare,
