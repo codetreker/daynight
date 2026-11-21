@@ -223,6 +223,25 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(f.store.readState()).toMatchObject({ admission: "open", scopeGeneration: "2" });
   }, 5000);
 
+  it("reconciles a remote resume placeholder after saving its confirmed receipt fails", async () => {
+    const f = fixture(); await start(f); await disable(f); await f.manager.reconcile();
+    await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    const failure = new Error("Resume receipt persistence unavailable"), record = f.store.recordOperation;
+    let fail = true;
+    vi.spyOn(f.store, "recordOperation").mockImplementation(request => {
+      if (fail && request.operationId === id(22) && request.status === "confirmed") { fail = false; throw failure; }
+      return record(request);
+    });
+    await expect.poll(() => f.errors.includes(failure)).toBe(true);
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "prepared", request: null, receipt: null, localEpoch: "2" });
+    expect(f.store.readState().admission).toBe("closed");
+    await f.manager.waitForAdmission();
+    expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, receipt: { operationId: id(22), action: "resume", intentVersion: "3" } });
+    expect(vi.mocked(f.api.operation).mock.calls.filter(([operationId]) => operationId === id(22))).toHaveLength(2);
+    expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+    expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+  }, 5000);
+
   it("does not apply a remote resume to a local veto added during its operation lookup", async () => {
     const f = fixture(); await start(f); await disable(f);
     await f.manager.reconcile();

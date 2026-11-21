@@ -212,12 +212,15 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       pendingResume = undefined; return;
     }
     let original = store.readOperation(pending.operationId);
-    if (original !== null) {
+    if (original !== null && original.localEpoch !== pending.binding.localEpoch) { pendingResume = undefined; return; }
+    const unconfirmedRemote = original?.kind === "intent" && original.request === null && original.status === "prepared";
+    if (original !== null && !unconfirmedRemote) {
       await resolveOriginal(original);
       original = store.readOperation(pending.operationId)!;
-      if (original.localEpoch !== pending.binding.localEpoch) { pendingResume = undefined; return; }
       if (original.kind !== "intent" || original.status !== "confirmed") throw new Error("Original resume intent remains unresolved or was refused.");
     } else {
+      // A prior lookup may have saved its placeholder before receipt persistence
+      // failed. Read the same remote operation again without submitting intent.
       const result = await api.operation(pending.operationId, signal);
       if (result.kind !== "intent") throw new Error("Remote resume intent has no matching operation.");
       const receipt = result.receipt;
