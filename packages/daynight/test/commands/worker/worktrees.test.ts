@@ -1451,6 +1451,61 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(worktreePaths(f.repository)).toContain(root);
   });
 
+  it.skipIf(process.platform !== "win32")("reports each termination as it happens, including when the cleanup then succeeds", async () => {
+    const f = await repositoryFixture("files");
+    // The gap the failure diagnostics cannot cover: a recovery that works
+    // ends processes the Worker may never have started and reports nothing,
+    // because there is no failure to carry the record.
+    const reported: unknown[] = [];
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      reportHolderTerminated: event => { reported.push(event); },
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const holder = { pid: 804, image: "node.exe", directory: target };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [804] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (reported.length === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: binding.worktreePath } }]);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("completes the cleanup when reporting a termination fails", async () => {
+    const f = await repositoryFixture("files");
+    let stopped = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // A diagnostic that cannot be written must not turn a recovered worktree
+      // into a failed cleanup, and must not be recorded as a holder that could
+      // not be terminated. The diagnostics sink reports its own unavailability.
+      reportHolderTerminated: () => { throw new Error("diagnostic sink unavailable"); },
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stopped = true;
+        const holder = { pid: 805, image: "node.exe", directory: target };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [805] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!stopped) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
   it.skipIf(process.platform !== "win32")("reports a nested reservation's terminations with the attempt that reached it", async () => {
     const f = await repositoryFixture("files");
     const controller = new AbortController();

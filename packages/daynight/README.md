@@ -2526,6 +2526,11 @@ cancellation, the postcondition observation and a failure reported after the
 removal itself succeeded. Holders that survived are not claimed as ended, and a
 recovery that terminated nothing says so instead.
 
+A recovery that succeeds has no failure to carry that record, so each
+termination is also reported as it happens, naming the process and the
+directory it held. A report that cannot be written does not fail the cleanup it
+describes; the diagnostics sink reports its own unavailability separately.
+
 Every managed directory this cleanup removes is covered: the worktree contents
 and its root, the registered worktree left empty and pointerless by an
 interrupted attempt, and an unregistered reservation. Each is admitted through

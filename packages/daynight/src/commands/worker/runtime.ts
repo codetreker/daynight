@@ -87,6 +87,14 @@ const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Par
     ...(settlement.cleanupErrors.length === 0 ? {} : { error: new AggregateError(settlement.cleanupErrors, "Repository Git local cleanup reported errors.", { cause: pending.error }) }) });
 };
 
+// A cleanup that recovers a held worktree succeeds without any failure to
+// carry the record of what it terminated, and the processes it ended may be
+// ones the Worker never started. This is the operator's trace for that case.
+const holderTerminatedReporter = (emit: (event: WorkerEvent) => void): NonNullable<Parameters<typeof createWorkerGitManager>[0]["reportHolderTerminated"]> => event => {
+  emit({ kind: "worktree-holder-terminated", component: "git", phase: "worktree-remove",
+    message: `Terminated ${event.holder.image} (${event.holder.pid}) holding ${event.target} as its working directory, with the processes attributed to it as children (configuration revision ${event.revision}).` });
+};
+
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {
   switch (platform) {
     case "linux": return "linux";
@@ -605,7 +613,7 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
     const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
     const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (root.store = store = openWorkerStore(paths.databaseFile)) : store;
-    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit),
+    const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(emit), reportSettled: gitSettledReporter(emit), reportHolderTerminated: holderTerminatedReporter(emit),
       readCleanupPolicy: () => configuration?.readCleanupPolicy() ?? null,
       prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: getStore(), project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
     })) : git;
@@ -1261,7 +1269,7 @@ export const runWorkerControl = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit),
+    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit), reportHolderTerminated: holderTerminatedReporter(diagnostics.emit),
       prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: store!, project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
     });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });

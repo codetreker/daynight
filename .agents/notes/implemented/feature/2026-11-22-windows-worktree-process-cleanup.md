@@ -249,10 +249,22 @@ the inventory has no reason to track. That errs toward naming a process the
 Worker did not end rather than omitting one it did, which is the direction an
 irreversible action should be wrong in.
 
-A recovery that succeeds leaves no such record, because this cleanup has no
-channel that carries anything but errors. Adding one would change the Worker
-event protocol, which is a larger decision than this target; the configuration
-page states the consequence before the operator enables it.
+A recovery that succeeds has no failure to carry that record, and it has still
+ended processes the Worker may never have started. Each termination is
+therefore also reported as it happens, through the same kind of reporter the
+Git manager already uses for pending and settled cleanup. The Worker event
+this produces needs no new type: `WorkerEvent` carries an open `kind`, so the
+local diagnostics channel absorbs it without touching the protocol the service
+reads.
+
+Its failures do not change the outcome of the cleanup they describe. That
+departs from the Git reporters, whose failures are aggregated into the cleanup
+error, and the reason is that this one runs inside the per-holder guard of the
+termination loop: a throw there would be collected as a holder that could not
+be terminated, inverting the record it exists to keep. Swallowing is not
+silent either — the diagnostics sink reports its own unavailability, so a
+broken channel surfaces where it belongs rather than as a worktree that failed
+to clean up for no reason the operator can act on.
 
 `WorkerCleanupPolicy` now carries each member's own committed revision rather
 than one shared value. Both members are read from their own application result,

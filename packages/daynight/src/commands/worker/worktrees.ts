@@ -106,12 +106,14 @@ const ensureDirectory = async (target: string): Promise<void> => {
 };
 const coordinates = canonicalResourceOwner;
 export type WorkerGitPending = { error: RepositoryGitCleanupPendingError; attemptId: string; projectId: string; owner?: ResourceOwner; command: "clone" | "fetch" | "worktree-add" | "update-ref" | "worktree-remove" };
+/** One holder the cleanup has terminated, reported as it happens. */
+export type WorkerHolderTerminated = { target: string; revision: string | null; holder: TerminatedHolder };
 class WorkerGitCleanupError extends AggregateError {}
 class WorktreeCleanupInProgressError extends Error {
   constructor() { super("Task worktree cleanup is already in progress."); }
 }
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void>; readCleanupPolicy?: () => WorkerCleanupPolicy | null; runShellRemoval?: typeof runShellWorktreeRemoval; stopHoldingProcesses?: typeof stopWindowsWorktreeProcesses }) => {
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void>; readCleanupPolicy?: () => WorkerCleanupPolicy | null; runShellRemoval?: typeof runShellWorktreeRemoval; stopHoldingProcesses?: typeof stopWindowsWorktreeProcesses; reportHolderTerminated?: (event: WorkerHolderTerminated) => void }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
   const startOwnedGit = options.startOwnedGit ?? startOwnedRepositoryGit;
@@ -119,6 +121,23 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   const optionsForCleanupPolicy = options.readCleanupPolicy;
   const optionsForShellRemoval = options.runShellRemoval ?? runShellWorktreeRemoval;
   const optionsForProcessStop = options.stopHoldingProcesses ?? stopWindowsWorktreeProcesses;
+  /** Records a termination for this attempt and reports it as it happens.
+   *
+   * A cleanup that recovers successfully still ended processes the Worker may
+   * never have started, and the failure diagnostics cannot cover that: there
+   * is no failure. This is the trace for it.
+   *
+   * A diagnostic that cannot be written does not change the outcome of the
+   * cleanup it describes, which is why this swallows rather than following the
+   * Git reporters above. It is not silent either: the diagnostics sink reports
+   * its own unavailability, so a broken channel is visible where it belongs
+   * rather than as a cleanup that failed for no reason the operator can act on.
+   */
+  const recordTermination = (ended: TerminatedHolder[], target: string, revision: string | null) => (holder: TerminatedHolder): void => {
+    ended.push(holder);
+    try { options.reportHolderTerminated?.({ target, revision, holder }); }
+    catch { /* see above */ }
+  };
   const closing = new AbortController();
   const preparations = new Set<Promise<unknown>>();
   const handles = new Set<OwnedRepositoryGit>();
@@ -415,7 +434,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (!busy(ordinaryError) || process.platform !== "win32" || policy?.enableWindowsProcessCleanup !== true) throw ordinaryError;
       try {
         await admitReservation();
-        await (optionsForProcessStop)(target, operation, { onTerminated: holder => { ended.push(holder); } });
+        await (optionsForProcessStop)(target, operation, { onTerminated: recordTermination(ended, target, policy.windowsProcessRevision) });
         await admitReservation();
         await removeEmptyDirectory(target, operation, admitReservation);
         operation.check();
@@ -742,7 +761,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     try {
                       operation.check();
                       await reproveEmptyOwnership();
-                      await (optionsForProcessStop)(emptyPath, operation, { onTerminated: holder => { ended.push(holder); } });
+                      await (optionsForProcessStop)(emptyPath, operation, { onTerminated: recordTermination(ended, emptyPath, policy.windowsProcessRevision) });
                       operation.check();
                       await reproveEmptyOwnership();
                       await removeEmptyDirectory(emptyPath, operation, reproveEmptyOwnership);
@@ -855,7 +874,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                       // check, and terminating its process tree cannot be undone by
                       // the later identity failure.
                       await verifyOwnedRoot();
-                      await (optionsForProcessStop)(binding.worktreePath, operation, { onTerminated: holder => { ended.push(holder); } });
+                      await (optionsForProcessStop)(binding.worktreePath, operation, { onTerminated: recordTermination(ended, binding.worktreePath, policy.windowsProcessRevision) });
                       operation.check();
                       await verifyOwnedRoot();
                       await removeOwnedWorktree();
