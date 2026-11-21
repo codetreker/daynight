@@ -151,7 +151,7 @@ func TestScopedTerminalArchiveDenialReleasesPermit(t *testing.T) {
 	if _, err = svc.TerminalHistory(ctx, f.owner, f.project, f.task, "", 10); !errors.Is(err, scopepolicy.ErrInsufficientScope) {
 		t.Fatalf("revoked directory: %v", err)
 	}
-	permit, err := files.TryAcquireResidency(ctx, "session/archive/owner/"+f.owner.UserID)
+	permit, err := files.TryAcquireArchive(ctx, f.owner.UserID, "", 1, true)
 	if err != nil || permit == nil {
 		t.Fatalf("archive permit retained: %v", err)
 	}

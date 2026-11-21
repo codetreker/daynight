@@ -44,6 +44,20 @@ func (s *Storage) TryAcquireResidency(ctx context.Context, key string) (io.Close
 	return permit, nil
 }
 
+func (s *Storage) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	if s.closed.Load() {
+		return nil, os.ErrClosed
+	}
+	permit, err := s.gates.TryAcquireArchive(ctx, owner, session, limit, cleanup)
+	if err != nil {
+		return nil, err
+	}
+	if s.closed.Load() {
+		return nil, errors.Join(os.ErrClosed, permit.Close())
+	}
+	return permit, nil
+}
+
 type standaloneGates struct {
 	root string
 }
@@ -59,8 +73,67 @@ type standaloneKey struct {
 // Entries live only while a permit is held, even when its storage handle closes.
 var standalonePermits = struct {
 	sync.Mutex
-	held map[standaloneKey]*standalonePermit
-}{held: make(map[standaloneKey]*standalonePermit)}
+	held     map[standaloneKey]*standalonePermit
+	archives map[standaloneKey]*standaloneArchives
+}{held: make(map[standaloneKey]*standalonePermit), archives: make(map[standaloneKey]*standaloneArchives)}
+
+type standaloneArchives struct {
+	sessions map[string]bool
+	cleanup  bool
+	done     chan struct{}
+}
+
+type standaloneArchivePermit struct {
+	key     standaloneKey
+	session string
+	cleanup bool
+	once    sync.Once
+}
+
+func (p *standaloneArchivePermit) Close() error {
+	p.once.Do(func() {
+		standalonePermits.Lock()
+		defer standalonePermits.Unlock()
+		state := standalonePermits.archives[p.key]
+		if p.cleanup {
+			state.cleanup = false
+		} else {
+			delete(state.sessions, p.session)
+		}
+		if !state.cleanup && len(state.sessions) == 0 {
+			delete(standalonePermits.archives, p.key)
+			close(state.done)
+		}
+	})
+	return nil
+}
+
+func (g standaloneGates) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	key, err := filestorage.ArchiveGateKey(owner, session, limit, cleanup)
+	if err != nil {
+		return nil, err
+	}
+	k := standaloneKey{root: g.root, residency: key}
+	standalonePermits.Lock()
+	defer standalonePermits.Unlock()
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	state := standalonePermits.archives[k]
+	if standalonePermits.held[k] != nil || (state != nil && (state.cleanup || cleanup || len(state.sessions) >= limit || state.sessions[session])) {
+		return nil, filestorage.ErrGateBusy
+	}
+	if state == nil {
+		state = &standaloneArchives{sessions: make(map[string]bool), done: make(chan struct{})}
+		standalonePermits.archives[k] = state
+	}
+	if cleanup {
+		state.cleanup = true
+	} else {
+		state.sessions[session] = true
+	}
+	return &standaloneArchivePermit{key: k, session: session, cleanup: cleanup}, nil
+}
 
 type standalonePermit struct {
 	key  standaloneKey
@@ -112,7 +185,8 @@ func acquireStandalone(ctx context.Context, key standaloneKey, wait bool) (io.Cl
 			return nil, err
 		}
 		held := standalonePermits.held[key]
-		if held == nil {
+		archives := standalonePermits.archives[key]
+		if held == nil && archives == nil {
 			permit := &standalonePermit{key: key, done: make(chan struct{})}
 			standalonePermits.held[key] = permit
 			standalonePermits.Unlock()
@@ -122,8 +196,14 @@ func acquireStandalone(ctx context.Context, key standaloneKey, wait bool) (io.Cl
 		if !wait {
 			return nil, filestorage.ErrGateBusy
 		}
+		done := (<-chan struct{})(nil)
+		if held != nil {
+			done = held.done
+		} else {
+			done = archives.done
+		}
 		select {
-		case <-held.done:
+		case <-done:
 		case <-ctx.Done():
 			return nil, context.Cause(ctx)
 		}

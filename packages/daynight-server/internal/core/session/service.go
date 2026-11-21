@@ -28,6 +28,7 @@ type Engine struct {
 	mediaWork             imageWorkRegistry
 	archiveSlots          chan struct{}
 	archivePreflightSlots chan struct{}
+	archiveOwnerLimit     int
 	Origin                string
 	files                 filestorage.Storage
 	imageDecoder          ImageDecoder
@@ -47,7 +48,7 @@ type Engine struct {
 }
 
 func NewEngine(files filestorage.Storage) *Engine {
-	return &Engine{archiveSlots: make(chan struct{}, 1), archivePreflightSlots: make(chan struct{}, 1), files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+	return &Engine{archiveSlots: make(chan struct{}, 1), archivePreflightSlots: make(chan struct{}, 1), archiveOwnerLimit: 1, files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
 }
 func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {

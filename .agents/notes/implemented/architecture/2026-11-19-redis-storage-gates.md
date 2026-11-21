@@ -24,6 +24,10 @@ work that holds it. Publication and deletion verify every relevant permit
 against Redis before changing file contents. The [attachment design](../../../../docs/design/daynight-task-attachments.md)
 owns the operation and deployment contracts.
 
+The [archive owner permit](2026-11-21-session-archive-owner-permits.md) uses
+the same residency key with a versioned multi-permit value while preserving
+exclusion with the original scalar lease protocol.
+
 This supersedes the file synchronization mechanisms in the
 [attachment target gate](2026-11-06-attachment-target-gate.md) and
 [archive residency](2026-11-07-session-archive-residency.md) decisions.
