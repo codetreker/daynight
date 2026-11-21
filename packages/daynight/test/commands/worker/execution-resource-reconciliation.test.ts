@@ -1,5 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as realSetTimeout, clearTimeout as realClearTimeout } from "node:timers";
 import * as childProcesses from "node:child_process";
 import * as suspendedChildren from "../../../src/commands/worker/suspended-node-child.js";
 import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
@@ -15,6 +16,7 @@ import { OwnedCommandAdmissionError, ownedCommandClosure, retainedOwnedCommandBo
 vi.mock("node:child_process", { spy: true });
 
 const roots: string[] = [];
+let pendingCleanup: (() => Promise<void>) | undefined;
 const identity = { serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" };
 const fixture = async (syncDirectory?: (directory: string) => Promise<void>) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/execution-resource-reconciliation");
@@ -24,7 +26,11 @@ const fixture = async (syncDirectory?: (directory: string) => Promise<void>) => 
   const journal = await openExecutionResourceJournal({ directory: journalDirectory, identity, ...(syncDirectory === undefined ? {} : { syncDirectory }) });
   return { directory, journalDirectory, journal };
 };
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await pendingCleanup?.(); pendingCleanup = undefined;
+  vi.restoreAllMocks();
+  await Promise.all(roots.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+}, 30_000);
 
 it.each(["inventory-only", "stop-first", "inventory-first"])("joins original Git cleanup after %s closure without replay", async order => {
   const { directory, journalDirectory, journal } = await fixture(), marker = path.join(directory, "executed");
@@ -202,11 +208,29 @@ it.each(["cancelled", "spawn-rejected"])("recovers the original no-spawn termina
   } finally { rejectSave = false; operation.dispose(); await journal.reconcileRetained({ generation: "5", deadline: Date.now() + 1000 }); }
 });
 
-it("joins pending original prepared and terminal writes before retiring a no-spawn owner", async () => {
-  const { journal } = await fixture(), operation = createOperation();
+it.each(["prepared", "stopped"])("joins pending original writes when reconciliation expires at %s", async blockedStage => {
+  const preparedEntered = Promise.withResolvers<void>(), preparedRelease = Promise.withResolvers<void>();
+  let blockPrepared = false;
+  const { journal } = await fixture(async directory => {
+    if (blockPrepared) { preparedEntered.resolve(); await preparedRelease.promise; }
+    if (process.platform !== "win32") {
+      const handle = await open(directory, "r");
+      try { await handle.sync(); } finally { await handle.close(); }
+    }
+  });
+  const bounded = async <T>(work: Promise<T>, stage: string): Promise<T> => {
+    let timer: ReturnType<typeof realSetTimeout> | undefined;
+    try {
+      return await Promise.race([work, new Promise<never>((_, reject) => {
+        timer = realSetTimeout(() => reject(new Error(`Timed out waiting for ${stage}`)), 2000);
+      })]);
+    } finally { realClearTimeout(timer); }
+  };
+  const operation = createOperation();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   const terminalEntered = Promise.withResolvers<void>(), terminalRelease = Promise.withResolvers<void>();
   const replace = files.replaceFileAtomically;
+  const spawned = vi.spyOn(childProcesses, "spawn"), suspended = vi.spyOn(suspendedChildren, "createSuspendedNodeChild");
   let delayTerminal = true, terminalWrites = 0;
   vi.spyOn(files, "replaceFileAtomically").mockImplementation(async (file, text, ...rest) => {
     if (JSON.parse(String(text)).event.stage === "stopped") {
@@ -215,31 +239,82 @@ it("joins pending original prepared and terminal writes before retiring a no-spa
     return replace(file, text, ...rest);
   });
   const sink = journal.sink("8");
+  let closure: Promise<void> | undefined;
   const running = runLifecycleOwnedCommand({ file: process.execPath, args: ["--eval", "process.exit(99)"], environment: process.env }, operation, async event => {
+    closure = ownedCommandClosure(event.resourceId);
     await sink(event); entered.resolve(); await release.promise; throw new Error("prepared acknowledgement failed");
   }).catch(error => error);
+  let first: Promise<{ error?: unknown }> | undefined, fakeTimers = false, failure: unknown;
+  let cleanup: Promise<void> | undefined;
+  pendingCleanup = () => cleanup ??= (async () => {
+    blockPrepared = false; delayTerminal = false;
+    release.resolve(); preparedRelease.resolve(); terminalRelease.resolve();
+    if (fakeTimers) { await vi.advanceTimersByTimeAsync(10_000); vi.useRealTimers(); fakeTimers = false; }
+    await running; await first;
+    operation.dispose();
+    await journal.reconcileRetained({ generation: "8", deadline: Date.now() + 10_000 });
+    await closure;
+    await journal.assertClosed();
+    expect(retainedOwnedCommandBoundaries()).toEqual([]);
+    if (failure !== undefined) expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
+  })();
+  const containsDeadline = (error: unknown): boolean => error instanceof Error &&
+    (error.message.includes("deadline") || (error instanceof AggregateError && error.errors.some(containsDeadline)) || containsDeadline(error.cause));
   try {
-    await entered.promise;
+    await bounded(Promise.race([entered.promise, running.then(result => { throw new Error("Command settled before the prepared acknowledgement", { cause: result }); })]), "prepared acknowledgement");
     await expect(journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })).rejects.toThrow();
     expect(terminalWrites).toBe(0);
     release.resolve();
-    const failure = await running;
+    failure = await running;
     expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
-    const first = journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 });
-    await terminalEntered.promise;
-    await expect(first).rejects.toThrow();
-    await expect(journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })).rejects.toThrow();
-    expect(terminalWrites).toBe(1);
+    expect((await journal.read())[0]!.event).toMatchObject({ sequence: 1, stage: "prepared", proof: null });
+
+    blockPrepared = blockedStage === "prepared";
+    vi.useFakeTimers(); fakeTimers = true;
+    first = journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })
+      .then(() => ({}), error => ({ error }));
+    const terminalOrResult = Promise.race([
+      terminalEntered.promise.then(() => "stopped" as const),
+      first.then(result => { throw new Error("Reconciliation settled before the stopped write", { cause: result.error }); }),
+    ]);
+    // Observe the race immediately even when the prepared write is deliberately held.
+    const observedTerminal = terminalOrResult.then(value => ({ value }), error => ({ error }));
+    if (blockedStage === "prepared") {
+      await bounded(Promise.race([preparedEntered.promise, first.then(result => { throw new Error("Reconciliation settled before the prepared flush", { cause: result.error }); })]), "prepared flush");
+      await vi.advanceTimersByTimeAsync(100);
+      const early = await bounded(observedTerminal, "reconciliation result");
+      expect(early).toMatchObject({ error: { message: "Reconciliation settled before the stopped write", cause: expect.any(Error) } });
+      expect(terminalWrites).toBe(0);
+    } else {
+      expect(await bounded(observedTerminal, "stopped write")).toEqual({ value: "stopped" });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(terminalWrites).toBe(1);
+    }
+    const firstError = (await bounded(first, "first reconciliation")).error;
+    expect(firstError).toBeInstanceOf(AggregateError);
+    expect(containsDeadline(firstError)).toBe(true);
+    if (blockedStage === "stopped") {
+      const second = journal.reconcileRetained({ generation: "8", deadline: Date.now() + 50 })
+        .then(() => ({ error: undefined as unknown }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(100);
+      const secondError = (await bounded(second, "second reconciliation")).error;
+      expect(secondError).toBeInstanceOf(Error);
+      expect(containsDeadline(secondError)).toBe(true);
+      expect(terminalWrites).toBe(1);
+    }
     expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(true);
-    delayTerminal = false; terminalRelease.resolve();
-    await journal.reconcileRetained({ generation: "8", deadline: Date.now() + 1000 });
-    expect(hasUnconfirmedOwnedCommandCleanup(failure)).toBe(false);
-    await journal.assertClosed();
+    let closed = false;
+    void closure!.then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
   } finally {
-    release.resolve(); terminalRelease.resolve(); delayTerminal = false;
-    await running; operation.dispose(); await journal.reconcileRetained({ generation: "8", deadline: Date.now() + 1000 });
+    await pendingCleanup();
   }
-});
+  expect(terminalWrites).toBe(1);
+  expect((await journal.read())[0]!.event).toMatchObject({ stage: "stopped", proof: null });
+  expect(spawned).not.toHaveBeenCalled(); expect(suspended).not.toHaveBeenCalled();
+}, 30_000);
 
 it("accepts only an explicit pre-write rejection as absent reservation responsibility", async () => {
   const operation = createOperation(), cancellation = new Error("admission already closed");
