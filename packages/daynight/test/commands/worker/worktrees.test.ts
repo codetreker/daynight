@@ -1451,6 +1451,34 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(worktreePaths(f.repository)).toContain(root);
   });
 
+  it.skipIf(process.platform !== "win32")("reports a nested reservation's terminations with the attempt that reached it", async () => {
+    const f = await repositoryFixture("files");
+    const controller = new AbortController();
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const holder = { pid: 903, image: "node.exe", directory: target };
+        options?.onTerminated?.(holder);
+        controller.abort(new Error("cleanup cancelled"));
+        return { observed: [holder], terminated: [903] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const admin = await realpath(administrativeDirectory(binding.worktreePath));
+    // Without its Git registration the directory is an unregistered
+    // reservation, so the removal reaches it through the nested path rather
+    // than the main one. The record is the attempt's, not that step's.
+    await rm(admin, { recursive: true, force: true });
+    for (const entry of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, entry), { recursive: true, force: true });
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (903).");
+  });
+
   it.skipIf(process.platform !== "win32")("names the terminated holders when cancellation ends the attempt instead of the removal", async () => {
     const f = await repositoryFixture("files");
     const controller = new AbortController();
