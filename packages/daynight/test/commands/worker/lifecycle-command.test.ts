@@ -31,7 +31,7 @@ describe("local lifecycle command boundaries", () => {
     ["resume", "--worker-id", identity.workerId, "--local", "--confirm", "--json"],
     ["lifecycle", "show", "--worker-id", identity.workerId, "--json"],
     ["disable", "--worker-id", identity.workerId, "--local", "--confirm", "--json", "--project", identity.userId],
-  ])("rejects missing local/confirmation or remote selector flags: %j", async args => {
+  ])("rejects missing local/confirmation or remote selector flags: %j", async (...args) => {
     const context = { stdout: () => {}, homeDirectory: () => { throw new Error("Should reject arguments before reading state."); } } as unknown as CliContext;
     await expect(runWorkerCommand(args, context)).rejects.toMatchObject({ name: "UsageError" });
   });

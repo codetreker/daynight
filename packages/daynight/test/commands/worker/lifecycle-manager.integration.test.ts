@@ -209,7 +209,7 @@ describe("Worker lifecycle management with real local authority", () => {
 
   it("does not open a scope when an owner has not proved stopping", async () => {
     const f = fixture(), owner = control();
-    owner.reconcile = vi.fn(async () => [{ ...stopped[0]!, stop: "unknown", save: "failed" }]);
+    owner.reconcile = vi.fn<typeof owner.reconcile>(async () => [{ ...stopped[0]!, stop: "unknown", save: "failed" }]);
     f.manager.attach(owner); f.manager.start();
     await expect.poll(() => f.errors.length).toBeGreaterThan(0);
     expect(f.store.readState().admission).toBe("closed");
