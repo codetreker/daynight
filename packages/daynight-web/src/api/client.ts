@@ -67,6 +67,7 @@ export const cancelAuthNetworkRequests = (): void => {
   previous.abort();
 };
 export const responseSignal = (response: Response, fallback: AbortSignal): AbortSignal => responseSignals.get(response) ?? fallback;
+export const authRequestLifetime = (signal: AbortSignal): AbortSignal => AbortSignal.any([signal, authNetwork.signal]);
 export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
 const authPauseListeners = new Set<() => void>();

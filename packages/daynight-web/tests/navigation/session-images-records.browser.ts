@@ -12,7 +12,7 @@ const uuid = (index: number) => `00000089-1111-4111-8111-${String(index).padStar
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
 /** Execute the production App and fixed-record reader against controlled HTTP. */
-async function openRecords(page: Page, completed: boolean) {
+async function openRecords(page: Page, completed: boolean, busy?: { target: 'content' | 'timeline'; principal?: string; code?: string; always?: boolean; waitForLoad?: boolean }) {
   const { source, resources, entries, bodies } = imageBrowserData();
   const projectId = source.identity.projectId, taskId = source.identity.taskId, root = `/api/v1/projects/${projectId}/tasks/${taskId}`;
   const time = '2026-11-06T00:00:00Z', personalId = uuid(1);
@@ -37,7 +37,7 @@ async function openRecords(page: Page, completed: boolean) {
     return { ...record, item, manifest, status, timeline };
   });
   await Promise.all(records.map(record => verifySessionArchiveMetadata(parseSessionArchiveManifest(record.manifest), new TextEncoder().encode(record.timeline))));
-  const observations = { currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], completedResourceReads: [] as string[], cancelledResourceReads: [] as string[], failedResourceReads: [] as { key: string; error: string | null }[], pageErrors: [] as string[], unexpected: [] as string[] };
+  const observations = { contentReads: 0, timelineReads: 0, currentReads: 0, channels: 0, writes: [] as string[], resourceReads: [] as string[], completedResourceReads: [] as string[], cancelledResourceReads: [] as string[], failedResourceReads: [] as { key: string; error: string | null }[], pageErrors: [] as string[], unexpected: [] as string[] };
   const resourceRequests = new Map<Request, string>();
   page.on('requestfinished', request => {
     const key = resourceRequests.get(request);
@@ -53,7 +53,7 @@ async function openRecords(page: Page, completed: boolean) {
     resourceRequests.delete(request);
   });
   page.on('pageerror', error => observations.pageErrors.push(error.message));
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(() => { localStorage.setItem('daynight.web.locale', 'en'); Math.random = () => 0.5; });
   await page.routeWebSocket('**/channel*', socket => { observations.channels++; socket.close(); });
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -75,8 +75,15 @@ async function openRecords(page: Page, completed: boolean) {
     for (const record of records) {
       const base = `${root}/sessions/${record.sessionId}`;
       if (path === `${base}/archive`) return send({ archive: record.status });
-      if (path === `${base}/archive/content`) return send(record.manifest);
-      if (path === `${base}/archive/files/${record.manifest.timeline.fileId}`) return route.fulfill({ status: 200, body: record.timeline, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      const isContent = path === `${base}/archive/content`, isTimeline = path === `${base}/archive/files/${record.manifest.timeline.fileId}`;
+      if (isContent || isTimeline) {
+        const count = isContent ? ++observations.contentReads : ++observations.timelineReads;
+        if (busy && busy.target === (isContent ? 'content' : 'timeline') && (count === 1 || busy.always)) {
+          return route.fulfill({ status: 429, json: { error: { code: busy.code ?? 'resource_busy', message: 'busy', requestId: source.sessionId } }, headers: { 'Retry-After': '2', ...(busy.principal === undefined ? {} : { 'Daynight-User-ID': busy.principal }) } });
+        }
+      }
+      if (isContent) return send(record.manifest);
+      if (isTimeline) return route.fulfill({ status: 200, body: record.timeline, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
       const resourceId = path.startsWith(`${base}/resources/`) && path.endsWith('/content') ? path.split('/').at(-2) : null;
       if (resourceId && bodies.has(resourceId)) {
         const key = `${record.sessionId}/${resourceId}`;
@@ -93,7 +100,7 @@ async function openRecords(page: Page, completed: boolean) {
   });
   await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=session`);
   const selected = records[completed ? 0 : 1]!;
-  await expect(page.getByText(selected.name, { exact: true })).toBeVisible();
+  if (busy?.waitForLoad !== false) await expect(page.getByText(selected.name, { exact: true })).toBeVisible();
   return { records, resources, bodies, observations };
 }
 
@@ -166,4 +173,49 @@ test('unclaimed saved history reads only fixed records with no current lookup', 
   const trigger = page.getByRole('button', { name: `View image: ${resource.name}`, exact: true });
   await trigger.scrollIntoViewIfNeeded(); await assertDecoded(trigger.getByRole('img'));
   expect(fixture.observations.currentReads).toBe(0); expect(fixture.observations.channels).toBe(0); expect(fixture.observations.writes).toEqual([]);
+});
+
+for (const target of ['content', 'timeline'] as const) test(`archive ${target} retries a headerless busy response in Chromium`, async ({ page }) => {
+  const fixture = await openRecords(page, true, { target });
+  expect(fixture.observations.contentReads).toBe(target === 'content' ? 2 : 1);
+  expect(fixture.observations.timelineReads).toBe(target === 'timeline' ? 2 : 1);
+  expect(fixture.observations.writes).toEqual([]);
+  expect(fixture.observations.pageErrors).toEqual([]);
+});
+
+for (const [label, response] of [
+  ['different principal', { principal: uuid(999) }],
+  ['invalid principal', { principal: 'invalid' }],
+  ['other error code without principal', { code: 'rate_limited' }],
+] as const) test(`${label} is rejected without archive retry`, async ({ page }) => {
+  const fixture = await openRecords(page, true, { target: 'content', ...response, always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  await page.waitForTimeout(2500);
+  expect(fixture.observations.contentReads).toBe(1);
+  expect(fixture.observations.timelineReads).toBe(0);
+  await expect(page.getByText(fixture.records[0]!.name, { exact: true })).toHaveCount(0);
+});
+
+test('closing the page during an archive wait sends no retry', async ({ page }) => {
+  const fixture = await openRecords(page, true, { target: 'content', always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  await page.close();
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  expect(fixture.observations.contentReads).toBe(1);
+});
+
+
+test('an account change during archive backoff sends no retry', async ({ page, context }) => {
+  const fixture = await openRecords(page, true, { target: 'content', always: true, waitForLoad: false });
+  await expect.poll(() => fixture.observations.contentReads).toBe(1);
+  const other = await context.newPage();
+  try {
+    await other.route('**/api/**', route => route.abort());
+    await other.goto('/');
+    await other.evaluate(userId => { localStorage.setItem('daynight.activeUser', JSON.stringify(userId)); const channel = new BroadcastChannel('daynight-identity'); channel.postMessage('identity-changed'); channel.close(); }, uuid(999));
+    await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
+    await page.waitForTimeout(2500);
+    expect(fixture.observations.contentReads).toBe(1);
+    expect(fixture.observations.timelineReads).toBe(0);
+  } finally { await other.close(); }
 });
