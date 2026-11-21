@@ -25,6 +25,7 @@ func configuredTestConfig() configpkg.Config {
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "configuration-test", AppSecret: "configuration-test", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 	c.MCP.Transfer = configpkg.DefaultConfig().MCP.Transfer
+	c.Session = configpkg.DefaultConfig().Session
 	return c
 }
 

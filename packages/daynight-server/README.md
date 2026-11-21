@@ -992,11 +992,22 @@ diagnostics and cause categories.
 | `DAYNIGHT_METRICS_LISTEN_ADDR` | Optional numeric IP and port for the independent metrics listener | Empty (disabled) |
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Shared positive shutdown duration, at most 10 seconds | `10s` |
+| `DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT` | Positive per-instance Session archive concurrency limit | `20` |
+| `DAYNIGHT_SESSION_ARCHIVE_MAX_CONCURRENT_PER_OWNER` | Positive Session archive concurrency limit per original owner across a shared coordination domain | `5` |
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 | `DAYNIGHT_IMAGE_NODE_PATH` | Path to the pinned Node.js 24 executable | Unconfigured |
 | `DAYNIGHT_IMAGE_HELPER_PATH` | Path to the packaged image validation helper | Unconfigured |
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
+
+The Session archive limits may be set independently as `session.archive_max_concurrent`
+and `session.archive_max_concurrent_per_owner` in YAML, or with the corresponding
+environment variables above. Changes take effect after restart. Each operation
+requires both an instance slot and an original-owner slot. Instances sharing a
+coordination domain should use the same owner limit. During a rolling increase,
+each instance checks its own limit against the shared in-flight count; the largest
+active limit is the domain maximum. To lower it, stop admission on old higher-limit
+instances and drain their in-flight operations before admitting at the new limit.
 
 GitHub Apps are registered as independent resources with their private key and
 webhook secret. Grant a Team use of an App and have its administrator connect

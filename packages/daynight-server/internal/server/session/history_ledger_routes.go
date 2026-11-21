@@ -19,8 +19,8 @@ type historyLedgerOperation interface {
 
 func (h *Routes) registerHistoryLedgerRoutes(mux httpx.RouteRegistrar, observe func(ProducerRoute)) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
-		registerProducerRoute(mux, "PUT "+base+"/image-history-ledger/{fileId}", h.archivePreflight(h.historyLedger), producerIndependent, observe)
-		registerProducerRoute(mux, "GET "+base+"/image-history-ledger/{fileId}/status", h.archivePreflight(h.historyLedger), producerIndependent, observe)
+		registerProducerRoute(mux, "PUT "+base+"/image-history-ledger/{fileId}", h.archivePreflight(h.historyLedger, archiveVersionKnown), producerIndependent, observe)
+		registerProducerRoute(mux, "GET "+base+"/image-history-ledger/{fileId}/status", h.archivePreflight(h.historyLedger, archiveVersionKnown), producerIndependent, observe)
 	}
 }
 func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {

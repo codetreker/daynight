@@ -26,7 +26,7 @@ func (s *reviewRuntimeStore) ReviewScanStart(ctx context.Context) (time.Time, *s
 
 func TestReviewAssignmentApplicationLifecycle(t *testing.T) {
 	db := &reviewRuntimeStore{entered: make(chan struct{}), release: make(chan struct{}), exited: make(chan struct{})}
-	app := NewModules(config.Config{}, db, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, db, nil, nil, nil)
 	if err := app.assembleReviewAssignment(db, nil); err != nil {
 		t.Fatal(err)
 	}

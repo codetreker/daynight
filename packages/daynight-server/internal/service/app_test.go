@@ -85,7 +85,7 @@ func (s *configuredOAuthStore) WriteCredentialFamily(context.Context, func(store
 
 func TestNewModulesConfiguresTheSharedOAuthAPIAudience(t *testing.T) {
 	database := &configuredOAuthStore{failure: errors.New("configured family unavailable")}
-	app := NewModules(config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}}, database, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session, Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}}, database, nil, nil, nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -100,7 +100,7 @@ func TestNewModulesConfiguresTheSharedOAuthAPIAudience(t *testing.T) {
 }
 
 func TestOAuthProfileComposition(t *testing.T) {
-	c := config.Config{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{
+	c := config.Config{Session: config.DefaultConfig().Session, Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{
 		"known": []byte(`{"client_id":"known","redirect_uris":["https://client.example/callback"]}`),
 	}}}
 	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
@@ -118,6 +118,7 @@ func TestOAuthProfileComposition(t *testing.T) {
 		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example"}, OAuth: oauthconfig.Config{PreregisteredClients: map[string][]byte{"bad": []byte(`{}`)}}},
 		{Server: serverconfig.Config{PublicOrigin: "https://daynight.example/path"}},
 	} {
+		invalid.Session = config.DefaultConfig().Session
 		app := NewModules(invalid, compositionOnlyStore{}, nil, nil, nil)
 		if app.OAuthProfile != nil || app.APIIssuer != nil || app.OAuthError == nil {
 			t.Fatal("invalid OAuth configuration produced a public profile")
@@ -129,7 +130,7 @@ func TestOAuthProfileComposition(t *testing.T) {
 }
 
 func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
-	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	if app.PrivateContent != nil || app.Uploads != nil {
 		t.Fatal("incomplete private storage assembled scoped transfer services")
 	}
@@ -161,6 +162,7 @@ func appTestConfig(t *testing.T) config.Config {
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "app", AppSecret: "secret", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}
 	c.MCP.Transfer = transferconfig.DefaultConfig()
+	c.Session = config.DefaultConfig().Session
 	return c
 }
 
@@ -386,7 +388,7 @@ func (f *observedAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForPersistenceAndReusesTimedOutClose(t *testing.T) {
-	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	started, release, completed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseClose := func() { releaseOnce.Do(func() { close(release) }) }
@@ -471,7 +473,7 @@ func (f *blockingAppFiles) Close() error {
 }
 
 func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
-	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	var persistenceCalls atomic.Int32
 	app.persistence = &Persistence{Close: func() { persistenceCalls.Add(1) }}
 	failure := errors.New("file close failed")
@@ -566,7 +568,7 @@ func TestNewModulesAssemblesUsageWithoutKeys(t *testing.T) {
 	t.Setenv("DAYNIGHT_USAGE_CURSOR_KEY", "")
 	t.Setenv("DAYNIGHT_USAGE_WRITE_ENABLED", "false")
 	t.Setenv("DAYNIGHT_USAGE_QUALIFIED_PROFILES", "")
-	app := NewModules(config.Config{}, compositionOnlyStore{}, nil, nil, nil)
+	app := NewModules(config.Config{Session: config.DefaultConfig().Session}, compositionOnlyStore{}, nil, nil, nil)
 	defer func() {
 		if err := app.Close(t.Context()); err != nil {
 			t.Error(err)

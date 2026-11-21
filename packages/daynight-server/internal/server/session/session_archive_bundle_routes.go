@@ -41,7 +41,7 @@ func (h *Routes) registerUnifiedArchiveRoutes(mux httpx.RouteRegistrar, base str
 	} {
 		next := h.auth.Require(h.unifiedArchiveParameters(handler, route == "GET "+base+"/files/{fileId}"))
 		if route[:3] != "GET" || route == "GET "+base+"/files/{fileId}" {
-			next = h.archivePreflight(next)
+			next = h.archivePreflight(next, archiveVersionKnown)
 		}
 		if !strings.HasPrefix(route, "GET ") {
 			registerProducerRoute(mux, route, next, producerCredential, observe)

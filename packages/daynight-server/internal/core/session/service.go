@@ -47,8 +47,25 @@ type Engine struct {
 	workCanceled          bool
 }
 
-func NewEngine(files filestorage.Storage) *Engine {
-	return &Engine{archiveSlots: make(chan struct{}, 1), archivePreflightSlots: make(chan struct{}, 1), archiveOwnerLimit: 1, files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+// ArchiveLimits bounds archive operations per instance and original owner.
+type ArchiveLimits struct {
+	MaxConcurrent         int
+	MaxConcurrentPerOwner int
+}
+
+// NewEngine uses single-slot limits unless explicitly configured. Limits must be positive.
+func NewEngine(files filestorage.Storage, configured ...ArchiveLimits) *Engine {
+	limits := ArchiveLimits{MaxConcurrent: 1, MaxConcurrentPerOwner: 1}
+	if len(configured) > 1 {
+		panic("multiple archive limits")
+	}
+	if len(configured) == 1 {
+		limits = configured[0]
+	}
+	if limits.MaxConcurrent <= 0 || limits.MaxConcurrentPerOwner <= 0 {
+		panic("archive limits must be positive")
+	}
+	return &Engine{archiveSlots: make(chan struct{}, limits.MaxConcurrent), archivePreflightSlots: make(chan struct{}, limits.MaxConcurrent), archiveOwnerLimit: limits.MaxConcurrentPerOwner, files: files, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
 }
 func fault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func conflict() error {

@@ -3,6 +3,7 @@ package application
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -29,8 +30,8 @@ type Scoped struct {
 	Observations           *task.Observations
 }
 
-func NewScoped(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, origin string, unavailable []scopepolicy.ScopeID, capture ...task.Capturer) (*Application, error) {
-	a := New(database, files, client, callbackURL, preview, overlap, capture...)
+func NewScoped(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, origin string, unavailable []scopepolicy.ScopeID, limits *sessioncore.ArchiveLimits, capture ...task.Capturer) (*Application, error) {
+	a := newWithArchiveLimits(database, files, client, callbackURL, preview, overlap, limits, capture...)
 	source := &credentialpolicy.Source{Database: database, Origin: origin}
 	pat, err := availableCatalog(scopepolicy.PAT, unavailable)
 	if err != nil {
