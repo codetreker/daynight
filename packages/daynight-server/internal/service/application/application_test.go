@@ -178,6 +178,10 @@ func (f *borrowedFiles) TryAcquireResidency(context.Context, string) (io.Closer,
 	return nil, f.unexpected("TryAcquireResidency")
 }
 
+func (f *borrowedFiles) TryAcquireArchive(context.Context, string, string, int, bool) (io.Closer, error) {
+	return nil, f.unexpected("TryAcquireArchive")
+}
+
 func (f *borrowedFiles) AcquireGate(context.Context, filestorage.GateDomain, string) (io.Closer, error) {
 	return nil, f.unexpected("AcquireGate")
 }

@@ -90,6 +90,13 @@ func (f cleanupLeaseFiles) TryAcquireResidency(_ context.Context, key string) (i
 	return permit, nil
 }
 
+func (f cleanupLeaseFiles) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	if session != "" || limit != 1 || !cleanup {
+		return nil, errors.New("unexpected archive cleanup permit")
+	}
+	return f.TryAcquireResidency(ctx, "session/archive/owner/"+owner)
+}
+
 type cleanupLeasePermit struct {
 	lose   context.CancelCauseFunc
 	closed bool
@@ -202,7 +209,7 @@ func TestArchiveCleanupWaitsForArchiveResponseOrUploadGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Body.Close()
-	permit, err := f.TryAcquireResidency(t.Context(), "session/archive/owner/"+target.OwnerID)
+	permit, err := f.TryAcquireArchive(t.Context(), target.OwnerID, target.SessionID, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}

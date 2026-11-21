@@ -130,8 +130,7 @@ func TestTerminalHistoryReadsPersistedArchiveIndependently(t *testing.T) {
 	if !bytes.Equal(retained.Data, data) {
 		t.Error("archive bytes changed")
 	}
-	gateKey := "session/archive/owner/" + f.p.UserID
-	if permit, err := files.TryAcquireResidency(t.Context(), gateKey); !errors.Is(err, filestorage.ErrGateBusy) {
+	if permit, err := files.TryAcquireArchive(t.Context(), f.p.UserID, "", 1, true); !errors.Is(err, filestorage.ErrGateBusy) {
 		if permit != nil {
 			_ = permit.Close()
 		}
@@ -140,7 +139,7 @@ func TestTerminalHistoryReadsPersistedArchiveIndependently(t *testing.T) {
 	if err = retained.Close(); err != nil {
 		t.Fatal(err)
 	}
-	permit, err := files.TryAcquireResidency(t.Context(), gateKey)
+	permit, err := files.TryAcquireArchive(t.Context(), f.p.UserID, "", 1, true)
 	if err != nil {
 		t.Fatalf("archive close did not release owner gate: %v", err)
 	}

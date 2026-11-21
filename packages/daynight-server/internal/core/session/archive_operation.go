@@ -92,7 +92,7 @@ func (s *Execution) TryReserveArchivePreflight() (*ArchivePreflightReservation, 
 	default:
 		return nil, archiveBusy()
 	}
-	if len(s.archiveSlots) != 0 {
+	if len(s.archiveSlots) == cap(s.archiveSlots) {
 		<-s.archivePreflightSlots
 		return nil, archiveBusy()
 	}
@@ -184,7 +184,11 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 	if s.files == nil {
 		return nil, errors.New("archive residency gate unavailable")
 	}
-	permit, err := s.files.TryAcquireResidency(ctx, "session/archive/owner/"+owner)
+	sessionID, err := model.CanonicalID(id)
+	if err != nil {
+		return nil, err
+	}
+	permit, err := s.files.TryAcquireArchive(ctx, owner, sessionID, s.archiveOwnerLimit, false)
 	if err != nil {
 		if onlyArchiveGateBusy(err) {
 			return nil, errors.Join(archiveBusy(), err)

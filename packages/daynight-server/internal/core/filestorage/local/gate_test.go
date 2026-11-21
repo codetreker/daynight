@@ -148,6 +148,10 @@ type gateProbe struct {
 	blockingKey, residencyKey string
 }
 
+func (p *gateProbe) TryAcquireArchive(_ context.Context, _, _ string, _ int, _ bool) (io.Closer, error) {
+	return nil, p.backendErr
+}
+
 func (p *gateProbe) AcquireGate(_ context.Context, domain filestorage.GateDomain, key string) (io.Closer, error) {
 	p.domain, p.blockingKey = domain, key
 	return nil, p.backendErr

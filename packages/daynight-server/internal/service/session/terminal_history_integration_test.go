@@ -125,7 +125,7 @@ func TestPersistedTerminalHistoryReadAndRevocation(t *testing.T) {
 			if !bytes.Equal(content.Data, data) {
 				t.Fatal("archive bytes changed")
 			}
-			permit, err := files.TryAcquireResidency(ctx, "session/archive/owner/"+f.owner.UserID)
+			permit, err := files.TryAcquireArchive(ctx, f.owner.UserID, "", 1, true)
 			if !errors.Is(err, filestorage.ErrGateBusy) {
 				if permit != nil {
 					_ = permit.Close()

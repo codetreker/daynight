@@ -81,7 +81,7 @@ func (s *ArchiveCleanup) clean(ctx context.Context, target store.ArchiveCleanupT
 	}
 	// Admission is now closed. A still-open response or upload retains this
 	// original-owner gate, so no database connection is held while it drains.
-	permit, err := s.files.TryAcquireResidency(ctx, "session/archive/owner/"+target.OwnerID)
+	permit, err := s.files.TryAcquireArchive(ctx, target.OwnerID, "", 1, true)
 	if errors.Is(err, filestorage.ErrGateBusy) {
 		return nil
 	}
