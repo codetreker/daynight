@@ -60,16 +60,12 @@ export const createWorkerBotHost = (options: {
       return value;
     } });
     const deletion = createBotDeletion({ ...options, store, executions, process: botProcess, sessionApi, remote });
-    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner).filter(record => {
-      if (record.migration !== undefined) return false;
-      try { return recovery.ready(record); }
-      catch (cause) { options.emit({ kind: "bot-unavailable", message: `Bot ${record.botId}: ${cause instanceof Error ? cause.message : "Recovery state is unavailable."}` }); return false; }
-    }),
+    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner).filter(record => record.migration === undefined),
       stateDirectory: botId => prepareBotStateDirectory(options.paths, botId),
       healthy: async (record, signal) => {
         try {
           const snapshot = await botProcess.observe(record, AbortSignal.any([signal, AbortSignal.timeout(10_000)]));
-          return snapshot.startup?.state === "ready" && ["ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped && snapshot.error === null;
+          return recovery.ready(record) && snapshot.startup?.state === "ready" && ["ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped && snapshot.error === null;
         } catch (error) { signal.throwIfAborted(); if (error instanceof ControllerIpcOutcomeUnknownError) return false; throw error; }
       },
       idle: async (record, signal) => {
