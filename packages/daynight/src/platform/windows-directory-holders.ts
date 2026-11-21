@@ -25,13 +25,18 @@ export type WindowsDirectoryHolderKernel = {
 
 let kernel: Promise<WindowsDirectoryHolderKernel> | undefined;
 
-// Offsets into the 64-bit PEB and RTL_USER_PROCESS_PARAMETERS. They differ on
-// other architectures, so an unexpected pointer size is refused rather than
-// guessed: a wrong offset would read an unrelated address and could report a
-// directory that belongs to no process.
-const processParametersOffset = 0x20n;
-const currentDirectoryOffset = 0x38n;
-const currentDirectoryBufferOffset = 8;
+// Offsets into the PEB and RTL_USER_PROCESS_PARAMETERS. A wrong offset reads
+// an unrelated address and could report a directory that belongs to no
+// process, so an unexpected pointer size is refused rather than guessed and
+// each inspected process is read through the layout its own code uses.
+// UNICODE_STRING is { USHORT Length; USHORT MaximumLength; PWSTR Buffer }, so
+// the 64-bit form pads before its pointer and the 32-bit form does not.
+const nativeLayout = { parameters: 0x20n, directory: 0x38n, pointer: 8, stringBytes: 16, stringBuffer: 8 } as const;
+// A WOW64 process runs 32-bit code that maintains its 32-bit process
+// parameters. The native structures reached through ProcessBasicInformation do
+// not carry that process's active working directory, so reading them would
+// silently omit a 32-bit holder.
+const wow64Layout = { parameters: 0x10n, directory: 0x24n, pointer: 4, stringBytes: 8, stringBuffer: 4 } as const;
 const processEntrySize = 568;
 const processEntryIdOffset = 8;
 const processEntryImageOffset = 44;
@@ -90,15 +95,27 @@ const loadKernel = async (): Promise<WindowsDirectoryHolderKernel> => {
         if (times(handle, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8)) === 0) return null;
         const birth = creation.readBigUInt64LE();
         if (birth <= 0n) return null;
-        const basic = Buffer.alloc(8 * 6), returned = Buffer.alloc(4);
-        if ((query(handle, 0, basic, basic.length, returned) as number) < 0 || returned.readUInt32LE() !== basic.length) return null;
-        const peb = basic.readBigUInt64LE(8);
+        // ProcessWow64Information yields the 32-bit PEB of a WOW64 process and
+        // zero for a native one, which is what selects the layout below.
+        const wow64 = Buffer.alloc(8), wow64Returned = Buffer.alloc(4);
+        if ((query(handle, 26, wow64, wow64.length, wow64Returned) as number) < 0 || wow64Returned.readUInt32LE() !== wow64.length) return null;
+        const wow64Peb = wow64.readBigUInt64LE();
+        const layout = wow64Peb === 0n ? nativeLayout : wow64Layout;
+        let peb = wow64Peb;
+        if (peb === 0n) {
+          const basic = Buffer.alloc(8 * 6), returned = Buffer.alloc(4);
+          if ((query(handle, 0, basic, basic.length, returned) as number) < 0 || returned.readUInt32LE() !== basic.length) return null;
+          peb = basic.readBigUInt64LE(8);
+        }
         if (peb === 0n) return null;
-        const parameters = read(handle, peb + processParametersOffset, 8)?.readBigUInt64LE();
-        if (parameters === undefined || parameters === 0n) return null;
-        const directoryString = read(handle, parameters + currentDirectoryOffset, 16);
+        const pointerAt = (data: Buffer, offset = 0): bigint => layout.pointer === 8 ? data.readBigUInt64LE(offset) : BigInt(data.readUInt32LE(offset));
+        const parametersValue = read(handle, peb + layout.parameters, layout.pointer);
+        if (parametersValue === null) return null;
+        const parameters = pointerAt(parametersValue);
+        if (parameters === 0n) return null;
+        const directoryString = read(handle, parameters + layout.directory, layout.stringBytes);
         if (directoryString === null) return null;
-        const length = directoryString.readUInt16LE(0), buffer = directoryString.readBigUInt64LE(currentDirectoryBufferOffset);
+        const length = directoryString.readUInt16LE(0), buffer = pointerAt(directoryString, layout.stringBuffer);
         // A process between creation and its first directory assignment has an
         // empty string; an implausible length means the layout did not match.
         if (length === 0 || length % 2 !== 0 || length > 0x8000 || buffer === 0n) return null;

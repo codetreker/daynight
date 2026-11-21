@@ -1941,6 +1941,42 @@ exec "$@"
     }
   });
 
+  it.skipIf(process.platform !== "win32")("recovers a pointerless empty worktree after an earlier termination attempt failed", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0, allowed = false, terminated = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async target => {
+        stops++;
+        // The first attempt fails after the pointer is already unlinked, so
+        // every later attempt arrives through the pointerless-empty branch.
+        if (!allowed) throw new Error("holder inventory interrupted");
+        terminated = true;
+        return { observed: [{ pid: 909, image: "node.exe", directory: target }], terminated: [909] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      if (!terminated) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    const first = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(first)).toContain("EBUSY");
+    expect(errorText(first)).toContain("holder inventory interrupted");
+    expect(stops).toBe(1);
+    // The interrupted attempt left the worktree registered, empty and without
+    // its Git pointer; a later attempt must still reach the recovery.
+    expect(await readFile(path.join(root, ".git"), "utf8").catch(() => null)).toBeNull();
+    expect(worktreePaths(f.repository)).toContain(root);
+    allowed = true;
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(stops).toBe(2);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
   it("retains a pointerless empty worktree that is locked during the busy backoff", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root); const binding = await prepareCleanupFixture(f, adapter);
     // Captured while the pointer still resolves, then emptied to reach the

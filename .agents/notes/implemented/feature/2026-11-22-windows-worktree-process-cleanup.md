@@ -34,10 +34,19 @@ termination of processes it does not own authorize different things.
 then reads each one's working directory from its `RTL_USER_PROCESS_PARAMETERS`
 through `NtQueryInformationProcess` and `ReadProcessMemory`. A process it
 cannot open or read is skipped rather than failing the inventory: another
-account's process is not a holder this Worker can act on. The 64-bit layout
-offsets are refused outright on a different pointer size rather than guessed,
-because a wrong offset reads an unrelated address and could name a directory
-belonging to no process.
+account's process is not a holder this Worker can act on. The layout offsets are
+refused outright on an unexpected pointer size rather than guessed, because a
+wrong offset reads an unrelated address and could name a directory belonging to
+no process.
+
+The Worker's own pointer size does not describe the process being inspected. A
+64-bit Worker can read a 32-bit WOW64 holder, whose running code maintains its
+32-bit process parameters; the native structures reached through
+`ProcessBasicInformation` do not carry that process's active working directory.
+`ProcessWow64Information` yields the 32-bit PEB for such a process and zero for
+a native one, which is what selects the layout. Reading the native structures
+for both would silently omit a 32-bit holder and leave cleanup refusing to
+remove a directory it was authorized to recover.
 
 Each holder's process handle stays open from inspection until termination.
 Windows does not recycle a process identifier while a handle to that process
@@ -55,6 +64,17 @@ The first attempt and the retry run one `removeOwnedWorktree` sequence, so the
 two cannot verify different things. The Git pointer is unlinked only once: a
 retry that already reached the root has removed it, and `verifyOwnership`
 switches to requiring its absence at that point.
+
+### Reaching the recovery after an interrupted attempt
+
+Ordinary cleanup unlinks the Git pointer before it removes the root, so an
+attempt that fails at the root leaves the worktree registered, empty and
+pointerless. Every later attempt then enters the branch for a registered
+worktree whose pointer an interrupted cleanup already removed, not the main
+path. That branch recovers holders too; without it one busy failure would
+permanently route every subsequent attempt away from the recovery, including
+after a Worker restart and including the case where the target was enabled only
+after an earlier cleanup had already failed with it disabled.
 
 ## Alternatives
 

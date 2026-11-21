@@ -638,21 +638,37 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 await reproveEmpty();
                 try { await removeEmptyDirectory(emptyPath, operation, reproveEmpty); }
                 catch (ordinaryError) {
-                  if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
-                  try {
-                    operation.check();
-                    const original = result;
-                    const paths = [repository.root, repository.commonDirectory, path.join(repository.root, ".worktrees"), path.dirname(original.binding.worktreePath), original.binding.worktreePath, original.registration.directory];
-                    const identities = await Promise.all(paths.map(directory));
-                    if (identities.some(identity => identity === null) || identities[0] !== repository.rootIdentity || identities[1] !== repository.commonIdentity || identities[4] !== original.leaf || identities[3]!.split(":")[0] !== identities[4]!.split(":")[0]) throw new Error("Worktree ownership directories or device cannot be established.");
-                    await assertNoWorktreeMounts(await realpath(original.binding.worktreePath));
-                    operation.check();
-                    const confirmed = await inspectWorktree(project, owner, repository, operation, true);
-                    if (JSON.stringify(original) !== JSON.stringify(confirmed) || JSON.stringify(identities) !== JSON.stringify(await Promise.all(paths.map(directory)))) throw new Error("The empty worktree changed before privileged removal.");
-                    await optionsForShellRemoval(repository.root, original.binding.worktreePath, operation);
-                    recoveredPermissionError = ordinaryError;
-                    operation.check();
-                  } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree cleanup failed (configuration revision ${policy.sudoRevision}).`, { cause: ordinaryError }); }
+                  if (busy(ordinaryError) && process.platform === "win32" && policy?.enableWindowsProcessCleanup === true) {
+                    // An interrupted removal leaves the worktree empty and
+                    // pointerless, so every later attempt arrives here instead
+                    // of the main path. Without this the first busy failure
+                    // would permanently route the recovery away from itself.
+                    try {
+                      operation.check();
+                      await reproveEmpty();
+                      await (optionsForProcessStop)(emptyPath, operation);
+                      operation.check();
+                      await reproveEmpty();
+                      await removeEmptyDirectory(emptyPath, operation, reproveEmpty);
+                      operation.check();
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+                  } else {
+                    if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
+                    try {
+                      operation.check();
+                      const original = result;
+                      const paths = [repository.root, repository.commonDirectory, path.join(repository.root, ".worktrees"), path.dirname(original.binding.worktreePath), original.binding.worktreePath, original.registration.directory];
+                      const identities = await Promise.all(paths.map(directory));
+                      if (identities.some(identity => identity === null) || identities[0] !== repository.rootIdentity || identities[1] !== repository.commonIdentity || identities[4] !== original.leaf || identities[3]!.split(":")[0] !== identities[4]!.split(":")[0]) throw new Error("Worktree ownership directories or device cannot be established.");
+                      await assertNoWorktreeMounts(await realpath(original.binding.worktreePath));
+                      operation.check();
+                      const confirmed = await inspectWorktree(project, owner, repository, operation, true);
+                      if (JSON.stringify(original) !== JSON.stringify(confirmed) || JSON.stringify(identities) !== JSON.stringify(await Promise.all(paths.map(directory)))) throw new Error("The empty worktree changed before privileged removal.");
+                      await optionsForShellRemoval(repository.root, original.binding.worktreePath, operation);
+                      recoveredPermissionError = ordinaryError;
+                      operation.check();
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree cleanup failed (configuration revision ${policy.sudoRevision}).`, { cause: ordinaryError }); }
+                  }
                 }
                 result = await inspectWorktree(project, owner, repository, operation, true);
               }
