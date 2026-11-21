@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AssistantTask } from '../src/api/assistant-tasks';
 import { invalidateAuthRequests } from '../src/api/client';
 import type { Project } from '../src/api/types';
-import { AssistantTaskSubscriptions, targetsInbox } from '../src/features/bots/AssistantTaskSubscriptions';
+import { AssistantTaskSubscriptions, inboxClientKey } from '../src/features/bots/AssistantTaskSubscriptions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
@@ -12,18 +12,19 @@ const directories = vi.hoisted(() => ({ projects: [] as unknown[] }));
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: directories.projects, nextCursor: null })) }));
 
 const origin = 'https://daynight.example', taskId = botId(70), inboxId = botId(71);
-const inboxUrl = `${origin}/api/v1/assistant-task-inbox/${inboxId}`;
+const inboxUrl = `${origin}/api/v1/assistant-task-inbox/${inboxId}`, inboxKey = `assistant-task-inbox:${inboxId}`;
+const listPath = `/api/v1/me/webhooks?${new URLSearchParams({ clientKey: inboxKey, limit: '100' })}`;
 const alpha = botId(73), beta = botId(74), personalId = botId(75), otherId = botId(76), subscriptionId = botId(78);
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Release watcher', purpose: '', scope: '', application: '', kind: 'continuous', state: 'active', takeover: 'manual', trigger: null, version: '3', manualVersion: '1', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
 const project = (id: string, name: string) => ({ id, name } as Project);
 const personal = { kind: 'personal', id: BOT_USER };
 type Subscription = { id: string; projectId: string; projectName: string | null; eventTypes: string[]; eligibility: 'eligible' | 'confirmation_required' };
-const endpoint = (id: string, url: string, subscriptions: Subscription[], enabled = true, version = '4') => ({
-  id, owner: personal, lifecycle: 'active', configVersion: version, deletedAt: null, name: `Endpoint ${id.slice(-2)}`, enabled, destinationRevision: '2',
+const endpoint = (id: string, url: string, subscriptions: Subscription[], enabled = true, version = '4', clientKey: string | null = inboxKey) => ({
+  id, owner: personal, lifecycle: 'active', clientKey, configVersion: version, deletedAt: null, name: `Endpoint ${id.slice(-2)}`, enabled, destinationRevision: '2',
   destination: { kind: 'http', adapterVersion: '1', url, displayUrl: url }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(79), overlapUntil: null },
   subscriptions, capabilities: { manage: true, readSecret: true, redeliver: true }, createdAt: BOT_TIME, updatedAt: BOT_TIME,
 });
-const summary = (value: ReturnType<typeof endpoint>) => ({ id: value.id, owner: personal, name: value.name, enabled: value.enabled, configVersion: value.configVersion, destination: value.destination, projectCount: value.subscriptions.length, eventTypeCount: 1, lastAttemptAt: null, lastResult: null });
+const summary = (value: ReturnType<typeof endpoint>) => ({ id: value.id, owner: personal, clientKey: value.clientKey, name: value.name, enabled: value.enabled, configVersion: value.configVersion, destination: value.destination, projectCount: value.subscriptions.length, eventTypeCount: 1, lastAttemptAt: null, lastResult: null });
 const sha256 = async (text: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
 const alphaCreated = (): Subscription => ({ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' });
 
@@ -35,15 +36,20 @@ function server(initial: ReturnType<typeof endpoint>[] = []) {
       const text = String(options?.body), body = JSON.parse(text) as Record<string, unknown>;
       writes.push({ method, path, body });
       const create = method === 'POST', endpointId = create ? botId(80) : path.split('/').at(-1)!;
+      const holder = create && typeof body.clientKey === 'string' ? state.personal.find(item => item.clientKey === body.clientKey) : undefined;
+      if (holder !== undefined) return botResponse({ error: { code: 'endpoint_exists', message: 'Conflict', requestId: 'bot-request', details: { endpointId: holder.id, configVersion: holder.configVersion } } }, BOT_USER, 409);
       const before = state.personal.find(item => item.id === endpointId);
       const after = create
-        ? endpoint(endpointId, inboxUrl, (body.subscriptions as Subscription[]).map((item, index) => ({ ...item, id: botId(90 + index), projectName: null, eligibility: 'eligible' as const })), true, '1')
+        ? endpoint(endpointId, inboxUrl, (body.subscriptions as Subscription[]).map((item, index) => ({ ...item, id: botId(90 + index), projectName: null, eligibility: 'eligible' as const })), true, '1', typeof body.clientKey === 'string' ? body.clientKey : null)
         : { ...before!, configVersion: String(Number(before!.configVersion) + 1), ...(body.subscriptions === undefined ? {} : { subscriptions: (body.subscriptions as Subscription[]).map((item, index) => ({ ...item, id: item.id ?? botId(95 + index), projectName: null, eligibility: 'eligible' as const })) }) };
       state.personal = [...state.personal.filter(item => item.id !== endpointId), after];
       const operation = { operationId: body.operationId, kind: create ? 'endpoint.create' : 'endpoint.patch', issuedAt: body.issuedAt, requestSha256: await sha256(text), actorUserId: BOT_USER, owner: personal, endpointId, effect: 'applied', configVersionAfter: after.configVersion, destinationRevisionAfter: create ? '1' : '2', deliveryId: null, generationAfter: null, keyId: null, overlapUntil: null, recordedAt: BOT_TIME, expiresAt: '2026-12-04T12:00:00Z' };
       return botResponse({ operation, endpoint: after }, BOT_USER, create ? 201 : 200);
     }
-    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: state.personal.map(summary), nextCursor: null });
+    if (path.startsWith('/api/v1/me/webhooks?')) {
+      const key = new URLSearchParams(path.slice(path.indexOf('?'))).get('clientKey');
+      return botResponse({ items: state.personal.filter(item => key === null || item.clientKey === key).map(summary), nextCursor: null });
+    }
     const found = state.personal.find(item => path === `/api/v1/me/webhooks/${item.id}`);
     return found ? botResponse(found) : botError(404, 'not_found');
   });
@@ -62,18 +68,28 @@ beforeEach(() => { directories.projects = [project(alpha, 'Alpha'), project(beta
 const eventsOf = (projectName: string) => within(screen.getByRole('group', { name: `Event types for ${projectName}` }));
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
-it('matches endpoint targets by origin and exact inbox path', () => {
-  expect(targetsInbox(`${inboxUrl}?trace=1`, inboxUrl)).toBe(true);
-  // The public route and its target check require the exact inbox path.
-  expect(targetsInbox(`${inboxUrl}/`, inboxUrl)).toBe(false);
-  expect(targetsInbox(`https://other.example/api/v1/assistant-task-inbox/${inboxId}`, inboxUrl)).toBe(false);
-  expect(targetsInbox(`${origin}/api/v1/assistant-task-inbox/${botId(1)}`, inboxUrl)).toBe(false);
-  expect(targetsInbox(null, inboxUrl)).toBe(false);
-  expect(targetsInbox('::', inboxUrl)).toBe(false);
+it('finds the endpoint by the inbox creation key rather than by its target', async () => {
+  expect(inboxClientKey(inboxId)).toBe(inboxKey);
+  const s = server([endpoint(otherId, inboxUrl, [alphaCreated()], true, '4', null), endpoint(personalId, 'https://receiver.example/hook', [{ ...alphaCreated(), eventTypes: ['task.deleted'] }])]); mount();
+  expect(await screen.findByText(`Endpoint ${personalId.slice(-2)}`)).toBeVisible();
+  expect(screen.queryByText(`Endpoint ${otherId.slice(-2)}`)).toBeNull();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task deleted' })).toBeChecked();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' })).not.toBeChecked();
+  expect(s.fetch.mock.calls.map(([url]) => String(url))).toContain(listPath);
+});
+
+it('refuses a listed endpoint whose detail no longer holds the inbox key', async () => {
+  const linked = endpoint(personalId, inboxUrl, [alphaCreated()]);
+  const s = server([linked]);
+  const serve = s.fetch.getMockImplementation()!;
+  s.fetch.mockImplementation(async (url, options) => String(url) === `/api/v1/me/webhooks/${personalId}` ? botResponse({ ...linked, clientKey: null }) : serve(url, options));
+  mount();
+  expect(await screen.findByRole('button', { name: 'Create subscription' })).toBeEnabled();
+  expect(screen.queryByText(`Endpoint ${personalId.slice(-2)}`)).toBeNull();
 });
 
 it('creates a personal endpoint targeting the token-free inbox URL with per-project event types', async () => {
-  const s = server([endpoint(otherId, 'https://receiver.example/hook', [])]); mount();
+  const s = server([endpoint(otherId, 'https://receiver.example/hook', [], true, '4', null)]); mount();
   fireEvent.click(await screen.findByRole('button', { name: 'Create subscription' }));
   expect(screen.getByRole('alert')).toHaveTextContent('Select at least one project and at least one event type for each selected project.');
   expect(s.writes).toHaveLength(0);
@@ -89,7 +105,7 @@ it('creates a personal endpoint targeting the token-free inbox URL with per-proj
   fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
   await waitFor(() => expect(s.writes).toHaveLength(1));
   expect(s.writes[0]).toMatchObject({ method: 'POST', path: '/api/v1/me/webhooks', body: {
-    expectedUserId: BOT_USER, name: 'Assistant inbox · Release watcher', enabled: true,
+    expectedUserId: BOT_USER, clientKey: inboxKey, name: 'Assistant inbox · Release watcher', enabled: true,
     destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } },
     subscriptions: [{ id: null, projectId: alpha, eventTypes: ['task.created'] }, { id: null, projectId: beta, eventTypes: ['task.deleted', 'task.thread_posted'] }],
   } });
@@ -100,7 +116,7 @@ it('creates a personal endpoint targeting the token-free inbox URL with per-proj
 });
 
 it('edits the personal endpoint targeting the inbox with its loaded version and without changing its enabled state', async () => {
-  const s = server([endpoint(otherId, `${inboxUrl}/`, []), endpoint(personalId, `${inboxUrl}?source=daynight`, [alphaCreated()])]); mount();
+  const s = server([endpoint(otherId, inboxUrl, [], true, '4', `assistant-task-inbox:${botId(1)}`), endpoint(personalId, `${inboxUrl}?source=daynight`, [alphaCreated()])]); mount();
   expect(await screen.findByRole('checkbox', { name: 'Alpha' })).toBeChecked();
   expect(screen.queryByText(`Endpoint ${otherId.slice(-2)}`)).toBeNull();
   expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' })).toBeChecked();
@@ -201,6 +217,27 @@ it('keeps the edits and a pending conflict when the panel becomes active again',
   expect(screen.getByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
 });
 
+it('reports an endpoint already created elsewhere and loads it only when the user reloads', async () => {
+  const s = server(); mount();
+  await screen.findByRole('button', { name: 'Create subscription' });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' }));
+  // Another session creates the inbox's endpoint after this panel loaded.
+  s.state.personal = [endpoint(personalId, inboxUrl, [alphaCreated()])];
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('A subscription for this inbox was already created elsewhere, so your change was not saved.');
+  expect(s.writes).toHaveLength(1);
+  expect(s.state.personal).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Check operation' })).toBeNull();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+  expect(await screen.findByRole('button', { name: 'Save subscription' })).toBeEnabled();
+  expect(screen.getByText(`Endpoint ${personalId.slice(-2)}`)).toBeVisible();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task created' })).toBeChecked();
+  expect(eventsOf('Alpha').getByRole('checkbox', { name: 'Task paused' })).not.toBeChecked();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
 it('releases a create refused for Webhook maintenance and keeps the edits', async () => {
   const s = server(); mount();
   await screen.findByRole('button', { name: 'Create subscription' });
@@ -273,7 +310,7 @@ it('keeps the form locked after a confirmed create until the created endpoint is
   let release = () => undefined as void, fail = true;
   const held = new Promise<void>(resolve => { release = resolve; });
   s.fetch.mockImplementation(async (url, options) => {
-    if (s.writes.length === 0 || (options?.method ?? 'GET') !== 'GET' || String(url) !== '/api/v1/me/webhooks?limit=100') return serve(url, options);
+    if (s.writes.length === 0 || (options?.method ?? 'GET') !== 'GET' || String(url) !== listPath) return serve(url, options);
     await held;
     if (fail) { fail = false; return botError(500, 'internal'); }
     return serve(url, options);

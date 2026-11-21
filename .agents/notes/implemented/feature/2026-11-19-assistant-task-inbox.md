@@ -38,10 +38,13 @@ notified about the same Task. Inbox storage is migration
 
 The Web subscription panel only creates or edits the user's own subscription
 for the inbox. Concurrency and policy correctness stay with the Webhook
-service: the panel submits the observed `ifVersion`, shows `version_conflict`
-with a Reload action, displays server error codes as returned, and links to the
-Webhook page for endpoint lifecycle. The inbox management panel follows the
-same rule for enable, disable and rotate.
+service: the panel submits the observed `ifVersion`, creates its endpoint with
+the [creation key](2026-11-21-webhook-endpoint-client-key.md)
+`assistant-task-inbox:<inboxId>` and finds it by that key, shows
+`version_conflict` and `endpoint_exists` with a Reload action, displays server
+error codes as returned, and links to the Webhook page for endpoint
+lifecycle. The inbox management panel follows the same rule for enable,
+disable and rotate.
 
 ## Alternatives
 
@@ -127,8 +130,9 @@ address policy, so the panels only use those contracts and show their errors.
   a security boundary; a same-user process can omit it and avoid suppression.
 - The ten-minute reaction window is a heuristic: a reaction after the window
   is delivered, and an unrelated write inside the window is suppressed.
-- Two concurrent creations can still produce two personal endpoints targeting
-  one inbox while the subscription panel creates endpoints without a key. Inbox
-  idempotency prevents duplicate inbound events. The Webhook endpoint contract
-  now provides an atomic per-owner [creation key](2026-11-21-webhook-endpoint-client-key.md);
-  the panel closes this gap once it creates and finds its endpoint by that key.
+- Concurrent creations from the subscription panel produce one personal
+  endpoint per inbox; the others receive `endpoint_exists`. An endpoint created
+  without the key, including one created by the panel before it adopted the
+  key, is not found by the panel, so creating from the panel adds a second
+  endpoint targeting the inbox until the user deletes the keyless one on the
+  Webhook page. Inbox idempotency prevents duplicate inbound events.

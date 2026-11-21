@@ -19,6 +19,7 @@ const en = {
   lifecycle: 'Pause, resume, delete and other endpoint management are on the Webhooks page.',
   unknown: 'The result of the Webhook change is unknown. Check the original operation before making another change.', check: 'Check operation',
   error: 'The Webhook request failed.', conflict: 'This subscription changed elsewhere, so your change was not saved. Reload to discard your edits and load the current configuration.', reload: 'Reload',
+  exists: 'A subscription for this inbox was already created elsewhere, so your change was not saved. Reload to discard your edits and load it.',
   loadError: 'Could not load Webhook subscriptions.', retry: 'Retry', loading: 'Loading…',
   endpointName: 'Assistant inbox',
   eventsFor: (project: string) => `Event types for ${project}`,
@@ -33,6 +34,7 @@ const zh: typeof en = {
   lifecycle: '暂停、恢复、删除等端点管理在 Webhook 页面进行。',
   unknown: 'Webhook 修改结果未知。再次修改前，请核对原操作。', check: '核对操作',
   error: 'Webhook 请求失败。', conflict: '这个订阅已在别处被修改，你的修改未保存。重新加载会放弃本地修改并读取最新配置。', reload: '重新加载',
+  exists: '这个收件箱的订阅已在别处创建，你的修改未保存。重新加载会放弃本地修改并读取该订阅。',
   loadError: '无法读取 Webhook 订阅。', retry: '重试', loading: '正在加载…',
   endpointName: '助手收件箱',
   eventsFor: (project: string) => `${project} 的事件类型`,
@@ -44,16 +46,10 @@ const idle: WebhookIntentState = { phase: 'idle', prepared: null, result: null, 
 const inertSubscribe = () => () => {};
 
 /**
- * The inbox route and its Delivery target check accept only the exact inbox path, so a query string does not separate
- * endpoints but a trailing slash names a different, non-working target.
+ * The creation key of the user's endpoint for one inbox. The Webhook service keeps a key unique among an owner's live
+ * endpoints, so it identifies that endpoint regardless of its target and refuses a second create with `endpoint_exists`.
  */
-export const targetsInbox = (target: string | null, inboxUrl: string): boolean => {
-  if (target === null) return false;
-  try {
-    const left = new URL(target), right = new URL(inboxUrl);
-    return left.origin === right.origin && left.pathname === right.pathname;
-  } catch { return false; }
-};
+export const inboxClientKey = (inboxId: string): string => `assistant-task-inbox:${inboxId}`;
 
 /** The event types chosen for each selected project, keyed by project id. An unselected project has no key. */
 type Selection = Readonly<Record<string, readonly WebhookEventType[]>>;
@@ -64,7 +60,7 @@ const selectionOf = (endpoint: WebhookActiveEndpoint | null): Selection => {
   for (const item of endpoint?.subscriptions ?? []) result[item.projectId] = EVENT_TYPES.filter(event => result[item.projectId]?.includes(event) || item.eventTypes.includes(event));
   return result;
 };
-const versionConflict = (error: unknown) => error instanceof ApiError && error.kind === 'server' && error.code === 'version_conflict';
+const serverCode = (error: unknown, code: string) => error instanceof ApiError && error.kind === 'server' && error.code === code;
 const errorCode = (error: unknown) => error instanceof ApiError && error.code ? ` ${error.code}` : '';
 
 type Directory = { readonly projects: readonly Project[]; readonly endpoint: WebhookActiveEndpoint | null };
@@ -82,29 +78,33 @@ const pages = async <T,>(read: (cursor: string | null) => Promise<{ readonly ite
 };
 const webhookAdmission = (scope: TaskCacheScope): WebhookAdmission => ({ userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, ready: signal => scope.ready(signal) });
 
-/** Reads the accessible projects and the user's personal endpoint targeting the inbox, if any. */
-async function loadDirectory(scope: TaskCacheScope, inboxUrl: string, signal: AbortSignal): Promise<Directory> {
+/** Reads the accessible projects and the user's personal endpoint created for the inbox, if any. */
+async function loadDirectory(scope: TaskCacheScope, clientKey: string, signal: AbortSignal): Promise<Directory> {
   const admission = webhookAdmission(scope), personal: WebhookOwner = { kind: 'personal', id: scope.userId };
   const projects = await pages(cursor => listProjects({ limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
-  const summary = (await pages(cursor => listWebhooks(personal, { limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission))).find(item => targetsInbox(item.destination.url, inboxUrl));
-  const detail = summary === undefined ? null : await getWebhook(personal, summary.id, signal, admission);
-  return { projects, endpoint: detail?.lifecycle === 'active' && targetsInbox(detail.destination.url, inboxUrl) ? detail : null };
+  const summaries = await pages(cursor => listWebhooks(personal, { clientKey, limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission));
+  // The service keeps the key unique among live endpoints, so more than one match breaks its contract.
+  if (summaries.length > 1) throw new ApiError('protocol');
+  const detail = summaries[0] === undefined ? null : await getWebhook(personal, summaries[0].id, signal, admission);
+  return { projects, endpoint: detail?.lifecycle === 'active' && detail.clientKey === clientKey ? detail : null };
 }
 
 /**
  * Creates or edits the user's personal outbound Webhook subscription for one assistant task inbox. The inbox and the
- * endpoint are independent resources; the parent mounts this panel once per inbox id.
+ * endpoint are independent resources; the parent mounts this panel once per inbox id. The endpoint is created with the
+ * inbox's creation key and found again by it.
  *
  * Concurrency and policy belong to the Webhook service. An edit is submitted with the endpoint version it was loaded at,
- * and the service rejects it with `version_conflict` if the endpoint changed meanwhile; the panel then offers a reload
- * that discards the edit. Target address, maintenance and project eligibility are decided by the service, whose error
- * code the panel shows as returned. Pausing, resuming, deleting and scope confirmation are on the Webhooks page.
+ * and the service rejects it with `version_conflict` if the endpoint changed meanwhile; a create is rejected with
+ * `endpoint_exists` if another session already created the inbox's endpoint. Both offer a reload that discards the
+ * edit. Target address, maintenance and project eligibility are decided by the service, whose error code the panel
+ * shows as returned. Pausing, resuming, deleting and scope confirmation are on the Webhooks page.
  */
 export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigin = globalThis.location?.origin ?? '' }: {
   readonly task: AssistantTask; readonly inboxId: string; readonly active: boolean; readonly serviceOrigin?: string;
 }) {
   const m = useMessages(), wm = useWebhookMessages(), scope = useTaskCacheScope(), heading = useId();
-  const inboxUrl = assistantTaskInboxUrl(inboxId, serviceOrigin);
+  const inboxUrl = assistantTaskInboxUrl(inboxId, serviceOrigin), clientKey = inboxClientKey(inboxId);
   const [data, setData] = useState<Directory | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null), [reload, setReload] = useState(0);
   // The user's selection while editing; null shows the loaded configuration. Every load discards it.
@@ -116,23 +116,23 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
   const [refreshing, setRefreshing] = useState(false);
   // The parent keeps this panel mounted across tabs. Becoming active again loads only what has not been loaded yet, so
   // edits and a pending conflict survive a tab switch; only Retry, Reload or a confirmed change requests a new load.
-  const loaded = useRef<{ readonly inboxUrl: string; readonly scope: TaskCacheScope; readonly reload: number } | null>(null);
+  const loaded = useRef<{ readonly clientKey: string; readonly scope: TaskCacheScope; readonly reload: number } | null>(null);
   useEffect(() => {
     if (!active) return;
     const last = loaded.current;
-    if (last !== null && last.inboxUrl === inboxUrl && last.scope === scope && last.reload === reload) return;
+    if (last !== null && last.clientKey === clientKey && last.scope === scope && last.reload === reload) return;
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
     void (async () => {
       try {
         await scope.ready(signal);
-        const value = await loadDirectory(scope, inboxUrl, signal);
+        const value = await loadDirectory(scope, clientKey, signal);
         if (signal.aborted) return;
-        loaded.current = { inboxUrl, scope, reload };
+        loaded.current = { clientKey, scope, reload };
         setData(value); setDraft(null); setFailure(null); setInvalid(false); setLoadError(null); setRefreshing(false);
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
     return () => controller.abort();
-  }, [active, inboxUrl, scope, reload]);
+  }, [active, clientKey, scope, reload]);
 
   const controller = useMemo(() => scope.isInvalidated ? null : new WebhookIntentController({ serviceOrigin, owner: { kind: 'personal', id: scope.userId }, admission: webhookAdmission(scope), signal: scope.signal }), [serviceOrigin, scope]);
   useEffect(() => () => controller?.dispose(), [controller]);
@@ -188,7 +188,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
     // The service limits names to 100 code points; slicing code points never leaves a lone surrogate. A subscription
     // save omits `enabled`, so a paused endpoint stays paused.
     void run(endpoint === null
-      ? { kind: 'endpoint.create', body: { name: [...`${m.endpointName} · ${task.name}`].slice(0, 100).join(''), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
+      ? { kind: 'endpoint.create', body: { clientKey, name: [...`${m.endpointName} · ${task.name}`].slice(0, 100).join(''), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
       : { kind: 'endpoint.patch', endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { subscriptions } });
   };
 
@@ -226,8 +226,8 @@ export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigi
       <p className="assistant-task-meta">{m.lifecycle} <a href={webhookUrl({ owner: 'personal', teamId: null, endpointId: null, tab: 'configuration' })}>{m.webhooks}</a></p>
     </>}
     {intent.phase === 'unknown' && intent.prepared !== null ? <div className="notice warning" role="status"><p>{m.unknown}{errorCode(intent.error)}</p><code>{intent.prepared.operationId}</code><button className="button" type="button" disabled={intent.reconciling} onClick={() => void reconcile()}>{m.check}</button></div> : null}
-    {failure === null ? null : versionConflict(failure)
-      ? <div className="notice error" role="alert"><p>{m.conflict}</p><button className="button" type="button" onClick={refresh}>{m.reload}</button></div>
+    {failure === null ? null : serverCode(failure, 'version_conflict') || serverCode(failure, 'endpoint_exists')
+      ? <div className="notice error" role="alert"><p>{serverCode(failure, 'endpoint_exists') ? m.exists : m.conflict}</p><button className="button" type="button" onClick={refresh}>{m.reload}</button></div>
       : <p className="notice error" role="alert">{m.error}{errorCode(failure)}</p>}
   </section>;
 }

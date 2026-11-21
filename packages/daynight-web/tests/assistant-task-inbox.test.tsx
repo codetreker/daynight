@@ -34,7 +34,7 @@ function server(initial: Inbox) {
       state.inbox = off; return botResponse(receipt('inbox_disable', off, id));
     }
     if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(state.inbox);
-    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [], nextCursor: null });
+    if (path.startsWith('/api/v1/me/webhooks?')) return botResponse({ items: [], nextCursor: null });
     return botError(404, 'not_found');
   });
   vi.stubGlobal('fetch', fetch);
@@ -162,7 +162,7 @@ it('remounts the subscription panel with a fresh form when the inbox id changes'
   const replacement = botId(93), serve = vi.mocked(fetch).getMockImplementation()!;
   let release = () => undefined as void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  vi.mocked(fetch).mockImplementation(async (url, options) => { if (String(url) === '/api/v1/me/webhooks?limit=100') await held; return serve(url, options); });
+  vi.mocked(fetch).mockImplementation(async (url, options) => { if (String(url).startsWith('/api/v1/me/webhooks?')) await held; return serve(url, options); });
   vi.mocked(fetch).mockImplementationOnce(async () => botError(409, 'version_conflict'));
   s.state.inbox = { ...on, inboxId: replacement };
   fireEvent.click(screen.getByRole('button', { name: 'Disable inbox' }));
