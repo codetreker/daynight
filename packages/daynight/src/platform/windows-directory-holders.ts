@@ -12,8 +12,10 @@ export type WindowsDirectoryHolder = { readonly pid: number; readonly birth: big
 export type WindowsDirectoryInventory = { readonly holders: readonly WindowsDirectoryHolder[]; readonly release: () => void };
 
 export type WindowsDirectoryHolderKernel = {
-  /** Every process identifier currently known to the system. */
-  processes(check: () => void): readonly { readonly pid: number; readonly image: string }[];
+  /** Every process identifier currently known to the system, with the parent
+   * Windows records for it. The parent is what lets the inventory recognize
+   * this process's own ancestors. */
+  processes(check: () => void): readonly { readonly pid: number; readonly image: string; readonly parent: number }[];
   /** Open one process and read its working directory and creation time, or
    * return null when it cannot be opened or read. An unreadable process is not
    * an error: another account's process is not a holder this Worker can act on.
@@ -39,6 +41,7 @@ const nativeLayout = { parameters: 0x20n, directory: 0x38n, pointer: 8, stringBy
 const wow64Layout = { parameters: 0x10n, directory: 0x24n, pointer: 4, stringBytes: 8, stringBuffer: 4 } as const;
 const processEntrySize = 568;
 const processEntryIdOffset = 8;
+const processEntryParentOffset = 32;
 const processEntryImageOffset = 44;
 const processEntryImageBytes = 520;
 
@@ -67,14 +70,14 @@ const loadKernel = async (): Promise<WindowsDirectoryHolderKernel> => {
     processes: check => {
       const handle: unknown = snapshot(2, 0); // TH32CS_SNAPPROCESS
       if (handle === null || koffi.address(handle) === (1n << 64n) - 1n) throw failure("CreateToolhelp32Snapshot");
-      const rows: { pid: number; image: string }[] = [], failures: unknown[] = [];
+      const rows: { pid: number; image: string; parent: number }[] = [], failures: unknown[] = [];
       try {
         const entry = Buffer.alloc(processEntrySize);
         entry.writeUInt32LE(entry.length);
         let available = first(handle, entry) as number;
         while (available !== 0) {
           check();
-          rows.push({ pid: entry.readUInt32LE(processEntryIdOffset),
+          rows.push({ pid: entry.readUInt32LE(processEntryIdOffset), parent: entry.readUInt32LE(processEntryParentOffset),
             image: entry.subarray(processEntryImageOffset, processEntryImageOffset + processEntryImageBytes).toString("ucs2").replace(/\0.*$/s, "") });
           available = next(handle, entry) as number;
         }
@@ -141,6 +144,9 @@ const normalized = (value: string): string => {
  * the normalized path: this inventory reports a holder, it does not resolve
  * links or prove that the caller owns `root`.
  *
+ * This process and its ancestors are never reported. A terminator reaches the
+ * descendants of what it is given, so either one would end this process.
+ *
  * The caller must call `release` once it has finished acting on the result.
  */
 export const windowsDirectoryHolders = async (
@@ -161,9 +167,23 @@ export const windowsDirectoryHolders = async (
   };
   try {
     check();
-    for (const { pid, image } of api.processes(check)) {
+    const rows = api.processes(check);
+    // A terminator ends the holder's descendants as well, so this process's own
+    // ancestors are not holders it may act on: ending one would end this
+    // cleanup partway through a removal, with no error left to report and the
+    // worktree in whatever state it had reached. Excluding only this process
+    // would leave that reachable through any ancestor holding the tree, which
+    // a Worker started from a shell inside the worktree would have.
+    //
+    // Windows reuses a parent identifier once that parent has exited, so the
+    // walk can stop early or follow a stale link. Either way it only declines a
+    // termination, which is the safe direction to be wrong in.
+    const parents = new Map(rows.map(row => [row.pid, row.parent]));
+    const protectedProcesses = new Set<number>([0, process.pid]);
+    for (let current = parents.get(process.pid); current !== undefined && !protectedProcesses.has(current); current = parents.get(current)) protectedProcesses.add(current);
+    for (const { pid, image } of rows) {
       check();
-      if (pid === process.pid || pid === 0) continue;
+      if (protectedProcesses.has(pid)) continue;
       const observed = api.inspect(pid);
       if (observed === null) continue;
       const directory = normalized(observed.directory);

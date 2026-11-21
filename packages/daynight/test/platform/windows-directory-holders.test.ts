@@ -4,8 +4,8 @@ import { windowsDirectoryHolders, type WindowsDirectoryHolderKernel } from "../.
 const root = "C:\\worktrees\\daynight\\55555555-5555-4555-8555-555555555555";
 const check = (): void => {};
 
-const kernelFor = (rows: readonly { pid: number; image: string; directory?: string; birth?: bigint }[], closed: number[] = []): WindowsDirectoryHolderKernel => ({
-  processes: () => rows.map(({ pid, image }) => ({ pid, image })),
+const kernelFor = (rows: readonly { pid: number; image: string; directory?: string; birth?: bigint; parent?: number }[], closed: number[] = []): WindowsDirectoryHolderKernel => ({
+  processes: () => rows.map(({ pid, image, parent }) => ({ pid, image, parent: parent ?? 0 })),
   inspect: pid => {
     const row = rows.find(entry => entry.pid === pid);
     if (row === undefined || row.directory === undefined) return null;
@@ -62,6 +62,36 @@ describe("Windows directory holders", () => {
     inventory.release();
   });
 
+  it("never reports an ancestor of this process, which a terminator would reach through its descendants", async () => {
+    // Grandparent -> parent -> this process, all holding the root. Terminating
+    // either ancestor ends this process with them, so neither is actionable.
+    const kernel = kernelFor([
+      { pid: 900, image: "pwsh.exe", directory: root },
+      { pid: 901, image: "bash.exe", directory: root, parent: 900 },
+      { pid: process.pid, image: "node.exe", directory: root, parent: 901 },
+      { pid: 902, image: "git.exe", directory: root, parent: 901 },
+    ]);
+    const inventory = await windowsDirectoryHolders(root, check, kernel);
+    // A sibling shares an ancestor but is not one, so it stays actionable.
+    expect(inventory.holders.map(holder => holder.pid)).toEqual([902]);
+    inventory.release();
+  });
+
+  it("stops walking ancestors when a recycled parent identifier forms a cycle", async () => {
+    // Windows reuses a parent identifier once that parent exits, so the
+    // recorded chain can close on itself. The walk must end rather than hang,
+    // and the processes it did reach stay excluded.
+    const kernel = kernelFor([
+      { pid: 910, image: "pwsh.exe", directory: root, parent: 911 },
+      { pid: 911, image: "bash.exe", directory: root, parent: 910 },
+      { pid: process.pid, image: "node.exe", directory: root, parent: 910 },
+      { pid: 912, image: "git.exe", directory: root, parent: 0 },
+    ]);
+    const inventory = await windowsDirectoryHolders(root, check, kernel);
+    expect(inventory.holders.map(holder => holder.pid)).toEqual([912]);
+    inventory.release();
+  });
+
   it("closes the handles of processes outside the root and of reported holders on release", async () => {
     const closed: number[] = [];
     const kernel = kernelFor([
@@ -83,7 +113,7 @@ describe("Windows directory holders", () => {
     let inspected = 0;
     const kernel: WindowsDirectoryHolderKernel = {
       ...base,
-      processes: () => [{ pid: 60, image: "node.exe" }, { pid: 61, image: "node.exe" }],
+      processes: () => [{ pid: 60, image: "node.exe", parent: 0 }, { pid: 61, image: "node.exe", parent: 0 }],
       inspect: pid => { if (++inspected > 1) throw failure; return base.inspect(pid); },
     };
     await expect(windowsDirectoryHolders(root, check, kernel)).rejects.toBe(failure);

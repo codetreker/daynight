@@ -62,6 +62,19 @@ remains open, so holding it is what makes the identifier safe to pass to
 `taskkill`. Comparing creation times afterwards would not close that window: by
 then the identifier could already name a different process.
 
+The inventory reports neither this process nor its ancestors. Excluding only
+this process looks sufficient and is not: `taskkill /T` ends the descendants of
+what it is given, so terminating any ancestor ends this cleanup with it. That
+happens partway through a removal, leaving no error to report and the worktree
+in whatever state it had reached — the one failure here that produces no
+diagnostic at all. A Worker started from a shell whose working directory is
+inside the worktree has exactly that ancestor.
+
+The walk follows the parent each process records in the Toolhelp snapshot.
+Windows reuses a parent identifier once that parent has exited, so the chain
+can stop early or close on itself; the walk ends on a repeat, and being wrong
+in either direction only declines a termination.
+
 ### Keeping ownership proven
 
 Ownership is verified before the inventory decides which processes to act on,
