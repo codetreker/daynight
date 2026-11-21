@@ -4,6 +4,7 @@ import { getWorkerLifecycle, getWorkerLifecycleOperation, lifecycleIntentHash, p
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useWorkerObservation, type WorkerReadOptions } from './useWorkerObservation';
 import { workerLifecycleStorageKey } from './lifecycle-storage';
+import { lifecycleFacts } from './lifecycle-facts';
 
 type Journal = { readonly request: LifecycleIntentRequest; readonly hash: string };
 type OperationState = { readonly journal: Journal | null; readonly busy: boolean; readonly error: string | null };
@@ -74,12 +75,14 @@ export const useWorkerLifecycle = (workerId: string, options: WorkerReadOptions)
   const context = useRef({ scope, workerId, enabled: options.readEnabled });
   context.current = { scope, workerId, enabled: options.readEnabled };
   const load = useCallback(async (owner: TaskCacheScope, signal: AbortSignal) => {
+    // Include the whole request duration so response transit cannot extend stop evidence.
+    const receivedMonotonic = performance.now();
     const snapshot = await getWorkerLifecycle(workerId, AbortSignal.any([signal, AbortSignal.timeout(12_000)]), { userId: owner.userId, onPrincipalMismatch: owner.principalMismatch });
     const previous = latest.current;
     if (previous?.scope === owner && previous.workerId === workerId && !lifecycleAdvances(previous.snapshot, snapshot)) throw new ApiError('protocol');
     if (store.receipt !== null && BigInt(snapshot.intentVersion) < BigInt(store.receipt.intentVersion)) throw new ApiError('protocol');
     latest.current = { scope: owner, workerId, snapshot };
-    return { snapshot, receivedMonotonic: performance.now() };
+    return { snapshot, receivedMonotonic };
   }, [workerId, store]);
   const read = useWorkerObservation(`worker-lifecycle:${workerId}`, options, load, true, unchanged, filter, true);
   const permitted = () => context.current.scope === scope && context.current.workerId === workerId && context.current.enabled && !scope.isInvalidated && !scope.mismatchSignal.aborted && !authRequestsPaused();
@@ -104,13 +107,7 @@ export const useWorkerLifecycle = (workerId: string, options: WorkerReadOptions)
         const resource = read.snapshot, envelope = resource?.observation;
         if (resource === null || resource.capability !== 'supported' || read.stale) return;
         if (action === 'disable' && resource.desired !== 'enabled') return;
-        if (action === 'resume' && (envelope === null || envelope === undefined || resource.instance === null || read.serverMilliseconds === null
-          || read.serverMilliseconds >= Date.parse(envelope.observation.freshUntil) || resource.desired !== 'disabled' || resource.admission !== 'closed'
-          || envelope.intentVersion !== resource.intentVersion || envelope.operationId !== resource.operationId
-          || envelope.instanceEpoch !== resource.instance?.instanceEpoch || envelope.instanceId !== resource.instance.instanceId
-          || envelope.observation.phase !== 'disabled' || envelope.observation.stop !== 'confirmed' || envelope.observation.save !== 'durable' || !envelope.observation.inventoryComplete)) return;
-        if (action === 'resume' && (envelope!.observation.resourceCount === null || envelope!.observation.stoppedCount !== envelope!.observation.resourceCount
-          || envelope!.observation.pendingCount !== 0 || envelope!.observation.blockedCount !== 0)) return;
+        if (action === 'resume' && !lifecycleFacts(resource, read.serverMilliseconds, read.stale).resumeEligible) return;
         const common = { protocolVersion: 1 as const, operationId: crypto.randomUUID(), expectedVersion: resource.intentVersion, source: 'web' as const };
         const request: LifecycleIntentRequest = action === 'disable' ? { ...common, action, localEpoch: null, originOperationId: null }
           : { ...common, action, localEpoch: envelope!.localEpoch, instanceEpoch: envelope!.instanceEpoch };

@@ -38,7 +38,7 @@ disable 绑定 `expectedVersion`，web 来源的 `localEpoch` 和 `originOperati
 
 resume 仅接受当前新鲜的 disabled 观察：完整库存、停止 confirmed、保存 durable，全部资源已停止，pending 和 blocked 均为零。受理后 `desired=enabled`、`admission=closed`。本机准备新 scope 并报送同意图的安全 resuming 观察后，activation 才能原子开门。服务端激活不等于本机已开门；本机仍须核验原 epoch、持久状态及最新意图。
 
-没有停用或恢复历史的首次启用可以 bootstrap 一次。正常已开放状态注册新实例时可获得 `reconnectAllowed`，完成同实例的新鲜安全观察后 reconnect。新的停用、恢复或已关闭状态下注册均不能保留这项许可。中断握手需要重新核对并显式恢复。
+没有停用或恢复历史的首次启用可以 bootstrap 一次。正常已开放状态注册新实例时可获得 `reconnectAllowed`，完成同实例的新鲜安全观察后 reconnect。新的停用、恢复或已关闭状态下注册均不能保留这项许可。中断握手需要重新核对并显式恢复。即使当前 desired=enabled，准入关闭且已有匹配当前意图、实例和操作的新鲜完整 disabled 观察时，Web 仍须提供显式恢复入口，不要求先提交另一次停用。
 
 观察分别保存 phase、stop、save、sync、完整库存摘要、全量计数、有限资源明细和逐执行恢复资格。接收时间由服务端生成，`freshUntil=receivedAt+30s`。同序号相同内容返回原接收时间，不能刷新时效；旧实例、旧意图、旧序号及相同序号的不同内容拒绝。
 

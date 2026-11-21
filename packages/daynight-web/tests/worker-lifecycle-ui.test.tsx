@@ -50,6 +50,18 @@ describe('Worker lifecycle evidence presentation', () => {
     expect(screen.getByRole('button', { name: 'Resume service' })).toBeEnabled();
   });
 
+  it('keeps interrupted-resume eligibility separate from disabled presentation and rejects incomplete evidence', () => {
+    const original = { ...resource(), desired: 'enabled' as const };
+    expect(lifecycleFacts(original, now, false)).toMatchObject({ disabled: false, resumeEligible: true, phase: 'blocked' });
+    for (const change of [{ inventoryComplete: false }, { stop: 'unknown' as const }, { save: 'failed' as const }, { phase: 'resuming' as const }, { resourceCount: null }, { pendingCount: 1 }]) {
+      expect(lifecycleFacts({ ...original, observation: { ...original.observation!, observation: { ...original.observation!.observation, ...change } } }, now, false).resumeEligible).toBe(false);
+    }
+    expect(lifecycleFacts(original, now + 60_000, false).resumeEligible).toBe(false);
+    expect(lifecycleFacts(original, now, true).resumeEligible).toBe(false);
+    expect(lifecycleFacts({ ...original, observation: { ...original.observation!, intentVersion: '1' } }, now, false).resumeEligible).toBe(false);
+    expect(lifecycleFacts({ ...original, admission: 'open' }, now, false).resumeEligible).toBe(false);
+  });
+
   it('does not turn an accepted intent or an old observation into stopped execution', () => {
     const data = resource();
     state.snapshot = { ...data, intentVersion: '3', observation: data.observation };

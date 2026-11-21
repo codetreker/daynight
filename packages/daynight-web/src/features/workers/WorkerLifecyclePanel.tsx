@@ -1,30 +1,14 @@
 import { useId, useState } from 'react';
 import { ApiError } from '../../api/client';
-import type { LifecycleResource } from '../../api/worker-lifecycle';
 import type { WorkerSummary } from '../../api/workers';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { workerLifecycleMessages } from '../../i18n/worker-lifecycle';
 import { ManagementDialog } from '../management/ManagementDialog';
 import { WorkerTimestamp } from './presentation';
 import { useWorkerLifecycle } from './useWorkerLifecycle';
+import { lifecycleFacts } from './lifecycle-facts';
+export { lifecycleFacts } from './lifecycle-facts';
 import './worker-lifecycle.css';
-
-export const lifecycleFacts = (resource: LifecycleResource | null, now: number | null, stale: boolean) => {
-  const envelope = resource?.observation ?? null, observation = envelope?.observation ?? null;
-  const current = resource !== null && envelope !== null && resource.instance !== null
-    && envelope.instanceId === resource.instance.instanceId && envelope.instanceEpoch === resource.instance.instanceEpoch
-    && envelope.intentVersion === resource.intentVersion && envelope.operationId === resource.operationId;
-  const fresh = current && !stale && now !== null && observation !== null
-    && now >= Date.parse(observation.receivedAt) && now < Date.parse(observation.freshUntil);
-  const stopped = fresh && resource?.capability === 'supported' && observation !== null && observation.inventoryComplete && observation.stop === 'confirmed'
-    && observation.save === 'durable' && observation.resourceCount !== null && observation.stoppedCount === observation.resourceCount
-    && observation.pendingCount === 0 && observation.blockedCount === 0;
-  const disabled = stopped && resource?.desired === 'disabled' && resource.admission === 'closed' && observation?.phase === 'disabled';
-  const accepting = fresh && resource?.desired === 'enabled' && resource.admission === 'open' && observation?.phase === 'accepting';
-  const phase = disabled ? 'disabled' : accepting ? 'accepting' : fresh && observation?.phase === 'blocked' ? 'blocked'
-    : fresh && observation?.phase === 'disabling' ? 'disabling' : resource?.desired === 'enabled' && resource.admission === 'closed' && resource.operationId !== null ? 'resuming' : 'awaiting';
-  return { current, fresh, stopped, disabled, accepting, phase } as const;
-};
 
 export const WorkerLifecyclePanel = ({ worker, readEnabled, compact = false }: { readonly worker: WorkerSummary; readonly readEnabled: boolean; readonly compact?: boolean }) => {
   const state = useWorkerLifecycle(worker.workerId, { readEnabled });
@@ -40,7 +24,7 @@ export const WorkerLifecyclePanel = ({ worker, readEnabled, compact = false }: {
   const unsupported = state.status === 'unavailable' || resource?.capability === 'unsupported';
   const hasAccess = readEnabled && state.status !== 'unavailable' && !state.stale && !denied && state.operationError !== 'storage';
   const mayDisable = hasAccess && resource?.capability === 'supported' && resource.desired === 'enabled' && state.pending === null && !state.busy;
-  const mayResume = hasAccess && resource?.capability === 'supported' && facts.disabled && state.pending === null && !state.busy;
+  const mayResume = hasAccess && resource?.capability === 'supported' && facts.resumeEligible && state.pending === null && !state.busy;
   const unknown = state.pending !== null && state.operationError !== 'accepted';
   const count = (value: number | null | undefined) => value == null ? m.unknown : format.number(value);
   const phase = resource === null ? null : m[facts.phase];
@@ -97,7 +81,7 @@ export const WorkerLifecyclePanel = ({ worker, readEnabled, compact = false }: {
     </>}
     <div className="worker-lifecycle-actions">
       <button className="button secondary" type="button" disabled={!mayDisable} aria-describedby={`${id}-reason`} onClick={() => setConfirm('disable')}>{m.disable}</button>
-      {resource?.desired === 'disabled' && <button className="button primary" type="button" disabled={!mayResume} aria-describedby={`${id}-reason`} onClick={() => setConfirm('resume')}>{m.resume}</button>}
+      {(resource?.desired === 'disabled' || facts.resumeEligible) && <button className="button primary" type="button" disabled={!mayResume} aria-describedby={`${id}-reason`} onClick={() => setConfirm('resume')}>{m.resume}</button>}
       <button className="button secondary" type="button" disabled={!readEnabled || state.busy} onClick={() => void state.check()}>{state.pending !== null ? m.check : m.refresh}</button>
     </div>
     <p id={`${id}-reason`} className="worker-lifecycle-muted">{denied ? m.denied : !readEnabled ? m.readOnly : unsupported ? m.unavailable : state.operationError === 'storage' ? m.storage : state.stale ? m.failed : resource?.desired === 'disabled' && !facts.disabled ? m.waitingResume : !mayDisable && !mayResume && !unknown ? m.waitingDisable : ''}</p>

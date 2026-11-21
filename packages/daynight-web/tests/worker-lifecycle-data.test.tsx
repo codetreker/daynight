@@ -3,12 +3,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invalidateAuthRequests } from '../src/api/client';
 import { lifecycleIntentHash, type LifecycleIntentRequest, type LifecycleResource } from '../src/api/worker-lifecycle';
 import { lifecycleAdvances, useWorkerLifecycle } from '../src/features/workers/useWorkerLifecycle';
+import { WorkerLifecyclePanel } from '../src/features/workers/WorkerLifecyclePanel';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
+import { WORKER_TIME, WORKER_USER, workerId, workerResponse, workerSummary } from './helpers/workers';
 
 const worker = workerId(1), original: LifecycleIntentRequest = { protocolVersion: 1, operationId: workerId(2), action: 'disable', expectedVersion: '1', source: 'web', localEpoch: null, originOperationId: null };
 const resource = (): LifecycleResource => ({ protocolVersion: 1, workerId: worker, intentVersion: '1', desired: 'enabled', admission: 'open', operationId: null,
   instance: { instanceId: workerId(3), instanceEpoch: '1' }, capability: 'supported', observation: null, observedAt: WORKER_TIME });
+const stoppedResource = (desired: 'enabled' | 'disabled'): LifecycleResource => ({ ...resource(), desired, admission: 'closed', operationId: workerId(4),
+  observation: { protocolVersion: 1, instanceId: workerId(3), instanceEpoch: '1', intentVersion: '1', operationId: workerId(4), localEpoch: '2', scopeGeneration: '3', reportSequence: '4',
+    observation: { phase: 'disabled', stop: 'confirmed', save: 'durable', sync: 'complete', inventoryComplete: true, detailsComplete: true, inventoryRevision: '1', inventoryDigest: 'a'.repeat(64),
+      resourceCount: 0, stoppedCount: 0, pendingCount: 0, blockedCount: 0, resources: [], recovery: [], errorCode: desired === 'enabled' ? 'resume_interrupted' : null,
+      receivedAt: WORKER_TIME, freshUntil: new Date(Date.parse(WORKER_TIME) + 5_000).toISOString() } },
+});
 const response = (value: unknown, status = 200) => { const result = workerResponse(value, WORKER_USER, status); result.headers.set('X-Daynight-Worker-Lifecycle', '1'); return result; };
 const missing = () => response({ error: { code: 'not_found', message: 'Absent', requestId: 'data-test' } }, 404);
 const key = () => `daynight.lifecycle.v1:${location.origin}:${WORKER_USER}:${worker}`;
@@ -96,6 +103,41 @@ describe('Worker lifecycle original operation continuity', () => {
 });
 
 describe('Worker lifecycle publication fences', () => {
+  it('withdraws safe-stop and resume when the response expires in transit', async () => {
+    let monotonic = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => {
+      monotonic += 10_000;
+      return response(stoppedResource('disabled'));
+    });
+    vi.stubGlobal('fetch', fetch);
+    render(<WorkerLifecyclePanel worker={workerSummary()} readEnabled />);
+    await waitFor(() => expect(screen.getByText('Observation stale')).toBeVisible());
+    expect(screen.queryByText(/You can restart this computer/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume service' })).toBeDisabled();
+    expect(fetch.mock.calls.every(([, init]) => init.method !== 'POST')).toBe(true);
+  });
+
+  it('submits explicit recovery from a fresh interrupted resume using its current epochs', async () => {
+    const snapshot = stoppedResource('enabled');
+    let submitted: LifecycleIntentRequest | null = null;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method !== 'POST') return response(snapshot);
+      submitted = JSON.parse(init.body as string) as LifecycleIntentRequest;
+      return response({ protocolVersion: 1, workerId: worker, operationId: submitted.operationId, action: 'resume', intentVersion: '2',
+        desired: 'enabled', admission: 'closed', state: 'accepted', errorCode: null, observedAt: WORKER_TIME }, 202);
+    });
+    vi.stubGlobal('fetch', fetch);
+    render(<WorkerLifecyclePanel worker={workerSummary()} readEnabled />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume service' })).toBeEnabled());
+    expect(screen.queryByText('Resuming', { exact: true })).toBeNull();
+    expect(screen.queryByText(/You can restart this computer/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume service' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(submitted).toMatchObject({ action: 'resume', expectedVersion: '1', localEpoch: '2', instanceEpoch: '1', source: 'web' }));
+    expect(fetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  });
+
   it('rejects older intent and instance observations even if delivered later', () => {
     const current = { ...resource(), intentVersion: '3', instance: { instanceId: workerId(3), instanceEpoch: '4' } };
     expect(lifecycleAdvances(current, { ...current, intentVersion: '2' })).toBe(false);

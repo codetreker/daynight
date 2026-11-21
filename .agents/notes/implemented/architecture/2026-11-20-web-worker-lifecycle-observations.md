@@ -13,7 +13,8 @@ request without issuing another lifecycle action.
 
 The Web client consumes the independent lifecycle resource and validates its
 principal and exact protocol fields. Intent, instance and report fences reject
-older results. Freshness follows server time plus monotonic elapsed time. The
+older results. Freshness follows server time plus monotonic elapsed time, anchored before the
+request so transit time cannot extend the evidence lifetime. The
 Worker card and detail share the same operation journal within the authenticated
 scope; the detail owns the full progress presentation.
 
@@ -30,7 +31,11 @@ private-state notice and explicit retry, while other accounts' records remain
 untouched.
 
 Current safe-stop conclusions require fresh matching complete stop and save
-evidence. Creating a resume request immediately withdraws conclusions from the
+evidence. Resume eligibility uses the same proof in the panel and submission
+path, independently of disabled presentation: a closed admission with a current
+complete disabled observation can recover an interrupted enabled intent. That
+state is blocked, not still resuming or safe to restart. Creating a resume request
+immediately withdraws conclusions from the
 previous stopped observation. Detail truncation remains independent of complete
 aggregate inventory evidence; synchronization and individual recovery eligibility
 remain independent of stopped and saved execution.
