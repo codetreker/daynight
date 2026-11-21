@@ -6,6 +6,8 @@ import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import Database from "better-sqlite3";
 import { createNativeInputPublication, nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
 import { readControllerOutboxByteLength } from "../../../src/commands/controller/outbox-store.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import * as imageHistory from "../../../src/commands/controller/media/history-sync.js";
 import * as usageRuntime from "../../../src/commands/controller/usage/runtime.js";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
@@ -352,7 +354,7 @@ test("shutdown while cleanup awaits cancellation prevents its later native input
     await vi.waitFor(() => expect(socket.end).toHaveBeenCalled());
     await running;
     expect(send).not.toHaveBeenCalled();
-    expect(record).toHaveBeenCalledWith("cleanup-operation", "unknown", null, "Controller stopped before native dispatch.");
+    expect(record).toHaveBeenCalledWith("cleanup-operation", "rejected", null, "Controller stopped before native dispatch.");
   } finally { cancelled.resolve(); process.emit("SIGTERM", "SIGTERM"); await running.catch(() => {}); }
 });
 
@@ -805,12 +807,13 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
 test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
   setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const db = new Database(":memory:");
-  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=15");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL)");
+  db.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat)}`);
   const quarantine = vi.fn(), originalExec = db.exec.bind(db);
   if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
+  const getOperation = vi.fn((_operationId: string) => { expect(db.inTransaction).toBe(true); readControllerOutboxByteLength(db); return null; });
   const publication = createNativeInputPublication({
-    db, ticket: { provider: "codex" }, content: {}, assertUsable() {}, quarantine,
-    getOperation: () => { readControllerOutboxByteLength(db); return null; },
+    db, ticket: { provider: "codex" }, content: {}, assertUsable() {}, quarantine, getOperation,
   } as never);
   const request = { identity: { provider: "codex", nativeSessionId: "native", nativeMessageId: "message", operationId: randomUUID(), intentSha256: "a".repeat(64), entryId: randomUUID() } };
   let original: ReturnType<typeof publication.publishNativeInputAssociation> | undefined;
@@ -824,6 +827,7 @@ test.each(["rolled-back", "unknown"] as const)("native publication carries its r
     const native = fixture.options as { imageRuntime: { publishNativeInputAssociation(request: unknown): unknown } };
     const receipt = native.imageRuntime.publishNativeInputAssociation(request);
     expect(receipt).toBe(original);
+    expect(getOperation).toHaveBeenCalledExactlyOnceWith(request.identity.operationId);
     expect(receipt).toMatchObject({ state: outcome === "unknown" ? "unknown" : "not_committed", error: { code: outcome === "unknown" ? "publication_unknown" : "publication_unavailable" } });
     const failure = nativeInputPublicationFailure(original!);
     expect(failure).toBeDefined();

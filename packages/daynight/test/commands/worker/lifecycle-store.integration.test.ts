@@ -6,6 +6,18 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LifecycleAdmissionError, openLifecycleStore, readLifecycleSnapshot, type LifecycleActivation, type LifecycleBinding, type LifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
 
+const fileIdentity = vi.hoisted(() => ({ file: null as string | null, inode: 0n }));
+vi.mock("node:fs", async (importOriginal: () => Promise<typeof filesystem>) => {
+  const actual = await importOriginal();
+  return { ...actual, lstatSync: ((file: filesystem.PathLike, options?: filesystem.StatOptions) => {
+    const info = actual.lstatSync(file, options);
+    if (file !== fileIdentity.file || info === undefined) return info;
+    return new Proxy(info, { get: (target, key, receiver) => key === "ino"
+      ? options?.bigint ? fileIdentity.inode : Number(fileIdentity.inode)
+      : Reflect.get(target, key, receiver) });
+  }) as typeof filesystem.lstatSync };
+});
+
 const root = fileURLToPath(new URL("../../../../../.tmp/lifecycle-store-tests/", import.meta.url));
 const directories: string[] = [], stores = new Set<LifecycleStore>(), databases = new Set<Database.Database>();
 const id = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -39,6 +51,7 @@ const enabled = () => {
 const reserve = (store: LifecycleStore, frozen: LifecycleBinding, resourceId = id(10)) => store.reserveExecution({ binding: frozen, resourceId, operationId: resourceId, ownerKind: "controller", identity: { sessionId: id(4), operationId: resourceId } });
 
 afterEach(() => {
+  fileIdentity.file = null;
   for (const store of stores) store.close(); stores.clear();
   for (const db of databases) if (db.open) db.close(); databases.clear();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -47,25 +60,17 @@ afterEach(() => {
 describe("persistent Worker lifecycle authority", () => {
   it("preserves large filesystem identifiers and rejects a replacement with the same rounded Number", () => {
     const f = fixture(); close(f.store);
-    const lstat = filesystem.lstatSync;
-    let inode = 9007199254740992n;
-    const stat = vi.spyOn(filesystem, "lstatSync").mockImplementation(((file: filesystem.PathLike, options?: filesystem.StatOptions) => {
-      const info = lstat(file, options);
-      if (file !== f.file || info === undefined) return info;
-      return new Proxy(info, { get: (target, key, receiver) => key === "ino"
-        ? options?.bigint ? inode : Number(inode)
-        : Reflect.get(target, key, receiver) });
-    }) as typeof filesystem.lstatSync);
+    fileIdentity.file = f.file; fileIdentity.inode = 9007199254740992n;
     try {
       const original = open(f.file);
       expect(original.readState().admission).toBe("closed");
-      expect(() => original.prepareOperation({ operationId: id(70), kind: "instance", request: { unsafe: Number(inode) } })).toThrow("unsupported value");
-      expect(() => original.prepareOperation({ operationId: id(71), kind: "instance", request: { unsupported: inode } as never })).toThrow("unsupported value");
-      inode++;
-      expect(Number(inode)).toBe(Number(inode - 1n));
+      expect(() => original.prepareOperation({ operationId: id(70), kind: "instance", request: { unsafe: Number(fileIdentity.inode) } })).toThrow("unsupported value");
+      expect(() => original.prepareOperation({ operationId: id(71), kind: "instance", request: { unsupported: fileIdentity.inode } as never })).toThrow("unsupported value");
+      fileIdentity.inode++;
+      expect(Number(fileIdentity.inode)).toBe(Number(fileIdentity.inode - 1n));
       expect(() => original.readState()).toThrow("authority file was replaced");
       close(original);
-    } finally { stat.mockRestore(); }
+    } finally { fileIdentity.file = null; }
   });
 
   it("creates a private closed authority and leaves missing reads uninitialized", () => {
@@ -245,15 +250,38 @@ describe("persistent Worker lifecycle authority", () => {
     expect(f.store.listOutbox().find(row => row.id === id(42))).toMatchObject({ uploadState: "unknown" });
   });
 
-  it("fails closed for a replaced file, mismatched identity, future format and invalid JSON", () => {
+  it("fails closed for mismatched identity, future format and invalid JSON", () => {
     const f = enabled();
     expect(() => openLifecycleStore({ file: f.file, identity: { ...identity, workerId: id(90) } })).toThrow("another identity");
     const db = new Database(f.file); databases.add(db); db.pragma("user_version=2");
     expect(() => f.store.assertAdmission(f.binding)).toThrow(); db.pragma("user_version=1");
     reserve(f.store, f.binding); db.prepare("UPDATE resource_owners SET identity_json='{}'").run();
     expect(() => f.store.snapshot()).toThrow("nonempty JSON object");
-    db.close(); renameSync(f.file, f.file + ".retained");
-    expect(() => f.store.assertAdmission(f.binding)).toThrow();
+    db.close();
+  });
+
+  it("fences a real rename through the live handle or the original authority path", () => {
+    const f = enabled(), retained = f.file + ".retained";
+    const before = filesystem.lstatSync(f.file, { bigint: true });
+    let blocked: unknown;
+    try { renameSync(f.file, retained); } catch (error) { blocked = error; }
+    if (blocked !== undefined) {
+      expect(process.platform).toBe("win32");
+      expect(blocked).toMatchObject({ code: "EBUSY", syscall: "rename" });
+      expect(filesystem.existsSync(retained)).toBe(false);
+      expect(filesystem.lstatSync(f.file, { bigint: true })).toMatchObject({ dev: before.dev, ino: before.ino });
+      expect(() => f.store.assertAdmission(f.binding)).not.toThrow();
+      // Windows denies renaming the live SQLite file. Closing the original
+      // handle permits the same filesystem operation; no replacement occurred.
+      close(f.store);
+      renameSync(f.file, retained);
+    } else {
+      expect(filesystem.existsSync(f.file)).toBe(false);
+      expect(() => f.store.assertAdmission(f.binding)).toThrow();
+    }
+    try {
+      expect(filesystem.lstatSync(retained, { bigint: true })).toMatchObject({ dev: before.dev, ino: before.ino });
+    } finally { renameSync(retained, f.file); }
   });
 
   it("refuses symlink authorities and never recreates a missing already initialized authority", () => {
