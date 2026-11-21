@@ -215,7 +215,17 @@ lock and cache fences have been observed. The project-preparation case advances
 the configuration clock at the recorded deadline, while observing persistence
 and inventory with real asynchronous work. The
 [startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
-owns both timing checks.
+owns both timing checks. The ordinary-run closure case holds the original
+Reviewer after its original journal has persisted stopped. It verifies that the
+runtime and lock remain owned beyond a one-second observation, then releases
+that same producer and observes natural completion within 35 seconds. A
+five-second startup observation and 45-second case limit bound the test; owner
+stop and management-close deadlines remain unchanged. Final assertions retain
+the uncancelled parent, one Reviewer invocation, generation 1 stopped record and
+reacquired lock. Failure diagnostics identify the phase, elapsed time and runtime
+errors. The
+[ordinary closure decision](../.agents/notes/implemented/testing/2026-11-21-worker-ordinary-closure-observation.md)
+owns this proof and budget.
 Worker reconcile wake tests retain native wake and cancellation. The poll
 completion case controls one Promise delay and asserts its requested interval.
 The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)
