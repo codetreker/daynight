@@ -2503,18 +2503,28 @@ an operator who accepts privileged deletion of files the Worker owns has not
 thereby accepted termination of processes it does not own.
 
 Windows keeps a directory handle open for every process working directory, so a
-live process makes an owned worktree undeletable. When ordinary removal has
+live process makes an owned directory undeletable. When ordinary removal has
 exhausted its busy retries and still fails with `EBUSY`, and the applied value
 is true, cleanup lists the processes whose working directory lies inside the
-verified worktree, terminates each one together with its descendants, and runs
+verified directory, terminates each one together with its descendants, and runs
 the same removal sequence again. Ownership is proven before the inventory
 decides which processes to act on and again before the retry removes anything;
 each holder's process handle stays open from inspection until termination, so
 Windows cannot recycle its identifier onto an unrelated process in between.
 
+Every managed directory this cleanup removes is covered: the worktree contents
+and its root, the registered worktree left empty and pointerless by an
+interrupted attempt, and an unregistered reservation. Each is admitted through
+the verifier that proves its own ownership, and each verifier rechecks its
+evidence after the asynchronous reads that gather it, because terminating a
+process cannot be undone by a later identity failure. Recovery of a permission
+obstacle is a different authorization and stays with `enableSudoCleanup`.
+
 Only working-directory holders are recovered. A process that keeps an open file
 inside the tree also blocks removal and is not reported, so the retry meets the
 same obstacle and the original error and cleanup responsibility are preserved.
+A 32-bit holder is read through its own process parameters rather than the
+native ones, which do not carry its active working directory.
 A holder belonging to another account cannot be read or terminated and is
 skipped rather than failing the inventory. The target defaults to false, and
 without it no process is terminated.
