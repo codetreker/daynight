@@ -13,6 +13,15 @@ export type WindowsWorktreeProcessOptions = {
   readonly holders?: typeof windowsDirectoryHolders;
   readonly kernel?: WindowsDirectoryHolderKernel;
   readonly terminate?: (holder: WindowsDirectoryHolder, operation: Operation) => Promise<void>;
+  /** Called with each holder the moment it has been terminated, before
+   * anything else here can fail.
+   *
+   * Termination cannot be undone, so the caller's record of it must not depend
+   * on this function returning. Cancellation or the deadline can arrive while
+   * a later holder is being processed, and the accumulated result would be
+   * discarded with the throw; a caller reading only the return value would
+   * then report that nothing had been terminated. */
+  readonly onTerminated?: (holder: { readonly pid: number; readonly image: string; readonly directory: string }) => void;
 };
 
 const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation): Promise<void> => {
@@ -34,7 +43,10 @@ const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation)
     const abort = (): void => { child.kill("SIGKILL"); };
     operation.signal.addEventListener("abort", abort, { once: true });
   });
-  operation.check();
+  // No check follows the termination. Once taskkill has returned, the holder
+  // is gone whether or not the operation has since been cancelled, and a throw
+  // here would be recorded as a failure to terminate rather than as what it
+  // is. The caller checks before the next holder and after the loop.
 };
 
 /** Terminate the processes whose working directory keeps a verified worktree
@@ -63,7 +75,11 @@ export const stopWindowsWorktreeProcesses = async (
       operation.check();
       // The open handle from the inventory pins this identifier, so Windows
       // cannot have recycled it onto an unrelated process before this call.
-      try { await terminate(holder, operation); terminated.push(holder.pid); }
+      try {
+        await terminate(holder, operation);
+        terminated.push(holder.pid);
+        options.onTerminated?.({ pid: holder.pid, image: holder.image, directory: holder.directory });
+      }
       catch (error) { failures.push(error); }
     }
   } finally { inventory.release(); }

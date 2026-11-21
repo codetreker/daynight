@@ -209,12 +209,24 @@ inside the tree also blocks removal and is not reported, so the retry observes
 the same obstacle and the original `EBUSY` is preserved together with cleanup
 responsibility. The same is true when every holder belongs to another account.
 
-A failed recovery names the holders it already ended. Termination cannot be
+A failed attempt names the holders it already ended. Termination cannot be
 undone and the processes it ends may be ones the Worker never started, so when
-the removal still fails the diagnostic is the only record the operator receives
-that any of it happened; a failure that mentioned only the revision would read
-as though nothing had been touched. Holders that survived are not claimed as
+the attempt fails the diagnostic is the only record the operator receives that
+any of it happened; a failure that mentioned only the revision would read as
+though nothing had been touched. Holders that survived are not claimed as
 ended, and a termination that reached nothing says so.
+
+The record belongs to the attempt, not to the recovery that performs the
+terminations. Reading it from the recovery's return value loses it three ways:
+the terminations accumulated before cancellation or the deadline are discarded
+with the throw that ends the loop, the postcondition observation and the
+completeness check both fail after the holders are gone, and an absent
+worktree reported with an effect error never throws at all. Each holder is
+therefore recorded the moment it is terminated, through a sink the attempt
+owns, and one wrap at the attempt boundary carries that record onto every
+exit. The recovery's own failure says only that it ended nothing, so the two
+never repeat each other. A nested reservation cleanup shares the array, so one
+attempt reports all of its terminations together.
 
 A recovery that succeeds leaves no such record, because this cleanup has no
 channel that carries anything but errors. Adding one would change the Worker

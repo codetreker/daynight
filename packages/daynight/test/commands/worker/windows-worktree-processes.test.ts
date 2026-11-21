@@ -101,4 +101,45 @@ describe("Windows worktree process termination", () => {
     expect(asked).toEqual([60]);
     expect(released).toEqual([2]);
   });
+
+  it("reports a termination before cancellation discards the accumulated result", async () => {
+    // The return value never arrives on this path, so a caller that read only
+    // the result would report that nothing had been terminated. Process 70 is
+    // gone either way, which is what the caller has to be able to say.
+    const current = operation(), reported: number[] = [];
+    const controller = new AbortController();
+    const cancelled: Operation = { ...current, signal: controller.signal, check: () => { controller.signal.throwIfAborted(); } };
+    await expect(stopWindowsWorktreeProcesses(target, cancelled, {
+      holders: async () => inventory([holder(70), holder(71)]),
+      terminate: async entry => { if (entry.pid === 70) controller.abort(new Error("cleanup cancelled")); },
+      onTerminated: entry => { reported.push(entry.pid); },
+    })).rejects.toThrow("cleanup cancelled");
+    expect(reported).toEqual([70]);
+  });
+
+  it("reports each termination with the image and directory of its holder", async () => {
+    const reported: { pid: number; image: string; directory: string }[] = [];
+    const nested = `${target}\\packages`;
+    const result = await stopWindowsWorktreeProcesses(target, operation(), {
+      holders: async () => inventory([holder(80), holder(81, nested)]),
+      terminate: async () => {},
+      onTerminated: entry => { reported.push(entry); },
+    });
+    expect(reported).toEqual([
+      { pid: 80, image: "node.exe", directory: target },
+      { pid: 81, image: "node.exe", directory: nested },
+    ]);
+    expect(result.terminated).toEqual([80, 81]);
+  });
+
+  it("does not report a holder whose termination failed", async () => {
+    const reported: number[] = [];
+    const result = await stopWindowsWorktreeProcesses(target, operation(), {
+      holders: async () => inventory([holder(90), holder(91)]),
+      terminate: async entry => { if (entry.pid === 90) throw new Error("access denied"); },
+      onTerminated: entry => { reported.push(entry.pid); },
+    });
+    expect(reported).toEqual([91]);
+    expect(result.terminated).toEqual([91]);
+  });
 });

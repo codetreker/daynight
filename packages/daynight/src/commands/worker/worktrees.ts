@@ -14,7 +14,7 @@ import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents, retryWhileBusy, WorktreePermissionError } from "./remove-worktree-contents.js";
 import { runShellWorktreeRemoval } from "./shell-worktree-removal.js";
-import { stopWindowsWorktreeProcesses, type WindowsWorktreeProcessStop } from "./windows-worktree-processes.js";
+import { stopWindowsWorktreeProcesses } from "./windows-worktree-processes.js";
 import { assertNoWorktreeMounts } from "./worktree-mounts.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
 import { bindingForManifest, managedNamespace, retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
@@ -46,18 +46,29 @@ const removing = new Set<string>();
 // refactor to recursive removal would route a held worktree to the sudo path
 // instead and leave the holders running.
 const busy = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "EBUSY";
-/** Names the holders a failed recovery already terminated.
+type TerminatedHolder = { readonly pid: number; readonly image: string; readonly directory: string };
+/** Names the holders a cleanup attempt has already terminated.
  *
  * Termination cannot be undone, and the processes it ends may be ones the
- * Worker never started. When the removal still fails this message is the only
- * record the operator receives that it happened at all, so the failure has to
- * carry it. A null stop means the termination itself failed, which it only
- * does when nothing was terminated. */
-const terminatedHolders = (stop: WindowsWorktreeProcessStop | null): string => {
-  const ended = stop === null ? [] : stop.observed.filter(holder => stop.terminated.includes(holder.pid));
-  if (ended.length === 0) return "No holder was terminated.";
-  return `Terminated ${ended.length} holder process ${ended.length === 1 ? "tree" : "trees"}: ${ended.map(holder => `${holder.image} (${holder.pid})`).join(", ")}.`;
-};
+ * Worker never started. When the attempt then fails this message is the only
+ * record the operator receives that it happened at all. */
+const terminatedHolders = (ended: readonly TerminatedHolder[]): string =>
+  ended.length === 0
+    ? "No holder was terminated."
+    : `Terminated ${ended.length} holder process ${ended.length === 1 ? "tree" : "trees"}: ${ended.map(holder => `${holder.image} (${holder.pid})`).join(", ")}.`;
+/** Carries that record onto a failure raised after the terminations.
+ *
+ * The removal that provoked the recovery is not the only way an attempt can
+ * end. Cancellation, the postcondition observation and the registration checks
+ * all fail after the holders are gone, and each of those exits is just as much
+ * the operator's only record. The original failure stays the cause, so nothing
+ * that inspects it loses what it looked for. */
+const withTerminated = (error: unknown, ended: readonly TerminatedHolder[], context: string): unknown =>
+  ended.length === 0 ? error : new AggregateError([error], `${context} ${terminatedHolders(ended)}`, { cause: error });
+/** The recovery's own failure reports that it ended nothing. When it did end
+ * something the attempt-level record names what, so the two never repeat each
+ * other and a reader is never left guessing whether the recovery even ran. */
+const noHolderTerminated = (ended: readonly TerminatedHolder[]): string => ended.length === 0 ? ` ${terminatedHolders(ended)}` : "";
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
 const uuid = (value: string, name: string): string => {
@@ -357,7 +368,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     catch (error) { if (!missing(error) || await directory(target) !== null) throw error; }
     operation.check();
   };
-  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation, policy: WorkerCleanupPolicy | null = null): Promise<void> => {
+  // `ended` is supplied by the caller and filled as each holder is terminated,
+  // so the record belongs to the whole cleanup attempt rather than to this
+  // step. When a worktree removal reaches this reservation, both share one
+  // array and the attempt reports every termination together, once.
+  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation, policy: WorkerCleanupPolicy | null = null, ended: TerminatedHolder[] = []): Promise<void> => {
     const parents = [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")];
     const target = path.join(parents[1]!, uuid(directoryName, "Worktree directory"));
     const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
@@ -394,14 +409,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       // already rechecks its identities after the registration scan, which is
       // the evidence an irreversible termination needs.
       if (!busy(ordinaryError) || process.platform !== "win32" || policy?.enableWindowsProcessCleanup !== true) throw ordinaryError;
-      let stopped: WindowsWorktreeProcessStop | null = null;
       try {
         await admitReservation();
-        stopped = await (optionsForProcessStop)(target, operation);
+        await (optionsForProcessStop)(target, operation, { onTerminated: holder => { ended.push(holder); } });
         await admitReservation();
         await removeEmptyDirectory(target, operation, admitReservation);
         operation.check();
-      } catch (error) { throw new AggregateError([ordinaryError, error], `Reservation process cleanup failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
+      } catch (error) { throw new AggregateError([ordinaryError, error], `Reservation process cleanup failed (configuration revision ${policy.windowsProcessRevision}).${noHolderTerminated(ended)}`, { cause: ordinaryError }); }
     }
     if (await directory(target) !== null || (await registrations(repository, target, operation)).length > 0) throw new Error("The unregistered task reservation removal is incomplete.");
   };
@@ -536,7 +550,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const repository = await requirePrepared(project, operation), identity = coordinates(owner);
       if (manifestFor(project, identity, repository) !== null) throw new Error("The original worktree has a published manifest; reservation cleanup is prohibited.");
       if (createWorktreeManifestStore(repository.commonDirectory).list().some(manifest => manifest.directoryName === identity.worktreeId)) throw new Error("The worktree reservation belongs to another published manifest.");
-      await removeEmptyReservation(repository, identity.worktreeId, operation, optionsForCleanupPolicy?.() ?? null);
+      const ended: TerminatedHolder[] = [];
+      try { await removeEmptyReservation(repository, identity.worktreeId, operation, optionsForCleanupPolicy?.() ?? null, ended); }
+      catch (error) { throw withTerminated(error, ended, "Reservation cleanup failed after terminating holders."); }
     },
     verifyWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
       const repository = await requirePrepared(project, operation);
@@ -616,6 +632,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       let key: string | undefined;
       let effectError: unknown;
       let recoveredPermissionError: unknown;
+      // Terminations are recorded here rather than inside the recovery that
+      // performs them: they outlive it. Every later exit from this attempt —
+      // cancellation, the postcondition observation, the completeness check —
+      // happens with those processes already gone, and each is the only place
+      // an operator would learn of it.
+      const ended: TerminatedHolder[] = [];
       let failed = false;
       try {
         try {
@@ -648,7 +670,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
               }
               if (result === null) throw new Error("The original worktree manifest is missing; resource removal cannot be authorized.");
               if (result.registration === null) {
-                if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation, policy);
+                if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation, policy, ended);
                 return;
               }
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
@@ -713,16 +735,15 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     // pointerless, so every later attempt arrives here instead
                     // of the main path. Without this the first busy failure
                     // would permanently route the recovery away from itself.
-                    let stopped: WindowsWorktreeProcessStop | null = null;
                     try {
                       operation.check();
                       await reproveEmptyOwnership();
-                      stopped = await (optionsForProcessStop)(emptyPath, operation);
+                      await (optionsForProcessStop)(emptyPath, operation, { onTerminated: holder => { ended.push(holder); } });
                       operation.check();
                       await reproveEmptyOwnership();
                       await removeEmptyDirectory(emptyPath, operation, reproveEmptyOwnership);
                       operation.check();
-                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}).${noHolderTerminated(ended)}`, { cause: ordinaryError }); }
                   } else {
                     if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
                     try {
@@ -818,7 +839,6 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 try { await removeOwnedWorktree(); }
                 catch (ordinaryError) {
                   if (busy(ordinaryError) && process.platform === "win32" && policy?.enableWindowsProcessCleanup === true) {
-                    let stopped: WindowsWorktreeProcessStop | null = null;
                     try {
                       operation.check();
                       // Ownership is proven before the termination decides which
@@ -831,12 +851,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                       // check, and terminating its process tree cannot be undone by
                       // the later identity failure.
                       await verifyOwnedRoot();
-                      stopped = await (optionsForProcessStop)(binding.worktreePath, operation);
+                      await (optionsForProcessStop)(binding.worktreePath, operation, { onTerminated: holder => { ended.push(holder); } });
                       operation.check();
                       await verifyOwnedRoot();
                       await removeOwnedWorktree();
                       operation.check();
-                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}).${noHolderTerminated(ended)}`, { cause: ordinaryError }); }
                   } else {
                     if (!(ordinaryError instanceof WorktreePermissionError) || policy?.enableSudoCleanup !== true || process.platform === "win32") throw ordinaryError;
                     try {
@@ -902,7 +922,16 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, error], `Worktree cleanup is incomplete after permission recovery (configuration revision ${policy!.sudoRevision}).`, { cause: recoveredPermissionError });
           throw error;
         }
-        return { kind: "absent", effectErrors: failed ? [effectError] : [] };
+        // An absent resource with a reported effect error is not a throw, so
+        // this exit needs the record applied here rather than by the catch.
+        return { kind: "absent", effectErrors: failed ? [withTerminated(effectError, ended, "Worktree cleanup reported a failure after terminating holders.")] : [] };
+      } catch (error) {
+        // Every thrown exit passes here exactly once, which is why no inner
+        // recovery appends the record itself: cancellation, the postcondition
+        // observation and the completeness check all end an attempt in which
+        // the holders are already gone, and each of them is the operator's
+        // only record of that.
+        throw withTerminated(error, ended, "Worktree cleanup failed after terminating holders.");
       } finally { if (key !== undefined) removing.delete(key); }
     },
     dispose: (): Promise<void> => {
