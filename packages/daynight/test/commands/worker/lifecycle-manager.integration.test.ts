@@ -202,11 +202,14 @@ describe("Worker lifecycle management with real local authority", () => {
     const f = fixture(); await start(f); await disable(f);
     await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
-    const operation = vi.mocked(f.api.operation).getMockImplementation()!;
-    vi.mocked(f.api.operation).mockRejectedValueOnce(unknown()).mockImplementation(operation);
-    await expect.poll(() => f.errors.length).toBeGreaterThan(0);
+    const operation = vi.mocked(f.api.operation).getMockImplementation()!, failure = unknown(), failed = deferred<void>();
+    vi.mocked(f.api.operation).mockImplementationOnce(async operationId => {
+      expect(operationId).toBe(id(22)); failed.resolve(); throw failure;
+    }).mockImplementation(operation);
+    await failed.promise;
     expect(f.store.readState()).toMatchObject({ admission: "closed", intentVersion: "3" });
     await f.manager.waitForAdmission();
+    expect(f.errors).toContain(failure);
     expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, localEpoch: "2" });
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
   }, 5000);
@@ -227,16 +230,17 @@ describe("Worker lifecycle management with real local authority", () => {
     const f = fixture(); await start(f); await disable(f);
     await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(21), intentVersion: "2", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     await f.api.intent({ protocolVersion: 1, operationId: id(22), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
-    const failure = new Error("Resume receipt persistence unavailable"), record = f.store.recordOperation;
+    const failure = new Error("Resume receipt persistence unavailable"), record = f.store.recordOperation, failed = deferred<void>();
     let fail = true;
     vi.spyOn(f.store, "recordOperation").mockImplementation(request => {
-      if (fail && request.operationId === id(22) && request.status === "confirmed") { fail = false; throw failure; }
+      if (fail && request.operationId === id(22) && request.status === "confirmed") { fail = false; failed.resolve(); throw failure; }
       return record(request);
     });
-    await expect.poll(() => f.errors.includes(failure)).toBe(true);
+    await failed.promise;
     expect(f.store.readOperation(id(22))).toMatchObject({ status: "prepared", request: null, receipt: null, localEpoch: "2" });
     expect(f.store.readState().admission).toBe("closed");
     await f.manager.waitForAdmission();
+    expect(f.errors).toContain(failure);
     expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, receipt: { operationId: id(22), action: "resume", intentVersion: "3" } });
     expect(vi.mocked(f.api.operation).mock.calls.filter(([operationId]) => operationId === id(22))).toHaveLength(2);
     expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
