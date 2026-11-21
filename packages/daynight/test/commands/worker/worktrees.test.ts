@@ -1340,6 +1340,39 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 
+  it.skipIf(process.platform !== "win32")("refuses to remove when ownership changes while the holders are being terminated", async () => {
+    const f = await repositoryFixture("files");
+    const manifestPath = path.join(f.repository, ".git", "daynight", "worktrees", `${ids.worktreeId}.json`);
+    let stops = 0, removals = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
+      stopHoldingProcesses: async target => {
+        stops++;
+        // Termination is asynchronous; the worktree this cleanup proved it
+        // owns stops being its own while the processes are going away.
+        rmSync(manifestPath, { force: true });
+        return { observed: [{ pid: 916, image: "node.exe", directory: target }], terminated: [916] };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      removals++;
+      if (stops === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as Error);
+    expect(stops).toBe(1);
+    expect(errorText(error)).toContain("manifest changed");
+    // The retry must not have removed anything after the proof became invalid.
+    // Both the admission that follows termination and the removal sequence's
+    // own verifier enforce this, so the case holds the behavior rather than
+    // any single guard.
+    expect((await lstat(root)).isDirectory()).toBe(true);
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
   it.skipIf(process.platform !== "win32")("terminates no holder when the busy root is replaced during the metadata read", async () => {
     const f = await repositoryFixture("files");
     let stops = 0;
