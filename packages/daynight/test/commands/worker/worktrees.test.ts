@@ -1659,7 +1659,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const input = JSON.parse(process.argv[1]);
       process.env.PATH = input.fake + ':' + process.env.PATH;
       const op = createOperation();
-      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), prepareFormat: async () => {}, readCleanupPolicy: () => cleanupPolicy({ enableSudoCleanup: true, sudoRevision: '18' }) });
+      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), prepareFormat: async () => {}, readCleanupPolicy: () => ({ enableSudoCleanup: true, sudoRevision: '18', enableWindowsProcessCleanup: false, windowsProcessRevision: null }) });
       try {
         await manager.prepareRepository(input.project, op);
         const binding = await manager.prepareWorktree(input.project, input.owner, op);
