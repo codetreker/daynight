@@ -5,8 +5,9 @@ const ERROR_LIMIT = 64 * 1024;
 const MAX_RETRIES = 4;
 const BUDGET_MS = 30_000;
 
-async function errorBytes(response: Response, signal: AbortSignal): Promise<unknown> {
-  const lifetime = responseSignal(response, signal);
+async function errorBytes(response: Response, signal: AbortSignal, provisional?: AbortSignal): Promise<unknown> {
+  const responseLifetime = responseSignal(response, signal);
+  const lifetime = provisional === undefined ? responseLifetime : AbortSignal.any([responseLifetime, provisional]);
   lifetime.throwIfAborted();
   if (!response.body) throw new Error('Missing error body');
   const length = response.headers.get('Content-Length');
@@ -87,15 +88,29 @@ export function archiveRetryDelay(attempt: number, random: number): number {
 /** One archive load shares its retry budget and original authentication lifetime. */
 export function createArchiveReadRetry(signal: AbortSignal, userId: string, onPrincipalMismatch: () => void, sessionId: string) {
   const generation = readAuthRequestGeneration();
-  let lifetime = authRequestLifetime(signal);
+  const originalLifetime = authRequestLifetime(signal);
+  let lifetime = originalLifetime;
   let firstBusy: number | null = null;
+  let lastBusy: ApiError | null = null;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadline: AbortController | undefined;
   let retries = 0;
-  const assertCurrent = () => {
-    lifetime.throwIfAborted();
-    if (generation !== readAuthRequestGeneration()) throw new DOMException('The authenticated account changed.', 'AbortError');
+  let currentPhase: 'content' | 'timeline' = 'content';
+  const expire = () => {
+    if (deadline?.signal.aborted || lastBusy === null) return;
+    console.warn('Session archive retry exhausted', { sessionId, phase: currentPhase, retries, requestId: lastBusy.requestId, code: lastBusy.code });
+    deadline?.abort(lastBusy);
   };
+  const assertCurrent = () => {
+    originalLifetime.throwIfAborted();
+    if (generation !== readAuthRequestGeneration()) throw new DOMException('The authenticated account changed.', 'AbortError');
+    if (firstBusy !== null && performance.now() - firstBusy >= BUDGET_MS) expire();
+    lifetime.throwIfAborted();
+  };
+  const dispose = () => { if (deadlineTimer !== undefined) clearTimeout(deadlineTimer); };
   const get = async (url: string, init: RequestInit, phase: 'content' | 'timeline'): Promise<Response> => {
     let attempt = 0;
+    currentPhase = phase;
     for (;;) {
       assertCurrent();
       const response = await request(url, lifetime, init);
@@ -110,14 +125,27 @@ export function createArchiveReadRetry(signal: AbortSignal, userId: string, onPr
       // A present identity is always checked, including on an early busy response.
       if (response.headers.has('Daynight-User-ID')) assertResponsePrincipal(response, userId, onPrincipalMismatch);
       let failure: unknown;
-      try { await json(response, lifetime, () => { throw new ApiError('protocol', response.status); }, () => errorBytes(response, lifetime)); }
+      // A stalled first 429 cannot establish its error code; bound its parsing
+      // without treating an unverified response as a capacity refusal.
+      const provisional = firstBusy === null ? new AbortController() : undefined;
+      const provisionalTimer = provisional === undefined ? undefined : setTimeout(() => provisional.abort(), BUDGET_MS);
+      try { await json(response, lifetime, () => { throw new ApiError('protocol', response.status); }, () => errorBytes(response, lifetime, provisional?.signal)); }
       catch (error) { failure = error; }
+      finally { if (provisionalTimer !== undefined) clearTimeout(provisionalTimer); }
       assertCurrent();
+      if (provisional?.signal.aborted) failure = new ApiError('protocol', response.status, 'protocol', null, failure);
       if (!(failure instanceof ApiError && failure.kind === 'server' && failure.status === 429 && failure.code === 'resource_busy')) {
         assertResponsePrincipal(response, userId, onPrincipalMismatch);
         throw failure;
       }
-      firstBusy ??= observedAt;
+      lastBusy = failure;
+      if (firstBusy === null) {
+        firstBusy = observedAt;
+        deadline = new AbortController();
+        lifetime = AbortSignal.any([lifetime, deadline.signal]);
+        deadlineTimer = setTimeout(expire, Math.max(0, BUDGET_MS - (performance.now() - firstBusy)));
+      }
+      assertCurrent();
       const hint = retryAfter(response.headers.get('Retry-After'));
       const delay = Math.max(archiveRetryDelay(attempt, Math.random()), hint ?? 0);
       if (retries >= MAX_RETRIES || (hint !== null && hint > 12_000) || delay > BUDGET_MS - (performance.now() - firstBusy)) {
@@ -129,8 +157,7 @@ export function createArchiveReadRetry(signal: AbortSignal, userId: string, onPr
       console.warn('Session archive retry', { sessionId, phase, retries, delayMs: Math.round(delay), requestId: failure.requestId, code: failure.code });
       await wait(delay, lifetime);
       assertCurrent();
-      if (performance.now() - firstBusy >= BUDGET_MS) throw failure;
     }
   };
-  return { get, assertCurrent };
+  return { get, assertCurrent, dispose };
 }

@@ -100,7 +100,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
     archiveContent: async (id, signal, expectedStatus) => {
       const retry = createArchiveReadRetry(signal, userId, onPrincipalMismatch, id);
       let lifetime = signal;
-      const assertCurrent = () => { lifetime.throwIfAborted(); retry.assertCurrent(); };
+      const assertCurrent = () => { retry.assertCurrent(); lifetime.throwIfAborted(); };
       try {
         const response = await retry.get(`${sessionRoot(id)}/archive/content`, { headers: { Accept: 'application/json', [TASK_BODY_HISTORY_VERSION_HEADER]: '1' } }, 'content');
         lifetime = responseSignal(response, signal);
@@ -126,7 +126,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           lifetime = responseSignal(timelineResponse, lifetime);
           assertCurrent();
           assertResponsePrincipal(timelineResponse, userId, onPrincipalMismatch);
-          if (timelineResponse.status !== 200) return json(timelineResponse, signal, () => { throw new ApiError('protocol', timelineResponse.status); });
+          if (timelineResponse.status !== 200) return await json(timelineResponse, signal, () => { throw new ApiError('protocol', timelineResponse.status); });
           const bytes = await boundedArchiveBytes(timelineResponse, signal, SESSION_ARCHIVE_TIMELINE_MAX_BYTES);
           assertCurrent();
           const timeline = await verifySessionArchiveMetadata(archive, bytes);
@@ -137,7 +137,8 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
         await verifySessionArchiveResources(archive);
         assertCurrent();
         return archive;
-      } catch (error) { lifetime.throwIfAborted(); throw error; }
+      } catch (error) { retry.assertCurrent(); lifetime.throwIfAborted(); throw error; }
+      finally { retry.dispose(); }
     },
     current: (signal) => get(currentUrl, signal, parseCurrent, { headers: currentHeaders }),
     timeline: (id, direction, cursor, signal) => {

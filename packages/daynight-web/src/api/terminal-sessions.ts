@@ -79,26 +79,29 @@ export function createTerminalSessionApi(projectId: string, taskId: string, user
     archive: async (item, signal) => {
       if (item.agentControlMode !== 'herdr') invalid();
       const retry = createArchiveReadRetry(signal, userId, onPrincipalMismatch, item.sessionId);
-      const status = await get(`${path(item.sessionId)}/archive`, signal, v => { const m = parseSessionV2Message(v); if (m.type !== 'archive_status') return invalid(); fence(m, item); return m; });
-      retry.assertCurrent();
-      if (item.archive?.state === 'ready' && (status.payload.state !== 'ready' || status.payload.sha256 !== item.archive.sha256 || status.payload.byteLength !== item.archive.byteLength || status.payload.completeness !== item.archive.completeness)) invalid();
-      if (status.payload.state !== 'ready') return { status, archive: null };
-      const response = await retry.get(`${path(item.sessionId)}/archive/content`, { headers: { Accept: 'application/json', [SESSION_PROTOCOL_HEADER]: SESSION_V2_PROTOCOL } }, 'content');
-      assertResponsePrincipal(response, userId, onPrincipalMismatch);
-      if (!response.ok) return json(response, signal, () => invalid());
-      if (response.status !== 200 || !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get('Content-Type') ?? '')) invalid();
-      const lifetime = responseSignal(response, signal);
       try {
-        const bytes = await boundedBytes(response, lifetime, SESSION_V2_LIMITS.archiveMaxBytes);
-        const digest = await hashSessionBytes(bytes);
-        lifetime.throwIfAborted(); retry.assertCurrent();
-        if (String(bytes.length) !== status.payload.byteLength || digest !== status.payload.sha256) invalid();
-        const archive = await decodeSessionV2Archive(bytes);
-        lifetime.throwIfAborted(); retry.assertCurrent();
-        fence({ ...terminalEnvelope(archive) }, item);
-        if (archive.owner.projectId !== projectId || archive.owner.taskId !== taskId || archive.owner.serverOrigin !== serverOrigin || archive.finalizationId !== status.payload.finalizationId || archive.completeness !== status.payload.completeness) invalid();
-        return { status, archive };
-      } catch (error) { lifetime.throwIfAborted(); throw error; }
+        const status = await get(`${path(item.sessionId)}/archive`, signal, v => { const m = parseSessionV2Message(v); if (m.type !== 'archive_status') return invalid(); fence(m, item); return m; });
+        retry.assertCurrent();
+        if (item.archive?.state === 'ready' && (status.payload.state !== 'ready' || status.payload.sha256 !== item.archive.sha256 || status.payload.byteLength !== item.archive.byteLength || status.payload.completeness !== item.archive.completeness)) invalid();
+        if (status.payload.state !== 'ready') return { status, archive: null };
+        const response = await retry.get(`${path(item.sessionId)}/archive/content`, { headers: { Accept: 'application/json', [SESSION_PROTOCOL_HEADER]: SESSION_V2_PROTOCOL } }, 'content');
+        assertResponsePrincipal(response, userId, onPrincipalMismatch);
+        if (!response.ok) return await json(response, signal, () => invalid());
+        if (response.status !== 200 || !/^application\/json(?:\s*;|\s*$)/i.test(response.headers.get('Content-Type') ?? '')) invalid();
+        const lifetime = responseSignal(response, signal);
+        try {
+          const bytes = await boundedBytes(response, lifetime, SESSION_V2_LIMITS.archiveMaxBytes);
+          const digest = await hashSessionBytes(bytes);
+          lifetime.throwIfAborted(); retry.assertCurrent();
+          if (String(bytes.length) !== status.payload.byteLength || digest !== status.payload.sha256) invalid();
+          const archive = await decodeSessionV2Archive(bytes);
+          lifetime.throwIfAborted(); retry.assertCurrent();
+          fence({ ...terminalEnvelope(archive) }, item);
+          if (archive.owner.projectId !== projectId || archive.owner.taskId !== taskId || archive.owner.serverOrigin !== serverOrigin || archive.finalizationId !== status.payload.finalizationId || archive.completeness !== status.payload.completeness) invalid();
+          return { status, archive };
+        } catch (error) { lifetime.throwIfAborted(); throw error; }
+      } catch (error) { retry.assertCurrent(); throw error; }
+      finally { retry.dispose(); }
     },
     nativeArchive: async (item, signal) => {
       if (item.agentControlMode !== 'web') invalid();

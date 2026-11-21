@@ -12,8 +12,8 @@ unbounded retries would keep obsolete page and account requests alive.
 
 The Web reader retries only the archive content and timeline GETs after an exact
 `429 resource_busy`. Each request has its own exponential backoff; the loading
-operation shares a retry count and elapsed budget across its files. The original
-authentication and page lifetime govern both waits and requests. A preflight busy
+operation shares a retry count and absolute deadline across its files, including
+in-flight requests and body reads. The original authentication and page lifetime govern both waits and requests. A preflight busy
 response may lack a principal, but a present principal is always verified and the
 error body never becomes Session data. The [Session protocol design](../../../../docs/design/task-session-protocol.md)
 records the limits and response handling.

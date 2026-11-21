@@ -407,7 +407,7 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 尚未发现、断线或中断的 Task 读取在可见和准入恢复后续接一次原发现或重连。健康 native channel 保留内容、草稿和阅读位置；重开恢复现有 3 秒 startup/report 观察，不先 disconnect。未注册重试、错误退避、WebSocket、历史与操作逻辑仍使用原策略。账户变化暂停立即停止远端传输，Task 读取可见性门禁不扩展到独立 Test/Bot authority observation。
 
-Web 的归档正文与 schema3 timeline GET，以及 Herdr 正文 GET 对精确 429 `resource_busy` 使用逐请求指数退避，基准为 1、2、4、8、10 秒并施加 ±20% 抖动；有效 `Retry-After` 是等待下界，超过 12 秒或剩余预算时终止。同一加载共享首次拒绝起 30 秒和四次重试预算，成功请求后的下一文件从第一阶开始，已校验的 manifest 不重新读取。错误正文有界解析；仅精确容量拒绝允许缺少主体头，其他响应及存在的主体仍按原规则校验。等待和重发保持初始认证代次、网络及页面取消；诊断仅包含 Session、阶段、次数、延时、请求 ID 和错误类别。设计取舍见[Web 归档退避决策](../../.agents/notes/implemented/bug-fix/2026-11-20-web-archive-backoff.md)。
+Web 的归档正文与 schema3 timeline GET，以及 Herdr 正文 GET 对精确 429 `resource_busy` 使用逐请求指数退避，基准为 1、2、4、8、10 秒并施加 ±20% 抖动；有效 `Retry-After` 是等待下界，超过 12 秒或剩余预算时终止。同一加载共享首次拒绝起 30 秒和四次重试预算，截止时间贯穿后续请求及正文读取，耗尽时取消在途 I/O 并返回最近一次容量错误。成功请求后的下一文件从第一阶开始，已校验的 manifest 不重新读取。错误正文有界解析；仅精确容量拒绝允许缺少主体头，其他响应及存在的主体仍按原规则校验。等待和重发保持初始认证代次、网络及页面取消；诊断仅包含 Session、阶段、次数、延时、请求 ID 和错误类别。设计取舍见[Web 归档退避决策](../../.agents/notes/implemented/bug-fix/2026-11-20-web-archive-backoff.md)。
 
 归档状态读取沿用原流程；ready 但 tab 已隐藏时，最终 current 绑定保留原 snapshot 与代次，延后到可见。恢复仍验证当前 fence 和归档正文身份，不以 ready receipt 替代已校验的内容。completed automatic hook 同时订阅文档可见性，等待 `scope.ready` 后在发 current 前复验，并在响应和后续准入等待后再次检查。取消中 flight 未 settle 时重开不启动第二次读取；旧 owner 的完成不能发布到新 claim，settle 后可恢复新 owner 的发现。详细取舍见[Task Current 可见性决策](../../.agents/notes/implemented/architecture/2026-11-08-task-current-read-visibility.md)。
 

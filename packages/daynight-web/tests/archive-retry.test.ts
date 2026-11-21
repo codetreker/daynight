@@ -36,7 +36,7 @@ describe('archive capacity retry', () => {
   it('retries legacy content after an early 429 without a principal', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(busy(null)).mockResolvedValueOnce(response({ archive: legacy })); vi.stubGlobal('fetch', fetch);
     const result = native().archiveContent(fence.sessionId, signal());
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(1000);
     await expect(result).resolves.toEqual(legacy);
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls.map(([url]) => url)).toEqual([expect.stringMatching(/\/archive\/content$/), expect.stringMatching(/\/archive\/content$/)]);
@@ -52,8 +52,8 @@ describe('archive capacity retry', () => {
       throw new Error(`Unexpected request ${url}`);
     }); vi.stubGlobal('fetch', fetch);
     const result = native().archiveContent(fence.sessionId, signal(), manifestStatus);
-    await vi.runAllTimersAsync();
-    await firstFile; await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(1000);
+    await firstFile; await vi.advanceTimersByTimeAsync(1000);
     await expect(result).resolves.toMatchObject({ schemaVersion: 3, entries: [] });
     expect(contentReads).toBe(2); expect(fileReads).toBe(2);
     expect(times.map(t => t - times[0]!)).toEqual([0, 1000, 1000, 2000]);
@@ -63,7 +63,7 @@ describe('archive capacity retry', () => {
     let contents = 0;
     const fetch = vi.fn(async (url: string) => url.endsWith('/archive') ? response(terminalStatus, terminalOwner.ownerUserId) : ++contents === 1 ? busy(null) : response(terminal, terminalOwner.ownerUserId)); vi.stubGlobal('fetch', fetch);
     const api = createTerminalSessionApi(terminalOwner.projectId, terminalOwner.taskId, terminalOwner.ownerUserId, vi.fn(), terminalOwner.serverOrigin);
-    const result = api.archive(terminalItem, signal()); await vi.runAllTimersAsync();
+    const result = api.archive(terminalItem, signal()); await vi.advanceTimersByTimeAsync(1000);
     await expect(result).resolves.toMatchObject({ archive: terminal });
     expect(fetch.mock.calls.map(([url]) => url)).toEqual([expect.stringMatching(/\/archive$/), expect.stringMatching(/\/archive\/content$/), expect.stringMatching(/\/archive\/content$/)]);
   });
@@ -85,8 +85,8 @@ describe('archive capacity retry', () => {
       throw new Error(`Unexpected request ${url}`);
     }); vi.stubGlobal('fetch', fetch);
     const result = native().archiveContent(fence.sessionId, signal(), manifestStatus).catch(error => error);
-    await vi.runAllTimersAsync();
-    await firstFile; await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(7000);
+    await firstFile; await vi.advanceTimersByTimeAsync(1000);
     expect(await result).toMatchObject({ kind: 'server', status: 429, code: 'resource_busy' });
     expect(contentReads).toBe(4); expect(fileReads).toBe(2);
   });
@@ -94,14 +94,14 @@ describe('archive capacity retry', () => {
   it.each([[0, 800], [1, 1200]] as const)('samples jitter at random=%s', async (random, delay) => {
     vi.mocked(Math.random).mockReturnValue(random); const times: number[] = [];
     const fetch = vi.fn(async () => { times.push(Date.now()); return times.length === 1 ? busy() : response({ archive: legacy }); }); vi.stubGlobal('fetch', fetch);
-    const result = native().archiveContent(fence.sessionId, signal()); await vi.runAllTimersAsync();
+    const result = native().archiveContent(fence.sessionId, signal()); await vi.advanceTimersByTimeAsync(delay);
     await expect(result).resolves.toEqual(legacy); expect(times[1]! - times[0]!).toBe(delay);
   });
 
   it('honors Retry-After and returns the busy error when the hint exceeds the limit', async () => {
     const times: number[] = [];
     const fetch = vi.fn(async () => { times.push(Date.now()); return times.length === 1 ? busy(user, { 'Retry-After': '3' }) : response({ archive: legacy }); }); vi.stubGlobal('fetch', fetch);
-    const result = native().archiveContent(fence.sessionId, signal()); await vi.runAllTimersAsync();
+    const result = native().archiveContent(fence.sessionId, signal()); await vi.advanceTimersByTimeAsync(3000);
     await expect(result).resolves.toEqual(legacy); expect(times[1]! - times[0]!).toBe(3000);
     fetch.mockReset().mockResolvedValue(busy(user, { 'Retry-After': '13' }));
     await expect(native().archiveContent(fence.sessionId, signal())).rejects.toMatchObject({ status: 429, code: 'resource_busy' }); expect(fetch).toHaveBeenCalledOnce();
@@ -114,12 +114,12 @@ describe('archive capacity retry', () => {
   ])('handles %s Retry-After dates, invalid dates and hints over the limit', async (_format, valid, invalid, excessive) => {
     const times: number[] = [];
     const fetch = vi.fn(async () => { times.push(Date.now()); return times.length === 1 ? busy(user, { 'Retry-After': valid }) : response({ archive: legacy }); }); vi.stubGlobal('fetch', fetch);
-    const accepted = native().archiveContent(fence.sessionId, signal()); await vi.runAllTimersAsync();
+    const accepted = native().archiveContent(fence.sessionId, signal()); await vi.advanceTimersByTimeAsync(3000);
     await expect(accepted).resolves.toEqual(legacy); expect(times[1]! - times[0]!).toBe(3000);
 
     times.length = 0;
     fetch.mockImplementation(async () => { times.push(Date.now()); return times.length === 1 ? busy(user, { 'Retry-After': invalid }) : response({ archive: legacy }); });
-    const ignored = native().archiveContent(fence.sessionId, signal()); await vi.runAllTimersAsync();
+    const ignored = native().archiveContent(fence.sessionId, signal()); await vi.advanceTimersByTimeAsync(1000);
     await expect(ignored).resolves.toEqual(legacy); expect(times[1]! - times[0]!).toBe(1000);
 
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
@@ -135,6 +135,89 @@ describe('archive capacity retry', () => {
     await vi.runAllTimersAsync();
     expect(await result).toMatchObject({ kind: 'server', status: 429, code: 'resource_busy' });
     expect(times.map(t => t - times[0]!)).toEqual([0, 12000, 24000]);
+  });
+
+  it('cancels the first unconfirmed 429 body at 30 seconds and reports a protocol error', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"error":')); },
+      cancel() { cancelled = true; },
+    });
+    const fetch = vi.fn(async () => new Response(body, { status: 429, headers: { 'Daynight-User-ID': user, 'Content-Type': 'application/json' } })); vi.stubGlobal('fetch', fetch);
+    let settled = false;
+    const result = native().archiveContent(fence.sessionId, signal()).catch(error => error).then(value => { settled = true; return value; });
+    await vi.advanceTimersByTimeAsync(29_999); expect(settled).toBe(false); expect(cancelled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ kind: 'protocol', status: 429 });
+    expect(cancelled).toBe(true); expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('requires a principal for a non-busy 429 and never retries it', async () => {
+    const fetch = vi.fn(async () => response({ error: { code: 'rate_limited', message: 'no', requestId: 'request-1' } }, null, 429)); vi.stubGlobal('fetch', fetch);
+    await expect(native().archiveContent(fence.sessionId, signal())).rejects.toMatchObject({ kind: 'protocol', status: 429 });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('ends a hanging retry fetch at the deadline with the last busy error', async () => {
+    let aborted = false;
+    const fetch = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+      if (fetch.mock.calls.length === 1) return busy();
+      const requestSignal = init!.signal!;
+      return new Promise((_resolve, reject) => {
+        requestSignal.addEventListener('abort', () => { aborted = true; reject(requestSignal.reason); }, { once: true });
+      });
+    }); vi.stubGlobal('fetch', fetch);
+    let settled = false;
+    const result = native().archiveContent(fence.sessionId, signal()).catch(error => error).then(value => { settled = true; return value; });
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fetch).toHaveBeenCalledTimes(2); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ kind: 'server', status: 429, code: 'resource_busy' });
+    expect(aborted).toBe(true); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels a hanging successful body at the deadline without publishing its archive', async () => {
+    let cancelled = false, release!: () => void;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { release = () => { try { controller.enqueue(new TextEncoder().encode(JSON.stringify({ archive: legacy }))); controller.close(); } catch { /* stream already cancelled */ } }; },
+      cancel() { cancelled = true; },
+    });
+    const fetch = vi.fn(async () => fetch.mock.calls.length === 1 ? busy() : new Response(body, { headers: { 'Daynight-User-ID': user, 'Content-Type': 'application/json' } })); vi.stubGlobal('fetch', fetch);
+    const result = native().archiveContent(fence.sessionId, signal()).catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await result).toMatchObject({ kind: 'server', status: 429, code: 'resource_busy' });
+    expect(cancelled).toBe(true); release(); expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the deadline while a verified manifest is followed by a hanging timeline request', async () => {
+    let fileStarted!: () => void; const firstFile = new Promise<void>(resolve => { fileStarted = resolve; });
+    let aborted = false;
+    const fetch = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url.endsWith('/archive/content')) return fetch.mock.calls.length === 1 ? busy() : response(manifest);
+      if (url.includes('/archive/files/')) {
+        fileStarted(); const requestSignal = init!.signal!;
+        return new Promise((_resolve, reject) => requestSignal.addEventListener('abort', () => { aborted = true; reject(requestSignal.reason); }, { once: true }));
+      }
+      throw new Error(`Unexpected request ${url}`);
+    }); vi.stubGlobal('fetch', fetch);
+    const result = native().archiveContent(fence.sessionId, signal(), manifestStatus).catch(error => error);
+    await vi.advanceTimersByTimeAsync(1000); await firstFile;
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(await result).toMatchObject({ kind: 'server', status: 429, code: 'resource_busy' });
+    expect(aborted).toBe(true); expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves page cancellation instead of reporting the busy deadline', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+      if (fetch.mock.calls.length === 1) return busy();
+      const requestSignal = init!.signal!;
+      return new Promise((_resolve, reject) => requestSignal.addEventListener('abort', () => reject(requestSignal.reason), { once: true }));
+    }); vi.stubGlobal('fetch', fetch);
+    const result = native().archiveContent(fence.sessionId, controller.signal).catch(error => error);
+    await vi.advanceTimersByTimeAsync(1000); expect(fetch).toHaveBeenCalledTimes(2);
+    controller.abort(); await vi.advanceTimersByTimeAsync(29_000);
+    expect(await result).toMatchObject({ name: 'AbortError' }); expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it.each([429, 403])('rejects an oversized HTTP %i error body without a retry', async status => {
