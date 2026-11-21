@@ -96,8 +96,9 @@ async function loadDirectory(scope: TaskCacheScope, clientKey: string, signal: A
  *
  * Concurrency and policy belong to the Webhook service. An edit is submitted with the endpoint version it was loaded at,
  * and the service rejects it with `version_conflict` if the endpoint changed meanwhile; a create is rejected with
- * `endpoint_exists` if another session already created the inbox's endpoint. Both offer a reload that discards the edit. Target address, maintenance and project eligibility are decided by the service, whose error
- * code the panel shows as returned. Pausing, resuming, deleting and scope confirmation are on the Webhooks page.
+ * `endpoint_exists` if another session already created the inbox's endpoint. Both offer a reload that discards the
+ * edit. Target address, maintenance and project eligibility are decided by the service, whose error code the panel
+ * shows as returned. Pausing, resuming, deleting and scope confirmation are on the Webhooks page.
  */
 export function AssistantTaskSubscriptions({ task, inboxId, active, serviceOrigin = globalThis.location?.origin ?? '' }: {
   readonly task: AssistantTask; readonly inboxId: string; readonly active: boolean; readonly serviceOrigin?: string;

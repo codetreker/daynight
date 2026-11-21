@@ -42,8 +42,9 @@ service: the panel submits the observed `ifVersion`, creates its endpoint with
 the [creation key](2026-11-21-webhook-endpoint-client-key.md)
 `assistant-task-inbox:<inboxId>` and finds it by that key, shows
 `version_conflict` and `endpoint_exists` with a Reload action, displays server
-error codes as returned, and links to the Webhook page for endpoint lifecycle. The inbox management panel follows the
-same rule for enable, disable and rotate.
+error codes as returned, and links to the Webhook page for endpoint
+lifecycle. The inbox management panel follows the same rule for enable,
+disable and rotate.
 
 ## Alternatives
 
