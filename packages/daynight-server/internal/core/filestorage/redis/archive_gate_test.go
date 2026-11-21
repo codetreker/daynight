@@ -302,3 +302,45 @@ func TestArchiveGateAtomicConcurrentAdmission(t *testing.T) {
 		t.Fatalf("inconsistent grants: %d cleanup, %d Sessions", cleanups, len(seen))
 	}
 }
+
+func TestArchiveGateRejectsInvalidCanceledAndUnavailable(t *testing.T) {
+	client := redisclient.NewClient(&redisclient.Options{Addr: "unused"})
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g := New(client)
+	owner, id := uuid.NewString(), uuid.NewString()
+	if p, err := g.TryAcquireArchive(t.Context(), owner, "invalid", 1, false); p != nil || err == nil {
+		t.Fatalf("invalid Session accepted: %v, %v", p, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if p, err := g.TryAcquireArchive(ctx, owner, id, 1, false); p != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled acquisition: %v, %v", p, err)
+	}
+	if p, err := g.TryAcquireArchive(t.Context(), owner, id, 1, false); p != nil || !errors.Is(err, redisclient.ErrClosed) {
+		t.Fatalf("unavailable Redis acquisition: %v, %v", p, err)
+	}
+}
+
+func TestArchiveGateCancellationAfterBusyResult(t *testing.T) {
+	a, b := redisFixture(t)
+	owner, one, two := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	p := archiveTestPermit(t, a, owner, one, 1, false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	b.client.AddHook(afterCommand{run: func(cmd redisclient.Cmder) {
+		if cmd.Name() == "eval" || cmd.Name() == "evalsha" {
+			cancel()
+		}
+	}})
+	if got, err := b.TryAcquireArchive(ctx, owner, two, 1, false); got != nil || !errors.Is(err, context.Canceled) {
+		if got != nil {
+			_ = got.Close()
+		}
+		t.Fatalf("canceled busy result: %v, %v", got, err)
+	}
+	if err := p.VerifyGate(t.Context()); err != nil {
+		t.Fatalf("busy attempt changed the held permit: %v", err)
+	}
+}

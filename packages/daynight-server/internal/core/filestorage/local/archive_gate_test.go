@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/google/uuid"
@@ -105,4 +107,75 @@ func TestArchiveConcurrentSameSession(t *testing.T) {
 	if len(permits) != 1 {
 		t.Fatalf("got %d simultaneous same-Session permits", len(permits))
 	}
+}
+
+type blockingArchiveGates struct {
+	filestorage.Gates
+	acquired chan struct{}
+	release  chan struct{}
+}
+
+func (g blockingArchiveGates) TryAcquireArchive(ctx context.Context, owner, session string, limit int, cleanup bool) (io.Closer, error) {
+	p, err := g.Gates.TryAcquireArchive(ctx, owner, session, limit, cleanup)
+	if err != nil {
+		return nil, err
+	}
+	close(g.acquired)
+	select {
+	case <-g.release:
+		return p, nil
+	case <-ctx.Done():
+		return nil, errors.Join(context.Cause(ctx), p.Close())
+	}
+}
+
+func TestArchiveGrantReleasedWhenStorageClosesDuringAcquisition(t *testing.T) {
+	root := t.TempDir()
+	backend := blockingArchiveGates{Gates: standaloneGates{root: root}, acquired: make(chan struct{}), release: make(chan struct{})}
+	s, err := NewWithGates(root, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	owner, id := uuid.NewString(), uuid.NewString()
+	result := make(chan error, 1)
+	go func() {
+		p, err := s.TryAcquireArchive(ctx, owner, id, 1, false)
+		if p != nil {
+			_ = p.Close()
+		}
+		result <- err
+	}()
+	select {
+	case <-backend.acquired:
+	case <-ctx.Done():
+		t.Fatal("backend did not acquire the permit")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(backend.release)
+	select {
+	case err := <-result:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("acquisition after close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("acquisition did not return")
+	}
+	if _, err := s.TryAcquireArchive(ctx, owner, id, 1, false); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed storage accepted a new operation: %v", err)
+	}
+	other, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	p, err := other.TryAcquireArchive(ctx, owner, id, 1, false)
+	if err != nil {
+		t.Fatalf("closed storage retained its grant: %v", err)
+	}
+	defer p.Close()
 }
