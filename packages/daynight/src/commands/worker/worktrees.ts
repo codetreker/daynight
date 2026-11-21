@@ -14,7 +14,7 @@ import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents, retryWhileBusy, WorktreePermissionError } from "./remove-worktree-contents.js";
 import { runShellWorktreeRemoval } from "./shell-worktree-removal.js";
-import { stopWindowsWorktreeProcesses } from "./windows-worktree-processes.js";
+import { stopWindowsWorktreeProcesses, type WindowsWorktreeProcessStop } from "./windows-worktree-processes.js";
 import { assertNoWorktreeMounts } from "./worktree-mounts.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
 import { bindingForManifest, managedNamespace, retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
@@ -46,6 +46,18 @@ const removing = new Set<string>();
 // refactor to recursive removal would route a held worktree to the sudo path
 // instead and leave the holders running.
 const busy = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "EBUSY";
+/** Names the holders a failed recovery already terminated.
+ *
+ * Termination cannot be undone, and the processes it ends may be ones the
+ * Worker never started. When the removal still fails this message is the only
+ * record the operator receives that it happened at all, so the failure has to
+ * carry it. A null stop means the termination itself failed, which it only
+ * does when nothing was terminated. */
+const terminatedHolders = (stop: WindowsWorktreeProcessStop | null): string => {
+  const ended = stop === null ? [] : stop.observed.filter(holder => stop.terminated.includes(holder.pid));
+  if (ended.length === 0) return "No holder was terminated.";
+  return `Terminated ${ended.length} holder process ${ended.length === 1 ? "tree" : "trees"}: ${ended.map(holder => `${holder.image} (${holder.pid})`).join(", ")}.`;
+};
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
 const uuid = (value: string, name: string): string => {
@@ -382,13 +394,14 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       // already rechecks its identities after the registration scan, which is
       // the evidence an irreversible termination needs.
       if (!busy(ordinaryError) || process.platform !== "win32" || policy?.enableWindowsProcessCleanup !== true) throw ordinaryError;
+      let stopped: WindowsWorktreeProcessStop | null = null;
       try {
         await admitReservation();
-        await (optionsForProcessStop)(target, operation);
+        stopped = await (optionsForProcessStop)(target, operation);
         await admitReservation();
         await removeEmptyDirectory(target, operation, admitReservation);
         operation.check();
-      } catch (error) { throw new AggregateError([ordinaryError, error], `Reservation process cleanup failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+      } catch (error) { throw new AggregateError([ordinaryError, error], `Reservation process cleanup failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
     }
     if (await directory(target) !== null || (await registrations(repository, target, operation)).length > 0) throw new Error("The unregistered task reservation removal is incomplete.");
   };
@@ -700,15 +713,16 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     // pointerless, so every later attempt arrives here instead
                     // of the main path. Without this the first busy failure
                     // would permanently route the recovery away from itself.
+                    let stopped: WindowsWorktreeProcessStop | null = null;
                     try {
                       operation.check();
                       await reproveEmptyOwnership();
-                      await (optionsForProcessStop)(emptyPath, operation);
+                      stopped = await (optionsForProcessStop)(emptyPath, operation);
                       operation.check();
                       await reproveEmptyOwnership();
                       await removeEmptyDirectory(emptyPath, operation, reproveEmptyOwnership);
                       operation.check();
-                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree process cleanup failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
                   } else {
                     if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
                     try {
@@ -804,6 +818,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 try { await removeOwnedWorktree(); }
                 catch (ordinaryError) {
                   if (busy(ordinaryError) && process.platform === "win32" && policy?.enableWindowsProcessCleanup === true) {
+                    let stopped: WindowsWorktreeProcessStop | null = null;
                     try {
                       operation.check();
                       // Ownership is proven before the termination decides which
@@ -816,12 +831,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                       // check, and terminating its process tree cannot be undone by
                       // the later identity failure.
                       await verifyOwnedRoot();
-                      await (optionsForProcessStop)(binding.worktreePath, operation);
+                      stopped = await (optionsForProcessStop)(binding.worktreePath, operation);
                       operation.check();
                       await verifyOwnedRoot();
                       await removeOwnedWorktree();
                       operation.check();
-                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}). ${terminatedHolders(stopped)}`, { cause: ordinaryError }); }
                   } else {
                     if (!(ordinaryError instanceof WorktreePermissionError) || policy?.enableSudoCleanup !== true || process.platform === "win32") throw ordinaryError;
                     try {

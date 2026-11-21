@@ -196,6 +196,18 @@ inside the tree also blocks removal and is not reported, so the retry observes
 the same obstacle and the original `EBUSY` is preserved together with cleanup
 responsibility. The same is true when every holder belongs to another account.
 
+A failed recovery names the holders it already ended. Termination cannot be
+undone and the processes it ends may be ones the Worker never started, so when
+the removal still fails the diagnostic is the only record the operator receives
+that any of it happened; a failure that mentioned only the revision would read
+as though nothing had been touched. Holders that survived are not claimed as
+ended, and a termination that reached nothing says so.
+
+A recovery that succeeds leaves no such record, because this cleanup has no
+channel that carries anything but errors. Adding one would change the Worker
+event protocol, which is a larger decision than this target; the configuration
+page states the consequence before the operator enables it.
+
 `WorkerCleanupPolicy` now carries each member's own committed revision rather
 than one shared value. Both members are read from their own application result,
 and a diagnostic names the revision of the member that authorized the action

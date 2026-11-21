@@ -1445,6 +1445,33 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
     expect(errorText(error)).toContain("EBUSY");
     expect(errorText(error)).toContain("configuration revision 7");
+    expect(errorText(error)).toContain("No holder was terminated.");
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it.skipIf(process.platform !== "win32")("names the terminated holders when the worktree stays busy after termination", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // One holder kept an open file as well as its working directory, so the
+      // tree stays busy after its working directory holders are gone.
+      stopHoldingProcesses: async target => ({
+        observed: [{ pid: 701, image: "node.exe", directory: target }, { pid: 702, image: "pwsh.exe", directory: target }, { pid: 703, image: "git.exe", directory: target }],
+        terminated: [701, 703],
+      }),
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("EBUSY");
+    // The termination cannot be undone, so the failure is the only record of
+    // it the operator receives. Holders that survived are not claimed as ended.
+    expect(errorText(error)).toContain("Terminated 2 holder process trees: node.exe (701), git.exe (703).");
+    expect(errorText(error)).not.toContain("pwsh.exe");
     expect(worktreePaths(f.repository)).toContain(root);
   });
 
