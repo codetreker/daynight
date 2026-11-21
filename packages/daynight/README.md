@@ -2821,7 +2821,16 @@ incomplete archive enters a durable repair-required state: every 15 minutes the 
 the stopped generation and SQL projection error markers without materializing the
 complete timeline or reading resource bytes.
 A receipt still requires remote validation; it does not itself clear the repair
-classification. Transient backfill failures use a bounded retry. Only successful
+classification. Initial terminal upload and historical backfill share bounded
+capacity retries: exact HTTP 429 `resource_busy` on an explicitly replayable
+request waits from a one-second exponential baseline up to ten seconds, with
+independent uniform ±20% jitter. A valid `Retry-After` is a minimum; a hint above
+12 seconds or a delay beyond the remaining round budget returns the last capacity
+error. The original 60-second round, 15-second request and eight-retry limit
+remain, with parent cancellation throughout. Each new request resets the retry
+count. Unknown writes retain their original receipt reconciliation. The
+[Worker design](../../docs/design/daynight-worker.md#结束清理与退出) owns the algorithm
+and response-version ordering. Only successful
 archival recovers its alert; neither the repair wait nor an old archive cleanup
 schedule blocks worktree removal or a successor claim. Stopping, ownership and Git
 safety checks remain required, and cancellation stops subsequent file operations.
@@ -3169,7 +3178,10 @@ execution and stop evidence, and does not require the old working directory to
 still exist. Use `-- archive` to send the literal word as an initial prompt.
 Archives are limited to 64 MiB including resource encoding, with at most 8 MiB
 per resource; incomplete or oversized archives fail explicitly and retain their
-source. Completed pages disable all Agent controls.
+source. Independent Controller uploads and this retry command use the same
+[terminal archive capacity backoff](../../docs/design/daynight-worker.md#结束清理与退出)
+as Worker uploads, preserving the original intent and stop evidence. Completed
+pages disable all Agent controls.
 
 Resume a stopped Test Session with its native context:
 

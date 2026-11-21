@@ -87,7 +87,7 @@ VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`
 
 ## 同步、归档与连接关闭
 
-正文策略的 relay 在 WebSocket 握手请求中发送 `Daynight-Task-Body-History-Version: 1`，并核对 upgrade 响应同值；不支持时在发送 hello 前关闭连接并报告 `upgrade_required`，不回退到全量历史。活动同步和停止归档的 HTTP 请求也声明并逐次检查此能力。兼容 execution 不发送正文策略声明。
+正文策略的 relay 在 WebSocket 握手请求中发送 `Daynight-Task-Body-History-Version: 1`，并核对 upgrade 响应同值；不支持时在发送 hello 前关闭连接并报告 `upgrade_required`，不回退到全量历史。活动同步和停止归档的 HTTP 请求也声明并逐次检查此能力。停止归档先有界识别精确的 HTTP 429 `resource_busy`，该拒绝可在旧 Server 的版本头之前发生；成功及其他原需校验的响应仍要求版本 1，错误体不因此被接纳为会话内容。重放条件、退避和预算由[Worker 设计](daynight-worker.md#结束清理与退出)拥有。兼容 execution 不发送正文策略声明。
 
 活动同步只在原 source 序列已全部 ACK、无 projection gap 且 history epoch 已知时准备。它在原短同步 SQL 事务内取得 epoch、完整 source 截止点、有序正文条目和正文引用资源，物化同步文件并持久提交原 intent 后结束事务，再等待网络。正文策略额外携带 `contentPolicy=task_body` 与最多 4096 个累积的 `onlineImageOccurrences`，供在线工具图片捕获校验，不携带工具文本；工具修订移除图片也保留原位置至最终结算。重试保留 syncId 和冻结字节；同步文件是传输材料，不是第二份会话权威。source 水位覆盖所有事件，不能用筛选后的正文序号替代。
 
