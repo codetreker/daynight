@@ -332,6 +332,39 @@ describe("worker cloud-first startup", () => {
     expect(released).not.toBeNull(); await released!.release();
   });
 
+  it.each(["failure", "success"] as const)("joins a pending startup lock after waiter cancellation and retains its original %s", async outcome => {
+    const f = await fixture(), failure = Object.assign(new Error("Worker lock write failed."), { code: "EIO" });
+    const locks = await import("../../../src/commands/worker/instance-lock.js"), acquire = locks.acquireWorkerInstanceLock;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const acquiring = vi.spyOn(locks, "acquireWorkerInstanceLock").mockImplementationOnce(async paths => {
+      entered.resolve();
+      await release.promise;
+      if (outcome === "failure") throw failure;
+      return acquire(paths);
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    let joined = false;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    void running.then(() => { joined = true; }, () => { joined = true; });
+    try {
+      await entered.promise;
+      cancellation.abort();
+      await vi.waitFor(() => expect(control?.snapshot().admission).toBe("closed"));
+      expect(control!.snapshot().resources.find(resource => resource.resourceId === "startup"))
+        .toMatchObject({ result: null, detail: { settled: false } });
+      expect(joined).toBe(false);
+      release.resolve();
+      if (outcome === "failure") await expect(running).rejects.toBe(failure);
+      else await running;
+      expect(control!.snapshot().stopped).toBe(true);
+      expect(acquiring).toHaveBeenCalledOnce();
+      expect(mocks.remote).not.toHaveBeenCalled();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally { release.resolve(); cancellation.abort(); await Promise.allSettled([running]); acquiring.mockRestore(); }
+  });
+
   it("reports an initialization failure on ordinary exit after releasing its original lock", async () => {
     const f = await fixture(), failure = new Error("Worker identity read failed.");
     const identity = vi.spyOn(workerIdentity, "ensureWorkerIdentity").mockImplementationOnce(async () => {

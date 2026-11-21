@@ -21,6 +21,7 @@ export type GatedNodeChild = EventEmitter & {
 const bridge = String.raw`
 const net = require('node:net');
 const channel = net.connect(process.env.DAYNIGHT_CHILD_PIPE);
+channel.setEncoding('utf8');
 const secret = process.env.DAYNIGHT_CHILD_SECRET;
 delete process.env.DAYNIGHT_CHILD_PIPE; delete process.env.DAYNIGHT_CHILD_SECRET;
 let pending = '';
@@ -34,7 +35,7 @@ for (const stream of ['stdout', 'stderr']) Object.defineProperty(process, stream
 })});
 channel.write(JSON.stringify({secret})+'\n');
 channel.on('data', chunk => {
-  pending += chunk.toString('utf8');
+  pending += chunk;
   if (Buffer.byteLength(pending)>33554432) { channel.destroy(); return; }
   let end;
   while ((end=pending.indexOf('\n'))>=0) {

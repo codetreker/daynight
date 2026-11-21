@@ -7,6 +7,7 @@ import type { Operation } from "../../api/operation.js";
 import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../controller/process-proof.js";
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../controller/windows-job.js";
 import { createSuspendedNodeChild } from "./suspended-node-child.js";
+import { isWorkerCancellation } from "./execution.js";
 import { withinExecutionDeadline } from "./execution-scope.js";
 import { OwnedCommandCleanupError, OwnedCommandError, registerOwnedCommandCleanupConfirmation, type OwnedCommand, type OwnedCommandResult } from "./owned-command.js";
 
@@ -253,24 +254,30 @@ const runCommand = async (command: OwnedCommand, operation: Operation, sink: Own
       birth.resolve();
       if (dispatchClosed) return;
       operation.check();
-      if (dispatchClosed || failure !== undefined) throw new Error("Owned launcher dispatch was cancelled.");
+      if (dispatchClosed || failure !== undefined) return;
       if (await inspectProcessProof(proof, budget(5000)) !== "running" || !child.connected) throw new Error("Owned launcher ended before dispatch.");
       // Native observation yields; cancellation and an expired dispatch window
       // must be checked again in the same turn as the irreversible send.
       operation.check();
-      if (dispatchClosed || failure !== undefined) throw new Error("Owned launcher dispatch was cancelled.");
+      if (dispatchClosed || failure !== undefined) return;
       child.send({ kind: "run", file: command.file, args: command.args, environment: command.environment, ...(options.stdin === undefined ? {} : { input: options.stdin }) });
     } else if (message.kind === "result") {
       if (!("code" in message) || !("signal" in message)) throw new Error("Incomplete owned launcher result.");
       const value = message as { code: number | null; signal: string | null };
       if (!bound || !(value.code === null || Number.isInteger(value.code)) || !(value.signal === null || typeof value.signal === "string")) throw new Error("Invalid owned launcher result.");
       result = value;
-    } else if (message.kind === "spawn-error") failure ??= Object.assign(new Error("Cannot execute the owned prerequisite command."), "missing" in message && message.missing === true ? { code: "ENOENT" } : {});
-    else if (message.kind === "io-error") failure ??= new Error("Owned command input or output capture failed.");
+    } else if (message.kind === "spawn-error") captureFailure(Object.assign(new Error("Cannot execute the owned prerequisite command."), "missing" in message && message.missing === true ? { code: "ENOENT" } : {}));
+    else if (message.kind === "io-error") captureFailure(new Error("Owned command input or output capture failed."));
     else throw new Error("Unknown owned launcher message.");
   };
   let messages = Promise.resolve();
-  child.on("message", message => { messages = messages.then(() => handshake(message)).catch(error => { failure ??= error; birth.reject(error); }); });
+  child.on("message", message => {
+    messages = messages.then(() => handshake(message)).catch(error => {
+      if (isWorkerCancellation(error, operation.signal)) failure ??= error;
+      else captureFailure(error);
+      birth.reject(error);
+    });
+  });
   if (suspended !== undefined) {
     try {
       proof = { ...await captureProcessProof(child.pid!, budget(15_000)), jobObjectName: `Local\\Daynight-${resourceId}` };

@@ -20,7 +20,9 @@ Normal startup and exit use the same create/stop path exposed to lifecycle
 integration. A replacement needs new objects and a new signal, and is forbidden
 until all original owners report confirmed closure and durable save. Startup
 constructors are owned before their first asynchronous operation: cancelling a
-wait retains the original constructor and cleanup of its late result.
+wait retains the original constructor and cleanup of its late result. Its original
+non-cancellation rejection is recorded independently of that waiter, so a late
+initialization failure remains reportable without duplicating the same error.
 
 Owners close admission synchronously and stop concurrently with bounded
 observations. A timeout preserves unknown responsibility. Explicit reconciliation
@@ -78,10 +80,11 @@ grace period. A command result or closed output pipe cannot prove that a descend
 which closed its inherited streams has exited. Loss of parent IPC makes the verified group leader
 close its own group instead of abandoning its descendants.
 
-The Windows guardian drains complete output frames and backpressured writers
+The Windows guardian decodes input incrementally so socket chunk boundaries
+cannot corrupt multibyte executable paths, arguments, environment or stdin. It drains complete output frames and backpressured writers
 before treating an incomplete EOF tail as a capture failure. Missing bytes cannot
 keep output joins pending forever. Native exit and handle release still require
-their original evidence. Cancellation does not suppress later channel or writer
+their original evidence. Cancellation does not suppress later channel, helper I/O or writer
 errors; errors arriving after a cleanup timeout remain in that original result,
 even when resource closure is subsequently confirmed.
 

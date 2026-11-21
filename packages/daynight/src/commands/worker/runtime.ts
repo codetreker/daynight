@@ -1157,12 +1157,17 @@ const runWorkerScope = async (options: WorkerRunOptions, root: WorkerManagementR
   try {
     // Publish control before the first I/O. Aborting its waiter does not erase
     // the constructor Promise or permit owners to close before late resources join.
-    startupWork = Promise.resolve().then(initialize).finally(() => { startupSettled = true; });
+    startupWork = Promise.resolve().then(initialize).catch(error => {
+      // A cancelled foreground waiter cannot report a late constructor failure.
+      // Retain it independently without turning a completed join into a live owner.
+      if (!isWorkerCancellation(error, signal) && !failures.includes(error)) failures.push(error);
+      throw error;
+    }).finally(() => { startupSettled = true; });
     publishControl();
     const run = await waitForConfigurationOperation(startupWork, signal);
     await run();
   } catch (error) {
-    if (!isWorkerCancellation(error, signal)) failures.push(error);
+    if (!isWorkerCancellation(error, signal) && !failures.includes(error)) failures.push(error);
   } finally {
     observeMonitoring(m => { m.setLifecycle("stopping"); m.setPhase("stopping"); });
     monitoringSender?.trigger();
