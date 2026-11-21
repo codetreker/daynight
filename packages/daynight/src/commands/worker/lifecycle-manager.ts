@@ -220,7 +220,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (initialization !== undefined && store.readState().phase === "resuming" && store.readState().activation !== null) {
       await finishPreparedActivation(store.readState().activation!); initialized = true; initialization = undefined; return;
     }
-    const before = initialization?.before ?? store.readState();
+    let before = initialization?.before ?? store.readState();
     if (initialization === undefined) {
       if (before.phase === "resuming") store.markBlocked("resume_interrupted"); else store.markManagementFailure();
     }
@@ -236,6 +236,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
         // evidence permits a separate decision after its missing prerequisite.
         await options.ensureWorkerRegistered(true);
         registrationVerified = true;
+        before = store.readState();
         initialization = undefined;
       }
     }
@@ -263,9 +264,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     store.confirmManagementAuthority(binding());
     await stop();
     await disableCloud(cloud);
-    if (normalReconnect(before) && receipt.reconnectAllowed && before.intentVersion === cloud.intentVersion && cloud.desired === "enabled"
-      && !store.readState().localVeto && store.readState().errorCode === null) await activate(randomUUID(), "reconnect");
-    else if (!before.bootstrapConsumed && !before.localVeto && before.instanceEpoch === null && before.activation === null && cloud.desired === "enabled" && cloud.operationId === null
+    const current = store.readState();
+    const internalActivationAllowed = !current.localVeto && current.desired === "enabled" && cloud.desired === "enabled"
+      && current.intentVersion === cloud.intentVersion && current.errorCode === null;
+    if (internalActivationAllowed && normalReconnect(before) && receipt.reconnectAllowed && before.intentVersion === cloud.intentVersion) await activate(randomUUID(), "reconnect");
+    else if (internalActivationAllowed && !before.bootstrapConsumed && !before.localVeto && before.instanceEpoch === null && before.activation === null && cloud.operationId === null
       && !store.listOperations().some(operation => operation.kind === "activation")) await activate(randomUUID(), "bootstrap");
     else await report();
     initialized = true; initialization = undefined;

@@ -293,6 +293,28 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(f.store.readOperation(replacement.operationId)?.status).toBe("confirmed");
     expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false });
     expect(f.store.readOperation(id(61), "activation")?.status).toBe("confirmed");
+    expect(f.api.activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ operationId: id(61) }), f.cancellation.signal);
+    expect(f.store.listOperations().filter(operation => operation.kind === "activation" && operation.phase === "primary")).toEqual([]);
+  });
+
+  it("honors a local veto added while the instance registration is pending", async () => {
+    const f = fixture(), started = deferred<void>(), release = deferred<void>();
+    const register = vi.mocked(f.api.register).getMockImplementation()!;
+    vi.mocked(f.api.register).mockImplementation(async request => { started.resolve(); await release.promise; return register(request); });
+    const result = f.manager.initializeForControl().then(() => null, error => error);
+    try {
+      await started.promise;
+      f.store.closeAdmission({ operationId: id(62), local: true });
+      release.resolve();
+      expect(await result).toBeInstanceOf(Error);
+      expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, desired: "disabled", phase: "disabled" });
+      expect(f.cloud().desired).toBe("disabled");
+      expect(f.api.activate).not.toHaveBeenCalled();
+      await f.manager.resume(id(63));
+      expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false });
+      expect(f.api.register).toHaveBeenCalledOnce();
+      expect(f.api.activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ operationId: id(63) }), f.cancellation.signal);
+    } finally { release.resolve(); await result; }
   });
 
   it("preserves a registration refusal unrelated to the Worker existence prerequisite", async () => {

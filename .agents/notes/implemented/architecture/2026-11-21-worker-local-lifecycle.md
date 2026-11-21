@@ -42,8 +42,10 @@ registration refused because the Worker record was absent remains in the ledger;
 a new registration decision requires confirming that prerequisite again. Other
 refusals do not permit this retry. Unknown registrations retain their original
 request identity and must be resolved before another decision.
-Normal reconnect and initial bootstrap cannot clear a local veto. Independent
-Task pauses, claims, worktrees, native context and recovery budgets remain owned
+Normal reconnect and initial bootstrap cannot clear a local veto. Their activation
+eligibility checks current persisted veto, desired state and intent version after
+registration and reconciliation awaits; an earlier initialization snapshot cannot
+erase an intervening stop decision. Independent Task pauses, claims, worktrees, native context and recovery budgets remain owned
 by their existing mechanisms. A management-only command's activation receipt does
 not mean a foreground Worker execution scope started.
 Per-execution recovery observations come from the original Task and Bot owners
