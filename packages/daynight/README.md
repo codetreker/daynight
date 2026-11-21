@@ -2500,9 +2500,24 @@ When the service provides `enableWindowsProcessCleanup`, the Worker validates
 and applies the boolean the same way. It is an independent target rather than a
 platform branch of `enableSudoCleanup`: the two authorize different things, and
 an operator who accepts privileged deletion of files the Worker owns has not
-thereby accepted termination of processes it does not own. Nothing consumes the
-value yet; recognizing it keeps the member out of the unknown-target path, so a
-Worker reports its application instead of preserving it as opaque authority.
+thereby accepted termination of processes it does not own.
+
+Windows keeps a directory handle open for every process working directory, so a
+live process makes an owned worktree undeletable. When ordinary removal has
+exhausted its busy retries and still fails with `EBUSY`, and the applied value
+is true, cleanup lists the processes whose working directory lies inside the
+verified worktree, terminates each one together with its descendants, and runs
+the same removal sequence again. Ownership is proven before the inventory
+decides which processes to act on and again before the retry removes anything;
+each holder's process handle stays open from inspection until termination, so
+Windows cannot recycle its identifier onto an unrelated process in between.
+
+Only working-directory holders are recovered. A process that keeps an open file
+inside the tree also blocks removal and is not reported, so the retry meets the
+same obstacle and the original error and cleanup responsibility are preserved.
+A holder belonging to another account cannot be read or terminated and is
+skipped rather than failing the inventory. The target defaults to false, and
+without it no process is terminated.
 
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged

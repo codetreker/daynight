@@ -14,6 +14,7 @@ import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents, retryWhileBusy, WorktreePermissionError } from "./remove-worktree-contents.js";
 import { runShellWorktreeRemoval } from "./shell-worktree-removal.js";
+import { stopWindowsWorktreeProcesses } from "./windows-worktree-processes.js";
 import { assertNoWorktreeMounts } from "./worktree-mounts.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
 import { bindingForManifest, managedNamespace, retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
@@ -33,11 +34,12 @@ export type WorkerRepository = { root: string; commonDirectory: string; rootIden
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
 export type WorktreeCleanupOutcome = { kind: "absent"; effectErrors: readonly unknown[] };
 export type WorktreeCleanupOptions = { signal?: AbortSignal };
-export type WorkerCleanupPolicy = { readonly enableSudoCleanup: boolean; readonly revision: string };
+export type WorkerCleanupPolicy = { readonly enableSudoCleanup: boolean; readonly sudoRevision: string | null; readonly enableWindowsProcessCleanup: boolean; readonly windowsProcessRevision: string | null };
 
 /** The Git manager and execution backends share the selected task target. */
 export const selectedWorktreePath = (repositoryRoot: string, worktreeId: string): string => path.join(managedNamespace(repositoryRoot), uuid(worktreeId, "Worktree ID"));
 const removing = new Set<string>();
+const busy = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "EBUSY";
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
 const uuid = (value: string, name: string): string => {
@@ -76,13 +78,14 @@ class WorktreeCleanupInProgressError extends Error {
   constructor() { super("Task worktree cleanup is already in progress."); }
 }
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void>; readCleanupPolicy?: () => WorkerCleanupPolicy | null; runShellRemoval?: typeof runShellWorktreeRemoval }) => {
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void>; readCleanupPolicy?: () => WorkerCleanupPolicy | null; runShellRemoval?: typeof runShellWorktreeRemoval; stopHoldingProcesses?: typeof stopWindowsWorktreeProcesses }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
   const startOwnedGit = options.startOwnedGit ?? startOwnedRepositoryGit;
   const removeDirectory: typeof rm = options.removeDirectory ?? (target => unlink(target));
   const optionsForCleanupPolicy = options.readCleanupPolicy;
   const optionsForShellRemoval = options.runShellRemoval ?? runShellWorktreeRemoval;
+  const optionsForProcessStop = options.stopHoldingProcesses ?? stopWindowsWorktreeProcesses;
   const closing = new AbortController();
   const preparations = new Set<Promise<unknown>>();
   const handles = new Set<OwnedRepositoryGit>();
@@ -607,7 +610,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   recoveredPermissionError = ordinaryError;
                   operation.check();
                   result = await inspectWorktree(project, owner, repository, operation, true);
-                } catch (error) { throw new AggregateError([ordinaryError, error], `Inaccessible worktree cleanup failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+                } catch (error) { throw new AggregateError([ordinaryError, error], `Inaccessible worktree cleanup failed (configuration revision ${policy.sudoRevision}).`, { cause: ordinaryError }); }
               }
               if (result === null) throw new Error("The original worktree manifest is missing; resource removal cannot be authorized.");
               if (result.registration === null) {
@@ -649,7 +652,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     await optionsForShellRemoval(repository.root, original.binding.worktreePath, operation);
                     recoveredPermissionError = ordinaryError;
                     operation.check();
-                  } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree cleanup failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+                  } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree cleanup failed (configuration revision ${policy.sudoRevision}).`, { cause: ordinaryError }); }
                 }
                 result = await inspectWorktree(project, owner, repository, operation, true);
               }
@@ -697,7 +700,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                 const confirmed = await inspectWorktree(project, owner, repository, operation, true);
                 if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
                 await verifyOwnership();
-                try {
+                // One sequence serves the first attempt and the retry that
+                // follows process termination, so the two cannot verify
+                // different things. The Git pointer is removed once: a retry
+                // that reached the root already unlinked it.
+                const removeOwnedWorktree = async (): Promise<void> => {
                   // The inode checks inside the walk prove only local identity.
                   // Admitting every entry through `verifyOwnership` adds the
                   // manifest, the captured metadata and the external Git lock,
@@ -705,12 +712,14 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   // same way it stops the first attempt.
                   await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation, beforeMutation: verifyOwnership }, removeDirectory);
                   await verifyOwnership();
-                  try { await unlink(path.join(binding.worktreePath, ".git")); }
-                  catch (error) {
-                    if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree Git pointer removal was denied.", { cause: error });
-                    throw error;
+                  if (!pointerRemoved) {
+                    try { await unlink(path.join(binding.worktreePath, ".git")); }
+                    catch (error) {
+                      if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree Git pointer removal was denied.", { cause: error });
+                      throw error;
+                    }
+                    pointerRemoved = true;
                   }
-                  pointerRemoved = true;
                   operation.check();
                   await verifyOwnedRoot();
                   try { await removeEmptyDirectory(binding.worktreePath, operation, verifyOwnedRoot); }
@@ -718,18 +727,36 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                     if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree directory removal was denied.", { cause: error });
                     throw error;
                   }
-                } catch (ordinaryError) {
-                  if (!(ordinaryError instanceof WorktreePermissionError) || policy?.enableSudoCleanup !== true || process.platform === "win32") throw ordinaryError;
-                  try {
-                    operation.check();
-                    await verifyOwnership();
-                    await assertNoWorktreeMounts(await realpath(binding.worktreePath));
-                    operation.check();
-                    await verifyOwnership();
-                    await (optionsForShellRemoval)(repository.root, binding.worktreePath, operation);
-                    operation.check();
-                    recoveredPermissionError = ordinaryError;
-                  } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and privileged worktree removal failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+                };
+                try { await removeOwnedWorktree(); }
+                catch (ordinaryError) {
+                  if (busy(ordinaryError) && process.platform === "win32" && policy?.enableWindowsProcessCleanup === true) {
+                    try {
+                      operation.check();
+                      // Ownership is proven before the termination decides which
+                      // processes to act on, and again before the retry mutates
+                      // anything: termination is asynchronous, and the directory
+                      // this cleanup owns must still be the one it removes.
+                      await verifyOwnership();
+                      await (optionsForProcessStop)(binding.worktreePath, operation);
+                      operation.check();
+                      await verifyOwnership();
+                      await removeOwnedWorktree();
+                      operation.check();
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and process worktree removal failed (configuration revision ${policy.windowsProcessRevision}).`, { cause: ordinaryError }); }
+                  } else {
+                    if (!(ordinaryError instanceof WorktreePermissionError) || policy?.enableSudoCleanup !== true || process.platform === "win32") throw ordinaryError;
+                    try {
+                      operation.check();
+                      await verifyOwnership();
+                      await assertNoWorktreeMounts(await realpath(binding.worktreePath));
+                      operation.check();
+                      await verifyOwnership();
+                      await (optionsForShellRemoval)(repository.root, binding.worktreePath, operation);
+                      operation.check();
+                      recoveredPermissionError = ordinaryError;
+                    } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and privileged worktree removal failed (configuration revision ${policy.sudoRevision}).`, { cause: ordinaryError }); }
+                  }
                 }
               }
               operation.check();
@@ -747,13 +774,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         } catch (error) {
           if (error instanceof WorktreeCleanupInProgressError) throw error;
           failed = true;
-          effectError = recoveredPermissionError === undefined ? error : new AggregateError([recoveredPermissionError, error], `Worktree permission recovery and subsequent cleanup failed (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
+          effectError = recoveredPermissionError === undefined ? error : new AggregateError([recoveredPermissionError, error], `Worktree permission recovery and subsequent cleanup failed (configuration revision ${policy!.sudoRevision}).`, { cause: recoveredPermissionError });
         }
         const checkCancellation = (): void => {
           if (!options.signal?.aborted) return;
           const cancellation = new OperationError("cancelled", { cause: options.signal.reason });
           if (failed) throw new AggregateError([effectError, cancellation], "Worktree cleanup failed before cancellation.", { cause: effectError });
-          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, cancellation], `Worktree cleanup was cancelled after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, cancellation], `Worktree cleanup was cancelled after permission recovery (configuration revision ${policy!.sudoRevision}).`, { cause: recoveredPermissionError });
           throw cancellation;
         };
         checkCancellation();
@@ -772,14 +799,14 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           }, options.signal);
         } catch (observationError) {
           if (failed) throw new AggregateError([effectError, observationError], "Worktree cleanup and its postcondition observation failed.", { cause: effectError });
-          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, observationError], `Worktree observation failed after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, observationError], `Worktree observation failed after permission recovery (configuration revision ${policy!.sudoRevision}).`, { cause: recoveredPermissionError });
           throw observationError;
         }
         checkCancellation();
         if (!absent) {
           if (failed) throw effectError;
           const error = new Error("The original task worktree removal is incomplete.");
-          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, error], `Worktree cleanup is incomplete after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, error], `Worktree cleanup is incomplete after permission recovery (configuration revision ${policy!.sudoRevision}).`, { cause: recoveredPermissionError });
           throw error;
         }
         return { kind: "absent", effectErrors: failed ? [effectError] : [] };

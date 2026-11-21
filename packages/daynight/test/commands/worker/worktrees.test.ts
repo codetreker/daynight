@@ -9,6 +9,7 @@ import type { Operation } from "../../../src/api/operation.js";
 import { RepositoryGitError, runRepositoryGit } from "../../../src/repository/git.js";
 import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSettlement, type OwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
+import type { WorkerCleanupPolicy } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
@@ -70,6 +71,10 @@ const seeds = new Map<RefFormat, Promise<string>>();
 const directories: string[] = [];
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const busyError = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+// Each cleanup member carries its own committed revision; a fixture names the
+// one it exercises and leaves the other member unapplied.
+const cleanupPolicy = (applied: Partial<WorkerCleanupPolicy>): WorkerCleanupPolicy =>
+  ({ enableSudoCleanup: false, sudoRevision: null, enableWindowsProcessCleanup: false, windowsProcessRevision: null, ...applied });
 
 const managers: ReturnType<typeof createWorkerGitManager>[] = [];
 const operations: Operation[] = [];
@@ -1267,6 +1272,68 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 
+  it.skipIf(process.platform !== "win32")("terminates the processes holding a persistently busy worktree and completes cleanup", async () => {
+    const f = await repositoryFixture("files");
+    const stopped: string[] = [];
+    let attempts = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async target => { stopped.push(path.normalize(target)); return { observed: [{ pid: 4242, image: "node.exe", directory: target }], terminated: [4242] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      // Busy through every backoff, so only termination can unblock removal.
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      attempts++;
+      if (stopped.length === 0) throw busyError();
+      return actualFs.rmdir(target, options);
+    });
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(stopped).toEqual([root]);
+    expect(attempts).toBe(7);
+    expect(worktreePaths(f.repository)).not.toContain(root);
+    expect(await lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32")("retains a busy worktree and its registration when the target is not applied", async () => {
+    const f = await repositoryFixture("files");
+    let stops = 0;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: false, windowsProcessRevision: "7" }),
+      stopHoldingProcesses: async () => { stops++; return { observed: [], terminated: [] }; },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow(/EBUSY/);
+    expect(stops).toBe(0);
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
+  it.skipIf(process.platform !== "win32")("retains the original busy error when the worktree stays busy after termination", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // A holder that keeps an open file rather than a working directory is
+      // not reported, so the retry observes the same obstacle.
+      stopHoldingProcesses: async () => ({ observed: [], terminated: [] }),
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("EBUSY");
+    expect(errorText(error)).toContain("configuration revision 7");
+    expect(worktreePaths(f.repository)).toContain(root);
+  });
+
   it("rejects a worktree root replaced during the metadata read of a busy retry", async () => {
     const f = await repositoryFixture("files");
     const adapter = manager(f.root);
@@ -1320,7 +1387,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {
     const f = await repositoryFixture("files"); let enabled = true, calls = 0;
     const denied = Object.assign(new Error("denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: enabled, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: enabled, sudoRevision: "42" })),
       removeDirectory: async () => { enabled = false; throw denied; },
       runShellRemoval: async (root, target) => { calls++; expect(root).toBe(f.repository); await rm(target, { recursive: true }); },
     });
@@ -1332,7 +1399,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32")("preserves both permission and actual shell errors", async () => {
     const f = await repositoryFixture("files"); const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { throw new Error("sudo denied"); },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1343,7 +1410,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it("does not elevate an ordinary I/O failure", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const io = Object.assign(new Error("filesystem I/O failed"), { code: "EIO" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw io; }, runShellRemoval: async () => { calls++; },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1354,7 +1421,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform !== "win32")("never invokes sudo on Windows even when enabled", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { calls++; },
     });
     await prepareCleanupFixture(f, adapter);
@@ -1365,7 +1432,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains registration and both errors when privileged removal is partial", async () => {
     const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { await rm(path.join(target, "tracked.txt")); throw new Error("partial shell removal"); },
     });
@@ -1378,7 +1445,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains an unattributable nonempty leaf after partial privileged removal", async () => {
     const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { calls++; await rm(path.join(target, ".git")); throw new Error("privileged partial removal"); },
     });
@@ -1398,7 +1465,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   it.skipIf(process.platform === "win32")("retains the permission error when Git registration removal fails", async () => {
     const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "42" })),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async (_root, target) => { await rm(target, { recursive: true }); },
       startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
         if (args.includes("worktree") && args.includes("remove")) throw new Error("registration failure");
@@ -1414,7 +1481,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("removes a real root-owned directory through noninteractive sudo and clears Git registration", async () => {
     const f = await fixture();
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "17" }) });
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "17" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const owned = path.join(binding.worktreePath, "root-owned");
     execFileSync("sudo", ["-n", "mkdir", owned], { timeout: 10000 });
@@ -1432,7 +1499,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rechecks registration when the original Git pointer is inaccessible", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     execFileSync("sudo", ["-n", "chown", "0", binding.worktreePath], { timeout: 10000 });
     execFileSync("sudo", ["-n", "chmod", "700", binding.worktreePath], { timeout: 10000 });
@@ -1443,7 +1510,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["absolute", "relative"])("cleans an inaccessible owned worktree beside an unrelated stale registration with a %s pointer", async format => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const stale = path.join(f.root, "stale worktree");
     git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
@@ -1466,7 +1533,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["dangling", "missing-parent-traversal", "case-alias", "trailing-slash", "inaccessible-parent", "symlink-name", "hardlink-name"])("retains an inaccessible target when an unrelated registration has %s ambiguity", async kind => {
     const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const stale = path.join(f.root, "stale worktree");
     git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
@@ -1509,7 +1576,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rejects an inaccessible registration with an unprovable symlink traversal", async () => {
     const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const admin = administrativeDirectory(binding.worktreePath), gitdir = path.join(admin, "gitdir"), original = await readFile(gitdir, "utf8");
     const parent = path.dirname(binding.worktreePath), alias = path.join(parent, "outside-alias"), outside = path.join(f.root, "outside");
@@ -1528,7 +1595,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rejects an inaccessible worktree with a physically different common directory", async () => {
     const f = await fixture(); let calls = 0;
-    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
+    const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })), runShellRemoval: async () => { calls++; } });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const admin = administrativeDirectory(binding.worktreePath), common = path.join(admin, "commondir"), original = await readFile(common, "utf8");
     const outside = path.join(f.root, "outside"), alias = path.join(f.repository, "alias");
@@ -1546,7 +1613,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("accepts a verified relative Git pointer when the worktree is inaccessible", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "20" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const admin = administrativeDirectory(binding.worktreePath), gitdir = path.join(admin, "gitdir");
     await writeFile(gitdir, `${path.relative(admin, path.join(binding.worktreePath, ".git"))}\n`);
@@ -1559,7 +1626,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rechecks the empty leaf when its parent denies final removal", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "21" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "21" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const parent = path.dirname(binding.worktreePath); await chmod(parent, 0o555);
     try {
@@ -1569,7 +1636,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("retries an already empty worktree when its parent denies removal", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "22" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "22" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     for (const name of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, name), { recursive: true, force: true });
     const parent = path.dirname(binding.worktreePath); await chmod(parent, 0o555);
@@ -1592,7 +1659,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const input = JSON.parse(process.argv[1]);
       process.env.PATH = input.fake + ':' + process.env.PATH;
       const op = createOperation();
-      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), prepareFormat: async () => {}, readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: '18' }) });
+      const manager = createWorkerGitManager({ temporaryDirectory: path.join(input.root, 'temporary'), prepareFormat: async () => {}, readCleanupPolicy: () => cleanupPolicy({ enableSudoCleanup: true, sudoRevision: '18' }) });
       try {
         await manager.prepareRepository(input.project, op);
         const binding = await manager.prepareWorktree(input.project, input.owner, op);
@@ -1612,7 +1679,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("keeps the task gate through cancellation until the real sudo child exits", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "19" }) });
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => (cleanupPolicy({ enableSudoCleanup: true, sudoRevision: "19" })) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const owned = path.join(binding.worktreePath, "root-owned");
     const shim = path.join(f.root, "commands"), ready = path.join(f.root, "sudo-ready"), release = path.join(f.root, "sudo-release");

@@ -1,0 +1,109 @@
+# Agent Note: Windows Worktree Process Cleanup
+
+Status: implemented
+
+## Problem
+
+Windows keeps a directory handle open for every process working directory. The
+[busy removal retry](../bug-fix/2026-11-20-windows-busy-worktree-removal.md)
+covers the window in which a terminated agent's handle has not been reclaimed
+yet, and states plainly that a directory held by a *live* process still fails
+with its original `EBUSY`. That case is now recoverable.
+
+It is not hypothetical. Three directories left behind by a test run on a
+development machine stayed `EBUSY` for hours, long after the run had finished,
+and `Directory.Delete` reported them as "being used by another process".
+
+## Decision
+
+When ordinary removal exhausts its busy retries and still fails with `EBUSY`,
+and the applied `enableWindowsProcessCleanup` target is true, cleanup lists the
+processes whose working directory lies inside the verified worktree, terminates
+each one with its descendants, and runs the same removal sequence again.
+
+The option exists because that termination reaches processes the Worker never
+launched: `taskkill /T` takes the holder's whole tree, and a holder may itself
+be something an agent spawned and abandoned. That is an operator decision, not
+a default, which is also why it is a target of its own rather than a platform
+branch of `enableSudoCleanup`: privileged deletion of files the Worker owns and
+termination of processes it does not own authorize different things.
+
+### Finding the holders
+
+`windowsDirectoryHolders` enumerates processes with `CreateToolhelp32Snapshot`,
+then reads each one's working directory from its `RTL_USER_PROCESS_PARAMETERS`
+through `NtQueryInformationProcess` and `ReadProcessMemory`. A process it
+cannot open or read is skipped rather than failing the inventory: another
+account's process is not a holder this Worker can act on. The 64-bit layout
+offsets are refused outright on a different pointer size rather than guessed,
+because a wrong offset reads an unrelated address and could name a directory
+belonging to no process.
+
+Each holder's process handle stays open from inspection until termination.
+Windows does not recycle a process identifier while a handle to that process
+remains open, so holding it is what makes the identifier safe to pass to
+`taskkill`. Comparing creation times afterwards would not close that window: by
+then the identifier could already name a different process.
+
+### Keeping ownership proven
+
+Ownership is verified before the inventory decides which processes to act on,
+and again before the retry mutates anything. Termination is asynchronous, so
+the directory this cleanup proved it owns must still be the one it removes.
+
+The first attempt and the retry run one `removeOwnedWorktree` sequence, so the
+two cannot verify different things. The Git pointer is unlinked only once: a
+retry that already reached the root has removed it, and `verifyOwnership`
+switches to requiring its absence at that point.
+
+## Alternatives
+
+**Use the Restart Manager to find the holders.** `RmStartSession`,
+`RmRegisterResources` and `RmGetList` report the processes holding a resource
+without elevation, which is how installers identify what to close. Measurement
+rejects it for this purpose: against a file held open it works, returning
+`ERROR_MORE_DATA` and then the holder's identifier, creation time and
+application name. Against a *directory* held as a process working directory —
+one that `rmdir` genuinely refuses with `EBUSY` — `RmGetList` returns
+`ERROR_ACCESS_DENIED` with no holders. Restart Manager registers file
+resources; the directory handle behind this failure is not one.
+
+**Match the holder by its command line.** Cheaper than reading process memory
+and needs no interop. It finds nothing: the three stuck directories named above
+appear only in their holders' working directories, never in the command lines,
+so a command-line scan reports no holder for a directory that three live
+processes were holding.
+
+**Terminate the execution process tree the Worker launched.** The Worker
+already persists a `ProcessProof` with birth evidence, and on Windows a job
+object that would take the tree atomically, so this needs no interop at all.
+It addresses the wrong set: cleanup runs after the execution is stopped, and
+the holders observed in practice were orphans that were not the agent tree.
+Threading that evidence from the execution layer into cleanup would also be a
+wider change than discovering holders where they are.
+
+**Retry for longer instead of terminating.** The existing backoff already
+covers handle release after exit. A live holder does not exit because the
+remover waited; the measured directories were still held hours later.
+
+**Terminate every reported holder regardless of location.** The inventory is
+filtered to the worktree subtree on a separator boundary, so a sibling path
+that merely shares a prefix is not a holder. Acting on anything outside the
+directory whose ownership was proven would make the option unbounded.
+
+## Consequences
+
+Cleanup recovers a worktree held by a live process on Windows when the operator
+has enabled it, at the cost of terminating that process and its descendants.
+The target defaults to false and nothing happens without it, so existing
+deployments are unchanged.
+
+Only working-directory holders are recovered. A process that keeps an open file
+inside the tree also blocks removal and is not reported, so the retry observes
+the same obstacle and the original `EBUSY` is preserved together with cleanup
+responsibility. The same is true when every holder belongs to another account.
+
+`WorkerCleanupPolicy` now carries each member's own committed revision rather
+than one shared value. Both members are read from their own application result,
+and a diagnostic names the revision of the member that authorized the action
+rather than a revision that may belong to the other one.

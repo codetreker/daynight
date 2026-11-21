@@ -94,6 +94,8 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 自动清理开始时从已提交的 appliedValue 与 actualSource 捕获 enableSudoCleanup 和真实 revision；缺席或尚未应用时只执行普通清理。文件系统阶段确认权限障碍后重新核验清单、目录身份和可访问的 Git 关联，再读取系统挂载清单并拒绝目标或其子树上的挂载；在已核验的仓库根目录通过 POSIX shell 删除原目标；root 使用 rm，其他用户使用 sudo -n，路径按单引号规则引用。普通清理的操作与句柄先收尾，shell 受原 Operation 预算与取消约束并等待关闭，再由普通 Git 清除原登记并重新观察。其他错误不触发提权；人工入口不接入该策略。整目录删除不保证最后移除 .git；部分失败后若 .git 已缺失、目录非空且原归属无法重新证明，后续重试保留错误与责任，不强行删除。进程内责任保持到命令收尾；非 root 的 sudo 在取消或超时后仍由原进程等待结束，不能以杀死父进程推断 root 子进程停止。挂载检查不能排除检查后外部并发挂载，强制重启后不提供新增跨进程互斥。取舍见[清理决策](../../.agents/notes/implemented/feature/2026-11-17-worker-sudo-cleanup.md)。
 
+Windows 的进程清理走另一条分支：普通删除耗尽忙碌重试仍为 EBUSY 时，若已应用的 enableWindowsProcessCleanup 为 true，先重新核验归属，再用 Toolhelp 快照列进程、经 NtQueryInformationProcess 与 ReadProcessMemory 读各进程 RTL_USER_PROCESS_PARAMETERS 中的工作目录，筛出落在已核验 worktree 子树内的持有者，以 `taskkill` 的 `/T /F` 连同后代终止，重新核验归属后重跑同一套删除流程。持有者句柄从检视保持到终止，Windows 不会在句柄存在期间回收其进程标识，因此不需要事后比对出生时间来防标识重用。64 位布局偏移在指针大小不符时直接拒绝而非猜测。首次尝试与重试共用同一删除序列，Git 指针只解除一次。只覆盖工作目录持有，文件句柄持有不在清单内，保留原始错误与责任。两个清理成员各自携带自己的已提交版本，诊断引用授权本次动作的那个成员的版本。取舍与被实测否决的 Restart Manager、命令行匹配两条路线见[进程清理决策](../../.agents/notes/implemented/feature/2026-11-22-windows-worktree-process-cleanup.md)。
+
 历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，及其执行证据；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
 
 ## 配置与目录
