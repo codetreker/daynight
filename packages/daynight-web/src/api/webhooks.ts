@@ -32,6 +32,9 @@ export const webhookVersion = (value: unknown): string => {
   return s;
 };
 const nonempty = (value: unknown): string => nonemptyString(value);
+// The server echoes an optional caller-chosen creation key: 1-200 visible ASCII bytes.
+const clientKey = (value: unknown): string | null => value === null ? null : typeof value === "string" && /^[\x21-\x7e]{1,200}$/.test(value) ? value : malformed();
+const withClientKey = (data: Record<string, unknown>, names: readonly string[]): readonly string[] => Object.hasOwn(data, "clientKey") ? [...names, "clientKey"] : names;
 const positive = (value: unknown): number => { const n = count(value); return n > 0 ? n : malformed(); };
 const httpStatus = (value: unknown): number => { const n = count(value); return n >= 100 && n <= 599 ? n : malformed(); };
 export const parseWebhookEventType = (value: unknown) => oneOf(value, ["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"] as const);
@@ -81,18 +84,18 @@ export const parseWebhookEndpoint = (value: unknown, owner: WebhookOwner, expect
     fields(value, ["id", "owner", "lifecycle", "configVersion", "deletedAt"]);
     return { ...base, lifecycle: "deleted" as const, deletedAt: timestamp(d.deletedAt) };
   }
-  fields(value, ["id", "owner", "lifecycle", "configVersion", "deletedAt", "name", "enabled", "destinationRevision", "destination", "signing", "subscriptions", "capabilities", "createdAt", "updatedAt"]);
+  fields(value, withClientKey(d, ["id", "owner", "lifecycle", "configVersion", "deletedAt", "name", "enabled", "destinationRevision", "destination", "signing", "subscriptions", "capabilities", "createdAt", "updatedAt"]));
   if (d.lifecycle !== "active" || d.deletedAt !== null) return malformed();
   const caps = fields(d.capabilities, ["manage", "readSecret", "redeliver"]);
   const subscriptions = array(d.subscriptions, parseWebhookSubscription);
   if (new Set(subscriptions.map((s) => s.id)).size !== subscriptions.length) return malformed();
-  return { ...base, lifecycle: "active" as const, name: nonempty(d.name), enabled: boolean(d.enabled), destinationRevision: webhookVersion(d.destinationRevision), destination: destination(d.destination), signing: signing(d.signing), subscriptions, capabilities: { manage: boolean(caps.manage), readSecret: boolean(caps.readSecret), redeliver: boolean(caps.redeliver) }, createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), deletedAt: null };
+  return { ...base, lifecycle: "active" as const, ...(Object.hasOwn(d, "clientKey") ? { clientKey: clientKey(d.clientKey) } : {}), name: nonempty(d.name), enabled: boolean(d.enabled), destinationRevision: webhookVersion(d.destinationRevision), destination: destination(d.destination), signing: signing(d.signing), subscriptions, capabilities: { manage: boolean(caps.manage), readSecret: boolean(caps.readSecret), redeliver: boolean(caps.redeliver) }, createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), deletedAt: null };
 };
 export const parseWebhookEndpointPage = (value: unknown, owner: WebhookOwner) => {
   const d = fields(value, ["items", "nextCursor"]);
   const items = array(d.items, (item) => {
-    const s = fields(item, ["id", "owner", "name", "enabled", "configVersion", "destination", "projectCount", "eventTypeCount", "lastAttemptAt", "lastResult"]);
-    return { id: id(s.id), owner: parseWebhookOwner(s.owner, owner), name: nonempty(s.name), enabled: boolean(s.enabled), configVersion: webhookVersion(s.configVersion), destination: destination(s.destination), projectCount: count(s.projectCount), eventTypeCount: count(s.eventTypeCount), lastAttemptAt: nullableTimestamp(s.lastAttemptAt), lastResult: nullable(s.lastResult, result) };
+    const s = fields(item, withClientKey(record(item), ["id", "owner", "name", "enabled", "configVersion", "destination", "projectCount", "eventTypeCount", "lastAttemptAt", "lastResult"]));
+    return { id: id(s.id), owner: parseWebhookOwner(s.owner, owner), ...(Object.hasOwn(s, "clientKey") ? { clientKey: clientKey(s.clientKey) } : {}), name: nonempty(s.name), enabled: boolean(s.enabled), configVersion: webhookVersion(s.configVersion), destination: destination(s.destination), projectCount: count(s.projectCount), eventTypeCount: count(s.eventTypeCount), lastAttemptAt: nullableTimestamp(s.lastAttemptAt), lastResult: nullable(s.lastResult, result) };
   });
   if (new Set(items.map((s) => s.id)).size !== items.length) return malformed();
   return { items, nextCursor: nullable(d.nextCursor, nonempty) };

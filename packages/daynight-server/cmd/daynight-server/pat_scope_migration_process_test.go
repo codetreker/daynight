@@ -42,7 +42,9 @@ ALTER TABLE oauth_grants DROP COLUMN business_scopes, DROP COLUMN scope_version;
 ALTER TABLE oauth_authorizations DROP COLUMN approved_business_scopes;
 DROP TABLE worker_lifecycle_observations, worker_lifecycle_operations, worker_lifecycle;
 ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_version;
-DELETE FROM schema_migrations WHERE version IN (108,109,110,111)`); err != nil {
+DROP INDEX webhook_endpoints_live_client_key_idx;
+ALTER TABLE webhook_endpoints DROP COLUMN client_key;
+DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112)`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64

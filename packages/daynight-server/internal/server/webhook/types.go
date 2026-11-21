@@ -14,10 +14,11 @@ type Owner struct{ Kind, ID string }
 type Destination struct{ Kind, AdapterVersion, URL string }
 
 type ListQuery struct {
-	Query   string
-	Enabled *bool
-	Limit   int
-	Cursor  *string
+	Query     string
+	Enabled   *bool
+	ClientKey *string
+	Limit     int
+	Cursor    *string
 }
 
 // Mutation contains normalized request fields and the digest of the original
@@ -35,6 +36,7 @@ type Mutation struct {
 	HasConfirmProjectIDs                                    bool
 	Mode                                                    string
 	ReturnReceipt                                           bool
+	ClientKey                                               *string
 }
 
 type MutationResult struct {

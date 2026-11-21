@@ -21,6 +21,9 @@ const version = (value: unknown): string => {
   return s;
 };
 const nonempty = (value: unknown): string => text(value, true);
+// The server echoes the caller-chosen creation key: 1-200 visible ASCII bytes.
+export const isWebhookClientKey = (value: unknown): value is string => typeof value === "string" && /^[\x21-\x7e]{1,200}$/.test(value);
+const clientKey = (value: unknown): string | null => value === undefined || value === null ? null : isWebhookClientKey(value) ? value : malformed();
 const positive = (value: unknown): number => { const n = count(value); return n > 0 ? n : malformed(); };
 const httpStatus = (value: unknown): number => { const n = count(value); return n >= 100 && n <= 599 ? n : malformed(); };
 const eventType = (value: unknown) => oneOf(value, ["task.created", "task.status_changed", "task.paused", "task.deleted", "task.step_updated", "task.thread_posted"] as const);
@@ -63,7 +66,7 @@ export const parseWebhookCatalog = (value: unknown) => {
   return { items, service: { configurationExpansionAvailable: bool(s.configurationExpansionAvailable), dispatchEnabled: bool(s.dispatchEnabled) }, limits: { policyVersion: version(l.policyVersion), requestBytes: positive(l.requestBytes), payloadBytes: positive(l.payloadBytes), maxAutomaticAttempts: count(l.maxAutomaticAttempts), automaticWindowSeconds: positive(l.automaticWindowSeconds), maxManualOperations: count(l.maxManualOperations), payloadRetentionSeconds: positive(l.payloadRetentionSeconds), operationMaxAgeSeconds: positive(l.operationMaxAgeSeconds), operationFutureSkewSeconds: count(l.operationFutureSkewSeconds) } };
 };
 export const parseWebhookEndpoint = (value: unknown, owner: WebhookOwner, expectedId?: string) => {
-  const d = fields(value, ["id", "owner", "lifecycle", "configVersion", "deletedAt", "name", "enabled", "destinationRevision", "destination", "signing", "subscriptions", "capabilities", "createdAt", "updatedAt"]);
+  const d = fields(value, ["id", "owner", "lifecycle", "configVersion", "deletedAt", "clientKey", "name", "enabled", "destinationRevision", "destination", "signing", "subscriptions", "capabilities", "createdAt", "updatedAt"]);
   const endpointId = id(d.id); if (expectedId !== undefined && endpointId !== expectedId) return malformed();
   const base = { id: endpointId, owner: parseWebhookOwner(d.owner, owner), configVersion: version(d.configVersion) };
   if (d.lifecycle === "deleted") {
@@ -74,13 +77,13 @@ export const parseWebhookEndpoint = (value: unknown, owner: WebhookOwner, expect
   const caps = fields(d.capabilities, ["manage", "readSecret", "redeliver"]);
   const subscriptions = array(d.subscriptions, subscription);
   if (new Set(subscriptions.map((s) => s.id)).size !== subscriptions.length) return malformed();
-  return { ...base, lifecycle: "active" as const, name: nonempty(d.name), enabled: bool(d.enabled), destinationRevision: version(d.destinationRevision), destination: destination(d.destination), signing: signing(d.signing), subscriptions, capabilities: { manage: bool(caps.manage), readSecret: bool(caps.readSecret), redeliver: bool(caps.redeliver) }, createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), deletedAt: null };
+  return { ...base, lifecycle: "active" as const, clientKey: clientKey(d.clientKey), name: nonempty(d.name), enabled: bool(d.enabled), destinationRevision: version(d.destinationRevision), destination: destination(d.destination), signing: signing(d.signing), subscriptions, capabilities: { manage: bool(caps.manage), readSecret: bool(caps.readSecret), redeliver: bool(caps.redeliver) }, createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), deletedAt: null };
 };
 export const parseWebhookEndpointPage = (value: unknown, owner: WebhookOwner) => {
   const d = fields(value, ["items", "nextCursor"]);
   const items = array(d.items, (item) => {
-    const s = fields(item, ["id", "owner", "name", "enabled", "configVersion", "destination", "projectCount", "eventTypeCount", "lastAttemptAt", "lastResult"]);
-    return { id: id(s.id), owner: parseWebhookOwner(s.owner, owner), name: nonempty(s.name), enabled: bool(s.enabled), configVersion: version(s.configVersion), destination: destination(s.destination), projectCount: count(s.projectCount), eventTypeCount: count(s.eventTypeCount), lastAttemptAt: nullableTimestamp(s.lastAttemptAt), lastResult: nullable(s.lastResult, result) };
+    const s = fields(item, ["id", "owner", "clientKey", "name", "enabled", "configVersion", "destination", "projectCount", "eventTypeCount", "lastAttemptAt", "lastResult"]);
+    return { id: id(s.id), owner: parseWebhookOwner(s.owner, owner), clientKey: clientKey(s.clientKey), name: nonempty(s.name), enabled: bool(s.enabled), configVersion: version(s.configVersion), destination: destination(s.destination), projectCount: count(s.projectCount), eventTypeCount: count(s.eventTypeCount), lastAttemptAt: nullableTimestamp(s.lastAttemptAt), lastResult: nullable(s.lastResult, result) };
   });
   if (new Set(items.map((s) => s.id)).size !== items.length) return malformed();
   return { items, nextCursor: nullable(d.nextCursor, nonempty) };

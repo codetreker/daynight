@@ -36,6 +36,20 @@ func NormalizeName(value string) (string, error) {
 	return name, nil
 }
 
+// ValidClientKey accepts 1-200 bytes of visible ASCII (0x21-0x7E). The caller
+// chooses the meaning; the server only uses it as an owner-scoped live identity.
+func ValidClientKey(value string) error {
+	if len(value) < 1 || len(value) > 200 {
+		return ErrInvalidInput
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x21 || value[i] > 0x7e {
+			return ErrInvalidInput
+		}
+	}
+	return nil
+}
+
 // ValidateURL validates a generic HTTPS destination and returns its safe origin.
 // The caller retains the original URL; path and query are never rewritten.
 func ValidateURL(value string) (string, error) {
@@ -180,6 +194,9 @@ type Intent struct {
 	Subscriptions                                                      []SubscriptionInput `json:",omitempty"`
 	ConfirmProjectIDs                                                  []string            `json:",omitempty"`
 	Mode                                                               string
+	// ClientKey is omitted when absent so receipts recorded before the field
+	// existed keep their original fingerprints.
+	ClientKey *string `json:",omitempty"`
 }
 
 // Fingerprint binds semantic intent independently from the hash of wire bytes.

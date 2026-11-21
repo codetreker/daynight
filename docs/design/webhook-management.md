@@ -24,6 +24,14 @@ Webhook 管理模块处理 Personal User 和 shared Team 的 endpoint 配置、�
 
 来源锁后确认归属管理权，再按当前Project资格决定新订阅、事件扩大、范围确认及启用。资格不为eligible时返回领域错误 `webhook_project_ineligible`，HTTP适配保留机器码并映射为403；它不表示Team管理权撤回，不包含Project或目的地细节。归属管理拒绝仍返回 `forbidden`。两类拒绝均不写入效果或回执，数据库或事务清理失败仍优先报告其实际失败，不能伪装为确定拒绝。
 
+## 创建键
+
+创建请求可携带可选 `clientKey`：1–200 字节的可见 ASCII（0x21–0x7E），含义由调用方决定。同一 owner（Personal User 或 Team）的活动 endpoint 之间 `clientKey` 唯一；不同 owner 和未携带键的 endpoint 不受影响。键在创建后不可修改，更新请求不接受该字段。删除生成的墓碑清空键，之后的创建可以再次使用它。活动 endpoint 的详情和列表项返回 `clientKey`，未设置时为 `null`；墓碑视图不含该字段。列表接受 `clientKey` 过滤，分页游标绑定该过滤条件。
+
+创建事务在来源锁之后、全部权限与 scope 检查通过且写入之前，读取同一 owner 下持有该键的活动 endpoint。存在持有者时返回领域错误 `endpoint_exists`，HTTP 适配映射为 409，不写入效果或回执。调用方当前具有 `webhook:read` 时，错误 details 携带持有者的 `endpointId` 和十进制字符串 `configVersion`；否则不含 details。Team 来源锁以 Team 根串行同一 Team 的创建；Personal owner 没有覆盖全部创建的 owner 级锁。唯一性的最终保证因此是 `webhook_endpoints (owner_kind, owner_id, client_key) WHERE deleted_at IS NULL AND client_key IS NOT NULL` 部分唯一索引。携带键的 endpoint 写入在 savepoint 内执行；索引冲突只回滚该 savepoint，事务随后读取已提交的持有者并返回同一 `endpoint_exists`。持有者在冲突后已被删除时，错误不含 details。
+
+`clientKey` 属于规范化意图指纹：同一操作 ID 的匹配重放返回原结果，同一操作 ID 换用不同键返回 `operation_conflict`。未携带键时指纹编码与引入该字段前相同，既有回执继续匹配；不携带 `clientKey` 的请求行为不变。备选方案与取舍见[创建键决策](../../.agents/notes/implemented/feature/2026-11-21-webhook-endpoint-client-key.md)。
+
 ## 目标配置与签名秘密
 
 `webhook_endpoints.destination_configuration` 以 `bytea` 保存规范化 JSON 的 UTF-8 明文字节；活动 endpoint 必须保存 1–262144 字节，删除墓碑为空。当前 HTTP 配置结构为：

@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -142,6 +143,7 @@ func TestFingerprintBindsIntent(t *testing.T) {
 			v.Destination = &Destination{Kind: "http", AdapterVersion: "1", URL: "https://example.test/private"}
 		},
 		func(v *Intent) { v.HasSubscriptions = false }, func(v *Intent) { v.Mode = "immediate" },
+		func(v *Intent) { key := "inbox:1"; v.ClientKey = &key },
 	}
 	for i, mutate := range mutations {
 		changed := intent
@@ -154,5 +156,31 @@ func TestFingerprintBindsIntent(t *testing.T) {
 	copy := intent
 	if got, err := Fingerprint(copy); err != nil || got != base {
 		t.Fatalf("same semantic input: %q, %v", got, err)
+	}
+}
+
+func TestFingerprintOmitsAbsentClientKey(t *testing.T) {
+	// Receipts recorded before clientKey existed must keep matching replays.
+	if data, err := json.Marshal(Intent{Kind: "endpoint.create"}); err != nil || strings.Contains(string(data), "ClientKey") {
+		t.Fatalf("absent client key encoded: %s, %v", data, err)
+	}
+	first, second := "inbox:1", "inbox:2"
+	a, errA := Fingerprint(Intent{Kind: "endpoint.create", ClientKey: &first})
+	b, errB := Fingerprint(Intent{Kind: "endpoint.create", ClientKey: &second})
+	if errA != nil || errB != nil || a == b {
+		t.Fatalf("client keys did not bind: %q %q %v %v", a, b, errA, errB)
+	}
+}
+
+func TestValidClientKey(t *testing.T) {
+	for _, value := range []string{"a", "assistant-task-inbox:4f1c", "!~", strings.Repeat("k", 200)} {
+		if err := ValidClientKey(value); err != nil {
+			t.Errorf("%q rejected: %v", value, err)
+		}
+	}
+	for _, value := range []string{"", strings.Repeat("k", 201), "a b", "tab\t", "caf\u00e9", "line\n", "\x7f"} {
+		if err := ValidClientKey(value); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%q accepted: %v", value, err)
+		}
 	}
 }

@@ -2,11 +2,17 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 )
+
+// ErrWebhookClientKeyExists reports that another live endpoint of the same owner
+// already holds the creation key. PutEndpoint returns it with the transaction
+// still usable, so the caller can read the holder before rolling back.
+var ErrWebhookClientKeyExists = errors.New("webhook endpoint client key exists")
 
 // WebhookTransactions isolates operation fencing and subsequent current views.
 type WebhookTransactions interface {
@@ -39,6 +45,8 @@ type WebhookWriteScope interface {
 type WebhookReader interface {
 	Endpoint(context.Context, webhook.Owner, string) (webhook.Endpoint, error)
 	Endpoints(context.Context, webhook.Owner) ([]webhook.Endpoint, error)
+	// LiveEndpointByClientKey returns model.ErrNotFound when no live endpoint holds the key.
+	LiveEndpointByClientKey(context.Context, webhook.Owner, string) (webhook.Endpoint, error)
 	SigningKeys(context.Context, string) ([]webhook.SigningKey, error)
 	Subscriptions(context.Context, string) ([]webhook.Subscription, error)
 	Bindings(context.Context, string) ([]webhook.Binding, error)

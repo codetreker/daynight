@@ -21,12 +21,15 @@ type Mutation struct {
 	Subscriptions                                           []core.SubscriptionInput
 	ConfirmProjectIDs                                       []string
 	Mode                                                    string
+	// ClientKey is accepted only on create and is immutable afterwards.
+	ClientKey *string
 }
 type ListQuery struct {
-	Query   string
-	Enabled *bool
-	Limit   int
-	Cursor  *string
+	Query     string
+	Enabled   *bool
+	ClientKey *string
+	Limit     int
+	Cursor    *string
 }
 type Result struct {
 	Body   any

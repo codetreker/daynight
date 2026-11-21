@@ -1,4 +1,4 @@
--- Schema snapshot version: 111
+-- Schema snapshot version: 112
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1501,6 +1501,7 @@ CREATE TABLE "webhook_endpoints" (
     "created_at" timestamp with time zone NOT NULL,
     "updated_at" timestamp with time zone NOT NULL,
     "deleted_at" timestamp with time zone,
+    "client_key" "text",
     CONSTRAINT "webhook_endpoints_check" CHECK (((("deleted_at" IS NULL) AND ("name" IS NOT NULL) AND (("char_length"("name") >= 1) AND ("char_length"("name") <= 120)) AND ("destination_kind" = 'http'::"text") AND ("adapter_version" = 1) AND ("configuration_schema_version" = 1) AND ("destination_origin" IS NOT NULL) AND ("destination_configuration" IS NOT NULL) AND (("octet_length"("destination_configuration") >= 1) AND ("octet_length"("destination_configuration") <= 262144)) AND ("active_key_id" IS NOT NULL) AND ("destination_kind" IS NOT NULL) AND ("adapter_version" IS NOT NULL) AND ("configuration_schema_version" IS NOT NULL)) OR (("deleted_at" IS NOT NULL) AND (NOT "enabled") AND ("name" IS NULL) AND ("destination_kind" IS NULL) AND ("adapter_version" IS NULL) AND ("configuration_schema_version" IS NULL) AND ("destination_origin" IS NULL) AND ("destination_configuration" IS NULL) AND ("active_key_id" IS NULL)))),
     CONSTRAINT "webhook_endpoints_config_version_check" CHECK (("config_version" > 0)),
     CONSTRAINT "webhook_endpoints_created_at_check" CHECK ("isfinite"("created_at")),
@@ -2407,6 +2408,8 @@ CREATE INDEX "webhook_delivery_matches_subscription" ON "webhook_delivery_matche
 CREATE INDEX "webhook_endpoint_waits_owner" ON "webhook_endpoint_waits" USING "btree" ("owner_kind", "owner_id", "endpoint_id", "destination_revision");
 
 CREATE INDEX "webhook_endpoints_deleted" ON "webhook_endpoints" USING "btree" ("deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
+
+CREATE UNIQUE INDEX "webhook_endpoints_live_client_key_idx" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "client_key") WHERE (("deleted_at" IS NULL) AND ("client_key" IS NOT NULL));
 
 CREATE INDEX "webhook_endpoints_owner" ON "webhook_endpoints" USING "btree" ("owner_kind", "owner_id", "created_at", "id") WHERE ("deleted_at" IS NULL);
 
