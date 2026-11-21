@@ -297,7 +297,7 @@ describe("Worker lifecycle management with real local authority", () => {
 
   it("preserves a registration refusal unrelated to the Worker existence prerequisite", async () => {
     const f = fixture();
-    vi.mocked(f.api.register).mockRejectedValueOnce(new ApiError({ operation: "test.lifecycle" }, "response", { status: 403, confirmedRefusal: true }));
+    vi.mocked(f.api.register).mockRejectedValueOnce(new ApiError({ operation: "test.lifecycle" }, "response", { status: 403, confirmedRefusal: true, cause: undefined }));
     await expect(f.manager.initializeForControl()).rejects.toThrow();
     const original = f.store.listOperations().find(operation => operation.kind === "instance")!;
     await expect(f.manager.initializeForControl()).rejects.toThrow("Original management registration remains unresolved or was refused.");
