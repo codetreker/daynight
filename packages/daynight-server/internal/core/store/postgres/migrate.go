@@ -346,6 +346,9 @@ var workerLifecycleSQL string
 //go:embed schema/migrations/111_credential_scope_activation.sql
 var credentialScopeActivationSQL string
 
+//go:embed schema/migrations/112_worker_windows_process_cleanup.sql
+var workerWindowsProcessCleanupSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -463,6 +466,7 @@ var schemaMigrations = []migration{
 	{version: 109, sql: oauthBusinessScopesSQL},
 	{version: 110, sql: workerLifecycleSQL},
 	{version: 111, sql: credentialScopeActivationSQL},
+	{version: 112, sql: workerWindowsProcessCleanupSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

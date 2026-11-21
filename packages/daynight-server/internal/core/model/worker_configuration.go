@@ -17,20 +17,22 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
-	TaskTagFilter               *TagNameFilter               `json:"taskTagFilter,omitempty"`
-	PreserveTaskTagFilter       bool                         `json:"-"`
-	ArchiveSessions             *bool                        `json:"-"`
-	PreserveArchiveSessions     bool                         `json:"-"`
-	ToolPaths                   WorkerToolPaths              `json:"toolPaths"`
-	PreserveToolPaths           bool                         `json:"-"`
-	PreserveSudoCleanup         bool                         `json:"-"`
-	EnableSudoCleanup           bool                         `json:"enableSudoCleanup"`
-	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
-	MaxConcurrent               int64                        `json:"maxConcurrent"`
-	PollIntervalMs              int64                        `json:"pollIntervalMs"`
-	RecoveryLimit               int64                        `json:"recoveryLimit"`
-	Native                      WorkerNativeConfiguration    `json:"native"`
-	Projects                    []WorkerProjectConfiguration `json:"projects"`
+	TaskTagFilter                 *TagNameFilter               `json:"taskTagFilter,omitempty"`
+	PreserveTaskTagFilter         bool                         `json:"-"`
+	ArchiveSessions               *bool                        `json:"-"`
+	PreserveArchiveSessions       bool                         `json:"-"`
+	ToolPaths                     WorkerToolPaths              `json:"toolPaths"`
+	PreserveToolPaths             bool                         `json:"-"`
+	PreserveSudoCleanup           bool                         `json:"-"`
+	EnableSudoCleanup             bool                         `json:"enableSudoCleanup"`
+	PreserveWindowsProcessCleanup bool                         `json:"-"`
+	EnableWindowsProcessCleanup   bool                         `json:"enableWindowsProcessCleanup"`
+	PreferPlatformSpecificTasks   bool                         `json:"preferPlatformSpecificTasks"`
+	MaxConcurrent                 int64                        `json:"maxConcurrent"`
+	PollIntervalMs                int64                        `json:"pollIntervalMs"`
+	RecoveryLimit                 int64                        `json:"recoveryLimit"`
+	Native                        WorkerNativeConfiguration    `json:"native"`
+	Projects                      []WorkerProjectConfiguration `json:"projects"`
 }
 
 type WorkerDesiredConfiguration struct {

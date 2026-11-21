@@ -161,7 +161,7 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "toolPaths", "archiveSessions", "enableSudoCleanup", "taskTagFilter")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "toolPaths", "archiveSessions", "enableSudoCleanup", "enableWindowsProcessCleanup", "taskTagFilter")
 	if err != nil {
 		return value, err
 	}
@@ -195,6 +195,11 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	}
 	if rawSudo, ok := fields["enableSudoCleanup"]; ok {
 		if err := configurationDecode(rawSudo, &value.EnableSudoCleanup); err != nil {
+			return value, err
+		}
+	}
+	if rawWindows, ok := fields["enableWindowsProcessCleanup"]; ok {
+		if err := configurationDecode(rawWindows, &value.EnableWindowsProcessCleanup); err != nil {
 			return value, err
 		}
 	}
@@ -357,7 +362,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "native", "archiveSessions", "taskTagFilter"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "native", "archiveSessions", "taskTagFilter"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -384,7 +389,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
-			case "preferPlatformSpecificTasks", "enableSudoCleanup", "archiveSessions":
+			case "preferPlatformSpecificTasks", "enableSudoCleanup", "enableWindowsProcessCleanup", "archiveSessions":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)
 			case "taskTagFilter":

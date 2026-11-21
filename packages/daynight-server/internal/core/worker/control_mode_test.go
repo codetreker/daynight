@@ -40,6 +40,36 @@ func TestSudoCleanupProtocolOmission(t *testing.T) {
 	}
 }
 
+func TestWindowsProcessCleanupProtocolOmission(t *testing.T) {
+	document := configurationInputDocument()
+	for _, entry := range []struct {
+		value                      any
+		present, preserve, enabled bool
+	}{
+		{nil, false, true, false}, {false, true, false, false}, {true, true, false, true},
+	} {
+		if entry.present {
+			document["enableWindowsProcessCleanup"] = entry.value
+		} else {
+			delete(document, "enableWindowsProcessCleanup")
+		}
+		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{})
+		if err != nil || value.PreserveWindowsProcessCleanup != entry.preserve || value.EnableWindowsProcessCleanup != entry.enabled {
+			t.Fatalf("protocol value %v: %+v %v", entry.value, value, err)
+		}
+		normalized, err := NormalizeConfiguration(value)
+		if err != nil || normalized.PreserveWindowsProcessCleanup != entry.preserve {
+			t.Fatalf("normalization lost omission: %+v %v", normalized, err)
+		}
+	}
+	for _, invalid := range []any{nil, "false", 1} {
+		document["enableWindowsProcessCleanup"] = invalid
+		if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{}); err == nil {
+			t.Fatalf("accepted %v", invalid)
+		}
+	}
+}
+
 func TestConfigurationMergeChecksFinalEncodedBudget(t *testing.T) {
 	value := configurationFixture()
 	args := make([][]string, 8)
