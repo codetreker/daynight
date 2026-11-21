@@ -17,6 +17,7 @@ import { openExecutionResourceJournal } from "../../../src/commands/worker/execu
 import { withOwnedCommandLifecycle } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
 import * as files from "../../../src/platform/files.js";
+import { skipWithoutSymbolicLinks } from "../../helpers/symlink-support.js";
 
 // Only the selected removal is replaced; every other directory removal runs the
 // real implementation.
@@ -420,7 +421,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await adapter.listWorktrees(f.project, operation(), false, true)).toEqual([{ owner: foreignOwner, binding }]);
   });
 
-  it("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
+  it.skipIf(skipWithoutSymbolicLinks)("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     const absent = { ...f.project, localPath: path.join(f.root, "missing", "repo") };
     await expect(adapter.listWorktrees(absent, operation())).rejects.toThrow("missing");
@@ -562,7 +563,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await readFile(path.join(target, "keep"), "utf8")).toBe("retained\n");
   });
 
-  it("rejects symlink parents when cleaning a reservation by task identity", async () => {
+  it.skipIf(skipWithoutSymbolicLinks)("rejects symlink parents when cleaning a reservation by task identity", async () => {
     const f = await repositoryFixture("files"); const adapter = manager(f.root);
     const outside = path.join(f.root, "outside");
     await mkdir(path.join(outside, ids.taskId), { recursive: true });
@@ -745,7 +746,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(manual, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it.each(["duplicate", "duplicate-missing", "duplicate-final-symlink", "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
+    // Only the final-symlink alias needs a symbolic link of its own; the other
+    // kinds reach the same code through a junction, which needs no privilege.
+    it.each(["duplicate", "duplicate-missing", ...(skipWithoutSymbolicLinks ? [] : ["duplicate-final-symlink"]), "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
@@ -828,7 +831,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     });
 
-    it.each(["symlink", "file"])("keeps a registration replaced by a %s unknown without reading through it", async kind => {
+    it.each([...(skipWithoutSymbolicLinks ? [] : ["symlink"]), "file"])("keeps a registration replaced by a %s unknown without reading through it", async kind => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath), retained = path.join(f.root, "retained-admin");
@@ -843,7 +846,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect(await readFile(path.join(retained, "gitdir"), "utf8")).toBe(marker);
     });
 
-    it.each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
+    it.skipIf(skipWithoutSymbolicLinks).each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
       const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const binding = addRegisteredWorktree(f.owner);
       const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
