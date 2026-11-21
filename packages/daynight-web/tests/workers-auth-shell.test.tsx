@@ -13,6 +13,8 @@ import { viewerHeaders } from './helpers/taskSync';
 import { personalTeamPage } from './helpers/team';
 import { configurationResource, configurationResponse } from './helpers/worker-configuration';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';

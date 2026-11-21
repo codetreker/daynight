@@ -16,6 +16,7 @@ import { useWorkerMonitoring } from './useWorkerMonitoring';
 import type { WorkerAlias } from '../../api/worker-alias';
 import { WorkerAliasEditor } from './WorkerAliasEditor';
 import './workers.css';
+import { WorkerLifecyclePanel } from './WorkerLifecyclePanel';
 
 const sections = ['overview', 'system', 'configuration', 'prompt'] as const;
 
@@ -92,6 +93,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
       <WorkerMonitoringTime state={monitoring} />
+      <WorkerLifecyclePanel key={`${userId}/${workerId}`} worker={worker} readEnabled={readEnabled && active && !historyError} />
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
         {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
         <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>

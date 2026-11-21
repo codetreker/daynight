@@ -9,6 +9,8 @@ import { configurationResource, configurationResponse } from './helpers/worker-c
 import { toolPathConfiguration, toolPathTelemetry } from './helpers/worker-tool-paths';
 import { WORKER_USER, workerDetail, workerId, workerResponse } from './helpers/workers';
 
+vi.mock('../src/features/workers/WorkerLifecyclePanel', () => ({ WorkerLifecyclePanel: () => null }));
+
 const target = workerId(1), other = workerId(2);
 const scopes: TaskCacheScope[] = [];
 const flush = () => act(async () => { for (let n = 0; n < 30; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });

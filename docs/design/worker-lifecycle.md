@@ -1,4 +1,4 @@
-# Worker 服务端生命周期设计
+# Worker 生命周期设计
 
 ## 所有者和一致性
 
@@ -42,10 +42,22 @@ Bot 保持 credential、Bot、Session 再 Worker 的顺序。需要 Worker 互�
 
 新实例只撤销旧观察及服务端准入，不能替代旧进程停止证明。注册前 admission=open 且 desired=enabled 时保存 reconnect 资格；停用或恢复意图清除此资格。bootstrap 只允许没有意图历史且未消费的初始资源。
 
+## Web 状态消费
+
+Web 的 `api/worker-lifecycle.ts` 独立协商并严格解析生命周期 v1，不改变旧 Worker list/detail 的解析合同。读取和操作都校验响应 principal；账号作用域、Worker 身份、意图版本、管理实例 epoch 与报告序号共同限制结果发布。较旧版本、实例、报告或服务端观察时间不能覆盖较新结果。`useWorkerObservation` 保留后台检查期间的视图，并用服务端 `observedAt` 加浏览器 monotonic 时间推进时效。稳定时每 30 秒读取；未知原操作、正在停用或恢复、尚待本机观察的新意图每 2 秒核对。隐藏页面停止轮询。
+
+`useWorkerLifecycle` 在同一账号作用域内共享原操作记录和提交互斥。派发前先在同源 `sessionStorage` 保存 service origin、账号、Worker、原精确请求和域分隔 SHA-256 摘要。无法保存时不派发新意图，保留内存请求供核对；存储读取失败或记录损坏时禁止新操作。显式核对可以重新读取恢复后的存储。刷新只查询原 operationId；GET 404 后使用原请求 resolve，核实回执的 Worker、操作、阶段和摘要。查询与 resolve 都不重放业务请求，未知结果不能更换 ID 猜测成功。账号作用域结束时清理其恢复记录；退出账号也按账号前缀清理当前页面从未挂载过的 Worker 记录，失败沿账号私有状态清理提示及显式重试入口处理。
+
+卡片提供摘要和确认入口，详情拥有停止接收、停止执行、关键保存、同步四阶段及逐资源恢复资格。当前安全停止结论要求同实例、同意图、同操作的新鲜完整聚合停证和关键保存证明，且 desired=disabled、admission=closed。明细只传前缀不推翻完整聚合证明；库存未知不能显示为零。恢复请求一旦建立，旧的 disabled 观察不再产生当前安全结论；受理与 activation 均不替代本机 accepting 的新鲜观察。上传失败与本地停止分开，个别会话恢复受阻与 Worker 接受合格工作分开。
+
+确认面板复用共享对话框的焦点约束、Escape 和返回焦点机制，保留机器、别名、Worker、报告时间及已观察范围。Task 数量不作为资源总数；无 Bot 总数时显示未知。面板说明助手租约风险、独立暂停保留和同机其他 Worker 的隔离范围。中英文使用等价保证和共享字号；控件保留至少 44px 触控高度。
+
 ## 验证责任
 
 协议测试验证必填 null、判别联合、规范 ID/精确 int64、未知字段、完整聚合条件、明细限制和确定摘要。领域测试验证所有状态转换、幂等、墓碑、观察时效及 epoch 拒绝。service 验证当前凭据、事务绑定、锁后时间与 Completion；HTTP 验证真实路由、解析、错误码、取消和响应失败。
 
 真实隔离 PostgreSQL 验证迁移、持久化、行锁竞争、首次缺行、CAS、rollback、取消、跨连接重读以及原请求和 resolve 两种提交顺序。正常 API 集成贯穿注册、停用、观察、恢复和激活。平台本机停止证明和 UI 行为不由服务端单元测试代替。
+
+Web 模块通过受控 API 验证严格解析、原操作恢复、未知结果、版本竞争、撤权及各阶段事实映射。独立 frontend-only 浏览器验证真实产品组件的窄屏、双语、放大文本、键盘焦点、后台草稿和滚动连续性。Web 验证不启动 Go 或 PostgreSQL，也不代替真实跨端与平台停止验收。
 
 [独立生命周期决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-lifecycle-authority.md)保存替代方案和成本。

@@ -7,6 +7,7 @@ import { clearPendingBotDeletions } from '../features/bots/deletion-coordinator'
 import { clearBotDisplaySnapshots, retryBotDisplaySnapshotCleanup } from '../features/bots/display-snapshot-coordinator';
 import { clearPendingBotCreation } from '../features/bots/pending-creation';
 import { clearWebhookPending } from '../features/webhook-intents/controller';
+import { clearWorkerLifecyclePending } from '../features/workers/lifecycle-storage';
 import { clearSessionDrafts } from '../features/task-agent-session/client';
 import { clearBotSessionStorage } from '../features/bots/session-storage';
 import { clearSessionDisplayPreference } from '../features/task-agent-session/useSessionDisplayPreference';
@@ -51,12 +52,13 @@ async function clearPrivateSessionState(userId: string): Promise<Error | null> {
   const snapshotsCleared = clearBotDisplaySnapshots(userId);
   const imageDraftsCleared = clearImageDraftScope({ origin: window.location.origin, actorUserId: userId, sessionId: null, reason: 'account_changed' });
   const webhookCleanupError = clearWebhookPending(window.location.origin, userId);
+  const lifecycleCleanupError = clearWorkerLifecyclePending(window.location.origin, userId);
   clearSessionDrafts(userId);
   clearPendingBotCreation(userId);
   clearPendingBotDeletions(userId);
   for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
   const [imageCleanupError, snapshotsComplete] = await Promise.all([imageDraftsCleared, snapshotsCleared]);
-  return imageCleanupError ?? (snapshotsComplete ? webhookCleanupError : new Error('Assistant display snapshots could not be cleared.'));
+  return imageCleanupError ?? (snapshotsComplete ? webhookCleanupError ?? lifecycleCleanupError : new Error('Assistant display snapshots could not be cleared.'));
 }
 
 type SyncSource = AccountSignalSource | "bootstrap" | "logout" | "unauthorized" | "principal";
@@ -236,11 +238,12 @@ export function AccountSessionProvider({ children }: { readonly children: ReactN
       const imageCleanup = retryImageDraftScopeCleanup();
       for (const userId of state.privateCleanup.keys()) {
         const webhookError = clearWebhookPending(window.location.origin, userId);
+        const lifecycleError = clearWorkerLifecyclePending(window.location.origin, userId);
         void Promise.all([retryBotDisplaySnapshotCleanup(userId), imageCleanup]).then(([cleared]) => {
           if (disposed) return;
           const next = new Map(state.privateCleanup);
           const imageError = imageDraftCleanupFailures().find(failure => failure.actorUserId === userId)?.error;
-          const error = imageError ?? (cleared ? webhookError : new Error('Assistant display snapshots could not be cleared.'));
+          const error = imageError ?? (cleared ? webhookError ?? lifecycleError : new Error('Assistant display snapshots could not be cleared.'));
           if (error === null) next.delete(userId); else next.set(userId, error);
           update({ privateCleanup: next });
         });
