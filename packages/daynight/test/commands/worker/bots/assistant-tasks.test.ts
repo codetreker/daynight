@@ -76,6 +76,7 @@ const fixture = async (botNumber = 3) => {
   const event = (n: number): AssistantTaskEvent => ({ id: id(n), taskId: task.id, targetBotId: botId, type: "trigger", payload: { fact: `Event ${n}` }, state: "pending", attention: false, createdAt: new Date(start).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null });
   return { owner, bot, scope, clock, create, options, event, claimResult, api, relatedAppendix, getItem, listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, send, readOperation, healthy, idle, onError, get task() { return task; }, set task(value) { task = value; }, get events() { return events; }, set events(value) { events = value; } };
 };
+const notificationOperation = (command: SessionCommand, state: SessionOperation["state"]): SessionOperation => ({ protocol: SESSION_PROTOCOL, sessionId: command.sessionId, testExecutionId: command.testExecutionId!, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: "send_message", state, providerResult: null, error: null });
 const application = (runtime: AssistantTaskRuntime) => {
   const started = deferred<AssistantApplicationContext>(), stopped = deferred();
   runtime.registerApplication("watchdog", context => { started.resolve(context); return new Promise<void>(resolve => { context.signal.addEventListener("abort", () => { stopped.resolve(); resolve(); }, { once: true }); }); });
@@ -83,6 +84,78 @@ const application = (runtime: AssistantTaskRuntime) => {
 };
 
 describe("assistant-task managed loops", () => {
+  it("confirms a queued notification within the same delivery turn without another scan or submission", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const tick = f.create().tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1], scans = f.listEvents.mock.calls.length;
+    f.clock.advance(999); expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled();
+    f.clock.advance(1); await tick;
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.listEvents).toHaveBeenCalledTimes(scans);
+    expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+    expect(f.clock.pending).toEqual([]); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["unknown", "failed"] as const)("retains a %s notification for original-operation recovery without fast polling", async state => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, state));
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled(); expect(f.clock.pending).toEqual([]);
+    const original = f.send.mock.calls[0]![1]; await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it("retains the submitted journal after a definite original receipt query failure", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    f.readOperation.mockRejectedValueOnce(new AssistantTaskSessionError(false, "request_failed"));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1]; f.clock.advance(1000); await tick;
+    expect(f.ackEvent).not.toHaveBeenCalled(); expect(f.onError).toHaveBeenCalledOnce();
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledTimes(2);
+    expect(f.readOperation.mock.calls.every(call => call[1].operationId === original.operationId)).toBe(true);
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it("retains the same submitted command when the fast receipt budget expires in flight", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const reading = deferred<AbortSignal>();
+    f.readOperation.mockImplementationOnce((_bot, _command, readSignal) => new Promise((_resolve, reject) => {
+      reading.resolve(readSignal); readSignal.addEventListener("abort", () => reject(readSignal.reason), { once: true });
+    }));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    f.clock.advance(1000); const readSignal = await reading.promise;
+    f.clock.advance(8999); expect(readSignal.aborted).toBe(false);
+    f.clock.advance(1); await tick;
+    expect(readSignal.aborted).toBe(true); expect(f.ackEvent).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith(expect.stringContaining("observation deadline expired"), f.bot.botId);
+    const original = f.send.mock.calls[0]![1]; await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledTimes(2);
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+  it.each(["Bot", "runtime"] as const)("joins %s stop during fast observation and recovers only the original command", async stopping => {
+    const f = await fixture(); f.events = [f.event(51)];
+    f.send.mockImplementationOnce(async (_bot, command) => notificationOperation(command, "accepted"));
+    const runtime = f.create(), tick = runtime.tick("delivery", signal());
+    await vi.waitFor(() => expect(f.clock.pending.some(entry => entry.due === start + 1000)).toBe(true));
+    const original = f.send.mock.calls[0]![1];
+    if (stopping === "Bot") await runtime.stopBot(f.bot.botId); else await runtime.shutdown();
+    await tick;
+    expect(f.clock.pending).toEqual([]); expect(f.readOperation).not.toHaveBeenCalled(); expect(f.ackEvent).not.toHaveBeenCalled();
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).toHaveBeenCalledExactlyOnceWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledExactlyOnceWith(f.task.id, id(51), { operationId: original.operationId });
+  });
+
+
   it("retains an application which outlives the stop budget and allows a later join", async () => {
     const f = await fixture(), runtime = f.create(), started = deferred(), finish = deferred();
     f.task.application = "watchdog";
