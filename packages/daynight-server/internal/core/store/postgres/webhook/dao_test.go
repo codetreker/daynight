@@ -58,7 +58,7 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	migration, err = os.ReadFile("../schema/migrations/112_webhook_endpoint_client_key.sql")
+	migration, err = os.ReadFile("../schema/migrations/113_webhook_endpoint_client_key.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func clientKeySchema(t *testing.T, ctx context.Context) string {
 		t.Fatal(err)
 	}
 	defer conn.Close(context.Background())
-	for _, path := range []string{"048_webhook_management.sql", "051_webhook_delivery.sql", "052_webhook_redelivery.sql", "112_webhook_endpoint_client_key.sql"} {
+	for _, path := range []string{"048_webhook_management.sql", "051_webhook_delivery.sql", "052_webhook_redelivery.sql", "113_webhook_endpoint_client_key.sql"} {
 		migration, err := os.ReadFile("../schema/migrations/" + path)
 		if err != nil {
 			t.Fatal(err)

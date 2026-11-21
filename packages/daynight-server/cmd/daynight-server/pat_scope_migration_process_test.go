@@ -44,7 +44,7 @@ DROP TABLE worker_lifecycle_observations, worker_lifecycle_operations, worker_li
 ALTER TABLE session_operations DROP COLUMN worker_id, DROP COLUMN worker_intent_version;
 DROP INDEX webhook_endpoints_live_client_key_idx;
 ALTER TABLE webhook_endpoints DROP COLUMN client_key;
-DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112)`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (108,109,110,111,112,113)`); err != nil {
 		t.Fatal(err)
 	}
 	var latest int64
