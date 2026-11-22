@@ -2500,9 +2500,64 @@ When the service provides `enableWindowsProcessCleanup`, the Worker validates
 and applies the boolean the same way. It is an independent target rather than a
 platform branch of `enableSudoCleanup`: the two authorize different things, and
 an operator who accepts privileged deletion of files the Worker owns has not
-thereby accepted termination of processes it does not own. Nothing consumes the
-value yet; recognizing it keeps the member out of the unknown-target path, so a
-Worker reports its application instead of preserving it as opaque authority.
+thereby accepted termination of processes it does not own.
+
+Windows keeps a directory handle open for every process working directory, so a
+live process makes an owned directory undeletable. When ordinary removal has
+exhausted its busy retries and still fails with `EBUSY`, and the applied value
+is true, cleanup lists the processes whose working directory lies inside the
+verified directory, terminates each one along with the processes attributable
+to it as children, and runs
+the same removal sequence again. Ownership is proven before the inventory
+decides which processes to act on and again before the retry removes anything;
+each holder's process handle stays open from inspection until termination, so
+Windows cannot recycle its identifier onto an unrelated process in between.
+
+Neither the Worker nor any of its own ancestors is reported as a holder.
+Termination reaches the descendants of what it is given, so ending an ancestor
+would end the cleanup along with it, partway through a removal and with no
+error left to report. A Worker started from a shell whose working directory is
+inside the worktree has exactly that ancestor.
+
+A failed attempt reports how many holders it ended and names up to eight of
+them, by image and identifier; the count is always the real one, so a
+truncated list still says how much happened rather than how much fits. The
+termination cannot be undone and may reach processes the Worker never started,
+so this is the operator's only record of it: every exit carries it, including
+cancellation, the postcondition observation and a failure reported after the
+removal itself succeeded. Holders that survived are not claimed as ended, and a
+recovery that terminated nothing says so instead.
+
+A recovery that succeeds has no failure to carry that record, so each
+termination is also reported as it happens, naming the process, when it
+started, and the directory it held. The start time is what still identifies it
+afterwards: Windows reuses a process identifier once the process is gone, and
+this record is read long after the handle that pinned it was closed. A report
+that cannot be written does not fail the cleanup it describes; the diagnostics
+sink reports its own unavailability separately.
+
+Every managed directory this cleanup removes is covered: the worktree contents
+and its root, the registered worktree left empty and pointerless by an
+interrupted attempt, and an unregistered reservation. Each is admitted through
+the verifier that proves its own ownership, and each verifier rechecks its
+evidence after the asynchronous reads that gather it, because terminating a
+process cannot be undone by a later identity failure. Recovery of a permission
+obstacle is a different authorization and stays with `enableSudoCleanup`.
+
+Only working-directory holders are recovered. A process that keeps an open file
+inside the tree is not reported, and where such a handle does prevent removal
+the retry meets the same obstacle and the original error and cleanup
+responsibility are preserved. That boundary is narrower than it sounds:
+measured on Windows, a file held open by a Node process does not block removal
+at all, because those handles permit deletion. The holders this recovers keep a
+working directory, which is the case that genuinely refuses.
+A 32-bit holder is read through its own process parameters rather than the
+native ones, which do not carry its active working directory.
+A holder belonging to another account cannot be read or terminated and is
+skipped rather than failing the inventory. Descendant termination is not a
+guarantee either: a grandchild whose parent already exited may survive, and if
+it still holds the directory the retry keeps the original error. The target
+defaults to false, and without it no process is terminated.
 
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged

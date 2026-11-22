@@ -118,7 +118,7 @@ describe("Worker configuration cache", () => {
     await first.receive(receiveWorkerDesired(raw), "9"); await first.settle();
     expect(first.current().effective.native).toBeNull();
     expect(first.current().retainedArchiveSessions).toBe(false);
-    expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(invalid).toHaveBeenCalledWith("10", "unsupported_configuration");
     await first.stop();
     const second = await createWorkerConfigurationManager(options);
@@ -128,14 +128,38 @@ describe("Worker configuration cache", () => {
     expect(saved.currentItems).toContainEqual(withoutMode(archive));
     expect(saved.currentItems).toContainEqual(withoutMode(sudo));
     expect(second.current().effective.native).toBeNull();
-    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(applyNative).not.toHaveBeenCalled();
     await second.receive(receiveWorkerDesired(JSON.stringify(modern({ ...desired, value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } }, "11"))), "9");
     await second.settle();
-    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
     expect(second.current().effective.archiveSessions).toBe(false);
     expect(applyNative).toHaveBeenCalledTimes(2);
     await second.stop();
+  });
+
+  it("reads each cleanup member from its own committed application", async () => {
+    // Every other assertion here leaves the Windows member absent, and the
+    // cleanup behaviour tests inject a policy rather than reading one. Without
+    // this, nothing proves the member reaches a policy at all, and nothing
+    // would notice the two members sharing one value or one revision again.
+    const original = cache();
+    const recorded = tracked(81, { kind: "enableSudoCleanup" });
+    const sudo = { ...recorded, value: { ...recorded.value, appliedValue: false } };
+    const processes = tracked(82, { kind: "enableWindowsProcessCleanup" }, "11");
+    // The members were committed by different targets. A fully applied cache
+    // requires every member to sit at the application revision, so differing
+    // revisions only exist while an application is still pending.
+    const raw = JSON.stringify(modern({ ...desired, value: { ...desired.value, enableSudoCleanup: false, enableWindowsProcessCleanup: true } }, "11"));
+    const source = { ...original, schemaVersion: 12, authority: { ...original.authority, desiredJson: raw, applicationRevision: "11", pendingApplication: true }, currentItems: withoutModeItems([...original.currentItems, sudo, processes]) };
+    const folder = await directory(), file = path.join(folder, "members.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, [JSON.stringify(source)], 0o600);
+    const manager = await createWorkerConfigurationManager({ file, identity, signal, applyNative: async () => {} });
+    try {
+      await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
+      // Opposite values and different revisions: a shared one cannot produce this.
+      expect(manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, sudoRevision: "10", enableWindowsProcessCleanup: true, windowsProcessRevision: "11" });
+    } finally { await manager.stop(); }
   });
 
   it.each([
@@ -158,7 +182,7 @@ describe("Worker configuration cache", () => {
       const manager = await createWorkerConfigurationManager(options);
       try {
         await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
-        expect(manager.readCleanupPolicy()).toEqual(expected === null ? null : { enableSudoCleanup: expected, revision: "10" });
+        expect(manager.readCleanupPolicy()).toEqual(expected === null ? null : { enableSudoCleanup: expected, sudoRevision: "10", enableWindowsProcessCleanup: false, windowsProcessRevision: null });
         const saved = (await readConfigurationCache(file, identity, signal)).cache;
         expect(saved.authority.desiredJson).toBe(raw);
         expect(saved.currentItems).toContainEqual(withoutMode(sudo));
