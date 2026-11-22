@@ -157,17 +157,20 @@ describe("Windows worktree process termination", () => {
     expect(reported).toEqual([70]);
   });
 
-  it("reports each termination with the image and directory of its holder", async () => {
-    const reported: { pid: number; image: string; directory: string }[] = [];
+  it("reports each termination with the image, directory and creation time of its holder", async () => {
+    const reported: { pid: number; image: string; directory: string; birth: bigint }[] = [];
     const nested = `${target}\\packages`;
     const result = await stopWindowsWorktreeProcesses(target, operation(), {
       holders: async () => inventory([holder(80), holder(81, nested)]),
       terminate: async () => {},
       onTerminated: entry => { reported.push(entry); },
     });
+    // The creation time travels with the rest: an identifier alone stops
+    // identifying the process once Windows reuses it, and this record is read
+    // long after the handle that pinned it was closed.
     expect(reported).toEqual([
-      { pid: 80, image: "node.exe", directory: target },
-      { pid: 81, image: "node.exe", directory: nested },
+      { pid: 80, image: "node.exe", directory: target, birth: 80n },
+      { pid: 81, image: "node.exe", directory: nested, birth: 81n },
     ]);
     expect(result.terminated).toEqual([80, 81]);
   });

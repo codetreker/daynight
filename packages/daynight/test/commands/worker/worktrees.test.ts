@@ -520,7 +520,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const stopped: string[] = [];
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
-      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 915, image: "node.exe", directory: target }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [915] }; },
+      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 915, image: "node.exe", directory: target, birth: 915n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [915] }; },
     });
     await adapter.prepareRepository(f.project, operation());
     const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
@@ -545,7 +545,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
       stopHoldingProcesses: async (target, _operation, options) => {
         stopped = true;
-        const holder = { pid: 917, image: "node.exe", directory: target };
+        const holder = { pid: 917, image: "node.exe", directory: target, birth: 917n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [917] };
       },
@@ -1350,7 +1350,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     let attempts = 0;
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
-      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 4242, image: "node.exe", directory: target }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [4242] }; },
+      stopHoldingProcesses: async (target, _operation, options) => { stopped.push(path.normalize(target)); const holder = { pid: 4242, image: "node.exe", directory: target, birth: 4242n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [4242] }; },
     });
     const binding = await prepareCleanupFixture(f, adapter);
     const root = path.normalize(binding.worktreePath);
@@ -1379,7 +1379,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         // Termination is asynchronous; the worktree this cleanup proved it
         // owns stops being its own while the processes are going away.
         rmSync(manifestPath, { force: true });
-        const holder = { pid: 916, image: "node.exe", directory: target };
+        const holder = { pid: 916, image: "node.exe", directory: target, birth: 916n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [916] };
       },
@@ -1408,7 +1408,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     let stops = 0;
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
-      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 914, image: "node.exe", directory: target }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [914] }; },
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 914, image: "node.exe", directory: target, birth: 914n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [914] }; },
     });
     const binding = await prepareCleanupFixture(f, adapter);
     const root = path.normalize(binding.worktreePath);
@@ -1492,7 +1492,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         // A holder usually sits in a descendant rather than the target itself,
         // so the directory it held and the directory it blocked are different
         // facts and the report has to carry both.
-        const holder = { pid: 804, image: "node.exe", directory: path.join(target, "packages", "app") };
+        const holder = { pid: 804, image: "node.exe", directory: path.join(target, "packages", "app"), birth: 804n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [804] };
       },
@@ -1505,7 +1505,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       return actualFs.rmdir(target, options);
     });
     await adapter.removeWorktree(f.project, f.owner, operation());
-    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: path.join(binding.worktreePath, "packages", "app") } }]);
+    expect(reported).toEqual([{ target: binding.worktreePath, revision: "7", holder: { pid: 804, image: "node.exe", directory: path.join(binding.worktreePath, "packages", "app"), birth: 804n } }]);
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 
@@ -1520,7 +1520,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       reportHolderTerminated: () => { throw new Error("diagnostic sink unavailable"); },
       stopHoldingProcesses: async (target, _operation, options) => {
         stopped = true;
-        const holder = { pid: 805, image: "node.exe", directory: target };
+        const holder = { pid: 805, image: "node.exe", directory: target, birth: 805n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [805] };
       },
@@ -1543,7 +1543,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
       stopHoldingProcesses: async (target, _operation, options) => {
-        const holder = { pid: 903, image: "node.exe", directory: target };
+        const holder = { pid: 903, image: "node.exe", directory: target, birth: 903n };
         options?.onTerminated?.(holder);
         controller.abort(new Error("cleanup cancelled"));
         return { observed: [holder], terminated: [903] };
@@ -1571,7 +1571,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
       stopHoldingProcesses: async (target, _operation, options) => {
-        const holder = { pid: 801, image: "node.exe", directory: target };
+        const holder = { pid: 801, image: "node.exe", directory: target, birth: 801n };
         // Reported before the cancellation, which is the whole point: the
         // process is gone and this attempt will never return a result.
         options?.onTerminated?.(holder);
@@ -1598,7 +1598,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
       stopHoldingProcesses: async (target, _operation, options) => {
         stopped = true;
-        const holder = { pid: 802, image: "node.exe", directory: target };
+        const holder = { pid: 802, image: "node.exe", directory: target, birth: 802n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [802] };
       },
@@ -1630,7 +1630,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       // tree stays busy after its working directory holders are gone.
       stopHoldingProcesses: async (target, _operation, options) => {
         rounds++;
-        const observed = [{ pid: 701, image: "node.exe", directory: target }, { pid: 702, image: "pwsh.exe", directory: target }, { pid: 703, image: "git.exe", directory: target }];
+        const observed = [{ pid: 701, image: "node.exe", directory: target, birth: 701n }, { pid: 702, image: "pwsh.exe", directory: target, birth: 702n }, { pid: 703, image: "git.exe", directory: target, birth: 703n }];
         for (const holder of [observed[0]!, observed[2]!]) options?.onTerminated?.(holder);
         return { observed, terminated: [701, 703] };
       },
@@ -2271,7 +2271,7 @@ exec "$@"
         // every later attempt arrives through the pointerless-empty branch.
         if (!allowed) throw new Error("holder inventory interrupted");
         terminated = true;
-        const holder = { pid: 909, image: "node.exe", directory: target };
+        const holder = { pid: 909, image: "node.exe", directory: target, birth: 909n };
         options?.onTerminated?.(holder);
         return { observed: [holder], terminated: [909] };
       },
@@ -2303,7 +2303,7 @@ exec "$@"
     let stops = 0;
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
-      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 911, image: "node.exe", directory: target }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [911] }; },
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 911, image: "node.exe", directory: target, birth: 911n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [911] }; },
     });
     const binding = await prepareCleanupFixture(f, adapter);
     const admin = administrativeDirectory(binding.worktreePath);
@@ -2333,7 +2333,7 @@ exec "$@"
     let stops = 0;
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "9" }),
-      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 913, image: "node.exe", directory: target }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [913] }; },
+      stopHoldingProcesses: async (target, _operation, options) => { stops++; const holder = { pid: 913, image: "node.exe", directory: target, birth: 913n }; options?.onTerminated?.(holder); return { observed: [holder], terminated: [913] }; },
     });
     const binding = await prepareCleanupFixture(f, adapter);
     const admin = administrativeDirectory(binding.worktreePath);

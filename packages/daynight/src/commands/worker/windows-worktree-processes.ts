@@ -21,7 +21,7 @@ export type WindowsWorktreeProcessOptions = {
    * a later holder is being processed, and the accumulated result would be
    * discarded with the throw; a caller reading only the return value would
    * then report that nothing had been terminated. */
-  readonly onTerminated?: (holder: { readonly pid: number; readonly image: string; readonly directory: string }) => void;
+  readonly onTerminated?: (holder: { readonly pid: number; readonly image: string; readonly directory: string; readonly birth: bigint }) => void;
 };
 
 const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation): Promise<void> => {
@@ -96,7 +96,7 @@ export const stopWindowsWorktreeProcesses = async (
       try {
         await terminate(holder, operation);
         terminated.push(holder.pid);
-        options.onTerminated?.({ pid: holder.pid, image: holder.image, directory: holder.directory });
+        options.onTerminated?.({ pid: holder.pid, image: holder.image, directory: holder.directory, birth: holder.birth });
       }
       catch (error) { failures.push(error); }
     }

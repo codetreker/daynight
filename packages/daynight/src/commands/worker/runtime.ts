@@ -87,6 +87,17 @@ const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Par
     ...(settlement.cleanupErrors.length === 0 ? {} : { error: new AggregateError(settlement.cleanupErrors, "Repository Git local cleanup reported errors.", { cause: pending.error }) }) });
 };
 
+// Windows counts a process creation time in 100-nanosecond intervals from
+// 1601-01-01, so the epoch offset is fixed rather than configurable.
+const windowsEpochOffset = 116_444_736_000_000_000n;
+/** When the terminated process started, so the record identifies it later.
+ *
+ * An identifier alone does not: Windows reuses one once the process is gone,
+ * and this record is read after that. An open handle keeps the identifier
+ * stable only while the termination runs, not afterwards in a log. */
+const processStart = (birth: bigint): string =>
+  birth > windowsEpochOffset ? new Date(Number((birth - windowsEpochOffset) / 10_000n)).toISOString() : "an unreadable time";
+
 // A cleanup that recovers a held worktree succeeds without any failure to
 // carry the record of what it terminated, and the processes it ended may be
 // ones the Worker never started. This is the operator's trace for that case.
@@ -96,7 +107,7 @@ const holderTerminatedReporter = (emit: (event: WorkerEvent) => void): NonNullab
   // wrong. Both belong here: one is the process that was ended, the other is
   // the directory that could not be removed because of it.
   emit({ kind: "worktree-holder-terminated", component: "git", phase: "worktree-remove",
-    message: `Terminated ${event.holder.image} (${event.holder.pid}), whose working directory ${event.holder.directory} kept ${event.target} from being removed, together with the processes Windows attributes to it as children (configuration revision ${event.revision}).` });
+    message: `Terminated ${event.holder.image} (${event.holder.pid}, started ${processStart(event.holder.birth)}), whose working directory ${event.holder.directory} kept ${event.target} from being removed, together with the processes Windows attributes to it as children (configuration revision ${event.revision}).` });
 };
 
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {

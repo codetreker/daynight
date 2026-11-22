@@ -46,7 +46,7 @@ const removing = new Set<string>();
 // refactor to recursive removal would route a held worktree to the sudo path
 // instead and leave the holders running.
 const busy = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "EBUSY";
-type TerminatedHolder = { readonly pid: number; readonly image: string; readonly directory: string };
+type TerminatedHolder = { readonly pid: number; readonly image: string; readonly directory: string; readonly birth: bigint };
 /** Names the holders a cleanup attempt has already terminated.
  *
  * Termination cannot be undone, and the processes it ends may be ones the
