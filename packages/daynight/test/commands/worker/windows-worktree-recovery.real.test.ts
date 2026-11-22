@@ -67,6 +67,39 @@ describe.skipIf(!windows)("Windows worktree recovery against a real holder", () 
     expect(existsSync(path.join(target, "packages"))).toBe(false);
   }, 90_000);
 
+  it("terminates the working-directory holder and leaves a process that only has a file open", async () => {
+    const base = path.resolve("../../.tmp/holder-tests");
+    await mkdir(base, { recursive: true });
+    const root = await mkdtemp(path.join(base, "fileholder-")); roots.push(root);
+    const target = path.join(root, "worktree"), nested = path.join(target, "packages");
+    await mkdir(nested, { recursive: true });
+    const file = path.join(nested, "held.txt"), marker = path.join(root, "ready.txt");
+    await writeFile(file, "retained");
+
+    // Holds the file and nothing else: its working directory is outside the
+    // worktree. Over-terminating here would end a process that was never an
+    // obstacle, which is the risk this target carries. It reports only after
+    // the descriptor is open, so an unopened file cannot pass for a held one.
+    const reader = spawn(process.execPath, ["-e", "const fs=require('fs');fs.openSync(process.argv[1],'r');fs.writeFileSync(process.argv[2],'held');setTimeout(() => {}, 600000)", file, marker], { cwd: base, stdio: "ignore" });
+    children.push(reader);
+    for (let attempt = 0; attempt < 300 && !existsSync(marker); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    expect(existsSync(marker)).toBe(true);
+    const held = await holdDirectory(nested);
+
+    const stop = await stopWindowsWorktreeProcesses(target, operation());
+    expect(stop.terminated).toContain(held);
+    expect(stop.observed.map(entry => entry.pid)).not.toContain(reader.pid);
+    expect(stop.terminated).not.toContain(reader.pid);
+    // Still running: nothing ended it, and nothing had reason to.
+    expect(() => process.kill(reader.pid!, 0)).not.toThrow();
+
+    // Its open file does not refuse removal either, so the retry completes
+    // with that process still holding the descriptor.
+    await removeWorktreeContents({ target, expectedIdentity: await identity(target), operation: operation() });
+    expect(existsSync(nested)).toBe(false);
+    expect(() => process.kill(reader.pid!, 0)).not.toThrow();
+  }, 90_000);
+
   it("leaves the holder alone when its working directory is outside the worktree", async () => {
     const base = path.resolve("../../.tmp/holder-tests");
     await mkdir(base, { recursive: true });
