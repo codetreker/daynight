@@ -141,6 +141,19 @@ const loadKernel = async (): Promise<WindowsDirectoryHolderKernel> => {
  */
 export const windowsDirectoryHolderKernel = async (): Promise<WindowsDirectoryHolderKernel> => await (kernel ??= loadKernel());
 
+// Windows counts a process creation time in 100-nanosecond intervals from
+// 1601-01-01, so the epoch offset is fixed rather than configurable.
+const windowsEpochOffset = 116_444_736_000_000_000n;
+/** When a holder started, for a record that outlives its identifier.
+ *
+ * A process identifier identifies a process only while it exists; Windows
+ * reuses it afterwards, and the record this feeds is read later, when the
+ * handle that pinned it is long closed. A value at or below the epoch cannot
+ * be a real creation time and says so rather than reporting 1601.
+ */
+export const windowsProcessStartTime = (birth: bigint): string =>
+  birth > windowsEpochOffset ? new Date(Number((birth - windowsEpochOffset) / 10_000n)).toISOString() : "an unreadable time";
+
 const normalized = (value: string): string => {
   const resolved = path.win32.resolve(value);
   return (resolved.endsWith(path.win32.sep) ? resolved.slice(0, -path.win32.sep.length) : resolved).toLowerCase();

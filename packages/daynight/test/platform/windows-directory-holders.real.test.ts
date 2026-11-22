@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { windowsDirectoryHolders, windowsDirectoryHolderKernel } from "../../src/platform/windows-directory-holders.js";
+import { windowsDirectoryHolders, windowsDirectoryHolderKernel, windowsProcessStartTime } from "../../src/platform/windows-directory-holders.js";
 
 // SysWOW64\cmd.exe is the 32-bit command processor present on every 64-bit
 // Windows installation, so a WOW64 holder needs no fixture binary.
@@ -53,7 +53,13 @@ describe.skipIf(!windows)("Windows directory holders against real processes", ()
       const holder = inventory.holders.find(entry => entry.pid === pid);
       expect(holder).toBeDefined();
       expect(path.win32.resolve(holder!.directory).toLowerCase()).toBe(path.win32.resolve(held).toLowerCase());
-      expect(holder!.birth).toBeGreaterThan(0n);
+      // Greater than zero would pass on a wrong offset too. This shell was
+      // started moments ago, so its creation time has to convert to about
+      // now — which checks the field the record depends on against the clock.
+      const started = Date.parse(windowsProcessStartTime(holder!.birth));
+      expect(Number.isNaN(started)).toBe(false);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(0);
+      expect(Date.now() - started).toBeLessThan(300_000);
     } finally { inventory.release(); }
   });
 

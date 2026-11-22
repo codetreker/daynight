@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { windowsDirectoryHolders, type WindowsDirectoryHolderKernel } from "../../src/platform/windows-directory-holders.js";
+import { windowsDirectoryHolders, windowsProcessStartTime, type WindowsDirectoryHolderKernel } from "../../src/platform/windows-directory-holders.js";
 
 const root = "C:\\worktrees\\daynight\\55555555-5555-4555-8555-555555555555";
 const check = (): void => {};
@@ -12,6 +12,22 @@ const kernelFor = (rows: readonly { pid: number; image: string; directory?: stri
     return { birth: row.birth ?? 1n, directory: row.directory, handle: { pid } };
   },
   close: handle => { closed.push((handle as { pid: number }).pid); },
+});
+
+describe("Windows process creation times", () => {
+  const epoch = 116_444_736_000_000_000n;
+
+  it("converts a creation time from the Windows epoch", () => {
+    // The offset is the whole of this conversion, so it is checked against
+    // values that pin it rather than against the formula that produced it.
+    expect(windowsProcessStartTime(epoch)).toBe("an unreadable time");
+    expect(windowsProcessStartTime(epoch + 1n)).toBe("1970-01-01T00:00:00.000Z");
+    expect(windowsProcessStartTime(epoch + BigInt(Date.parse("2026-11-22T09:41:03.000Z")) * 10_000n)).toBe("2026-11-22T09:41:03.000Z");
+  });
+
+  it.each([0n, 1n, epoch - 1n])("reports %s as unreadable rather than as a date in 1601", value => {
+    expect(windowsProcessStartTime(value)).toBe("an unreadable time");
+  });
 });
 
 describe("Windows directory holders", () => {
