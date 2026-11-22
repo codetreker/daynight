@@ -25,6 +25,14 @@ Web 清理首次落盘时，以 backend 读取的时间为 startedAt；如果调
 
 Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task 的 worker.phase。Task summary 保留 preparing/executing/paused 等执行阶段，避免审批期间的高频版本更新使 Agent 刚读到的 task version 立即失效。模式不可通过 worker summary 或普通 properties 更新。存在 Worker claim 时，服务端当前 claim 是主页面模式的唯一依据，nativeSessionId、是否在线或用户 YAML 均不能替代它；无 claim 的只读入口使用原历史记录的内容类型，按[共同入口设计](herdr-session-web.md#页面与身份)自动选择。[认领设计](daynight-worker-claims.md)拥有实际 HTTP 路径和事务约束。
 
+## Worker 持久派发围栏
+
+Worker 管理的 Controller ticket 与 journal 保存原 `lifecycleBinding`，包含服务、账号、Worker、管理实例、意图版本、本机 epoch 与作用域代次。Controller 从原私有 `lifecycle.sqlite` 验证该绑定；已存在 Worker 权威但旧受管 ticket 缺少绑定时拒绝业务启动，先停止原边界再处理格式转换。独立 `standalone_test` 不属于 Worker 准入，不能因同机存在 Worker 数据库而被吸收进其身份。
+
+Controller 在启动和输入进入前登记原资源责任，在每个最终 Provider 调用及异步准备之后重新读取持久准入；辅助进程携带冻结的同一围栏。取消、原结果保存与停止通道保留管理权限，清理 prompt、图片解码、Markdown 采集和设置刷新不能借用该权限开展新的业务工作。旧 intent、实例或作用域不能用内存缓存绕过本机关门。围栏拒绝不会删除已登记的原责任。
+
+输入结算与进程停止分别保存：原 operation 的 `confirmed/provider_accepted` 证明受理，`rejected/expired` 证明未派发，其他状态保留未知；受理回执不证明原生已停止。Controller/Provider 资源仍由原执行 owner 核对原出生证明、完整 PGID 或 Windows Job、journal 与 writer 保存结果。父连接消失、直接 PID 不存在和受理回执都不能替代整边界停止证明。Worker 恢复只消费原执行和操作证据，不重放结果未知的输入；[Worker 生命周期设计](daynight-worker.md#持久停用与恢复)拥有恢复资格与管理根职责。
+
 ## Wire 身份与操作
 
 协议主版本为 `daynight.session.v1`。sessionId 与严格互斥的绑定字段标识持久归属：Task 使用 claimId，Test 使用 testExecutionId。Test identity 使用 ownerUserId，不携带 projectId、taskId、workerId、worktreeId；Task identity 保持这些真实字段。缺失绑定、两种绑定混合及身份与绑定不符均拒绝。executionGeneration 标识原生运行实例，connectionEpoch 标识当前网络连接。代次用规范正 int64 十进制字符串，避免 JavaScript number 舍入和不同编码的等价值。重连不改变执行代次。

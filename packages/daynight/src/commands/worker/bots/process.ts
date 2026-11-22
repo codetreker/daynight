@@ -1,7 +1,8 @@
+import { assertWorkerLifecycleAdmission, currentLifecycleBinding } from "../lifecycle-context.js";
 import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
@@ -11,7 +12,7 @@ import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../backends/controller-process.js";
+import { controllerLaunchNeedsReplacement, createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../backends/controller-process.js";
 import { preservesControllerProcessProof, preservesNativeProcessPrefix } from "../backends/orchestration.js";
 import { controllerCredentialNeedsRefresh } from "../backends/grant-renewal.js";
 import { writeControllerCredential } from "../backends/session-api.js";
@@ -29,6 +30,7 @@ import { createControllerJobLeases, type ControllerJobLeases } from "../backends
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { assertBotMigrationExecutable } from "./migration-state.js";
 
 export class BotAdmissionBlockedError extends Error {
@@ -331,7 +333,8 @@ export const createBotProcess = (options: {
         const nativeHome = previousTicket?.nativeHome ?? (config.provider === "codex" ? prepared.environment.CODEX_HOME ?? path.join(options.homeDirectory, ".codex")
           : config.provider === "claude" ? prepared.environment.CLAUDE_CONFIG_DIR ?? path.join(options.homeDirectory, ".claude")
           : prepared.environment.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
-        ticket = { schemaVersion: 1, launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
+        const lifecycleBinding = currentLifecycleBinding();
+        ticket = { schemaVersion: lifecycleBinding === undefined ? 1 : 2, ...(lifecycleBinding === undefined ? {} : { lifecycleBinding: { ...lifecycleBinding } }), launchId: intent.launchId, executionId: intent.executionId, testExecutionId: intent.executionId,
           controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, sessionId: intent.sessionId,
           executionGeneration: intent.executionGeneration, serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId,
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
@@ -346,6 +349,37 @@ export const createBotProcess = (options: {
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
+      }
+      const binding = currentLifecycleBinding();
+      const needsReplacement = controllerLaunchNeedsReplacement(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
+      if (needsReplacement || binding !== undefined && controllerPayloadHash(ticket.lifecycleBinding ?? null) !== controllerPayloadHash(binding)) {
+        if (binding === undefined) throw new Error("Bot launch replacement requires current Worker lifecycle authorization.");
+        const original = record;
+        const assertPending = () => {
+          signal.throwIfAborted(); assertWorkerLifecycleAdmission();
+          controllerLaunchNeedsReplacement(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, original));
+          const latest = current(original), execution = options.executions.get(latest);
+          if (controllerPayloadHash(latest.intent) !== controllerPayloadHash(original.intent) || execution === null
+            || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot lifecycle authorization requires proven never-submitted execution.");
+          if (binding.serverOrigin !== latest.owner.serverOrigin || binding.userId !== latest.owner.ownerUserId) throw new Error("Bot lifecycle authorization conflicts with its original owner.");
+        };
+        assertPending();
+        const storage = resolveBotControllerStateDirectory(options.homeDirectory, record), launchId = randomUUID();
+        const replacement: ControllerLaunchTicket = { ...ticket, schemaVersion: 2, lifecycleBinding: { ...binding }, launchId,
+          ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, launchId, storage), ipcSecret: randomBytes(32).toString("hex") };
+        // Publish before switching the two durable Bot rows. Interrupted publication
+        // leaves the original attempt usable; no submitted ticket is ever rewritten.
+        assertPending();
+        await writeLaunchTicket(options.homeDirectory, replacement, storage);
+        syncDurableDirectory(path.dirname(record.intent!.ticketPath));
+        if (ticket.provider !== "claude" && ticket.configuration.toolLaunch === undefined) {
+          const selection = await readLaunchToolSelection(options.homeDirectory, ticket, storage);
+          if (selection === undefined) throw missingSelection(record);
+          await writeLaunchToolSelection(options.homeDirectory, replacement, selection, assertPending, storage);
+        }
+        assertPending();
+        record = options.executions.replaceUnsubmittedLaunch(original, launchId, options.homeDirectory);
+        ticket = await checkedTicket(record);
       }
       const previous = options.executions.get(current(record))!.previous;
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };

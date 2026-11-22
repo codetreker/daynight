@@ -15,6 +15,8 @@ import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
+import * as toolRuntimes from "../../../src/commands/worker/tool-selection-runtime.js";
+import { ToolSelectionManager, type ToolSelectionTargets } from "../../../src/commands/worker/tool-selection.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import * as workerIdentity from "../../../src/commands/worker/identity.js";
 import * as atomicFiles from "../../../src/platform/files.js";
@@ -30,10 +32,15 @@ import * as workerDiagnostics from "../../../src/commands/worker/diagnostics.js"
 import * as reconcileWake from "../../../src/commands/worker/reconcile-wake.js";
 import * as grantRenewal from "../../../src/commands/worker/backends/grant-renewal.js";
 import { createNativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
-import { BotCliProbeCleanupError, createBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
+import { BotCliProbeCleanupError, createBotCliProbe, reconcileBotCliProbe, retainedBotCliProbes } from "../../../src/commands/worker/bots/cli-probe.js";
+import { prepareBotEnvironment } from "../../../src/commands/worker/bots/environment.js";
+import * as agentCliAliases from "../../../src/cli/agent-cli-aliases.js";
+import * as lifecycleClients from "../../../src/api/worker-lifecycle-client.js";
+import { LifecycleAdmissionError, openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
+import type { LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudNative, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
@@ -64,7 +71,7 @@ vi.mock("node:crypto", async original => {
 });
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   const { createWorkerToolSelectionFixture } = await import("../../helpers/worker-tool-runtime-fixture.js");
-  return { createWorkerToolSelectionRuntime: createWorkerToolSelectionFixture };
+  return { createWorkerToolSelectionRuntime: vi.fn(createWorkerToolSelectionFixture) };
 });
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
@@ -193,6 +200,119 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("releases a Bot probe rejected by local disable during environment preparation", async () => {
+    const f = await fixture(false, false);
+    // Lifecycle initialization reconciles retained Task owners before opening a
+    // scope, even when this fixture has no configured projects or saved claims.
+    const taskCoordinator = { ...coordinator(async () => {}), executionSnapshot: vi.fn(() => ({ recovery: [] })) };
+    mocks.coordinator.mockReturnValue(taskCoordinator);
+    const identity = { serverOrigin: origin, workerId, userId: uuid(6) };
+    const time = "2026-11-21T00:00:00.000Z";
+    let cloud: LifecycleResource = { protocolVersion: 1, workerId, intentVersion: "1", desired: "enabled", admission: "closed",
+      operationId: null, instance: null, capability: "supported", observation: null, observedAt: time };
+    const unexpected = vi.fn(async () => { throw new Error("Unexpected lifecycle request."); });
+    const api: lifecycleClients.WorkerLifecycleClient = {
+      read: vi.fn(async () => structuredClone(cloud)),
+      register: vi.fn(async request => {
+        const receipt = { protocolVersion: 1 as const, workerId, operationId: request.operationId, instanceId: request.instanceId,
+          instanceEpoch: "1", intentVersion: "1", desired: "enabled" as const, admission: "closed" as const, reconnectAllowed: false, observedAt: time };
+        cloud = { ...cloud, instance: { instanceId: receipt.instanceId, instanceEpoch: receipt.instanceEpoch } };
+        return receipt;
+      }),
+      activate: vi.fn(async request => {
+        cloud = { ...cloud, admission: "open" };
+        return { protocolVersion: 1 as const, workerId, operationId: request.operationId, action: "action" in request ? request.action : "resume",
+          instanceEpoch: request.instanceEpoch, intentVersion: request.intentVersion, localEpoch: request.localEpoch,
+          scopeGeneration: request.scopeGeneration, admission: "open" as const, observedAt: time };
+      }),
+      report: vi.fn(async envelope => ({ protocolVersion: 1 as const, accepted: true as const, instanceEpoch: envelope.instanceEpoch,
+        intentVersion: envelope.intentVersion, reportSequence: envelope.reportSequence, receivedAt: time })),
+      intent: vi.fn(async request => {
+        expect(request).toMatchObject({ action: "disable", source: "local", originOperationId: uuid(81) });
+        const receipt = { protocolVersion: 1 as const, workerId, operationId: request.operationId, action: "disable" as const,
+          intentVersion: "2", desired: "disabled" as const, admission: "closed" as const, state: "accepted" as const, errorCode: null, observedAt: time };
+        cloud = { ...cloud, intentVersion: receipt.intentVersion, desired: receipt.desired, admission: receipt.admission, operationId: receipt.operationId };
+        return receipt;
+      }),
+      operation: unexpected, resolve: unexpected,
+    };
+    const client = vi.spyOn(lifecycleClients, "createWorkerLifecycleClient").mockReturnValue(api);
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([])));
+    remote.report.mockResolvedValue({ observedAt: time, lastReportedAt: time });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), result = Promise.withResolvers<unknown>();
+    const prepareAliases = agentCliAliases.prepareAgentCliAliases;
+    const aliases = vi.spyOn(agentCliAliases, "prepareAgentCliAliases").mockImplementation(async options => {
+      const prepared = await prepareAliases(options);
+      if (options.environment.DAYNIGHT_BOT_ID === uuid(80)) { entered.resolve(); await release.promise; }
+      return prepared;
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ id: uuid(6), email: null, emailVerified: null,
+      name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } }),
+    { headers: { "content-type": "application/json", "Daynight-User-ID": uuid(6) } }));
+    // Keep the real environment, probe, runtime sink and SQLite reservation;
+    // only the Bot scheduler and account HTTP response are controlled.
+    mocks.bots.mockReturnValue({ closeAdmission: () => {}, snapshot: () => ({}), shutdown: async () => {},
+      run: async (signal: AbortSignal) => {
+        try {
+          const prepared = await prepareBotEnvironment({ homeDirectory: f.homeDirectory, cwd: f.homeDirectory, workerPaths: f.paths,
+            serverOrigin: origin, ownerUserId: uuid(6), botId: uuid(80), signal }, { fetch });
+          await prepared.release(); result.resolve(undefined);
+        } catch (error) { result.resolve(error); }
+      },
+    });
+    const controls: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl[] = [];
+    const managementMessages: string[] = [];
+    const { cancellation, running } = start(f, { lifecycle: true, log: message => { managementMessages.push(message.trim()); }, onExecutionScope: control => { controls.push(control); } });
+    const waitForStage = async <T>(stage: string, work: Promise<T>): Promise<T> => {
+      try {
+        return await withinExecutionDeadline(Promise.race([work, running.then(() => { throw new Error("Worker stopped before the barrier."); })]), Date.now() + 5_000);
+      } catch (cause) { throw new Error(`Worker did not complete ${stage}. Management diagnostics: ${managementMessages.join("; ") || "none"}`, { cause }); }
+    };
+    let lifecycle: ReturnType<typeof openLifecycleStore> | undefined;
+    try {
+      await waitForStage("Bot alias preparation", Promise.race([entered.promise, result.promise.then(error => {
+        throw new Error("Bot environment preparation settled before the alias barrier.", { cause: error });
+      })]));
+      expect(taskCoordinator.executionSnapshot).toHaveBeenCalled();
+      expect(api.activate).toHaveBeenCalledOnce();
+      lifecycle = openLifecycleStore({ file: path.join(f.paths.workerDirectory, "lifecycle.sqlite"), identity, allowCreate: false });
+      expect(lifecycle.readState().admission).toBe("open");
+      expect(controls).toHaveLength(1);
+      const spawnCount = vi.mocked(childProcesses.spawn).mock.calls.length;
+      lifecycle.closeAdmission({ operationId: uuid(81), local: true });
+      release.resolve();
+      const error = await waitForStage("Bot probe admission rejection", result.promise);
+      expect(error).toBeInstanceOf(LifecycleAdmissionError);
+      expect(retainedBotCliProbes()).toEqual([]);
+      expect(retainedOwnedCommandBoundaries()).toEqual([]);
+      expect(vi.mocked(childProcesses.spawn).mock.calls).toHaveLength(spawnCount);
+      expect(lifecycle.listResources()).toEqual([]);
+      expect((await readdir(path.join(f.paths.workerDirectory, "execution-resources"))).filter(file => file.endsWith(".json"))).toEqual([]);
+      await vi.waitFor(() => expect(controls[0]!.snapshot().stopped).toBe(true), { timeout: 5_000 });
+      await vi.waitFor(() => expect(lifecycle!.readState()).toMatchObject({ admission: "closed", localVeto: true, stop: "confirmed", save: "durable" }), { timeout: 5_000 });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(unexpected).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      try {
+        // A failing regression must also retire the never-spawned probe. Import
+        // its original ownership only for teardown, after the assertions above.
+        if (lifecycle !== undefined) for (const probe of retainedBotCliProbes()) {
+          const state = lifecycle.readState();
+          lifecycle.importResource({ binding: { ...identity, instanceId: state.instanceId!, instanceEpoch: state.instanceEpoch!,
+            intentVersion: state.intentVersion!, localEpoch: state.localEpoch, scopeGeneration: state.scopeGeneration },
+          resourceId: probe.launchId, operationId: probe.launchId, ownerKind: "repository", identity: { kind: "owned_command" } });
+          await reconcileBotCliProbe(probe.launchId);
+        }
+      } finally {
+        cancellation.abort(); await Promise.allSettled([running]); lifecycle?.close(); aliases.mockRestore(); client.mockRestore();
+      }
+    }
+    const lock = await tryAcquireWorkerInstanceLock(f.paths);
+    try { expect(lock).not.toBeNull(); } finally { await lock?.release(); }
+  }, 20_000);
+
   it("does not implicitly rebuild after an ordinary run settles its original journal boundary", async () => {
     const f = await fixture();
     const boundary = Promise.withResolvers<AbortSignal>(), release = Promise.withResolvers<void>();
@@ -684,12 +804,89 @@ describe("worker cloud-first startup", () => {
       release.resolve();
       await vi.waitFor(() => expect(stopManager).toHaveBeenCalledOnce());
       expect((await controls[0]!.reconcile()).every(result => result.stop === "confirmed")).toBe(true);
+      expect(stopManager).toHaveBeenCalledOnce();
       expect(mocks.bots).not.toHaveBeenCalled();
       controls[0]!.rebuild();
       await vi.waitFor(() => { expect(controls).toHaveLength(2); expect(mocks.coordinator).toHaveBeenCalled(); });
       expect(await readFile(f.paths.lockFile, "utf8")).toBe(originalLock);
       expect((await controls[1]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
     } finally { release.resolve(); cancellation.abort(); await running; constructing.mockRestore(); }
+  });
+
+  it.each([false, true])("keeps tools open for a late configuration publication and preserves close failure=%s", async (failStop: boolean) => {
+    const f = await fixture(false, false), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+    const unavailable = new Error("Controlled native preparation unavailable"), stopFailure = new Error("Controlled configuration close failure");
+    const order: string[] = [];
+    let rejectStop = failStop, configurationJoined = false;
+    let preparationSignal: AbortSignal | undefined, lateState: cloudConfiguration.WorkerConfigurationSnapshot | undefined;
+    let tools: ToolSelectionManager | undefined;
+    const closeTools = vi.fn(async () => {
+      order.push("tools-close");
+      const operation = createOperation();
+      try { await tools!.close(operation); } finally { operation.dispose(); }
+    });
+    const createTools: typeof toolRuntimes.createWorkerToolSelectionRuntime = vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).getMockImplementation()!;
+    vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockImplementationOnce((options: Parameters<typeof toolRuntimes.createWorkerToolSelectionRuntime>[0]) => {
+      tools = new ToolSelectionManager({ ...options, probe: { check: async () => ({ version: "fixture" }), close: async () => {} } });
+      return { ...createTools(options), manager: tools,
+        setTargets: (targets: ToolSelectionTargets | null) => targets === null ? tools!.suspendTargets() : tools!.setTargets(targets),
+        prepareNative: async (_native: WorkerCloudNative, signal: AbortSignal) => { preparationSignal = signal; entered.resolve(); await release.promise; throw unavailable; },
+        close: closeTools,
+      };
+    });
+    const createConfiguration = cloudConfiguration.createWorkerConfigurationManager;
+    const constructing = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementationOnce(async (options: Parameters<typeof cloudConfiguration.createWorkerConfigurationManager>[0]) => {
+      const manager = await createConfiguration({ ...options, onChange: snapshot => {
+        options.onChange?.(snapshot);
+        if (options.signal.aborted) { lateState = snapshot; order.push("late-publication"); }
+      } });
+      const stop = manager.stop;
+      manager.stop = async () => { await stop(); if (!configurationJoined) { configurationJoined = true; order.push("configuration-joined"); } if (rejectStop) throw stopFailure; };
+      return manager;
+    });
+    let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
+    const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
+    const result = running.then(() => undefined, error => error);
+    try {
+      await entered.promise;
+      await vi.waitFor(() => expect(mocks.reporter).toHaveBeenCalled());
+      if (!failStop) cancellation.abort();
+      const stopping = control!.stop();
+      await vi.waitFor(() => expect(preparationSignal?.aborted).toBe(true));
+      expect(closeTools).not.toHaveBeenCalled();
+      release.resolve();
+      await stopping;
+      expect(lateState?.items.find(item => item.key.kind === "native")).toMatchObject({ state: "error", error: { code: "unavailable" } });
+      const persisted = configurationCache.parseConfigurationCache(JSON.parse(await readFile(f.paths.configurationFile, "utf8")), { serverOrigin: origin, userId: uuid(6), workerId }).cache;
+      expect(persisted.currentItems.find(item => item.value.key.kind === "native")?.value).toMatchObject({ state: "error", error: { code: "unavailable" } });
+      expect(order.indexOf("late-publication")).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf("late-publication")).toBeLessThan(order.indexOf("configuration-joined"));
+      expect(order.indexOf("configuration-joined")).toBeLessThan(order.indexOf("tools-close"));
+      expect(closeTools).toHaveBeenCalledOnce();
+      expect(() => tools!.setTargets({ source: "local", revision: null, choices: { codex: null, copilot: null } })).toThrow("Tool selection manager is closed.");
+      if (failStop) {
+        const configurationResult = control!.snapshot().resources.find(owner => owner.resourceId === "configuration")?.result;
+        expect(configurationResult).toMatchObject({ stop: "unknown", save: "failed" });
+        expect(configurationResult?.error).toBe(stopFailure);
+        expect(control!.snapshot().resources).toContainEqual(expect.objectContaining({ resourceId: "probes", result: expect.objectContaining({ stop: "confirmed", save: "durable" }) }));
+        expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
+        rejectStop = false;
+        expect((await control!.reconcile()).every(owner => owner.stop === "confirmed")).toBe(true);
+      }
+      expect(control!.snapshot().stopped).toBe(true);
+      cancellation.abort();
+      const failure = await result;
+      if (failStop) expect(failure instanceof AggregateError ? failure.errors : [failure]).toContain(stopFailure);
+      else expect(failure).toBeUndefined();
+      const lock = await tryAcquireWorkerInstanceLock(f.paths);
+      expect(lock).not.toBeNull(); await lock?.release();
+    } finally {
+      release.resolve(); rejectStop = false;
+      if (control !== undefined && !control.snapshot().stopped) await control.reconcile();
+      cancellation.abort(); await result; constructing.mockRestore();
+      vi.mocked(toolRuntimes.createWorkerToolSelectionRuntime).mockReset().mockImplementation(createTools);
+    }
   });
 
   it("stops Tasks while directory work is joining and retains Controller storage until configuration joins", async () => {

@@ -40,15 +40,15 @@ const run: RunCommand = async (command, args, options) => {
   return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
 };
 
-const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "session:produce"]) => {
+const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "session:produce", "session:control"]) => {
   const base = path.resolve(import.meta.dirname, "../../../../.tmp/external-image-auth-tests"); await mkdir(base, { recursive: true });
   const directory = await mkdtemp(path.join(base, "auth-")); roots.push(directory);
   const appCert = await certificate(directory, "daynight"), providerCert = await certificate(directory, "provider");
   const actualCert = wrongAppCertificate ? await certificate(directory, "untrusted") : appCert;
   if (wrongAppCertificate) expect(new X509Certificate(actualCert.cert).verify(new X509Certificate(appCert.cert).publicKey)).toBe(false);
   let authOrigin = "", appOrigin = "", previewOrigin = "", loginRequests = 0, tokenRequests = 0;
-  let tokenBody: Record<string, unknown> | null = null, tokenOrigin: string | undefined;
   const sso: string[] = [];
+  const credentials: { path: string; method: string; origin: string | undefined; body: unknown }[] = [];
   const auth = createHttpServer((request, response) => {
     const route = request.url?.split("?")[0];
     const json = (status: number, value: unknown) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
@@ -101,18 +101,19 @@ const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "s
       sso.push("complete"); response.writeHead(303, { location: `${appOrigin}/auth/complete?returnPath=%2Fprojects` }); response.end();
     } else if (route === "/auth/complete") response.end("ok");
     else if (route === "/service") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ authorization: request.headers.authorization })); }
-    else if (route === "/api/v1/me" || route === "/api/v1/me/credential-scope-catalog" || route === "/api/v2/me/tokens") {
+    else if (route === "/api/v1/me/tokens") { response.writeHead(400); response.end(); }
+    else if (route === "/api/v2/me/tokens" || route === "/api/v1/me" || route === "/api/v1/me/credential-scope-catalog") {
       tokenRequests++;
       if (!request.headers.cookie?.includes("__Host-daynight_session=fixture")) { response.writeHead(403); response.end(); return; }
-      if (route === "/api/v2/me/tokens") {
-        tokenOrigin = request.headers.origin;
-        const chunks: Buffer[] = [];
-        request.on("data", chunk => chunks.push(Buffer.from(chunk)));
-        request.on("end", () => { tokenBody = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>; response.writeHead(201, { "content-type": "application/json" }); response.end(JSON.stringify({ token: "synthetic-token", id: "synthetic-token-id" })); });
-      } else {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(route === "/api/v1/me" ? { id: "synthetic-user" } : { pat: { catalogRevision: "catalog-v1", groups: [{ scopeIds: scopes }] } }));
-      }
+      let body = "";
+      request.on("data", chunk => { body += String(chunk); });
+      request.on("end", () => {
+        credentials.push({ path: route, method: request.method!, origin: request.headers.origin, body: body ? JSON.parse(body) : null });
+        response.writeHead(route.endsWith("tokens") ? 201 : 200, { "content-type": "application/json" });
+        response.end(JSON.stringify(route.endsWith("tokens") ? { token: "synthetic-token", id: "synthetic-token-id", scopePolicy: { scopes: ["session:read", "session:produce"], scopeVersion: "1" } }
+          : route.endsWith("credential-scope-catalog") ? { pat: { catalogRevision: "synthetic-catalog", groups: [{ id: "session", scopeIds: scopes }], defaultScopes: scopes } }
+          : { id: "synthetic-user" }));
+      });
     } else { response.writeHead(404); response.end(); }
   });
   const ws = new WebSocketServer({ server: app });
@@ -120,14 +121,21 @@ const fixture = async (wrongAppCertificate = false, scopes = ["session:read", "s
   appOrigin = `https://app.daynight.localhost:${await listen(app)}`;
   previewOrigin = appOrigin.replace("app.daynight.localhost", "preview.daynight.localhost");
   const environment = { baseURL: appOrigin, authURL: authOrigin, proxyURL: `http://127.0.0.1:${proxyPort}`, resourceIdentity: { network: "fixture", ingressNetwork: "fixture", applicationContainer: "fixture", postgresContainer: "fixture" }, startServer: async (credentials: { appId: string; appSecret: string }) => { expect(credentials).toEqual({ appId: "synthetic-app", appSecret: "synthetic-secret" }); }, close: async () => {} };
-  return { directory, environment, sso, counts: () => ({ loginRequests, tokenRequests }), tokenRequest: () => ({ body: tokenBody, origin: tokenOrigin }) };
+  return { directory, environment, sso, credentials, counts: () => ({ loginRequests, tokenRequests }) };
 };
 
 test("isolated OAuth follows both trusted TLS hosts and preserves secure cookies", async () => {
   const f = await fixture();
   expect(await authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).toEqual({ token: "synthetic-token", tokenId: "synthetic-token-id", userId: "synthetic-user" });
   expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 3 });
-  expect(f.tokenRequest()).toEqual({ origin: f.environment.baseURL, body: { expectedUserId: "synthetic-user", name: "External image source regression", expiresAt: expect.any(String), catalogRevision: "catalog-v1", scopes: ["session:read", "session:produce"] } });
+  expect(f.credentials.map(({ path, method }) => ({ path, method }))).toEqual([
+    { path: "/api/v1/me", method: "GET" },
+    { path: "/api/v1/me/credential-scope-catalog", method: "GET" },
+    { path: "/api/v2/me/tokens", method: "POST" },
+  ]);
+  expect(f.credentials[2]).toMatchObject({ origin: f.environment.baseURL, body: {
+    name: "External image source regression", expiresAt: expect.any(String), expectedUserId: "synthetic-user", catalogRevision: "synthetic-catalog", scopes: ["session:produce", "session:read"],
+  } });
   expect(f.sso).toEqual(["start", "authorize", "callback", "complete"]);
 }, 30_000);
 
@@ -139,9 +147,12 @@ test("isolated OAuth rejects an untrusted Daynight TLS certificate before login"
 
 test("isolated OAuth refuses to mint when a required Test Session scope is unavailable", async () => {
   const f = await fixture(false, ["session:read"]);
-  await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Test Session read and producer scopes");
+  await expect(authenticate({ environment: f.environment, directory: f.directory, artifacts: f.directory, repository: f.directory, run, signal: new AbortController().signal })).rejects.toThrow("Session production and reads");
   expect(f.counts()).toEqual({ loginRequests: 2, tokenRequests: 2 });
-  expect(f.tokenRequest().body).toBeNull();
+  expect(f.credentials.map(({ path, method }) => ({ path, method }))).toEqual([
+    { path: "/api/v1/me", method: "GET" },
+    { path: "/api/v1/me/credential-scope-catalog", method: "GET" },
+  ]);
 }, 30_000);
 
 test("the namespace forward carries HTTP and WebSocket over verified local TLS", async () => {

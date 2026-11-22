@@ -3288,6 +3288,49 @@ Each command acquires the same instance lock; an occupied lock returns an
 instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue.
 
+### Disable and resume a Worker
+
+Run these commands on the original Worker machine with its original
+`DN_CONFIG_DIR`, configured service and Worker ID:
+
+```bash
+daynight worker disable --worker-id <uuid> --local --confirm --json
+daynight worker resume --worker-id <uuid> --confirm --json
+daynight worker lifecycle show --worker-id <uuid> --local --json
+```
+
+`disable` durably closes local admission before contacting the manager or service.
+The local veto survives restart and does not depend on a cloud configuration
+revision. Stopping retains original claims, worktrees, branches, Sessions, native
+identities and uncertain operations. It does not release a claim, reset Git or
+send a cleanup prompt. The manager keeps its lock and reporting channel while
+joining producers, stopping owned native boundaries and saving original results.
+
+`show` reads the private local inventory without starting a Worker. Inspect
+`phase`, `stop`, `save`, `sync`, `inventoryComplete`, `resources` and `errorCode`
+together. Confirmed local stopping requires complete inventory, `stop=confirmed`
+and `save=durable`; cloud synchronization is a separate result. A missing process,
+an accepted request or an empty displayed Task list is insufficient evidence.
+Commands that await a transition print `outcome=confirmed`, `blocked` or `pending`;
+a pending deadline exits 3 and a blocked result exits 1. A successful read only
+confirms that the query succeeded.
+
+`resume` requires online authority and confirmed original stopping and saving.
+It reconciles original operations before obtaining explicit activation and
+opening a new execution scope. Independent Task pauses, permissions and recovery
+budgets remain effective. Resume preserves original native context where recovery
+is eligible; it does not replay initial prompts or uncertain requests. No live
+manager means the command may use the original free instance lock for management
+only; this does not launch a background Worker or execute Tasks. An occupied lock
+is never taken over. After an unknown command result, query the original local
+state before deciding on another write.
+
+Unknown external writes without an original-operation result protocol remain
+unresolved. The presence of an event, record or matching text cannot confirm the
+original write or authorize resume. Retain the private database and original
+resource evidence while investigating. The [Worker lifecycle design](../../docs/design/daynight-worker.md#持久停用与恢复)
+explains local authority and its relation to the service protocol.
+
 ### Legacy Bot storage migration
 
 After the original Worker and assistant execution have stopped, migrate one

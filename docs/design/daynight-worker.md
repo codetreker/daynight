@@ -44,6 +44,8 @@ flowchart TB
 
 作用域先同步关闭所有 owner 的准入，再以 `allSettled` 并行停止。每 owner 最多观察 20 秒，全轮调用的总截止不超过 60 秒；未响应的 IO/进程不会被超时包装器虚构为已取消。`OwnerStopResult` 保留 resourceId、scope generation、原身份快照、stop/save 事实及错误。未闭合责任使结果为 unknown，并拒绝冲突重建；管理根整体退出时同样不能提前关闭仍被 owner 使用的存储。Task 的业务 writer 不响应取消时，coordinator 仍独立核验原 owner、ticket、代际和进程出生证明并请求原生停止；该路径不写清理状态、不释放 lease，未 join 的 writer 继续阻止闭合。reporter 和配置 writer 的等待不阻挡 Task 停止请求，只限制存储释放。停止开始立即触发 `stopping` 观测；仅全部 owner 闭合后发布 `stopped`，未知结果继续保留停止中事实。
 
+工具选择管理器在配置作业及其最终状态发布完成后才关闭；配置停止失败仍由原配置 owner 保留，工具资源继续执行自身清理。原生库存对账不等待整个配置或探针 owner，以免配置中的 Git 作业反过来等待同一次对账而形成环。journal 按原资源 ID 分别消费 owned-command 与 Bot CLI probe 的进程内责任；Bot probe 的核对先等待原初始化建立或失败收尾，再等待原关闭操作、输出收尾和终态保存，不能把仍在关闭的探针提前当成只有持久记录的资源。单项失败保留 unknown，其他原资源仍独立核对。
+
 reporter 的 `stop()` 已结束只证明其上报循环已 join，不替代它报告的原生命令清理证明。缓存的清理错误随原资源的确认结果重新核对；有原确认凭据且全部清理责任已闭合时，该错误作为历史诊断保留。缺少凭据、混合未确认原因或仍未 join 的写入继续阻止释放管理存储和锁。
 
 诊断关闭独立记录实际资源是否闭合。原写入已 join、sink 已关闭且监听器已移除后，历史前台日志回调错误仍在普通退出时报告，但不阻止已接受的重建或原锁释放。仅关闭 Promise 拒绝不能证明仍有 writer；仅设置关闭意图或等待超时也不能证明闭合。
@@ -58,7 +60,7 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 
 正常 Worker 路径通过 `withOwnedCommandLifecycle` 注入 `execution-resources/` 私有持久库存。每资源 JSON 绑定服务、账号、Worker、代际和单调事件序号，以文件同步、原子替换及目录屏障保存 `prepared/bound/stopped/unknown`。旧事件不能覆盖新事实，迟到 unknown 不能撤销已证明的停止；替换已成功但目录屏障失败时，核对原事实并补完屏障后才能确认保存。重启后缺少原出生证明或 Windows lease 的责任保持未知，不能只因 PID 不存在清空库存。原 claim、worktree、HEAD/index、Session、journal 和未知业务操作仍由各自原记录拥有；停止不执行 stash、commit、reset 或删除现场。
 
-管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
+管理侧重新核对原生库存时先 join 命令生产者和原事件写入，再消费保留的原边界、输出 writer 与持久保存。生产者已经结束时，其历史清理错误不能跳过这次核对；仍未结束的生产者继续阻止闭合。停止事实保存失败后，核对的是同一资源、出生证明和代际，不重新执行 probe、Reviewer 或 Git 命令。 Windows Bot probe 已将原 guardian 成功分配给 Job，并通过该 Job 终止且确认其清空后，只继续等待原 guardian 退出、流关闭和句柄释放，不再次单独终止已退出的进程；尚未将 guardian 成功分配给 Job 的初始化失败仍由原 guardian 关闭路径负责。进程内保留责任和持久库存都确认闭合后才允许重建；缺少原证明或所需 lease 的记录仍保持 unknown。
 
 首次 `prepared` 保存前即保留原生产者的未启动责任。保存失败或原写入尚未完成时，管理侧只 join 同一写入，并凭原生产者确认未启动的事实补完原持久记录和终态保存，不重新派发命令。该凭据仅属于原进程内的具体资源和代际；重启后任意 `proof: null` 记录仍不能据此推断没有进程。
 
@@ -69,6 +71,30 @@ Controller 启动也先提交原 launch intent，再由受信 bootstrap 等待�
 Reviewer 命令清理未确认时，宿主保留原资源的关闭记录、锁和未完成关闭责任。原生命令核对成功后，宿主仍须核对同一次 Reviewer 执行的全部停止原因并实际完成关闭；只有原清理证明覆盖全部原因时才可解除阻塞。普通异常、宿主 Promise 已结束或错误中包含一个已确认的命令，均不足以证明 Reviewer 资源已释放。
 
 执行作用域和资源事件接口提供本机机制。持久停用意图、云端准入、Controller 最终 dispatch 围栏及显式恢复授权由生命周期集成层负责；单独建立或重建作用域不声明完整 Worker 停用能力。取舍和后果见[执行作用域决策](../../.agents/notes/implemented/architecture/2026-11-20-worker-execution-scopes.md)。
+
+## 持久停用与恢复
+
+`lifecycle-store.ts` 在原 Worker 私有目录保存独立的 `lifecycle.sqlite`，绑定服务、账号与 Worker。它拥有本机否决、`localEpoch`、管理实例和作用域代次、原操作账本、逐资源责任及观测 outbox；配置 revision 不能覆盖这些事实。已采用生命周期协议的 Worker 缺少原库时拒绝重建空权威。数据库采用严格 schema 校验，失败保留原库；恢复不能把损坏、权限错误或不兼容格式当成首次运行。服务端意图、实例 epoch 与 resolve 墓碑由[生命周期协议设计](worker-lifecycle.md)拥有。
+
+业务生产者先在同一本机权威预留责任，再执行副作用；关门与预留在 SQLite 事务内排序。原操作、服务、账号、Worker、管理实例、`intentVersion`、`localEpoch` 和 `scopeGeneration` 共同约束后续派发。`lifecycle-manager.ts` 先持久关闭准入，再通过执行作用域取消、join 和原资源核对收尾。原命令、Controller、Task 与 Bot journal 继续拥有各自的进程及业务结果证据，生命周期库存不会用 Promise 结束替代这些证据。 Controller 资源冻结原票据与 journal 的存储目录；Bot 独立目录和默认目录使用同一身份核验，Windows 停止核对不能改用默认目录。旧资源缺少显式目录字段时，仅能从已保存的原 journal 规范路径恢复其目录，再验证同一 launch、execution、Controller 和生命周期绑定；无法证明时保留未结责任。
+
+本地入口为 `daynight worker disable --worker-id <uuid> --local --confirm --json`。命令在唤醒管理根之前提交本机否决；网络失败不能撤销该否决。IPC 只传原身份、操作 ID 和管理动作，回执仅确认受理；实际结果从原 SQLite 读取。原管理根不可达且请求明确尚未发出时，管理命令仅尝试取得空闲实例锁核对原责任，不接管占用的锁，也不建立业务作用域。私有 IPC 凭据不能出现在 URL、任务材料或日志中。
+
+持久资源预约前的生命周期准入明确拒绝，按 owned command 从未启动处理，并移除内存准入标记；只有确认拒绝发生于预约写入前才使用此路径。持久化结果未知的失败保留原资源责任和标记，继续按原身份核对，不能伪造不存在的预约或丢弃潜在写入。
+
+Task Web 与 Bot 的票据均可在启动提交前保存。若后续 Worker 生命周期已变化，或同一生命周期内的原 launch 预约已持久确认 `not_dispatched`，只有原执行持久状态证明该代启动从未提交、没有当前 Controller 进程或不确定启动证据时，才能在当前开放的生命周期下建立新的本地 launch 票据。保留原 claim、Session、native 身份、恢复代次、预算、初始操作、提示词和冻结配置；Task 的首次启动还要求不存在 journal 运行证据，恢复代次只能接受同一执行已停止的前一代 journal。原预约的身份、票据哈希、存储路径和持久终态必须一致；临时配置拒绝恢复后使用新 launch，不重新开放原终结预约。先持久发布不可变票据和原工具侧文件，再原子更新执行中的启动引用，旧票据及生命周期责任继续保留用于核对。已提交或结果未知的启动不得通过此路径重绑定。对于已分配但从未提交的恢复代次，显式 retry 先验证原前代 journal 和进程树停止，再原子消费该次授权、清除恢复暂停及正常关停标记，并同步更新已有启动报告中的恢复摘要；随后才准备可能需要换绑的票据。存储等待后的继续执行保留已消费授权，不重复增加恢复次数或分配代次。
+
+管理根保留生命周期观察、原操作结果查询、停止和保存通道。启动初始化与常规管理循环中，停止核对、保存或原恢复意图查询失败时，仍独立读取当前权威并上报已有停止、阻塞和库存事实；失败继续保留原责任并关闭准入，不能把核对失败转换成停止成功。新停用的观察不能依赖旧恢复请求先查明结果。管理实例的未知注册结果仍须先按原身份查明，才能注册下一实例。注册成功后，未完成的执行核对保留同一初始化和关闭准入，不阻断管理观察；停止和原操作均确认后才允许执行激活。激活回执验证并成功提交本地准入后，在通知执行 owner 重建前同步结束保留的初始化；显式恢复中途查明旧请求结果，也不能使下一轮轮询重新进入启动停止路径。失败、未知或已被更新停用取代的激活不能凭此结束初始化。独立心跳仅报告管理连接及已有事实；它不启动能力探测。 实例注册前，管理根先取得同一 Worker 轻量心跳的成功回执，确保服务端 Worker 记录已经存在。因 Worker 记录不存在而明确拒绝的实例注册保留原账本；重新确认此前置后才允许作出新的注册决策，其他拒绝不能借此重试。submitted/unknown 注册继续按原 operationId 查询和 resolve，不得换 ID 绕过未知结果。凭据缺失时，显式管理 owner 仍可依据原私有身份尝试本地停止和保存；网络方法在发送前明确拒绝，原云端责任继续保留。关闭期间不得运行清理 prompt、Reviewer 工作、assistant 续期、接管或事件投递。停用保留原 claim、worktree、分支、HEAD/index、Session、native ID、独立暂停和恢复预算，不自动 stash、commit、reset、release 或删除现场。
+
+`daynight worker lifecycle show --worker-id <uuid> --local --json` 只读完整私有库存。`phase`、`stop`、`save`、`sync` 是独立事实：仅库存完整、原责任全部闭合且保存完成，才能确认本机停止；云端未收到观测仍单独报告同步未完成。云端明细可按条数限制截断，但总数、库存摘要与 `detailsComplete` 保留该区别，本机查询不使用展示截断证明完整。outbox 固定原序列及正文；原回执或更高权威覆盖后才能退休，重传同序列不刷新原观测时间。
+
+`daynight worker resume --worker-id <uuid> --confirm --json` 在线核对原身份、原操作、完整停止和保存，再请求显式恢复及 activation。服务端 activation 回执和当前权威一致后，本地事务才清除否决并开放下一代；重建使用新的对象和 signal。正常 reconnect 与首次 bootstrap 各有独立资格，不能清除本机否决。 注册和原请求核对跨越异步等待后，激活选择还须核对当前持久 veto、desired 与 intentVersion；开始初始化时的快照不能抵消等待期间新增的停用意图。恢复中断保留原 activation 请求和结果，不重新提交初始 prompt，不因本地仍关闭而推断远端请求未提交。CLI 等待截止报告 `outcome=pending` 并退出 3，受阻报告 `outcome=blocked` 并退出 1；查询退出 0 不代表停止完成。
+
+当前管理实例独立保留恢复的后续激活责任，不以 `intentVersion` 是否再次变化作为唯一入口。恢复意图响应丢失时，先查询或 resolve 原 operationId；已有本地账本保留完整冻结请求，仅首次从远端发现的操作使用无请求账本。操作查询、停止或观察上报暂时失败后，仍可核对同一恢复并继续激活。activation 续接前及提交后的权威读取，若确认同一实例已有更高版本的停用意图，均清除旧激活的续接资格并收敛、上报新停用；这也覆盖旧观察因版本过期被拒绝、尚无 activation 回执的情况。原操作账本中的已确认回执和未知结果独立保留。普通管理循环先上报当前停用，再按原身份自动核对被替代的未知激活；查询暂时失败时继续报告停止，且禁止新激活，恢复可查后才继续后续显式恢复。读取暂时失败不构成意图替代或原操作未提交的证明。本地 resume 在受理时、进入管理队列前冻结 `localEpoch`；初始化、原操作核对、停止、权威读取及上报完成后均验证该 epoch，才能发送恢复意图。activation 的原结果核对及上报等待后也验证冻结的 epoch，再发送激活请求；已发送请求仍按原身份保存和核对结果，失效不能改写其 unknown 语义。该责任绑定接受时的本地 epoch 和管理实例，新的本机停用使旧责任失效，不能读取后来的 binding 来采用新 veto 的 epoch；进程重启不重建这一自动续接资格，中断的恢复仍须再次显式请求。
+
+未知外部写入按原请求身份恢复。assistant claim/inbox 需要原请求指纹，事件确认需要原事件和 ack operation，Session 操作需要原 Session、绑定与执行代次。只有原回执才能结算派发结果，已受理仍不证明 native 停止。普通 assistant `addEvent`、`addRecord`、`saveItem`、`answer`、`clearAttention` 没有原操作结果查询协议时保留未知责任；相同正文、对象存在、404、权限失败或旧 fence 均不能证明原写成功或从未提交。该限制会阻止完整停止与恢复资格，必须保留原证据。取舍见[本机生命周期决策](../../.agents/notes/implemented/architecture/2026-11-21-worker-local-lifecycle.md)。
+
+逐执行 `recovery` 来自 Task/Bot owner 的原 claim、Session 和执行代次观察，独立记录 `eligible`、`blocked` 或 `unknown`，随同观测正文持久化到 outbox。Worker 开门本身不证明原执行已恢复；暂停、所有权变化、原生材料或预算阻塞仍可形成部分恢复。完整结束的历史执行不占未来恢复清单，未结责任及尚未恢复的原执行继续保留。旧代完整终态以原 canonical JSON 和 SHA-256 压缩保存，不计未来作用域的资源总数；历史证据不授权重用旧资源 ID。
 
 ## 状态来源与清理判定
 
@@ -464,7 +490,7 @@ Agent 完成全部交付和证据后，核验原 active claim、Worker 和 workt
 
 Release 在远端确认前保留 worktree，拒绝时仍可恢复原执行；确认成功后尚未完成本机收尾时，下一次 run 按原 claim 缺席继续处理。远端操作保留既有权限、精确版本和 release 的 stoppedConfirmed。停止后再检查取消，随后只提交一次 release；未知响应保留原错误和资源责任，不通过 GET 推断请求成功或重放。有效 200 后收尾失败明确报告释放已确认并保留错误原因。管理 runtime 只关闭自身句柄、释放锁；管理期间 runner 停机是这一单控制者方案的操作代价。
 
-Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和专用 Worker resume 入口均已移除；释放任务通过普通认领开始新执行。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
+Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和为已释放 Task 建立新 claim 的专用 resume 入口均已移除；释放任务通过普通认领开始新执行。Worker 整体生命周期的 `worker resume --worker-id` 只恢复原 Worker 准入，不提供 Task 领取例外。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
 
 ## 观测关联和错误
 

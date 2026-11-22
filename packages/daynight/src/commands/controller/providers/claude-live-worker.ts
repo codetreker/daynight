@@ -1,3 +1,4 @@
+import { retainDispatchedOutcome } from "./native-rpc.js";
 import { query, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -5,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureProcessProof } from "../process-proof.js";
+import { assertNativeLifecycleAdmission, freezeNativeLifecycleFence, type NativeLifecycleFence } from "../native-lifecycle.js";
 import { ClaudeLiveChannel } from "./claude-live-channel.js";
 import { encodeClaudeLiveInput, exportClaudeLiveMedia, type ClaudeLiveInput } from "./claude-live-media.js";
 import { claudeBackend } from "./claude-live-profile.js";
@@ -14,22 +16,31 @@ class InputStream implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = []; private wake: (() => void) | null = null; private closed = false;
   push(value: SDKUserMessage) { if (this.closed || this.queue.length >= 8) throw new Error("Claude input queue is unavailable."); this.queue.push(value); this.wake?.(); }
   close() { this.closed = true; this.queue = []; this.wake?.(); }
-  async *[Symbol.asyncIterator]() { while (!this.closed) { const next = this.queue.shift(); if (next) yield next; else await new Promise<void>(resolve => { this.wake = resolve; }); } }
+  async *[Symbol.asyncIterator]() { while (!this.closed) { const next = this.queue.shift(); if (next) { assertDispatch(); yield next; } else await new Promise<void>(resolve => { this.wake = resolve; }); } }
 }
 const within = <T>(promise: Promise<T>, ms: number) => new Promise<T>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Claude native process stop remains unconfirmed.")), ms); promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); }); });
 const input = new InputStream(), children: ChildProcess[] = [], proofs: Promise<unknown>[] = [];
 let native: Query | undefined, pump: Promise<void> | undefined, stopping = false, closed: Promise<void> | undefined;
+let nativeLifecycleFence: NativeLifecycleFence | undefined, opened = false;
+const assertDispatch = (): void => {
+  if (stopping) throw new Error("Claude helper stopped before native dispatch.");
+  if (nativeLifecycleFence) assertNativeLifecycleAdmission(nativeLifecycleFence);
+};
 let qualifyProfile: ((apiProvider: unknown) => Promise<void>) | undefined;
 const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
   const value = object(raw);
   if (method === "open") {
-    if (native || stopping) throw new Error("Claude helper cannot open another native session.");
-    const { daynightSessionMirror, ...configuration } = value;
+    if (opened || stopping) throw new Error("Claude helper cannot open another native session.");
+    opened = true;
+    const { daynightSessionMirror, nativeLifecycleFence: fence, ...configuration } = value;
+    if (Object.hasOwn(value, "nativeLifecycleFence")) nativeLifecycleFence = freezeNativeLifecycleFence(fence);
+    assertDispatch();
     const options = configuration as unknown as Options;
     const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk")), sdkVersion = String(JSON.parse(await readFile(path.join(path.dirname(sdkPath), "package.json"), "utf8")).version);
     const effectiveSettings = await resolveSettings({ ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.settingSources === undefined ? {} : { settingSources: options.settingSources }), ...(options.managedSettings === undefined ? {} : { managedSettings: options.managedSettings }) }).then(value => value.effective, () => null);
     let profileResolve!: () => void, profileReject!: (error: unknown) => void;
     const profileReady = new Promise<void>((resolve, reject) => { profileResolve = resolve; profileReject = reject; }); void profileReady.catch(() => {});
+    assertDispatch();
     native = query({ prompt: input, options: { ...options,
       ...(daynightSessionMirror === true ? { sessionStore: {
         async append(key, entries) {
@@ -49,8 +60,9 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
         },
         async load() { throw new Error("Claude Bot recovery must use its validated local transcript and original configuration."); },
       } satisfies NonNullable<Options["sessionStore"]>, sessionStoreFlush: "batched" as const } : {}),
-      hooks: { SessionStart: [{ hooks: [async event => { await channel.call("sessionStart", event); return {}; }] }] },
+      hooks: { SessionStart: [{ hooks: [async event => { await channel.call("sessionStart", event); assertDispatch(); return {}; }] }] },
       spawnClaudeCodeProcess: args => {
+        assertDispatch();
         const child = spawn(args.command, args.args, { cwd: args.cwd ?? options.cwd, env: args.env, signal: args.signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false }); children.push(child);
         const proof = new Promise<void>((resolve, reject) => {
           child.once("error", reject);
@@ -61,7 +73,8 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
             const script = /^(?:node|nodejs)(?:\.exe)?$/i.test(path.basename(args.command)) ? args.args.findIndex(value => /\.(?:mjs|cjs|js)$/.test(value)) : -1;
             const executable = script >= 0 ? args.args[script]! : args.command;
             const versionArgs = script >= 0 ? [...args.args.slice(0, script + 1), "--version"] : ["--version"];
-            const cliVersion = await new Promise<string>(accept => execFile(args.command, versionArgs, { timeout: 10_000, maxBuffer: 4096, encoding: "utf8", windowsHide: true, env: args.env }, (error, stdout) => accept(error ? "unknown" : /\b\d+\.\d+\.\d+\b/.exec(stdout)?.[0] ?? "unknown")));
+            assertDispatch();
+            const cliVersion = await new Promise<string>(accept => { const probe = execFile(args.command, versionArgs, { timeout: 10_000, maxBuffer: 4096, encoding: "utf8", windowsHide: true, env: args.env }, (error, stdout) => accept(error ? "unknown" : /\b\d+\.\d+\.\d+\b/.exec(stdout)?.[0] ?? "unknown")); children.push(probe); });
             qualifyProfile = async apiProvider => {
               const backend = claudeBackend(args.env, effectiveSettings, options.settings, apiProvider);
               await channel.call("profile", { sdkVersion, cliVersion, executable, backend });
@@ -73,8 +86,14 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
         }); proofs.push(proof); void proof.catch(error => { profileReject(error); fatal(error); });
         return child;
       },
-      canUseTool: async (name, toolInput, context) => await channel.call("canUseTool", { name, input: toolInput, toolUseID: context.toolUseID, decisionReason: context.decisionReason }, context.signal, 86_400_000) as Awaited<ReturnType<NonNullable<Options["canUseTool"]>>>,
-      onElicitation: async (request, context) => await channel.call("elicitation", { request, requestId: context.requestId }, context.signal, 86_400_000) as Awaited<ReturnType<NonNullable<Options["onElicitation"]>>>,
+      canUseTool: async (name, toolInput, context) => {
+        const result = await channel.call("canUseTool", { name, input: toolInput, toolUseID: context.toolUseID, decisionReason: context.decisionReason }, context.signal, 86_400_000);
+        assertDispatch(); return result as Awaited<ReturnType<NonNullable<Options["canUseTool"]>>>;
+      },
+      onElicitation: async (request, context) => {
+        const result = await channel.call("elicitation", { request, requestId: context.requestId }, context.signal, 86_400_000);
+        assertDispatch(); return result as Awaited<ReturnType<NonNullable<Options["onElicitation"]>>>;
+      },
       stderr: line => { void channel.call("diagnostic", line.slice(0, 4096)).catch(() => {}); },
     } });
     pump = (async () => { for await (const event of native!) { if (stopping) break; await channel.call("event", await exportClaudeLiveMedia(event, transfer)); } if (!stopping) await channel.call("ended"); })().catch(fatal);
@@ -82,10 +101,11 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
   }
   if (method === "stop") { await stop(); return { stopped: true }; }
   if (!native || stopping) throw new Error("Claude native session is unavailable.");
-  if (method === "input") { const encoded = await encodeClaudeLiveInput(value as unknown as ClaudeLiveInput); signal.throwIfAborted(); input.push(encoded); return { submitted: true }; }
+  if (method === "input") { const encoded = await encodeClaudeLiveInput(value as unknown as ClaudeLiveInput); signal.throwIfAborted(); assertDispatch(); input.push(encoded); return { submitted: true }; }
   if (method === "call" && typeof value.method === "string" && ["initializationResult", "supportedModels", "supportedCommands", "reloadSkills", "getSettings", "setModel", "setPermissionMode", "applyFlagSettings", "interrupt"].includes(value.method) && Array.isArray(value.args)) {
     const method = (native as unknown as Record<string, unknown>)[value.method]; if (typeof method !== "function") throw new Error("Claude native control is unsupported.");
-    const result = await method.apply(native, value.args);
+    if (value.method !== "interrupt") assertDispatch();
+    const result = await retainDispatchedOutcome(() => method.apply(native, value.args as unknown[]));
     // Only the provider discriminator crosses the profile channel; the
     // account's identity and credential metadata remain native-private.
     if (value.method === "initializationResult") await qualifyProfile?.(object(object(result).account).apiProvider);

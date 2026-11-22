@@ -468,10 +468,14 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (!await confirmWithLease(previousLaunchId(previous.controllerProcess, task.webExecution!.launchId), previous.controllerProcess, previous.nativeProcesses, undefined, previous)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
             signal.throwIfAborted();
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
+            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
+            signal.throwIfAborted();
+            if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed before retry authorization consumption.");
+            // Consume this authorization after stop proof and before preparing a
+            // ticket, which may need renewal under the current Worker lifecycle.
+            task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
             const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
             prepareControllerLaunchStorage(options.homeDirectory, retryTicket);
-            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
-            task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
           } else {
             const saved = originalSnapshot();
             if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");

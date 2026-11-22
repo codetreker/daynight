@@ -63,6 +63,6 @@ write contract. The schema enforces the selected lifecycle enums, positive
 versions, hash lengths and disabled/closed relationship as persisted invariants.
 
 Server admission is not native process proof. Full Worker capability still
-requires a persistent local veto, complete resource ownership and safe final
-Provider dispatch. Server activation does not establish that the local gate was
+requires the [local lifecycle integration](2026-11-21-worker-local-lifecycle.md),
+complete resource ownership and safe final Provider dispatch. Server activation does not establish that the local gate was
 opened, and platform acceptance remains separate from server protocol tests.

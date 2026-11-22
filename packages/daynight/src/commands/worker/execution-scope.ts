@@ -116,18 +116,21 @@ export const createExecutionScope = (generation: string, parentSignal: AbortSign
 };
 
 /** Retain the old scope until all owners have proved closure. */
-export const createExecutionScopeManager = (signal: AbortSignal): { current(): ExecutionScope | undefined; create(): ExecutionScope } => {
+export const createExecutionScopeManager = (signal: AbortSignal): { current(): ExecutionScope | undefined; create(generation?: string): ExecutionScope } => {
   let current: ExecutionScope | undefined;
   let generation = 0n;
   return {
     current: () => current,
-    create: (): ExecutionScope => {
+    create: (requestedGeneration?: string): ExecutionScope => {
       signal.throwIfAborted();
       if (current !== undefined) {
         const snapshot = current.snapshot();
         if (!snapshot.stopped) throw new Error("Previous execution scope retains unconfirmed resources.");
       }
-      current = createExecutionScope(String(++generation), signal);
+      const next = requestedGeneration === undefined ? generation + 1n : BigInt(requestedGeneration);
+      if (next <= generation) throw new Error("Execution scope generation must advance monotonically.");
+      generation = next;
+      current = createExecutionScope(String(generation), signal);
       return current;
     },
   };
