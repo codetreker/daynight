@@ -369,6 +369,78 @@ describe("Worker lifecycle management with real local authority", () => {
     } finally { f.onReport(undefined); cancellation.abort(); await replacement.close(); local.close(); }
   }, 25_000);
 
+  it("keeps resumed execution active across polling when an original intent recovers after incomplete initialization", async () => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => {
+      const receipt = await intent(request);
+      if (request.operationId === id(22)) throw unknown();
+      return receipt;
+    });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const original = f.store.readOperation(id(22))!;
+    expect(original).toMatchObject({ status: "unknown", request: { instanceEpoch: "1", expectedVersion: "2" } });
+    f.cancellation.abort(); await f.manager.close();
+    const local = openLifecycleStore({ file: f.file, identity }), cancellation = new AbortController();
+    const operation = vi.mocked(f.api.operation).getMockImplementation()!, lookupFailure = unknown();
+    let available = false, originalLookups = 0;
+    f.onReport(envelope => {
+      if (envelope.instanceEpoch === "2" && envelope.observation.errorCode === "authority_unavailable") {
+        expect(local.readOperation(id(22))).toEqual(original);
+        available = true;
+      }
+    });
+    vi.mocked(f.api.operation).mockImplementation(async operationId => {
+      if (operationId === id(22)) {
+        originalLookups++;
+        if (!available) throw lookupFailure;
+        expect(vi.mocked(f.api.report).mock.calls.at(-1)?.[0]).toMatchObject({ instanceEpoch: "2", observation: { errorCode: "authority_unavailable" } });
+      }
+      return operation(operationId);
+    });
+    const replacement = createLifecycleManager({ store: local, api: f.api, platform: "macos", signal: cancellation.signal,
+      reconcileResources: f.resources, reportError: error => f.errors.push(error) });
+    try {
+      // Initialization reports its unresolved request and returns without execution
+      // readiness; the remainder of this same local resume can now resolve it.
+      await replacement.resume(id(25));
+      expect(originalLookups).toBe(2);
+      expect(f.errors).toContain(lookupFailure);
+      expect(local.readOperation(id(22))).toMatchObject({ status: "confirmed", request: original.request, requestHash: original.requestHash });
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(local.readOperation(id(25), "activation")).toMatchObject({ status: "confirmed" });
+      const binding = replacement.binding();
+      expect(local.readState()).toMatchObject({ admission: "open", phase: "accepting", localVeto: false, instanceEpoch: "2", intentVersion: "4" });
+      expect(f.cloud()).toMatchObject({ admission: "open", desired: "enabled", operationId: id(25), intentVersion: "4" });
+      const owner = control();
+      let executionActive = true;
+      owner.stop = vi.fn(async () => { executionActive = false; return stopped; });
+      owner.reconcile = vi.fn(async () => { executionActive = false; return stopped; });
+      replacement.attach(owner);
+      f.onReport(undefined);
+      const reports = vi.mocked(f.api.report).mock.calls.length, errors = f.errors.length;
+      const registrations = vi.mocked(f.api.register).mock.calls.length, activations = vi.mocked(f.api.activate).mock.calls.length;
+      replacement.start();
+      // start() polls immediately; the second report requires the actual timer tick.
+      await expect.poll(() => vi.mocked(f.api.report).mock.calls.length, { timeout: 3500 }).toBeGreaterThanOrEqual(reports + 2);
+      expect(executionActive).toBe(true);
+      expect(owner.stop).not.toHaveBeenCalled();
+      expect(owner.reconcile).not.toHaveBeenCalled();
+      expect(owner.rebuild).not.toHaveBeenCalled();
+      expect(replacement.binding()).toEqual(binding);
+      expect(() => local.assertAdmission(binding)).not.toThrow();
+      expect(local.readState()).toMatchObject({ admission: "open", phase: "accepting", localVeto: false, errorCode: null });
+      expect(f.cloud()).toMatchObject({ admission: "open", operationId: id(25), intentVersion: "4", observation: {
+        instanceEpoch: "2", intentVersion: "4", operationId: id(25), observation: { phase: "accepting", errorCode: null },
+      } });
+      expect(vi.mocked(f.api.report).mock.calls.slice(reports).every(([envelope]) => envelope.observation.phase === "accepting")).toBe(true);
+      expect(f.errors).toHaveLength(errors);
+      expect(f.api.register).toHaveBeenCalledTimes(registrations);
+      expect(f.api.activate).toHaveBeenCalledTimes(activations);
+      expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
+    } finally { f.onReport(undefined); cancellation.abort(); await replacement.close(); local.close(); }
+  }, 6000);
+
   it("fences replacement initialization until the original unknown registration resolves by its frozen identity", async () => {
     const f = fixture(), register = vi.mocked(f.api.register).getMockImplementation()!;
     vi.mocked(f.api.register).mockImplementationOnce(async request => { await register(request); throw unknown(); });

@@ -64,6 +64,12 @@ pending; activation still requires confirmed stopping and resolved operations. R
 retain the known inventory, blocked state and original unresolved responsibility;
 a failed reconciliation cannot become proof of stopping or authorize admission.
 A newer disable can therefore receive observations while older work is unresolved.
+Successful local activation commits also complete retained initialization before
+notifying an execution owner to rebuild. An explicit resume may resolve an older
+request after startup returned with reconciliation pending; its committed
+activation must prevent the next poll from repeating startup stopping against the
+new scope. Failed, unknown or superseded activation cannot use that completion
+path.
 
 Local disable saves its veto before IPC or network access. IPC wakes the original
 manager and does not stand in for resource evidence. An unavailable manager permits

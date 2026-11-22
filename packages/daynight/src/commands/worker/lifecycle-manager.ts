@@ -230,6 +230,10 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     signal.throwIfAborted();
     store.commitActivation({ ...activation, receipt: json(receipt) });
     authorityOperationId = authority.operationId;
+    // Committed activation completes retained startup before a rebuilt owner can
+    // run; the next management tick must not repeat startup stopping.
+    initialized = true;
+    initialization = undefined;
     control?.rebuild();
   };
   const activate = async (operationId: string, action: LifecycleActivation["action"]): Promise<void> => {
