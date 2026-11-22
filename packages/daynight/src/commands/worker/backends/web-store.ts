@@ -262,7 +262,14 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       requireOrdinary(task); const execution = task.webExecution;
       if (execution === null || task.status !== "active" || !task.recovery.retryAuthorized || task.recovery.pauseReason === null || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || previous.executionId !== execution.executionId || previous.claimId !== task.claimId || previous.sessionId !== execution.sessionId || String(BigInt(previous.executionGeneration) + 1n) !== execution.executionGeneration || previous.controllerInstanceId === execution.controllerInstanceId || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null || previous.controllerProcess === null) throw new Error("Unsubmitted recovery requires the exact preceding stopped generation and no current launch evidence.");
       // A failed preparation retains the allocated launch intent; another explicit allowance cannot allocate it again.
-      return { ...task, recovery: { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true }, webExecution: { ...execution, restartAfterShutdown: false, activity: "initializing" } };
+      const report = execution.startupReport;
+      // Publish the consumed allowance and its current recovery summary together;
+      // a restart cannot retain a blocked summary for an already authorized attempt.
+      const startupReport = report === undefined || report.recovery.state === "none" ? report : { ...report,
+        revision: String(BigInt(report.revision) + 1n), observedAt: new Date(now).toISOString(),
+        recovery: { state: "none" as const, reasonCode: null } };
+      return { ...task, recovery: { count: integer(task.recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: true }, webExecution: { ...execution,
+        ...(startupReport === undefined ? {} : { startupReport }), restartAfterShutdown: false, activity: "initializing" } };
     }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {
       if (task.status !== "active") throw new Error("Resource creation requires an active execution.");

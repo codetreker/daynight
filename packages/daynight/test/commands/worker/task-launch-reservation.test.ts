@@ -114,7 +114,13 @@ const fixture = () => {
   const startupReport = () => createWebExecutionBackend({ homeDirectory: home, store, launcher, jobLeases: leases,
     git: new Proxy({} as WebBackendOptions["git"], { get: () => { throw new Error("Startup reporting must not invoke Git."); } }),
     platform: "linux", buildPrompt: prompt, emit: () => {}, now: () => 1000 }).observeStartupReport(current());
+  const backend = (git: WebBackendOptions["git"], request: NonNullable<WebBackendOptions["request"]>) => createWebExecutionBackend({
+    homeDirectory: home, store, launcher, jobLeases: leases, git, request,
+    platform: "linux", buildPrompt: prompt, emit: () => {}, now: () => 1000,
+  });
+  const advance = (execution: ReturnType<typeof createWebExecutionBackend>) => context(() => execution.advance(current(), signal));
   return { home, authority, current, prepare, prepareLegacy, launch, run, restart, resume, register, grant, dispatch, prompt, startupReport, proof,
+    backend, advance,
     store: () => store, binding: () => binding, setComplete: (value: boolean) => { complete = value; } };
 };
 
@@ -232,4 +238,90 @@ test("replaces a refused Task recovery launch without consuming another generati
   expect(f.grant.mock.calls.some(([, execution, , predecessor]) => execution.launchId === original.launchId
     && predecessor?.generation === "1" && predecessor.instanceId === initial.controllerInstanceId && predecessor.stoppedAt === previous.stoppedAt)).toBe(true);
   expect(f.register).toHaveBeenCalledOnce(); expect(f.prompt).toHaveBeenCalledOnce(); expect(f.dispatch).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])("retries a saved generation through the real Task backend and launcher after explicit pause and lifecycle restart (continue after admission wait: %s)", async continueAfterWait => {
+  const f = fixture(), initial = await f.prepare();
+  const journalFile = path.join(controllerExecutionDirectory(f.home, initial.executionId), "journal.sqlite");
+  const proof = process.platform === "win32" ? { ...f.proof, jobObjectName: `Local\\Daynight-${initial.launchId}` } : f.proof;
+  const journal = openControllerLifecycleStore(journalFile, initial, { controllerProcess: proof });
+  try { journal.patchSnapshot({ nativeSessionId: id(9), initialInputState: "confirmed", lifecycle: "ready", activity: "idle" }); }
+  finally { journal.close(); }
+  const previous = await recordStoppedControllerGeneration(journalFile, initial, process.platform === "win32" ? { jobLease: {} as ControllerJobLease } : {});
+  f.store().updateWebExecution(f.current(), { launchSubmission: "acknowledged", controllerProcess: proof, initialInputState: "confirmed" }, 1000);
+  f.store().bindNativeSession(f.current(), { source: "controller", sessionId: id(9) }, 1000);
+  f.store().pauseRecovery(f.current(), "Original execution requires explicit retry.", 1000);
+  f.store().authorizeRecoveryRetry(f.current(), 1000);
+  mkdirSync(path.join(f.home, ".git"), { recursive: true });
+  const prepareWorktree = vi.fn(async () => f.current().resources.worktree!);
+  const git = new Proxy({ prepareWorktree } as unknown as WebBackendOptions["git"], {
+    get: (target, key) => { if (key !== "prepareWorktree") throw new Error(`Unexpected recovery Git operation: ${String(key)}`); return target.prepareWorktree; },
+  });
+  const request = vi.fn<NonNullable<WebBackendOptions["request"]>>(async (ticket, action) => {
+    expect(action.kind).toBe("observe");
+    const observation = await native.reconcile({ ticket });
+    return { requestId: id(95), ok: true, snapshot: { ...observation.snapshot, initialInputState: "confirmed", lifecycle: "working", activity: "working", currentTurnId: id(96) } };
+  });
+  const grant = f.grant.getMockImplementation()!, grantFailure = new Error("Recovery grant temporarily unavailable.");
+  let refuseGrant = true;
+  f.grant.mockImplementation(async (...args) => {
+    const [, execution] = args;
+    if (refuseGrant && execution.executionGeneration === "2" && execution.launchSubmission === "unknown") {
+      expect(f.current().webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted", ticketPath: expect.any(String) });
+      throw grantFailure;
+    }
+    return grant(...args);
+  });
+  await expect(f.advance(f.backend(git, request))).rejects.toBe(grantFailure);
+  const allocated = f.current(), saved = await readLaunchTicket(f.home, allocated.webExecution!.launchId);
+  expect(allocated.recovery).toEqual({ count: 1, pauseReason: grantFailure.message, retryAuthorized: false });
+  expect(allocated.webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
+  expect(f.authority.getResource(saved.launchId)).toBeNull();
+  expect(native.spawn).not.toHaveBeenCalled(); expect(native.suspended).not.toHaveBeenCalled();
+  const report = f.startupReport()!;
+  expect(report).toMatchObject({ startup: { state: "unknown", reasonCode: "evidence_missing" }, recovery: { state: "blocked" } });
+  // The predecessor is already stopped and generation 2 never reached submission.
+  // Persist the ordinary shutdown/reopen facts before authorizing the next retry.
+  f.store().beginCleanup(f.current(), { kind: "shutdown", deadline: 6000 }, 1000);
+  f.store().clearShutdown(f.current(), 1000);
+  f.restart(); f.resume();
+  const authorized = f.store().authorizeRecoveryRetry(f.current(), 1000);
+  expect(authorized).toMatchObject({ recovery: { count: 1, pauseReason: grantFailure.message, retryAuthorized: true },
+    webExecution: { launchId: saved.launchId, restartAfterShutdown: true, startupReport: report } });
+  const consume = f.store().retryUnsubmittedWebGeneration;
+  const transitions: ReturnType<typeof consume>[] = [];
+  const transition = vi.spyOn(f.store(), "retryUnsubmittedWebGeneration").mockImplementation((...args) => {
+    const task = consume(...args); transitions.push(task); return task;
+  });
+  refuseGrant = false;
+  f.prompt.mockImplementation(() => { throw new Error("Explicit retry must preserve the frozen assignment."); });
+  if (continueAfterWait) prepareWorktree.mockRejectedValueOnce(new ConfigurationAdmissionWaiting());
+  let resumed = await f.advance(f.backend(git, request));
+  expect(transition).toHaveBeenCalledOnce();
+  expect(transitions[0]).toMatchObject({ recovery: { count: 2, pauseReason: null, retryAuthorized: true }, webExecution: {
+    executionGeneration: "2", restartAfterShutdown: false,
+    startupReport: { ...report, revision: String(BigInt(report.revision) + 1n), recovery: { state: "none", reasonCode: null } },
+  } });
+  if (continueAfterWait) {
+    expect(resumed.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: true });
+    expect(resumed.webExecution).toMatchObject({ executionGeneration: "2", launchSubmission: "not-submitted" });
+    expect(f.dispatch).not.toHaveBeenCalled();
+    transition.mockRestore(); f.restart();
+    const continuation = vi.spyOn(f.store(), "retryUnsubmittedWebGeneration");
+    resumed = await f.advance(f.backend(git, request));
+    expect(continuation).not.toHaveBeenCalled();
+  }
+  expect(resumed.recovery).toEqual({ count: 2, pauseReason: null, retryAuthorized: false });
+  expect(resumed).toMatchObject({ claimId: allocated.claimId, configuration: allocated.configuration, resources: allocated.resources,
+    webExecution: { executionId: saved.executionId, sessionId: saved.sessionId, executionGeneration: "2", controllerInstanceId: saved.controllerInstanceId,
+      initialOperationId: saved.initialOperationId, initialPrompt: saved.initialPrompt, restartAfterShutdown: false, launchSubmission: "acknowledged" } });
+  const replacement = await readLaunchTicket(f.home, resumed.webExecution!.launchId);
+  expect(replacement.launchId).not.toBe(saved.launchId);
+  expect(replacement).toEqual({ ...saved, launchId: replacement.launchId, ipcEndpoint: replacement.ipcEndpoint,
+    ipcSecret: replacement.ipcSecret, lifecycleBinding: f.binding() });
+  expect(await readLaunchTicket(f.home, saved.launchId)).toEqual(saved);
+  expect(readControllerSnapshot(journalFile)).toEqual(previous);
+  expect(f.authority.getResource(replacement.launchId)).toMatchObject({ stage: "running" });
+  expect(f.register).toHaveBeenCalledOnce(); expect(f.prompt).toHaveBeenCalledOnce(); expect(f.dispatch).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledOnce();
 });

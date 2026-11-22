@@ -40,6 +40,13 @@ reference. Prior tickets and lifecycle responsibilities remain available for
 reconciliation. Terminal reservations are preserved rather than reopened when
 configuration admission recovers. Submitted or uncertain launches cannot use this
 replacement path.
+For an allocated never-submitted recovery generation, an explicit retry verifies
+the original preceding journal and process-tree stop before atomically consuming
+its allowance and clearing pause and orderly-shutdown markers. The same commit
+updates an existing startup report's recovery summary without replacing startup
+evidence. Ticket preparation follows this transition, so pending pause markers
+cannot prevent authorized ticket renewal. Continuing after a storage wait retains
+the consumed allowance and does not increment the budget or generation again.
 
 Tool selection remains alive through configuration jobs and their final state
 publication. A configuration failure stays with that owner while tool cleanup
