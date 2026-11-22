@@ -538,6 +538,34 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.skipIf(process.platform !== "win32")("names the terminated holders when the reservation stays behind after its removal", async () => {
+    const f = await repositoryFixture("files");
+    let stopped = false;
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "5" }),
+      stopHoldingProcesses: async (target, _operation, options) => {
+        stopped = true;
+        const holder = { pid: 917, image: "node.exe", directory: target };
+        options?.onTerminated?.(holder);
+        return { observed: [holder], terminated: [917] };
+      },
+    });
+    await adapter.prepareRepository(f.project, operation());
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.worktreeId);
+    await mkdir(target, { recursive: true });
+    const owned = path.normalize(target);
+    vi.mocked(rmdir).mockImplementation(async (entry, options) => {
+      if (path.normalize(String(entry)) !== owned) return actualFs.rmdir(entry, options);
+      if (!stopped) throw busyError();
+      // The removal reports success and leaves the directory, so the attempt
+      // fails in its postcondition rather than in the recovery. The holder is
+      // gone either way, which is what the diagnostic has to say.
+    });
+    const error = await adapter.removeUnpublishedReservation(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("removal is incomplete");
+    expect(errorText(error)).toContain("Terminated 1 holder process tree: node.exe (917).");
+  });
+
   it.skipIf(process.platform !== "win32")("retains a busy reservation and terminates nothing when the target is not applied", async () => {
     const f = await repositoryFixture("files");
     let stops = 0;
