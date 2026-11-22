@@ -114,6 +114,14 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const snapshot = store.snapshot();
     store.markStopped({ localEpoch: snapshot.state.localEpoch, inventoryRevision: snapshot.inventoryRevision, owners: json(results) as unknown as OwnerStopResult[] });
   };
+  const stopForObservation = async (): Promise<void> => {
+    try { await stop(); }
+    catch (error) {
+      // Failed stopping retains closed admission and unresolved owner responsibility,
+      // but must not prevent current authority and blocked observations from advancing.
+      blocked(error, "stop_unknown");
+    }
+  };
   const reconcileReports = async (): Promise<void> => {
     const pending = store.listOutbox().filter(row => !["confirmed", "covered"].includes(row.uploadState));
     if (pending.length === 0) return;
@@ -179,7 +187,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     store.observeAuthority(authority);
     store.closeAdmission({ operationId: authority.operationId ?? randomUUID(), local: false });
     pendingResume = undefined;
-    await stop();
+    await stopForObservation();
     return true;
   };
   const finishPreparedActivation = async (activation: LifecycleActivation): Promise<void> => {
@@ -342,11 +350,7 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     const local = store.readState();
     if (local.phase === "resuming" && local.activation !== null) { await finishPreparedActivation(local.activation); await report(); return; }
     // Local closure must stop work before any network request can consume its budget.
-    if (local.admission === "closed" && local.phase !== "disabled" && local.phase !== "resuming") await stop();
-    if (pendingResume !== undefined) {
-      const original = store.readOperation(pendingResume.operationId);
-      if (original !== null) await resolveOriginal(original);
-    }
+    if (local.admission === "closed" && local.phase !== "disabled" && local.phase !== "resuming") await stopForObservation();
     const cloud = await readAuthority();
     authorityOperationId = cloud.operationId;
     if (cloud.instance?.instanceId !== binding().instanceId || cloud.instance.instanceEpoch !== binding().instanceEpoch) throw new Error("Original Worker management instance was replaced.");
@@ -363,19 +367,29 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       pendingResume = cloud.desired === "enabled" && cloud.operationId !== null
         ? { operationId: cloud.operationId, binding: { ...binding(), intentVersion: cloud.intentVersion } } : undefined;
       store.observeAuthority(cloud);
-      if (cloud.desired === "disabled") { store.closeAdmission({ operationId: cloud.operationId ?? randomUUID(), local: false }); await stop(); }
+      if (cloud.desired === "disabled") { store.closeAdmission({ operationId: cloud.operationId ?? randomUUID(), local: false }); await stopForObservation(); }
     }
-    const supersededActivations = store.listOperations().filter(original => original.kind === "activation" && ["submitted", "unknown"].includes(original.status)
-      && original.request !== null && BigInt(parseLifecycleActivationRequest(original.request).intentVersion) < BigInt(cloud.intentVersion));
-    if (supersededActivations.length > 0) {
-      // Publish the current stop before querying older outcomes. Failed lookups
-      // cannot suppress disabled observations or permit a new execution scope.
-      await stop();
+    const unresolvedOperations = store.listOperations().filter(original => ["submitted", "unknown"].includes(original.status)
+      && original.request !== null && typeof original.request === "object" && !Array.isArray(original.request)
+      && (original.kind === "activation" && BigInt(parseLifecycleActivationRequest(original.request).intentVersion) < BigInt(cloud.intentVersion)
+        || original.kind === "intent" && (original.request.action === "resume"
+          || typeof original.request.expectedVersion === "string" && (BigInt(original.request.expectedVersion) + 1n < BigInt(cloud.intentVersion)
+            || original.localEpoch !== store.readState().localEpoch && BigInt(original.request.expectedVersion) + 1n === BigInt(cloud.intentVersion)))));
+    if (unresolvedOperations.length > 0) {
+      // Report current stop evidence before settling original outcomes. A resume
+      // may not have committed, so authority versions cannot determine its outcome
+      // or whether its frozen request still needs reconciliation.
+      await stopForObservation();
       await report();
-      for (const original of supersededActivations) await resolveOriginal(original);
+      for (const original of unresolvedOperations) {
+        try { await resolveOriginal(original); } catch (error) { options.reportError(error); }
+      }
     }
-    await continueResume(cloud);
-    await disableCloud(cloud);
+    try { await continueResume(cloud); }
+    catch (error) {
+      if (store.readState().phase === "resuming") options.reportError(error); else blocked(error);
+    }
+    try { await disableCloud(cloud); } catch (error) { blocked(error); }
     await report();
   };
   return {

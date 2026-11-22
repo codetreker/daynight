@@ -25,6 +25,13 @@ cannot be replaced by the default root during Windows stop verification; legacy
 resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
+A Bot recovery ticket can exist before credential preparation completes. A
+later Worker lifecycle may authorize a fresh local launch identity only when the
+original durable execution proves never-submitted and has no Controller, startup
+receipt or execution snapshot. The Session, native identity, recovery generation
+and frozen configuration remain unchanged; the prior launch identity is retained.
+Submitted or uncertain launches cannot use this replacement path.
+
 Tool selection remains alive through configuration jobs and their final state
 publication. A configuration failure stays with that owner while tool cleanup
 still runs. Native inventory reconciliation independently joins each original
@@ -42,6 +49,12 @@ the original guardian to a Job, terminated that Job and confirmed it empty still
 join the guardian, streams and handles, but do not issue a second direct
 termination against the exited process. Initialization without a successful Job
 assignment retains its original guardian cleanup.
+
+Management authority reads and observations progress independently of failed
+stop/save reconciliation and unavailable original resume-intent lookups. Reports
+retain the known inventory, blocked state and original unresolved responsibility;
+a failed reconciliation cannot become proof of stopping or authorize admission.
+A newer disable can therefore receive observations while older work is unresolved.
 
 Local disable saves its veto before IPC or network access. IPC wakes the original
 manager and does not stand in for resource evidence. An unavailable manager permits

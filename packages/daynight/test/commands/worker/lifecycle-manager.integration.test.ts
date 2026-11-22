@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
-import { parseLifecycleObservationEnvelope, type LifecycleActivationRequest, type LifecycleActivationReceipt, type LifecycleInstanceRequest, type LifecycleInstanceReceipt, type LifecycleIntentRequest, type LifecycleIntentReceipt, type LifecycleObservationEnvelope, type LifecycleOperationResult, type LifecycleResolveRequest, type LifecycleResource } from "../../../src/api/worker-lifecycle.js";
+import { lifecycleRequestHash, parseLifecycleObservationEnvelope, type LifecycleActivationRequest, type LifecycleActivationReceipt, type LifecycleInstanceRequest, type LifecycleInstanceReceipt, type LifecycleIntentRequest, type LifecycleIntentReceipt, type LifecycleObservationEnvelope, type LifecycleOperationResult, type LifecycleResolveRequest, type LifecycleResource } from "../../../src/api/worker-lifecycle.js";
 import type { WorkerLifecycleClient } from "../../../src/api/worker-lifecycle-client.js";
 import { createLifecycleManager, type LifecycleExecutionControl } from "../../../src/commands/worker/lifecycle-manager.js";
 import { openLifecycleStore } from "../../../src/commands/worker/lifecycle-store.js";
@@ -142,6 +142,130 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(vi.mocked(owner.reconcile).mock.calls).toHaveLength(reconciliations);
     expect(vi.mocked(owner.stop).mock.calls).toHaveLength(stops);
   }, 6000);
+
+  it("refreshes a newer disable observation while original owners keep failing stop and save", async () => {
+    const f = fixture(); await f.manager.initializeForControl();
+    const owner = control(), failure: OwnerStopResult[] = [{ ...stopped[0]!, stop: "unknown", save: "failed" }];
+    owner.stop = vi.fn(async () => failure);
+    owner.reconcile = vi.fn(async () => failure);
+    f.manager.attach(owner);
+    const local = openLifecycleStore({ file: f.file, identity });
+    try {
+      local.reserveExecution({ binding: f.manager.binding(), resourceId: id(70), ownerKind: "task", identity: { taskId: id(71) }, operationId: id(72) });
+      local.recordResource({ resourceId: id(70), stage: "unknown", saveState: "failed", error: "Owner has not joined" });
+      local.closeAdmission({ operationId: id(20), local: true });
+      const original = local.readResource(id(70));
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: "1", source: "web", localEpoch: null, originOperationId: null });
+      const reports = vi.mocked(f.api.report).mock.calls.length, recoveries = f.resources.mock.calls.length;
+      f.manager.start();
+      await expect.poll(() => f.cloud().observation, { timeout: 2500 }).toMatchObject({ operationId: id(24), intentVersion: "2", observation: {
+        phase: "blocked", stop: "unknown", save: "pending", inventoryComplete: false, errorCode: "stop_unknown",
+        resources: [expect.objectContaining({ resourceId: id(70), stage: "unknown", stop: "unknown", save: "failed" })],
+      } });
+      const sequence = BigInt(f.cloud().observation!.reportSequence);
+      await expect.poll(() => BigInt(f.cloud().observation!.reportSequence), { timeout: 3500 }).toBeGreaterThan(sequence);
+      expect(local.readState()).toMatchObject({ admission: "closed", desired: "disabled", intentVersion: "2", phase: "blocked", stop: "unknown", inventoryComplete: false });
+      expect(local.readResource(id(70))).toEqual(original);
+      expect(vi.mocked(f.api.report).mock.calls.slice(reports).every(([request]) => request.observation.stop !== "confirmed" && request.observation.phase !== "disabled")).toBe(true);
+      expect(vi.mocked(owner.reconcile).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(f.resources).toHaveBeenCalledTimes(recoveries);
+      expect(f.api.activate).toHaveBeenCalledOnce();
+      expect(owner.rebuild).not.toHaveBeenCalled();
+    } finally { local.close(); }
+  }, 6000);
+
+  it("reports a newer disable while a lost resume intent lookup remains unavailable", async () => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => {
+      const receipt = await intent(request);
+      if (request.operationId === id(22)) throw unknown();
+      return receipt;
+    });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const local = openLifecycleStore({ file: f.file, identity });
+    const original = local.readOperation(id(22));
+    expect(original).toMatchObject({ status: "unknown", request: { action: "resume", expectedVersion: "2" } });
+    const operation = vi.mocked(f.api.operation).getMockImplementation()!, lookup = deferred<void>();
+    let available = false;
+    vi.mocked(f.api.operation).mockImplementation(async operationId => {
+      if (operationId === id(22) && !available) { lookup.resolve(); throw unknown(); }
+      return operation(operationId);
+    });
+    try {
+      f.manager.start();
+      await waitSignal(lookup.promise, AbortSignal.timeout(2500));
+      await f.api.intent({ protocolVersion: 1, operationId: id(24), action: "disable", expectedVersion: "3", source: "web", localEpoch: null, originOperationId: null });
+      await expect.poll(() => f.cloud().observation, { timeout: 3500 }).toMatchObject({ operationId: id(24), intentVersion: "4", observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
+      const sequence = BigInt(f.cloud().observation!.reportSequence);
+      await expect.poll(() => BigInt(f.cloud().observation!.reportSequence), { timeout: 3500 }).toBeGreaterThan(sequence);
+      expect(local.readState()).toMatchObject({ admission: "closed", desired: "disabled", intentVersion: "4", localVeto: true, activation: null });
+      expect(local.readOperation(id(22))).toEqual(original);
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+      expect(f.api.resolve).not.toHaveBeenCalled();
+      expect(owner.rebuild).not.toHaveBeenCalled();
+      available = true;
+      await expect.poll(() => local.readOperation(id(22)), { timeout: 3500 }).toMatchObject({ status: "confirmed", request: original!.request, requestHash: original!.requestHash });
+      expect(local.readState().admission).toBe("closed");
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(owner.rebuild).not.toHaveBeenCalled();
+      await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
+      await waitSignal(f.manager.waitForAdmission(), AbortSignal.timeout(3500));
+      expect(local.readState()).toMatchObject({ admission: "open", intentVersion: "5", localVeto: false });
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
+      expect(owner.rebuild).toHaveBeenCalledOnce();
+    } finally { local.close(); }
+  }, 12_000);
+
+  it("automatically settles an uncommitted unknown local resume before activating a different Web resume at the same resulting version", async () => {
+    const f = fixture(); await f.manager.initializeForControl(); await disable(f);
+    const owner = control(); f.manager.attach(owner);
+    const intent = vi.mocked(f.api.intent).getMockImplementation()!;
+    vi.mocked(f.api.intent).mockImplementation(async request => {
+      if (request.operationId === id(22)) throw unknown();
+      return intent(request);
+    });
+    await expect(f.manager.resume(id(22))).rejects.toThrow();
+    const local = openLifecycleStore({ file: f.file, identity });
+    const original = local.readOperation(id(22))!;
+    expect(original).toMatchObject({ status: "unknown", localEpoch: "2", request: { action: "resume", expectedVersion: "2" } });
+    expect(f.cloud()).toMatchObject({ desired: "disabled", intentVersion: "2", operationId: id(21) });
+    const disabledLookup = deferred<void>(), resumedLookup = deferred<void>();
+    let available = false;
+    vi.mocked(f.api.resolve).mockImplementation(async request => {
+      expect(request).toEqual({ protocolVersion: 1, requestKind: "intent", request: original.request });
+      expect(f.cloud().observation).toMatchObject({ operationId: f.cloud().operationId, intentVersion: f.cloud().intentVersion,
+        observation: { phase: "disabled", stop: "confirmed", save: "durable", inventoryComplete: true } });
+      if (f.cloud().intentVersion === "2") disabledLookup.resolve(); else resumedLookup.resolve();
+      if (!available) throw unknown();
+      return { kind: "not_committed", receipt: { protocolVersion: 1, workerId: identity.workerId, operationId: id(22), observedAt: time,
+        requestKind: "intent", requestHash: lifecycleRequestHash(request.requestKind, request.request), outcome: "not_committed" } };
+    });
+    try {
+      f.manager.start();
+      await waitSignal(disabledLookup.promise, AbortSignal.timeout(2500));
+      expect(local.readOperation(id(22))).toEqual(original);
+      await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "2", source: "web", localEpoch: "2", instanceEpoch: "1" });
+      await waitSignal(resumedLookup.promise, AbortSignal.timeout(3500));
+      expect(local.readState()).toMatchObject({ admission: "closed", intentVersion: "3", localEpoch: "2", localVeto: true });
+      expect(local.readOperation(id(22))).toEqual(original);
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(0);
+      expect(owner.rebuild).not.toHaveBeenCalled();
+      available = true;
+      await waitSignal(f.manager.waitForAdmission(), AbortSignal.timeout(3500));
+      expect(local.readOperation(id(22))).toMatchObject({ status: "rejected", request: original.request, requestHash: original.requestHash,
+        receipt: { outcome: "not_committed", requestKind: "intent", requestHash: lifecycleRequestHash("intent", original.request) } });
+      expect(local.readState()).toMatchObject({ admission: "open", intentVersion: "3", localVeto: false });
+      expect(local.readOperation(id(22), "activation")).toBeNull();
+      expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
+      expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
+      expect(owner.rebuild).toHaveBeenCalledOnce();
+    } finally { local.close(); }
+  }, 10_000);
 
   it("reconciles an unknown report from the saved same-sequence observation before producing a new report", async () => {
     const f = fixture(), lost = deferred<void>(); let once = true;

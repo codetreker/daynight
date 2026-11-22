@@ -1,8 +1,8 @@
-import { currentLifecycleBinding } from "../lifecycle-context.js";
+import { assertWorkerLifecycleAdmission, currentLifecycleBinding } from "../lifecycle-context.js";
 import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerPayloadHash, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
@@ -30,6 +30,7 @@ import { createControllerJobLeases, type ControllerJobLeases } from "../backends
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { assertBotMigrationExecutable } from "./migration-state.js";
 
 export class BotAdmissionBlockedError extends Error {
@@ -348,6 +349,34 @@ export const createBotProcess = (options: {
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
+      }
+      const binding = currentLifecycleBinding();
+      if (binding !== undefined && controllerPayloadHash(ticket.lifecycleBinding ?? null) !== controllerPayloadHash(binding)) {
+        const original = record;
+        const assertPending = () => {
+          signal.throwIfAborted(); assertWorkerLifecycleAdmission();
+          const latest = current(original), execution = options.executions.get(latest);
+          if (controllerPayloadHash(latest.intent) !== controllerPayloadHash(original.intent) || execution === null
+            || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot lifecycle authorization requires proven never-submitted execution.");
+          if (binding.serverOrigin !== latest.owner.serverOrigin || binding.userId !== latest.owner.ownerUserId) throw new Error("Bot lifecycle authorization conflicts with its original owner.");
+        };
+        assertPending();
+        const storage = resolveBotControllerStateDirectory(options.homeDirectory, record), launchId = randomUUID();
+        const replacement: ControllerLaunchTicket = { ...ticket, schemaVersion: 2, lifecycleBinding: { ...binding }, launchId,
+          ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, launchId, storage), ipcSecret: randomBytes(32).toString("hex") };
+        // Publish before switching the two durable Bot rows. Interrupted publication
+        // leaves the original attempt usable; no submitted ticket is ever rewritten.
+        assertPending();
+        await writeLaunchTicket(options.homeDirectory, replacement, storage);
+        syncDurableDirectory(path.dirname(record.intent!.ticketPath));
+        if (ticket.provider !== "claude" && ticket.configuration.toolLaunch === undefined) {
+          const selection = await readLaunchToolSelection(options.homeDirectory, ticket, storage);
+          if (selection === undefined) throw missingSelection(record);
+          await writeLaunchToolSelection(options.homeDirectory, replacement, selection, assertPending, storage);
+        }
+        assertPending();
+        record = options.executions.replaceUnsubmittedLaunch(original, launchId, options.homeDirectory);
+        ticket = await checkedTicket(record);
       }
       const previous = options.executions.get(current(record))!.previous;
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
