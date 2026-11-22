@@ -395,7 +395,11 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   // so the record belongs to the whole cleanup attempt rather than to this
   // step. When a worktree removal reaches this reservation, both share one
   // array and the attempt reports every termination together, once.
-  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation, policy: WorkerCleanupPolicy | null = null, ended: TerminatedHolder[] = []): Promise<void> => {
+  // `ended` is required rather than defaulted: a caller that forgot it would
+  // still terminate processes, and their record would vanish silently with no
+  // type error and no failing test. Making the attempt supply it forces every
+  // new call site to decide which attempt owns the terminations.
+  const removeEmptyReservation = async (repository: WorkerRepository, directoryName: string, operation: Operation, policy: WorkerCleanupPolicy | null, ended: TerminatedHolder[]): Promise<void> => {
     const parents = [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")];
     const target = path.join(parents[1]!, uuid(directoryName, "Worktree directory"));
     const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
