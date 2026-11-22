@@ -108,7 +108,13 @@ afterEach(async () => {
   // removing an open Windows cwd only hides the original failure with EBUSY.
   const traces = timingFailures.splice(0);
   if (failures.length !== 0) throw new AggregateError([...failures, ...traces], "Bot probe fixtures retain unconfirmed process ownership.");
-  try { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); }
+  // The scopes above closed cleanly, so every probe process has exited. Windows
+  // still holds the directory handle of a process that had it as its working
+  // directory for a moment after that, and this removal runs inside exactly
+  // that window. Retry across it rather than reporting a holder that is
+  // already gone; a directory a live process still holds outlasts the retries
+  // and fails as before.
+  try { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))); }
   catch (error) {
     if (traces.length !== 0) throw new AggregateError([error, ...traces], "Bot probe fixture removal and timing observation failed.", { cause: error });
     throw error;
