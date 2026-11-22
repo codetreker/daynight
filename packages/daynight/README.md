@@ -2540,8 +2540,12 @@ process cannot be undone by a later identity failure. Recovery of a permission
 obstacle is a different authorization and stays with `enableSudoCleanup`.
 
 Only working-directory holders are recovered. A process that keeps an open file
-inside the tree also blocks removal and is not reported, so the retry meets the
-same obstacle and the original error and cleanup responsibility are preserved.
+inside the tree is not reported, and where such a handle does prevent removal
+the retry meets the same obstacle and the original error and cleanup
+responsibility are preserved. That boundary is narrower than it sounds:
+measured on Windows, a file held open by a Node process does not block removal
+at all, because those handles permit deletion. The holders this recovers keep a
+working directory, which is the case that genuinely refuses.
 A 32-bit holder is read through its own process parameters rather than the
 native ones, which do not carry its active working directory.
 A holder belonging to another account cannot be read or terminated and is

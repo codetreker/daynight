@@ -219,9 +219,19 @@ The target defaults to false and nothing happens without it, so existing
 deployments are unchanged.
 
 Only working-directory holders are recovered. A process that keeps an open file
-inside the tree also blocks removal and is not reported, so the retry observes
-the same obstacle and the original `EBUSY` is preserved together with cleanup
-responsibility. The same is true when every holder belongs to another account.
+inside the tree is not reported, and where such a handle does prevent removal
+the retry observes the same obstacle and the original `EBUSY` is preserved
+together with cleanup responsibility. The same is true when every holder
+belongs to another account.
+
+The open-file boundary is narrower than it first appears, and the earlier
+wording here overstated it. Measured on Windows against a process that had the
+file open and its working directory elsewhere, the file unlinked and its
+directory was removed while the holder still ran: Node opens files with
+deletion permitted, so its handles do not refuse removal. Since the processes
+this cleanup meets are Node processes, treating open files as an equally
+blocking case would describe an obstacle the product rarely has. What refuses
+is the working directory, which is what the inventory looks for.
 
 A failed attempt names the holders it already ended. Termination cannot be
 undone and the processes it ends may be ones the Worker never started, so when

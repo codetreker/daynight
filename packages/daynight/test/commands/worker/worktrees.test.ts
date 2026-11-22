@@ -1462,8 +1462,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await repositoryFixture("files");
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
-      // A holder that keeps an open file rather than a working directory is
-      // not reported, so the retry observes the same obstacle.
+      // Nothing the inventory can act on, whatever is holding the directory:
+      // the retry meets the same obstacle and the original error stands.
       stopHoldingProcesses: async () => ({ observed: [], terminated: [] }),
     });
     const binding = await prepareCleanupFixture(f, adapter);

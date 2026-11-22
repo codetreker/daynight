@@ -57,8 +57,14 @@ const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation)
  * only acts on processes, never on the directory itself.
  *
  * Only working-directory holders are recovered. A process that merely holds an
- * open file inside the tree also blocks removal and is not reported here, so
- * the caller keeps its original error when the retry still fails.
+ * open file inside the tree is not reported, and when such a handle does
+ * prevent removal the caller keeps its original error.
+ *
+ * That boundary is narrower than it sounds. Measured on Windows, a file held
+ * open by a Node process does not block removal at all: those handles permit
+ * deletion, so the file unlinks and its directory is removed while the holder
+ * still runs. The holders this recovery was built for keep a working
+ * directory, which is the case that genuinely refuses.
  */
 export const stopWindowsWorktreeProcesses = async (
   target: string,
