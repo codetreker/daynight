@@ -2519,7 +2519,9 @@ would end the cleanup along with it, partway through a removal and with no
 error left to report. A Worker started from a shell whose working directory is
 inside the worktree has exactly that ancestor.
 
-A failed attempt names the holders it ended, by image and identifier. The
+A failed attempt reports how many holders it ended and names up to eight of
+them, by image and identifier; the count is always the real one, so a
+truncated list still says how much happened rather than how much fits. The
 termination cannot be undone and may reach processes the Worker never started,
 so this is the operator's only record of it: every exit carries it, including
 cancellation, the postcondition observation and a failure reported after the

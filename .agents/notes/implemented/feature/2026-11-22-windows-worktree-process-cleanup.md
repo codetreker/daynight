@@ -243,7 +243,11 @@ this cleanup meets are Node processes, treating open files as an equally
 blocking case would describe an obstacle the product rarely has. What refuses
 is the working directory, which is what the inventory looks for.
 
-A failed attempt names the holders it already ended. Termination cannot be
+A failed attempt reports how many holders it already ended and names up to
+eight of them; a worktree can be held by as many processes as an agent left
+behind, and naming all of them would put an unbounded list inside an error.
+The count is always the real one, and the reported events carry every holder
+individually. Termination cannot be
 undone and the processes it ends may be ones the Worker never started, so when
 the attempt fails the diagnostic is the only record the operator receives that
 any of it happened; a failure that mentioned only the revision would read as
