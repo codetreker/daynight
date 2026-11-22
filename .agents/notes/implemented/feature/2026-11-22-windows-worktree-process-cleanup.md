@@ -277,6 +277,16 @@ this produces needs no new type: `WorkerEvent` carries an open `kind`, so the
 local diagnostics channel absorbs it without touching the protocol the service
 reads.
 
+That report names when the process started, not only which identifier it had.
+An identifier identifies a process while it exists and no longer: Windows
+reuses it, and this record is read afterwards, when the handle that pinned the
+identifier is long closed. The creation time was already being collected for
+every holder and consumed by nothing, sitting beside a comment explaining that
+comparing creation times is not how this stays safe — which is true of the
+termination and says nothing about the record that outlives it. A value at or
+below the Windows epoch is reported as unreadable rather than as a date in
+1601.
+
 Its failures do not change the outcome of the cleanup they describe. That
 departs from the Git reporters, whose failures are aggregated into the cleanup
 error, and the reason is that this one runs inside the per-holder guard of the
