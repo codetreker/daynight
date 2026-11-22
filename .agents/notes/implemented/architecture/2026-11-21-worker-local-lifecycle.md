@@ -25,17 +25,21 @@ cannot be replaced by the default root during Windows stop verification; legacy
 resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
-A Bot recovery ticket can exist before credential preparation completes. A
-later Worker lifecycle or a durable never-dispatched reservation may require a
-fresh local launch identity. Current admission authorizes it only when the
-original durable execution proves never-submitted and has no Controller, startup
-receipt or execution snapshot. The Session, native identity, recovery generation
-and frozen configuration remain unchanged; the prior launch identity is retained.
-A reservation used as never-dispatched proof must match the original ticket hash,
-identities and storage paths, with durable terminal state and no process proof.
-The terminal reservation is preserved rather than reopened when configuration
-admission recovers. Submitted or uncertain launches cannot use this replacement
-path.
+Task Web and Bot tickets can exist before launch submission. A later Worker
+lifecycle or a durable never-dispatched reservation may require a fresh local
+launch identity. Current admission authorizes it only when the durable execution
+proves that generation never submitted and has no current Controller process or
+uncertain startup evidence. Claim, Session, native identity, recovery generation
+and budget, initial operation, prompt and frozen configuration remain unchanged.
+An initial Task launch requires no journal execution; a recovery launch accepts
+only the matching stopped preceding generation. A reservation used as
+never-dispatched proof must match the original ticket hash, identities and storage
+paths, with durable terminal state and no process proof. Immutable ticket and tool
+selection evidence are published before atomically changing the saved launch
+reference. Prior tickets and lifecycle responsibilities remain available for
+reconciliation. Terminal reservations are preserved rather than reopened when
+configuration admission recovers. Submitted or uncertain launches cannot use this
+replacement path.
 
 Tool selection remains alive through configuration jobs and their final state
 publication. A configuration failure stays with that owner while tool cleanup
