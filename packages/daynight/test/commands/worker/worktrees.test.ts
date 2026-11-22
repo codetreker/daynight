@@ -1623,11 +1623,13 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
   it.skipIf(process.platform !== "win32")("names the terminated holders when the worktree stays busy after termination", async () => {
     const f = await repositoryFixture("files");
+    let rounds = 0;
     const adapter = manager(f.root, {
       readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
       // One holder kept an open file as well as its working directory, so the
       // tree stays busy after its working directory holders are gone.
       stopHoldingProcesses: async (target, _operation, options) => {
+        rounds++;
         const observed = [{ pid: 701, image: "node.exe", directory: target }, { pid: 702, image: "pwsh.exe", directory: target }, { pid: 703, image: "git.exe", directory: target }];
         for (const holder of [observed[0]!, observed[2]!]) options?.onTerminated?.(holder);
         return { observed, terminated: [701, 703] };
@@ -1644,6 +1646,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     // The termination cannot be undone, so the failure is the only record of
     // it the operator receives. Holders that survived are not claimed as ended.
     expect(errorText(error)).toContain("Terminated 2 holder process trees: node.exe (701), git.exe (703).");
+    // One round per attempt. Terminating again because the tree is still busy
+    // would let anything that restarts a holder turn this into a kill loop.
+    expect(rounds).toBe(1);
     expect(errorText(error)).not.toContain("pwsh.exe");
     expect(worktreePaths(f.repository)).toContain(root);
   });

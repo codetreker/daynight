@@ -205,6 +205,16 @@ wider change than discovering holders where they are.
 covers handle release after exit. A live holder does not exit because the
 remover waited; the measured directories were still held hours later.
 
+**Keep terminating until the directory is gone.** A holder that appears after
+the inventory was taken leaves the retry failing with the same `EBUSY`, and
+another round would clear it. The round is deliberately single: whatever put a
+holder there can put another one there, and a supervisor restarting the process
+this cleanup just ended would turn one attempt into an unbounded kill loop
+inside a single operation, with its deadline as the only exit. Terminating once
+per attempt keeps that decision where it belongs — the attempt fails, preserves
+the original error and the record of what it ended, and cleanup is retried on
+its own schedule, terminating again if the obstacle is still there.
+
 **Terminate every reported holder regardless of location.** The inventory is
 filtered to the worktree subtree on a separator boundary, so a sibling path
 that merely shares a prefix is not a holder. Acting on anything outside the

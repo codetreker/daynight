@@ -56,6 +56,12 @@ const runTaskkill = async (holder: WindowsDirectoryHolder, operation: Operation)
  * calling, and must prove it again before removing anything: this function
  * only acts on processes, never on the directory itself.
  *
+ * One round, by design. A holder that appears after the inventory was taken
+ * leaves the caller's retry failing, and looping here would let anything that
+ * restarts the terminated process turn a single cleanup into an unbounded kill
+ * loop. The attempt fails instead, and cleanup terminates again on its own
+ * schedule if the obstacle is still there.
+ *
  * Only working-directory holders are recovered. A process that merely holds an
  * open file inside the tree is not reported, and when such a handle does
  * prevent removal the caller keeps its original error.
