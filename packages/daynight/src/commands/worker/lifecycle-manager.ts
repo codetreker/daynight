@@ -388,6 +388,10 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     try { await continueResume(cloud); }
     catch (error) {
       if (store.readState().phase === "resuming") options.reportError(error); else blocked(error);
+      // An unconfirmed resume must not be overwritten by the same local veto.
+      // Publish its current state while preserving the continuation for retry.
+      await report();
+      return;
     }
     try { await disableCloud(cloud); } catch (error) { blocked(error); }
     await report();

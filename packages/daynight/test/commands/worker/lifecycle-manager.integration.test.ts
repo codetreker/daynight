@@ -502,6 +502,7 @@ describe("Worker lifecycle management with real local authority", () => {
     await f.manager.waitForAdmission();
     expect(f.errors).toContain(failure);
     expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, localEpoch: "2" });
+    expect(f.cloud()).toMatchObject({ intentVersion: "3", desired: "enabled", admission: "open", operationId: id(22) });
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
   }, 5000);
 
@@ -533,6 +534,7 @@ describe("Worker lifecycle management with real local authority", () => {
     await f.manager.waitForAdmission();
     expect(f.errors).toContain(failure);
     expect(f.store.readOperation(id(22))).toMatchObject({ status: "confirmed", request: null, receipt: { operationId: id(22), action: "resume", intentVersion: "3" } });
+    expect(f.cloud()).toMatchObject({ intentVersion: "3", desired: "enabled", admission: "open", operationId: id(22) });
     expect(vi.mocked(f.api.operation).mock.calls.filter(([operationId]) => operationId === id(22))).toHaveLength(2);
     expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
