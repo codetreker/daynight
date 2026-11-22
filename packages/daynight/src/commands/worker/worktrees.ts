@@ -55,7 +55,14 @@ type TerminatedHolder = { readonly pid: number; readonly image: string; readonly
  *
  * A holder that exited on its own just before its termination is listed too:
  * `taskkill` reports the same absence either way, and the record errs toward
- * naming a process the Worker did not end rather than omitting one it did. */
+ * naming a process the Worker did not end rather than omitting one it did.
+ *
+ * Image and identifier only, while the reported event also carries when the
+ * process started. The two are read differently: this text arrives attached to
+ * the failure that produced it, already naming the directory and the
+ * configuration revision, and may list several holders at once, so it stays
+ * short enough to read. The event stands alone among unrelated records, where
+ * an identifier Windows has since reused no longer picks out one process. */
 const terminatedHolders = (ended: readonly TerminatedHolder[]): string =>
   ended.length === 0
     ? "No holder was terminated."
