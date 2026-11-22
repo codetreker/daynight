@@ -34,7 +34,10 @@ const holdDirectory = async (directory: string): Promise<number> => {
     if (found) return child.pid!;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  return child.pid!;
+  // Returning the identifier anyway would let the fixture fail later as a
+  // missing termination, which reads like the recovery lost a holder rather
+  // than like a shell that never finished starting on a slow runner.
+  throw new Error(`The fixture shell ${child.pid} never took ${directory} as its working directory.`);
 };
 
 describe.skipIf(!windows)("Windows worktree recovery against a real holder", () => {

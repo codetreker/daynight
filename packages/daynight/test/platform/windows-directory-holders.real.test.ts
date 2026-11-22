@@ -35,7 +35,10 @@ const holdDirectory = async (shell: string, directory: string): Promise<number> 
     if (found) return child.pid!;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  return child.pid!;
+  // Returning the identifier anyway would let the fixture fail later as an
+  // undiscovered holder, which reads like a broken inventory rather than like
+  // a shell that never finished starting on a slow runner.
+  throw new Error(`The fixture shell ${child.pid} never took ${directory} as its working directory.`);
 };
 
 describe.skipIf(!windows)("Windows directory holders against real processes", () => {
