@@ -102,6 +102,20 @@ describe("Windows worktree process termination", () => {
     expect(released).toEqual([2]);
   });
 
+  it("reports what it observed even when releasing the inventory clears the list", async () => {
+    // The inventory in use hands out a copy, so reading it after release
+    // happens to work. Nothing in the contract says it must, and an inventory
+    // that cleared its list while closing the handles would report that
+    // nothing was ever observed while still terminating everything.
+    const holders = [holder(120), holder(121)];
+    const result = await stopWindowsWorktreeProcesses(target, operation(), {
+      holders: async () => ({ holders, release: () => { holders.length = 0; } }),
+      terminate: async () => {},
+    });
+    expect(result.observed.map(entry => entry.pid)).toEqual([120, 121]);
+    expect(result.terminated).toEqual([120, 121]);
+  });
+
   it("keeps the cancellation as the cause when releasing the handles also fails", async () => {
     // A throw from the release would replace the error already on its way out,
     // and the caller would read a handle failure where the real cause was the

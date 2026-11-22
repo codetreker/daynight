@@ -69,6 +69,11 @@ export const stopWindowsWorktreeProcesses = async (
   const terminate = options.terminate ?? runTaskkill;
   operation.check();
   const inventory = await list(target, () => operation.check(), options.kernel);
+  // Taken before anything releases the inventory. Reading it afterwards works
+  // only while the inventory happens to hand out a copy of its own list, and
+  // an inventory that cleared the list as it closed the handles would report
+  // that nothing had been observed without failing anything.
+  const observed = inventory.holders.map(({ pid, image, directory }) => ({ pid, image, directory }));
   const failures: unknown[] = [], terminated: number[] = [];
   let failed = false, failure: unknown;
   try {
@@ -101,5 +106,5 @@ export const stopWindowsWorktreeProcesses = async (
     throw new AggregateError(failures, `No Windows worktree holder could be terminated for ${target}.`, { cause: failures[0] });
   }
   operation.check();
-  return { observed: inventory.holders.map(({ pid, image, directory }) => ({ pid, image, directory })), terminated };
+  return { observed, terminated };
 };
