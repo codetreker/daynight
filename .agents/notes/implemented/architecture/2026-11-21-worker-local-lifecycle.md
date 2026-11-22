@@ -26,11 +26,16 @@ resources derive a root only from their frozen canonical journal path and still
 verify the original execution and lifecycle binding.
 
 A Bot recovery ticket can exist before credential preparation completes. A
-later Worker lifecycle may authorize a fresh local launch identity only when the
+later Worker lifecycle or a durable never-dispatched reservation may require a
+fresh local launch identity. Current admission authorizes it only when the
 original durable execution proves never-submitted and has no Controller, startup
 receipt or execution snapshot. The Session, native identity, recovery generation
 and frozen configuration remain unchanged; the prior launch identity is retained.
-Submitted or uncertain launches cannot use this replacement path.
+A reservation used as never-dispatched proof must match the original ticket hash,
+identities and storage paths, with durable terminal state and no process proof.
+The terminal reservation is preserved rather than reopened when configuration
+admission recovers. Submitted or uncertain launches cannot use this replacement
+path.
 
 Tool selection remains alive through configuration jobs and their final state
 publication. A configuration failure stays with that owner while tool cleanup
@@ -50,8 +55,12 @@ join the guardian, streams and handles, but do not issue a second direct
 termination against the exited process. Initialization without a successful Job
 assignment retains its original guardian cleanup.
 
-Management authority reads and observations progress independently of failed
-stop/save reconciliation and unavailable original resume-intent lookups. Reports
+During startup and ordinary polling, management authority reads and observations
+progress independently of failed stop/save reconciliation and unavailable
+original resume-intent lookups. Unknown instance-registration outcomes still
+fence registration of a replacement management instance. Once registered,
+startup retains that instance and reports while execution reconciliation remains
+pending; activation still requires confirmed stopping and resolved operations. Reports
 retain the known inventory, blocked state and original unresolved responsibility;
 a failed reconciliation cannot become proof of stopping or authorize admission.
 A newer disable can therefore receive observations while older work is unresolved.
@@ -145,6 +154,12 @@ Git job can be waiting for the inventory to confirm its original command closure
 Waiting for that whole producer creates a cycle. Resource-specific reconciliation
 retains the original close operation while allowing independent boundaries to
 make progress.
+
+**Require execution reconciliation before establishing management observation.**
+An unavailable original outcome or retained owner would hide all startup inventory
+and newer stop intentions. Only unresolved management registrations block a new
+instance; execution readiness separately gates activation while the registered
+instance reports the unresolved facts.
 
 ## Consequences
 

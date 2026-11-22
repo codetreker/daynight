@@ -5,7 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuspendedProcess, type WindowsSuspendedProcess } from "../../../platform/windows-suspended-process.js";
 import { createControllerJobLease, releaseControllerJobLease, type ControllerJobLease } from "../../controller/windows-job.js";
-import { controllerExecutionDirectory, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { controllerExecutionDirectory, controllerPayloadHash, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { openLifecycleStore } from "../lifecycle-store.js";
+import { resolveWorkerPaths } from "../paths.js";
+import { resolveControllerStateDirectory } from "../../controller/paths.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
@@ -14,6 +17,33 @@ import { reconcileSubmittedControllerLaunch } from "../../controller/launch-obse
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+
+/** A terminal reservation needs a new launch identity; uncertain dispatch stays fenced.
+ * The caller must independently prove that its execution was never submitted.
+ */
+export const controllerLaunchNeedsReplacement = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): boolean => {
+  const binding = ticket.lifecycleBinding;
+  if (binding === undefined) return false;
+  const store = openLifecycleStore({ file: path.join(resolveWorkerPaths(homeDirectory).workerDirectory, "lifecycle.sqlite"),
+    identity: { serverOrigin: binding.serverOrigin, userId: binding.userId, workerId: binding.workerId }, allowCreate: false });
+  try {
+    const resource = store.getResource(ticket.launchId);
+    if (resource === null) return false;
+    if (resource.ownerKind !== "controller" || resource.operationId !== ticket.launchId
+      || resource.instanceId !== binding.instanceId || resource.instanceEpoch !== binding.instanceEpoch || resource.scopeGeneration !== binding.scopeGeneration
+      || resource.identity.kind !== "launch" || resource.identity.launchId !== ticket.launchId
+      || resource.identity.executionId !== ticket.executionId || resource.identity.sessionId !== ticket.sessionId
+      || resource.identity.executionGeneration !== ticket.executionGeneration || resource.identity.controllerInstanceId !== ticket.controllerInstanceId
+      || resource.identity.controllerId !== ticket.controllerId
+      || resource.identity.ticketHash !== controllerPayloadHash(ticket)
+      || resource.identity.storageStateDirectory !== resolveControllerStateDirectory(homeDirectory, storageStateDirectory)
+      || resource.identity.journalFile !== path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite")
+      || resource.stage !== "not_dispatched" || resource.saveState !== "durable" || resource.processProof !== null || resource.stopProof !== null) {
+      throw new Error("Controller launch reservation does not prove the original attempt was never dispatched.");
+    }
+    return true;
+  } finally { store.close(); }
+};
 
 export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): void => {
   const journalFile = path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite");

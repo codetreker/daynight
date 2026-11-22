@@ -12,7 +12,7 @@ import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure
 import { confirmControllerProcessesStopped, stopControllerProcesses } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../backends/controller-process.js";
+import { controllerLaunchNeedsReplacement, createControllerExecutionSerializer, launchControllerProcess, observeControllerProcess } from "../backends/controller-process.js";
 import { preservesControllerProcessProof, preservesNativeProcessPrefix } from "../backends/orchestration.js";
 import { controllerCredentialNeedsRefresh } from "../backends/grant-renewal.js";
 import { writeControllerCredential } from "../backends/session-api.js";
@@ -351,10 +351,13 @@ export const createBotProcess = (options: {
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
       }
       const binding = currentLifecycleBinding();
-      if (binding !== undefined && controllerPayloadHash(ticket.lifecycleBinding ?? null) !== controllerPayloadHash(binding)) {
+      const needsReplacement = controllerLaunchNeedsReplacement(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
+      if (needsReplacement || binding !== undefined && controllerPayloadHash(ticket.lifecycleBinding ?? null) !== controllerPayloadHash(binding)) {
+        if (binding === undefined) throw new Error("Bot launch replacement requires current Worker lifecycle authorization.");
         const original = record;
         const assertPending = () => {
           signal.throwIfAborted(); assertWorkerLifecycleAdmission();
+          controllerLaunchNeedsReplacement(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, original));
           const latest = current(original), execution = options.executions.get(latest);
           if (controllerPayloadHash(latest.intent) !== controllerPayloadHash(original.intent) || execution === null
             || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null || execution.startup !== null) throw new Error("Bot lifecycle authorization requires proven never-submitted execution.");

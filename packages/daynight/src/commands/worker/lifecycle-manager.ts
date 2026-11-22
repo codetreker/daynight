@@ -103,6 +103,16 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
   const reconcileOperations = async (): Promise<void> => {
     for (const original of store.listOperations()) await resolveOriginal(original);
   };
+  const unresolvedExecutionOperations = (): LifecycleOperation[] => store.listOperations().filter(original => original.kind !== "instance" && ["submitted", "unknown"].includes(original.status));
+  const reconcileForObservation = async (): Promise<void> => {
+    for (const original of unresolvedExecutionOperations()) {
+      try { await resolveOriginal(original); } catch (error) { blocked(error); }
+    }
+  };
+  const stoppedInventory = (): boolean => {
+    const current = store.readState();
+    return current.inventoryComplete && current.stop === "confirmed" && current.save === "durable";
+  };
   const stop = async (): Promise<void> => {
     const initial = store.readState();
     if (initial.phase === "disabled" && initial.inventoryComplete && initial.stop === "confirmed" && initial.save === "durable") return;
@@ -271,6 +281,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
   const disableCloud = async (cloud: CloudResource): Promise<void> => {
     const state = store.readState();
     if (!state.localVeto || cloud.desired === "disabled") return;
+    // A newly observed explicit resume must be checked before the same veto can
+    // issue a competing disable. A later local epoch never inherits this pause.
+    if (pendingResume?.operationId === cloud.operationId && pendingResume.binding.intentVersion === cloud.intentVersion
+      && pendingResume.binding.instanceId === state.instanceId && pendingResume.binding.instanceEpoch === state.instanceEpoch
+      && pendingResume.binding.localEpoch === state.localEpoch) return;
     const local = store.listOperations().find(operation => operation.kind === "local_disable" && operation.localEpoch === state.localEpoch);
     if (local === undefined) throw new Error("Local veto has lost its original operation.");
     const acceptedResume = store.listOperations().find(operation => operation.phase === "primary" && operation.kind === "intent" && operation.status === "confirmed"
@@ -296,8 +311,11 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     if (initialization === undefined) {
       if (before.phase === "resuming") store.markBlocked("resume_interrupted"); else store.markManagementFailure();
     }
-    await options.reconcileResources(Date.now() + 60_000);
-    await reconcileOperations();
+    try { await options.reconcileResources(Date.now() + 60_000); }
+    catch (error) { blocked(error, "stop_unknown"); }
+    // Registration outcomes alone fence a new management instance. Execution
+    // cleanup and request outcomes cannot withhold that instance's observations.
+    for (const original of store.listOperations().filter(original => original.kind === "instance")) await resolveOriginal(original);
     let registrationVerified = false;
     if (initialization !== undefined) {
       const original = store.readOperation(initialization.request.operationId);
@@ -329,21 +347,32 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
     }
     const receipt = pending.receipt;
     if (store.readState().instanceId !== receipt.instanceId || store.readState().instanceEpoch !== receipt.instanceEpoch) store.bindInstance(receipt);
-    await stop();
+    await stopForObservation();
+    const observationEpoch = store.readState().localEpoch;
     const cloud = await readAuthority();
     if (cloud.instance?.instanceId !== receipt.instanceId || cloud.instance.instanceEpoch !== receipt.instanceEpoch) throw new Error("Original Worker management instance was replaced.");
     store.observeAuthority(cloud);
     store.confirmManagementAuthority(binding());
-    await stop();
-    await disableCloud(cloud);
+    // A new Web resume may arrive after registration while startup reconciliation
+    // is still pending. Retain it, but do not reconstruct a pre-restart resume.
+    if (cloud.desired === "enabled" && cloud.operationId !== null && BigInt(cloud.intentVersion) > BigInt(receipt.intentVersion)) {
+      if (pendingResume?.operationId !== cloud.operationId) pendingResume = { operationId: cloud.operationId, binding: { ...binding(), localEpoch: observationEpoch } };
+    } else if (cloud.desired === "disabled") pendingResume = undefined;
+    await stopForObservation();
+    if (unresolvedExecutionOperations().length > 0 || !stoppedInventory()) await report();
+    await reconcileForObservation();
+    if (unresolvedExecutionOperations().length === 0) {
+      try { await disableCloud(cloud); } catch (error) { blocked(error); }
+    }
     const current = store.readState();
-    const internalActivationAllowed = !current.localVeto && current.desired === "enabled" && cloud.desired === "enabled"
+    const executionReady = stoppedInventory() && unresolvedExecutionOperations().length === 0;
+    const internalActivationAllowed = executionReady && !current.localVeto && current.desired === "enabled" && cloud.desired === "enabled"
       && current.intentVersion === cloud.intentVersion && current.errorCode === null;
     if (internalActivationAllowed && normalReconnect(before) && receipt.reconnectAllowed && before.intentVersion === cloud.intentVersion) await activate(randomUUID(), "reconnect");
     else if (internalActivationAllowed && !before.bootstrapConsumed && !before.localVeto && before.instanceEpoch === null && before.activation === null && cloud.operationId === null
       && !store.listOperations().some(operation => operation.kind === "activation")) await activate(randomUUID(), "bootstrap");
     else await report();
-    initialized = true; initialization = undefined;
+    if (executionReady) { initialized = true; initialization = undefined; }
   };
   const tick = async (): Promise<void> => {
     if (!initialized) { await initialize(); return; }
@@ -369,21 +398,12 @@ export const createLifecycleManager = (options: LifecycleManagerOptions) => {
       store.observeAuthority(cloud);
       if (cloud.desired === "disabled") { store.closeAdmission({ operationId: cloud.operationId ?? randomUUID(), local: false }); await stopForObservation(); }
     }
-    const unresolvedOperations = store.listOperations().filter(original => ["submitted", "unknown"].includes(original.status)
-      && original.request !== null && typeof original.request === "object" && !Array.isArray(original.request)
-      && (original.kind === "activation" && BigInt(parseLifecycleActivationRequest(original.request).intentVersion) < BigInt(cloud.intentVersion)
-        || original.kind === "intent" && (original.request.action === "resume"
-          || typeof original.request.expectedVersion === "string" && (BigInt(original.request.expectedVersion) + 1n < BigInt(cloud.intentVersion)
-            || original.localEpoch !== store.readState().localEpoch && BigInt(original.request.expectedVersion) + 1n === BigInt(cloud.intentVersion)))));
-    if (unresolvedOperations.length > 0) {
-      // Report current stop evidence before settling original outcomes. A resume
-      // may not have committed, so authority versions cannot determine its outcome
-      // or whether its frozen request still needs reconciliation.
+    if (unresolvedExecutionOperations().length > 0) {
+      // Authority versions cannot prove whether an original request committed.
+      // Report the current inventory before independently reconciling each result.
       await stopForObservation();
       await report();
-      for (const original of unresolvedOperations) {
-        try { await resolveOriginal(original); } catch (error) { options.reportError(error); }
-      }
+      await reconcileForObservation();
     }
     try { await continueResume(cloud); }
     catch (error) {
