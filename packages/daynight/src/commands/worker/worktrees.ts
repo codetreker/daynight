@@ -63,10 +63,17 @@ type TerminatedHolder = { readonly pid: number; readonly image: string; readonly
  * configuration revision, and may list several holders at once, so it stays
  * short enough to read. The event stands alone among unrelated records, where
  * an identifier Windows has since reused no longer picks out one process. */
-const terminatedHolders = (ended: readonly TerminatedHolder[]): string =>
-  ended.length === 0
-    ? "No holder was terminated."
-    : `Terminated ${ended.length} holder process ${ended.length === 1 ? "tree" : "trees"}: ${ended.map(holder => `${holder.image} (${holder.pid})`).join(", ")}.`;
+// A worktree can be held by as many processes as an agent left behind, and
+// naming all of them puts an unbounded list inside an error message. The count
+// is always the real one, so a truncated list still reports how much happened;
+// the reported events carry every holder individually in any case.
+const namedHolderLimit = 8;
+const terminatedHolders = (ended: readonly TerminatedHolder[]): string => {
+  if (ended.length === 0) return "No holder was terminated.";
+  const named = ended.slice(0, namedHolderLimit).map(holder => `${holder.image} (${holder.pid})`).join(", ");
+  const remaining = ended.length - Math.min(ended.length, namedHolderLimit);
+  return `Terminated ${ended.length} holder process ${ended.length === 1 ? "tree" : "trees"}: ${named}${remaining === 0 ? "" : `, and ${remaining} more`}.`;
+};
 /** Carries that record onto a failure raised after the terminations.
  *
  * The removal that provoked the recovery is not the only way an attempt can

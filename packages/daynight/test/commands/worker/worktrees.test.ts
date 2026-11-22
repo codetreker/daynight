@@ -1621,6 +1621,31 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(await lstat(root).catch(() => null)).toBeNull();
   });
 
+  it.skipIf(process.platform !== "win32")("counts every terminated holder while naming a bounded number of them", async () => {
+    const f = await repositoryFixture("files");
+    const adapter = manager(f.root, {
+      readCleanupPolicy: () => cleanupPolicy({ enableWindowsProcessCleanup: true, windowsProcessRevision: "7" }),
+      // An agent can leave behind more processes than belong in an error
+      // message, so the list is bounded while the count stays the real one.
+      stopHoldingProcesses: async (target, _operation, options) => {
+        const observed = Array.from({ length: 11 }, (_entry, index) => ({ pid: 600 + index, image: "node.exe", directory: target, birth: BigInt(600 + index) }));
+        for (const holder of observed) options?.onTerminated?.(holder);
+        return { observed, terminated: observed.map(holder => holder.pid) };
+      },
+    });
+    const binding = await prepareCleanupFixture(f, adapter);
+    const root = path.normalize(binding.worktreePath);
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (path.normalize(String(target)) !== root) return actualFs.rmdir(target, options);
+      throw busyError();
+    });
+    const error = await adapter.removeWorktree(f.project, f.owner, operation()).catch(failure => failure as AggregateError);
+    expect(errorText(error)).toContain("Terminated 11 holder process trees:");
+    expect(errorText(error)).toContain("node.exe (607), and 3 more.");
+    // The ninth onwards are counted, not named.
+    expect(errorText(error)).not.toContain("node.exe (608)");
+  });
+
   it.skipIf(process.platform !== "win32")("names the terminated holders when the worktree stays busy after termination", async () => {
     const f = await repositoryFixture("files");
     let rounds = 0;
