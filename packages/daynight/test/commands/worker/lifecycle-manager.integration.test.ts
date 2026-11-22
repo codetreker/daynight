@@ -549,8 +549,11 @@ describe("Worker lifecycle management with real local authority", () => {
     let available = false;
     vi.mocked(f.api.operation).mockImplementation(async operationId => {
       if (operationId === id(22) && !available) {
-        expect(f.cloud().observation).toMatchObject({ intentVersion: f.cloud().intentVersion, observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
-        if (f.cloud().intentVersion === "5") blockedResume.resolve();
+        // A Web resume submitted by the report hook may already have superseded
+        // that observation. The lookup follows the locally observed version.
+        const reported = vi.mocked(f.api.report).mock.calls.at(-1)?.[0];
+        expect(reported).toMatchObject({ intentVersion: f.store.readState().intentVersion, observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
+        if (reported?.intentVersion === "5") blockedResume.resolve();
         throw unknown();
       }
       return operation(operationId);
@@ -561,8 +564,24 @@ describe("Worker lifecycle management with real local authority", () => {
     await expect.poll(() => BigInt(f.cloud().observation!.reportSequence), { timeout: 3500 }).toBeGreaterThan(sequence);
     expect(f.store.readOperation(id(22), "activation")).toEqual(original);
     expect(f.api.operation).toHaveBeenCalledWith(id(22), f.cancellation.signal);
-    await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
+    const resumeSubmitted = deferred<void>();
+    f.onReport(async envelope => {
+      if (envelope.instanceEpoch !== "1" || envelope.intentVersion !== "4" || envelope.operationId !== id(24)
+        || envelope.observation.phase !== "disabled" || envelope.observation.stop !== "confirmed" || envelope.observation.save !== "durable"
+        || !envelope.observation.inventoryComplete || ![null, "resume_interrupted", "upload_failed"].includes(envelope.observation.errorCode)) return;
+      // Submit while the clean stop is published, before the unavailable original
+      // activation lookup can replace it with an ineligible failure observation.
+      f.onReport(undefined);
+      try {
+        expect(available).toBe(false);
+        expect(f.store.readOperation(id(22), "activation")).toEqual(original);
+        await f.api.intent({ protocolVersion: 1, operationId: id(25), action: "resume", expectedVersion: "4", source: "web", localEpoch: "2", instanceEpoch: "1" });
+        resumeSubmitted.resolve();
+      } catch (error) { resumeSubmitted.reject(error); throw error; }
+    });
+    await waitSignal(resumeSubmitted.promise, AbortSignal.timeout(2500));
     await waitSignal(blockedResume.promise, AbortSignal.timeout(2500));
+    expect(f.cloud().observation).toMatchObject({ operationId: id(25), intentVersion: "5", observation: { phase: "disabled", stop: "confirmed", save: "durable" } });
     expect(f.store.readState()).toMatchObject({ admission: "closed", localVeto: true, activation: null, intentVersion: "5" });
     expect(f.store.readOperation(id(22), "activation")).toEqual(original);
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(0);
@@ -573,6 +592,7 @@ describe("Worker lifecycle management with real local authority", () => {
     expect(f.store.readState()).toMatchObject({ admission: "open", localVeto: false, intentVersion: "5" });
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(22))).toHaveLength(1);
     expect(vi.mocked(f.api.activate).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
+    expect(vi.mocked(f.api.intent).mock.calls.filter(([request]) => request.operationId === id(25))).toHaveLength(1);
     expect(f.api.resolve).not.toHaveBeenCalled();
     expect(owner.rebuild).toHaveBeenCalledOnce();
   }, 10_000);
