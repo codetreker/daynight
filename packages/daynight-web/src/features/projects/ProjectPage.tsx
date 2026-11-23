@@ -19,6 +19,7 @@ import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { GoalCreate } from "../goal-detail/GoalCreate";
+import { GoalAcceptanceHost } from "../goal-acceptance-graph/GoalAcceptanceHost";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
@@ -106,6 +107,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const graphOwner = useRef(Symbol());
   useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
   const viewer = useTaskCacheScope();
+  const [acceptanceGraph, setAcceptanceGraph] = useState<{ projectId: string; viewer: typeof viewer; trigger: HTMLElement } | null>(null);
+  const closeAcceptanceGraph = useCallback(() => setAcceptanceGraph(null), []);
+  useEffect(() => { if (acceptanceGraph !== null && (graph.syncedSnapshot === null || acceptanceGraph.viewer !== viewer || acceptanceGraph.projectId !== projectId)) closeAcceptanceGraph(); }, [graph.syncedSnapshot, acceptanceGraph, viewer, projectId, closeAcceptanceGraph]);
   const account = useOptionalAccountSession();
   const { filter: assigneeFilter, onFilterChange: setAssigneeFilter, issue: assigneeIssue } = useProjectAssigneeFilter(projectId, viewer.userId);
   const { filter: statusFilter, onFilterChange: setStatusFilter, issue: statusIssue } = useProjectStatusFilter(projectId, viewer.userId);
@@ -919,7 +923,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onOpenSession, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, childTagFilter, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
+              goals={{ projectId, goals: pageGoals, childTagFilter, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, onOpenAcceptanceGraph: trigger => setAcceptanceGraph({ projectId, viewer, trigger }), graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
                 openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
@@ -943,6 +947,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       </div>
       {usageVisible && usage !== null && <ChainUsageDialog projectId={projectId} projectName={projectRead.project?.name ?? ""} anchor={usage.anchor} title={usage.title} pending={usagePending} error={graph.error} onRetry={graph.refresh} unavailable={!usageAnchorAvailable} root={usageRoot} onClose={onCloseUsage} onRestoreFocus={restoreUsageFocus} onOpenTask={onOpenUsageTask} />}
       <OverlayOwnerContext value={detailOwner}>{detailDialog}</OverlayOwnerContext>
+      {acceptanceGraph !== null && acceptanceGraph.projectId === projectId && acceptanceGraph.viewer === viewer && graph.syncedSnapshot !== null &&
+        <GoalAcceptanceHost projectId={projectId} snapshot={graph.syncedSnapshot} detailSnapshot={currentSnapshot} trigger={acceptanceGraph.trigger} onClose={closeAcceptanceGraph} onRefreshGraph={graph.refresh} graphError={graph.error} />}
       </div>
     </TaskExecutionClockProvider>
   );
