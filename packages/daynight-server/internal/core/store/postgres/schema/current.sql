@@ -1,4 +1,4 @@
--- Schema snapshot version: 115
+-- Schema snapshot version: 116
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -809,7 +809,11 @@ CREATE TABLE "session_archive_files" (
     "byte_length" bigint NOT NULL,
     "accepted_offset" bigint NOT NULL,
     "state" "text" NOT NULL,
-    "object_path" "text" NOT NULL
+    "object_path" "text" NOT NULL,
+    "upload_version" integer DEFAULT 1 NOT NULL,
+    "prefix_proof" "bytea",
+    "successor_file_id" "uuid",
+    "terminal_error" "jsonb"
 );
 
 CREATE TABLE "session_archive_migrations" (
