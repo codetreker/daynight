@@ -109,7 +109,7 @@ export class CodexReadAuthority {
     this.options.publish(null);
   }
 
-  async request(method: string, params: unknown, onLateResponse?: Parameters<Request>[2]): Promise<unknown> {
+  async request(method: string, params: unknown, onLateResponse?: Parameters<Request>[2], consume?: Parameters<Request>[3]): Promise<unknown> {
     const allowed = unchangedRequests[method], raw = record(params);
     const unchanged = readMethods.has(method) || allowed && raw.threadId === this.policy?.nativeSessionId && Object.keys(raw).every(key => allowed.includes(key));
     if (this.installed && !unchanged) {
@@ -122,7 +122,8 @@ export class CodexReadAuthority {
       if (this.startedReceipt) this.invalidate();
       else started = this.startedReceipt = { responded: false, response: undefined, notified: false, notification: undefined };
     }
-    const pending = onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
+    const pending = consume ? this.options.request(method, params, onLateResponse, consume)
+      : onLateResponse ? this.options.request(method, params, onLateResponse) : this.options.request(method, params);
     if (!started) return pending;
     try {
       const response = await pending;

@@ -34,8 +34,8 @@ Local transfer leaves remote recovery registration explicitly pending. Runtime
 entry points refuse to use the copied original intent to start or control an
 execution at its old paths. A dedicated reader validates the copied journal
 against the original ticket and exposes retained history without starting a
-Provider. Snapshot and timeline readers accept only validated shipped v16 or
-current v17 schemas through an explicit read-only path. Recovery binding reads
+Provider. Snapshot and timeline readers accept only validated shipped v16/v17 or
+current v18 schemas through an explicit read-only path. Recovery binding reads
 use the same check. CLI upgrades preserve every protected copied byte and its
 manifest digest; the strict current-writer reader remains unchanged. Native recovery material remains separately verified by its Provider;
 timeline availability never establishes native resume capability.

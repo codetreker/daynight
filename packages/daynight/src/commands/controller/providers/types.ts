@@ -87,12 +87,18 @@ export type ProviderOptions = {
   onImageOccurrence?(occurrence: ImageOccurrence, source: NativeImageSource | null): boolean;
   imageOccurrenceAcknowledged?(imageId: string): boolean;
   prepareImageCapture?(request: ImageCaptureRequest, signal?: AbortSignal): Promise<void>;
+  verifyImageCapture?(captureId: string, attemptId: string): void;
+  freezeImageCapture?(submission: DirectCaptureSubmission): void;
   submitImageCapture?(submission: DirectCaptureSubmission): Promise<ImageCaptureReceipt>;
   registerImageCapture?(request: ImageCaptureRequest): Promise<ImageCaptureReceipt>;
   queryImageCapture?(captureId: string): Promise<ImageCaptureReceipt>;
   commitImageCapture?(captureId: string, attemptId: string, validated: ValidatedImage): Promise<ImageCaptureReceipt>;
   failImageCapture?(captureId: string, attemptId: string, error: ImageError): Promise<ImageCaptureReceipt>;
   stageImageCapture?(input: CaptureStageInput): Promise<ValidatedImage>;
+  /** Stage a registered native source under its current authority and join its writer. */
+  stageNativeImageCapture?(request: ImageCaptureRequest, signal: AbortSignal): Promise<ValidatedImage>;
+  /** Observe an already admitted native stage without restarting source I/O. */
+  recoverNativeImageCapture?(request: ImageCaptureRequest): Promise<ValidatedImage | null>;
   /** The source owner opens only an acknowledged, registered capture and joins cancellation. */
   resolveImageCaptureSource?(request: ImageCaptureRequest, signal: AbortSignal): Promise<NativeImageFile>;
 };

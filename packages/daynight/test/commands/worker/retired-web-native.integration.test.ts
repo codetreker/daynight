@@ -1,3 +1,4 @@
+import { restoreControllerJournalVersion } from "../../helpers/controller-journal-version.js";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -203,7 +204,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (state === "missing" && mode === "patrol" && !recovered) {
       const retained = new Database(journalPath);
       try {
-        retained.exec("DROP TABLE stopped_generations; PRAGMA user_version=16");
+        restoreControllerJournalVersion(retained, 16);
         retained.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(original.leader.pid);
         expect(retained.pragma("user_version", { simple: true })).toBe(16);
       } finally { retained.close(); }
@@ -231,7 +232,7 @@ it.each(cases)("cleans the real retired $state Web boundary and Git worktree dur
     if (process.platform === "win32") expect(readControllerSnapshot(journalPath)?.windowsJobStopProof).toBeDefined();
     if (state === "missing" && mode === "patrol" && !recovered) {
       const upgraded = new Database(journalPath, { readonly: true });
-      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(17); }
+      try { expect(upgraded.pragma("user_version", { simple: true })).toBe(18); }
       finally { upgraded.close(); }
     }
     await expect(access(worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
