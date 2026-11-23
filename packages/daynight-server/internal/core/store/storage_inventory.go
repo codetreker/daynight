@@ -26,7 +26,6 @@ type StorageArchiveFileV2 struct {
 	UploadVersion                                         int
 	FileID, Purpose, SHA256, State, Path, SuccessorFileID string
 	ByteLength, AcceptedOffset, TimelineRevision          int64
-	PrefixProof                                           []byte
 	Resource, TerminalError                               json.RawMessage
 	StagingReleased                                       bool
 }
