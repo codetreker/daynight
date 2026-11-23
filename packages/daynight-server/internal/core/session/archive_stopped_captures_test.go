@@ -82,6 +82,8 @@ func TestStoppedCaptureInventoryRefusalsPreserveOnlineReferences(t *testing.T) {
 				d.captures[0].Receipt.ResourceID = nil
 			case "failed":
 				d.captures[0].Receipt.State = "failed"
+				d.captures[0].Receipt.ResourceID = nil
+				d.captures[0].Receipt.Error = &sp.ImageError{Code: "source_not_found", Message: "Original image was not found."}
 			}
 			r := &record{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}}}
 			err := (&Execution{}).verifyStoppedCaptures(t.Context(), &operationTx{dao: d}, r, archiveLedger{ContentPolicy: "task_body"}, nil)
