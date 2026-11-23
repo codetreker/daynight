@@ -224,6 +224,12 @@ the original resource and blocks rebuild until its output consumer joins and
 closure is recorded. The
 [command closure decision](../.agents/notes/implemented/bug-fix/2026-11-23-worker-owned-command-unknown.md)
 owns the runtime behavior these fixtures verify.
+The management-close and prepared-command save fixtures deliver the exact
+registered deadline after the original writer or close enters its held phase.
+Real file operations, ownership records and lock observations stay in the
+production paths. The
+[observation deadline decision](../.agents/notes/implemented/testing/2026-11-23-worker-observation-deadline-fixtures.md)
+describes their clock and cleanup boundaries.
 Worker reconcile wake tests retain native wake and cancellation. The poll
 completion case controls one Promise delay and asserts its requested interval.
 The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)

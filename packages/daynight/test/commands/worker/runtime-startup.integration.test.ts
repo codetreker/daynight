@@ -1,5 +1,6 @@
 import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 import { execFileSync } from "node:child_process";
 import * as childProcesses from "node:child_process";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
@@ -23,6 +24,7 @@ import * as atomicFiles from "../../../src/platform/files.js";
 import { hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { currentOwnedCommandLifecycle, retainedOwnedCommandBoundaries, runLifecycleOwnedCommand, withOwnedCommandLifecycle, type OwnedCommandLifecycleSink } from "../../../src/commands/worker/owned-command-lifecycle.js";
 import { withinExecutionDeadline } from "../../../src/commands/worker/execution-scope.js";
+import * as executionScope from "../../../src/commands/worker/execution-scope.js";
 import * as reviewerHost from "../../../src/commands/worker/reviewer-host.js";
 import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import * as directoryBrowsing from "../../../src/commands/worker/read-only/directory.js";
@@ -88,6 +90,40 @@ vi.mock("../../../src/commands/worker/native-version.js", async original => ({ .
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }),
 }));
+
+const expireManagementClose = async (rebuild: () => void, entered: Promise<void>, running: Promise<void>): Promise<void> => {
+  const observe = executionScope.withinExecutionDeadline;
+  type CloseTimer = ReturnType<typeof captureSynchronousDeadline<Promise<unknown>>>;
+  const registered = Promise.withResolvers<{ before: number; after: number; deadline: number; timer: CloseTimer }>();
+  let timer: CloseTimer | undefined;
+  let settled = false;
+  const markSettled = () => { settled = true; };
+  void running.then(markSettled, markSettled);
+  // Arm only after real scope stop. The next exported observer belongs to management close.
+  const observation = vi.spyOn(executionScope, "withinExecutionDeadline").mockImplementationOnce(<T>(work: Promise<T>, deadline: number): Promise<T> => {
+    const before = Date.now();
+    const captured = captureSynchronousDeadline(() => observe(work, deadline));
+    timer = captured;
+    registered.resolve({ before, after: Date.now(), deadline, timer: captured });
+    return captured.result;
+  });
+  const rebuildAt = Date.now();
+  try {
+    rebuild();
+    const [close] = await observe(Promise.all([registered.promise, entered]), Date.now() + 5_000);
+    expect(close.deadline).toBeGreaterThanOrEqual(rebuildAt + 10_000);
+    expect(close.deadline).toBeLessThanOrEqual(close.before + 10_000);
+    expect(close.timer.count).toBe(1);
+    expect(close.timer.requested).toBeGreaterThanOrEqual(Math.max(0, close.deadline - close.after));
+    expect(close.timer.requested).toBeLessThanOrEqual(close.deadline - close.before);
+    expect(settled).toBe(false);
+    close.timer.markReady();
+    await close.timer.expire();
+  } finally {
+    observation.mockRestore();
+    timer?.restore();
+  }
+};
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -769,7 +805,7 @@ describe("worker cloud-first startup", () => {
     try {
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
       expect((await controls[0]!.stop()).every(result => result.stop === "confirmed")).toBe(true);
-      controls[0]!.rebuild(); await entered.promise;
+      await expireManagementClose(() => controls[0]!.rebuild(), entered.promise, running);
       await expect(running).rejects.toThrow("owner stop deadline elapsed");
       expect(controls).toHaveLength(1);
       expect(await tryAcquireWorkerInstanceLock(f.paths)).toBeNull();
@@ -819,7 +855,7 @@ describe("worker cloud-first startup", () => {
   });
 
   it("retains the root through the diagnostic close deadline until its original file handle joins", async () => {
-    const f = await fixture(), release = Promise.withResolvers<void>();
+    const f = await fixture(), release = Promise.withResolvers<void>(), closeEntered = Promise.withResolvers<void>();
     const createWake = reconcileWake.createReconcileWake;
     let polling = false, appending = false;
     const waking = vi.spyOn(reconcileWake, "createReconcileWake").mockImplementation(() => {
@@ -847,7 +883,12 @@ describe("worker cloud-first startup", () => {
           finally { await handle.close(); if (held) handleClosed = true; }
         },
       } });
-      close = vi.spyOn(sink, "close"); return sink;
+      const closeOriginal = sink.close;
+      close = vi.spyOn(sink, "close").mockImplementation(() => {
+        closeEntered.resolve();
+        return closeOriginal();
+      });
+      return sink;
     });
     let control: import("../../../src/commands/worker/runtime.js").WorkerExecutionControl | undefined;
     const { cancellation, running } = start(f, { onExecutionScope: value => { control = value; } });
@@ -862,8 +903,7 @@ describe("worker cloud-first startup", () => {
       const stopping = control!.stop();
       await vi.waitFor(() => expect(appending).toBe(true));
       expect((await stopping).every(result => result.stop === "confirmed")).toBe(true);
-      control!.rebuild();
-      await vi.waitFor(() => expect(joined).toBe(true), { timeout: 15_000 });
+      await expireManagementClose(() => control!.rebuild(), closeEntered.promise, running);
       await expect(running).rejects.toThrow("owner stop deadline elapsed");
       expect(sink!.isClosed()).toBe(false); expect(handleClosed).toBe(false);
       expect(close).toHaveBeenCalledOnce();
