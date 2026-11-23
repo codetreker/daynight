@@ -26,10 +26,17 @@ server for single-origin delivery. The [localhost deployment](../../deployment/l
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
 provides an isolated instance of the same production build.
 
-The project Goals toolbar opens a separate Goal acceptance graph from the
-existing committed TaskSync baseline. It first displays active isolated Goals
-and their direct local prerequisites, including completed and cancelled context,
-then reads direct cross-project relationships through the existing Goal API.
+The project Goals toolbar and Goal detail's right column open a separate Goal
+acceptance graph from the existing committed TaskSync baseline. Project dialogs,
+standalone detail pages, My Tasks and nested Goal readers supply the current
+Goal's actual Project. An inherited Project-source registry reuses their existing
+synchronization owners, including an ancestor Project when returning through
+another Project. A missing foreign source starts normal synchronization on
+admitted detail mount; graph actions do not create it. Each reader has its own
+child graph controller. A detail entry selects the current
+Goal and includes it and its direct prerequisites even when the Goal is completed
+or cancelled; the toolbar starts without a selection. The graph first displays
+local Goals, then reads direct cross-project relationships through the existing Goal API.
 The graph session limits concurrent sources and follows each source's downstream
 pages sequentially. First reads publish verified partial results; repeated reads
 stage a complete replacement while retaining the prior still-authorized legal
@@ -46,20 +53,33 @@ and explicit external expansion.
 Inspection does not grow the canvas; expansion adds readable branches, including
 real edges within one foreign Project, and repeated expansion deduplicates sources,
 nodes and edges. Canvas eligibility and source reachability share synchronized
-roots, current direct prerequisites and one cross-project admission policy. Raw
-local-to-local relations cannot retain a removed source or qualify a removed
+active roots, a detail entry's focused Goal, their current direct prerequisites
+and one cross-project admission policy. Raw local-to-local relations cannot retain a removed source or qualify a removed
 terminal Goal through a foreign successor. Genuine cross-project prerequisites
 can qualify terminal Goals; terminal successors remain inspection-only unless
 independently eligible. Real external-to-local context uses synchronized local
-identity and status, and relations within a foreign Project remain readable. Disconnected inspection and
-expansion sources are filtered out and their queued or in-flight reads cancelled,
+identity and status, and relations within a foreign Project remain readable.
+Disconnected inspection and expansion sources are filtered out and their queued or in-flight reads cancelled,
 releasing the four-source capacity for reachable work. The session exposes retries,
 unsupported reads and inaccessible prerequisites. External cards use their
 actual Project and lifecycle data without invented summary versions or progress.
 Graph sessions have no polling loop and do not change TaskSync requests or
 watermarks. Trusted withdrawal and identity/history fences clear affected data;
 conflicting external reads cannot introduce a cycle into the retained local
-graph. Existing Task and Goal-child execution graphs retain their own projection
+graph. Detail entries register the graph under the originating reading layer,
+retaining its draft, tab, fullscreen and scroll state across ordinary source
+loading and Goal surface remounts. Nested Goal Details use
+the existing reading and draft layers with independent local draft identities;
+discarding a nested draft preserves a still-mounted parent's draft for the same
+Goal. Layered Escape closes the active overlay
+and closing the graph restores its actual entry or a visible Goal fallback.
+Trusted source loss retires its graph and prefers the current visible reading
+heading, including loading or failure headings, over an earlier entry button.
+Reading surface attachment records the latest focus target synchronously before
+batched entry updates or retirement. Nested graphs preserve their source
+detail and ancestor graphs.
+Opening the graph adds no history entry; accepted browser navigation closes it.
+Existing Task and Goal-child execution graphs retain their own projection
 and navigation. The
 [Goal relationship design](../../docs/design/goal-dependencies.md#项目-goal-验收图)
 owns the acceptance projection, reading layer and update continuity.
@@ -2458,6 +2478,11 @@ automatic-execution permission, execution platform, assignee and attachment mana
 share the focus loop, counted scroll lock, fullscreen scroll restoration and
 kept-mounted slots. Explicit parent ownership follows React across portals;
 child layers hold inert leases on their parent and alone handle detail Escape/Tab.
+Graph shells, detail backdrops/fullscreen surfaces and confirmations also supply
+an explicit visual surface. The shared visual lease retains its CSS base and
+stacks it above the actual registered parent, recalculating descendants on late
+parent registration or fullscreen changes. Release restores the original inline
+z-index while the lease still owns the assigned value.
 Focus restoration remains with the opening workspace. `TaskDetailPage` provides an ordinary full-page container,
 return-to-project link and language selector. Their outer workspaces own fullscreen
 mode and the shared Surface handles layered Escape. Standalone fullscreen hides

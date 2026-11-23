@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type MouseEvent, type RefObject } from 'react';
+import { useId, useLayoutEffect, useRef, type MouseEvent, type RefObject, type ReactNode } from 'react';
 import type { RelatedGoal } from '../../api/goal-dependencies';
 import { ApiError } from '../../api/client';
 import { browserNavigation } from '../../app/navigation';
@@ -12,9 +12,10 @@ import './goal-dependencies.css';
 
 const hrefFor = (goal: RelatedGoal) => taskDetailUrl(goal.projectId, goal.goalId, { tab: 'description', path: null });
 
-export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackFocus }: {
+export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackFocus, graphAction }: {
   readonly dependencies: ReturnType<typeof useGoalDependencies>; readonly canComplete: boolean; readonly refusal: unknown;
   readonly fallbackFocus: RefObject<HTMLElement | null>;
+  readonly graphAction?: ReactNode;
 }) => {
   const { locale, messages } = useI18n(), scope = useTaskCacheScope();
   const zh = locale === 'zh-CN';
@@ -57,7 +58,7 @@ export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackF
   const refused = refusal instanceof ApiError && refusal.code === 'goal_dependency_unsatisfied';
   const empty = zh ? '无关联 Goal' : 'No related Goals';
   return <section ref={root} className="goal-information-section goal-dependencies" aria-labelledby={headingId}>
-    <h3 id={headingId}>{zh ? 'Goal 验收依赖' : 'Goal acceptance dependencies'}</h3>
+    <div className="goal-dependency-heading"><h3 id={headingId}>{zh ? 'Goal 验收依赖' : 'Goal acceptance dependencies'}</h3>{graphAction}</div>
     {refused ? <p className="goal-dependency-notice goal-dependency-error" role="alert">{zh ? '无法完成。仍有前置 Goal 未完成。' : 'Cannot complete this Goal. A prerequisite Goal is unfinished.'}</p>
       : canComplete && page?.completionBlocked === true && <p className="goal-dependency-notice goal-dependency-blocked">{zh ? '完成受阻。仍有前置 Goal 未完成。' : 'Completion blocked. A prerequisite Goal is unfinished.'}</p>}
     {unavailable && <p>{zh ? '服务器暂不支持 Goal 依赖查看。' : 'This server does not support Goal dependencies yet.'}</p>}

@@ -35,7 +35,7 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
     const parent = owner.current!;
     const opener = document.activeElement;
     const resumeImages = suspendSessionImagePreviews();
-    const releaseOverlay = registerOverlay(dialog.current!, parent);
+    const releaseOverlay = registerOverlay(dialog.current!, parent, dialog.current!.closest<HTMLElement>('.task-confirmation-backdrop'));
     const results = parent.closest('.standalone-task-route')?.querySelector<HTMLElement>('.standalone-deletion-slot');
     const releaseResults = results == null ? undefined : acquireInert(results);
     cancel.current!.focus();

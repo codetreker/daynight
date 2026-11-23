@@ -17,6 +17,7 @@ import { useTaskDetail } from './useTaskDetail';
 import { TaskDetailDialog } from './TaskDetailDialog';
 import type { TaskObservationInput } from './TaskDetailSession';
 import { ResourceChildDraftHost } from './TaskDraftNavigation';
+import { useGoalAcceptanceOwner } from '../goal-acceptance-graph/GoalAcceptanceContext';
 
 type Props = TaskDetailSurfaceProps & {
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
@@ -141,14 +142,21 @@ const TypedDetailLoading = (props: Props & { readonly task: ReturnType<typeof us
   const root = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);
   const heading = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const acceptance = useGoalAcceptanceOwner();
   const modal = props.presentation === 'dialog';
   useDetailOverlay({ root, initialFocus: close, modal, fullscreen: false, scope: props.projectId, blocked: () => false,
     onEscape: () => props.onClose?.(), onRestoreFocus: () => { if (props.restoreOnUnmount()) props.onRestoreFocus?.(); } });
+  useLayoutEffect(() => {
+    if (acceptance?.projectId !== props.projectId) return;
+    acceptance.attach(props.taskId, root, headingRef);
+    if (props.task.status === 'deleted' || isThreadScopeLoss(props.task.error)) acceptance.retire(props.taskId);
+  }, [acceptance, props.projectId, props.taskId, props.task.status, props.task.error]);
   const error = props.task.error;
   const title = props.task.status === 'deleted' ? messages.inspection.deletion.deleted : props.task.status === 'error' ? m.failed : m.loading;
   const content = <OverlayOwnerContext value={root}><DetailFrame modal={modal} root={root} headingId={heading} className={modal ? 'task-detail-dialog' : 'task-detail-page'}>
     {!modal && <TaskDetailPageBar projectId={props.projectId} />}
-    <header className="task-detail-header"><h2 id={heading} className="task-detail-title">{title}</h2><AccountRefreshNotice />
+    <header className="task-detail-header"><h2 id={heading} className="task-detail-title" ref={headingRef} tabIndex={-1}>{title}</h2><AccountRefreshNotice />
       {modal && <button className="button task-detail-close" type="button" ref={close} aria-label={m.close} onClick={props.onClose}>×</button>}
     </header>
     {props.task.status === 'loading' && <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>}

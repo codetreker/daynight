@@ -14,16 +14,24 @@ different times or lose access while a graph remains visible.
 
 ## Decision
 
-The project Goals toolbar opens a separate acceptance graph. Active Goals are
-roots; their direct prerequisites remain visible even when completed or
-cancelled. Synchronized Goal `dependsOn` supplies project-local acceptance edges,
+The project Goals toolbar and Goal detail's right column open a separate
+acceptance graph. Project dialogs, standalone detail pages, My Tasks and nested
+Goal readers use the current Goal's actual Project. An inherited Project-source
+registry is separate from each reader's child graph controller. It reuses existing
+synchronization owners, including ancestor A during A→B→A reading; a missing
+foreign source starts normal `useTaskGraph` on admitted detail mount, before a
+graph action. A child graph keeps its source detail and ancestor graphs open.
+Active Goals are roots; a detail entry also selects and retains its current Goal
+and direct prerequisites even when that Goal is completed or cancelled.
+Synchronized Goal `dependsOn` supplies project-local acceptance edges,
 while ordinary child Task graphs keep their existing members, execution rules
 and URLs. The existing committed TaskSync baseline remains separate from detail
 receipt projections. Opening, closing and canvas actions do not install another
 synchronization lifecycle or change requests and watermarks.
 
 A graph-owned relationship session calls the existing Goal relationship GET for
-qualified active roots. It displays the local graph first, limits concurrent
+qualified roots, including a detail entry's terminal current Goal. It displays
+the local graph first, limits concurrent
 sources to four and reads each source's successor pages sequentially. Complete
 prerequisites and accumulated readable successors form session-only
 contributions. An initial traversal publishes verified partial pages; a repeated
@@ -43,8 +51,9 @@ queued and in-flight work. Inspection and expansion share each source's admitted
 results and in-flight request. Inspection contributions describe direct
 relationships; explicit expansion promotes the source's contribution into the
 canvas without repeating an already covered read. Source modes distinguish roots,
-inspection and expansion. Reachability starts from synchronized roots and visible
-prerequisites and follows legal root/expanded external contributions. Canvas
+inspection and expansion. Reachability starts from synchronized active roots, the
+detail entry's focused Goal and their current direct prerequisites, then follows
+legal root/expanded external contributions. Canvas
 eligibility, source discovery and external edge inclusion share the same Project
 boundary policy. Raw relationships whose source and target both belong to the
 graph's Project cannot establish ownership or canvas eligibility; TaskSync alone
@@ -55,8 +64,8 @@ qualify terminal Goals; successors qualify only active Goals unless independentl
 included by synchronized scope or a legal prerequisite. An external source can
 still reach a known synchronized local target, using its synchronized status,
 and real relations within one foreign Project remain eligible. Rendering filters
-disconnected inspection and expansion sources, and session reconciliation removes them and synchronously cancels queued or
-in-flight reads. Request finalizers release slots and dispatch eligible roots
+disconnected inspection and expansion sources. Session reconciliation removes
+them and synchronously cancels queued or in-flight reads. Request finalizers release slots and dispatch eligible roots
 without waiting for an abandoned response. Otherwise a cached local edge can retain
 a removed terminal inspection source and consume the four available read slots.
 Earlier discovery or an inverse stale contribution cannot keep a branch admitted.
@@ -104,8 +113,27 @@ Following an inspector relationship transfers focus to the persistent inspection
 heading without scrolling before the changing relation list can remove its
 trigger. The programmatically focusable heading remains outside ordinary Tab
 order and keeps the graph's Escape and fullscreen handling reachable.
-Goal Details use the existing detail and draft reading layers and restore their
-actual graph trigger. The [relationship design](../../../../docs/design/goal-dependencies.md#项目-goal-验收图)
+Detail entries register the graph under the originating reading layer without
+remounting its draft, tabs, fullscreen or scroll owners. Ordinary source loading
+or Goal surface remounts retain the graph controller and reattach its actual
+reading root, including its loading surface; trusted source loss retires it.
+Graph, detail and confirmation layers provide their actual visual surfaces to
+the shared overlay lease, so each child remains above its parent's current
+surface through nesting and fullscreen. The
+[shared frame decision](../architecture/2026-11-11-shared-detail-frame.md)
+owns visual stacking and release behavior. Goal Details use the
+existing detail and draft reading layers and restore their actual graph trigger.
+Each reader has a separate local draft identity, so discarding a nested reader's
+draft cannot discard a still-mounted parent's draft for the same Goal. Local
+departure checks inspect that reader's drafts.
+Opening the graph adds no browser history entry; accepted navigation closes it,
+and ordinary graph close restores the original detail entry or a visible reading
+heading. Surface attachment synchronously records the current root and focusable
+heading before batched entry attachment or retirement. Source-unavailable closure
+prefers that current heading, including a loading or failure heading: relationship
+denial can precede detail failure or trigger removal, and a still-connected old
+button is not sufficient restoration evidence. Restoration does not scroll.
+The [relationship design](../../../../docs/design/goal-dependencies.md#项目-goal-验收图)
 owns the mechanism and the [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-验收依赖图)
 own visible behavior.
 
@@ -149,7 +177,8 @@ determine deduplication.
 
 ## Consequences
 
-Readers see the local graph immediately and readable direct cross-project
+Readers can enter from project overview or their current Goal detail, including
+terminal Goals. They see the local graph immediately and readable direct cross-project
 context as it arrives, without changing ordinary Task graphs or synchronization
 traffic. Explicit external expansion adds readable branches while ordinary
 inspection preserves the canvas scope. Source reuse avoids repeated reads when

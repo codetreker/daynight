@@ -215,6 +215,46 @@ describe('Goal graph relationship session', () => {
     event({ projectId: externalProject, accessRevoked: true });
     expect(session.snapshot().sources.get(id(1))!.contribution?.successors).toEqual([]);
   });
+  it('preserves terminal focus and retained successor pages during reentry while withdrawing a matched hidden prerequisite immediately', async () => {
+    let hidden = false, rejectPage!: (error: unknown) => void;
+    const read = vi.fn(async (_project: string, goalId: string, cursor: string | null): Promise<GoalDependenciesRead> => {
+      if (cursor !== null && hidden) return new Promise((_resolve, reject) => { rejectPage = reject; });
+      return page(goalId, { canEdit: true, revision: '1', prerequisites: [{ edgeId: id(90), target: hidden ? null : related(10) }],
+        successors: [related(cursor === null ? 20 : 21)], nextCursor: cursor === null ? 'next' : null });
+    });
+    const { session } = await prepare(read), input = roots();
+    input.set(id(1), { ...input.get(id(1))!, status: 'done' });
+    session.setRoots(input, id(1)); await settled(session);
+    hidden = true; session.reenter(); await settled(session, id(1), 'partial');
+    expect(session.snapshot().sources.get(id(1))?.mode).toBe('root');
+    expect(session.snapshot().deniedIds.has(id(10))).toBe(true);
+    expect(session.snapshot().sources.get(id(1))!.hiddenCount).toBe(1);
+    const projection = combineGoalRelations(projectId, projectGoalAcceptance(input, id(1)), [session.snapshot().sources.get(id(1))!.contribution!], session.snapshot().deniedIds);
+    expect(projection.goals.has(id(10))).toBe(false);
+    expect(projection.goals.has(id(21))).toBe(true);
+    expect(projection.rootIds.has(id(1))).toBe(true);
+    rejectPage(new ApiError('network')); await settled(session, id(1), 'failed');
+    expect(session.snapshot().sources.get(id(1))!.contribution?.successors.map(goal => goal.goalId)).toEqual([id(20), id(21)]);
+  });
+
+  it.each(['done', 'cancelled'] as const)('reads a focused %s Goal as a root while keeping unfocused terminal Goals excluded', async status => {
+    const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(10, 'done') }] }));
+    const { session } = await prepare(read), input = roots(2);
+    for (const [goalId, goal] of input) input.set(goalId, { ...goal, status });
+    session.setRoots(input, id(1)); await settled(session);
+    expect([...session.snapshot().sources.keys()]).toEqual([id(1)]);
+    expect(session.snapshot().sources.get(id(1))?.mode).toBe('root');
+    const projection = combineGoalRelations(projectId, projectGoalAcceptance(input, id(1)), [session.snapshot().sources.get(id(1))!.contribution!], new Set());
+    expect(projection.rootIds).toEqual(new Set([id(1)]));
+    expect(projection.goals.has(id(2))).toBe(false);
+    expect(projection.edges).toEqual([{ source: id(10), target: id(1), external: true }]);
+    session.reenter(); await settled(session);
+    expect([...session.snapshot().sources.keys()]).toEqual([id(1)]);
+    expect(session.snapshot().sources.get(id(1))?.mode).toBe('root');
+    expect(read).toHaveBeenCalledTimes(2);
+    session.setRoots(input);
+    expect(session.snapshot().sources.size).toBe(0);
+  });
   it('inspects uncovered Goals without expanding and reuses completed reads for repeated expansion', async () => {
     const read = vi.fn(async (_project: string, goalId: string) => page(goalId, { prerequisites: [{ target: related(goalId === id(1) ? 10 : 11) }] }));
     const { session } = await prepare(read), input = roots();

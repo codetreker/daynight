@@ -20,6 +20,7 @@ import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock
 import { TaskOrganization } from "../task-detail/TaskOrganization";
 import { GoalCreate } from "../goal-detail/GoalCreate";
 import { GoalAcceptanceHost } from "../goal-acceptance-graph/GoalAcceptanceHost";
+import { GoalAcceptanceProvider } from "../goal-acceptance-graph/GoalAcceptanceProvider";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
@@ -847,7 +848,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   </>;
 
   return (
-    <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
+    <GoalAcceptanceProvider projectId={projectId} snapshot={graph.syncedSnapshot} detailSnapshot={currentSnapshot} graphError={graph.error} onRefreshGraph={graph.refresh}><TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
       {history.error && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
       <div hidden={history.error} inert={history.error}>
       <div className="project-navigation">
@@ -957,7 +958,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       {acceptanceGraph !== null && acceptanceGraph.projectId === projectId && acceptanceGraph.viewer === viewer && graph.syncedSnapshot !== null &&
         <GoalAcceptanceHost projectId={projectId} snapshot={graph.syncedSnapshot} detailSnapshot={currentSnapshot} trigger={acceptanceGraph.trigger} onClose={closeAcceptanceGraph} onRefreshGraph={graph.refresh} graphError={graph.error} />}
       </div>
-    </TaskExecutionClockProvider>
+    </TaskExecutionClockProvider></GoalAcceptanceProvider>
   );
 };
 

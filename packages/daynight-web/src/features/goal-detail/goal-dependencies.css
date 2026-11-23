@@ -1,4 +1,6 @@
 .goal-dependencies h3, .goal-dependencies h4 { margin: 0 0 8px; }
+.goal-dependency-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.goal-dependency-heading .button { font-size: inherit; }
 .goal-dependencies h4 { font-size: inherit; color: var(--ink); }
 .goal-dependencies section { margin-top: 14px; }
 .goal-dependencies ul { margin: 0; padding: 0; list-style: none; }
