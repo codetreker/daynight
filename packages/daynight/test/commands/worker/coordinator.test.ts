@@ -660,6 +660,171 @@ it.each(["supported", "legacy", "unavailable"])("reconciles paused summaries wit
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
+const seedSummaryClaim = (f: Awaited<ReturnType<typeof fixture>>): Task => {
+  const claimed = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: claimed.projectId, taskId: claimed.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  return claimed;
+};
+
+it.each(["already-current", "still-different", "claim-changed", "claim-completed", "status-changed", "project-changed", "task-changed", "worker-changed", "user-changed", "worktree-changed", "agent-changed", "mode-changed", "session-changed", "session-newly-bound"] as const)("rechecks the summary after inventory when the remote task is %s", async scenario => {
+  const f = await fixture();
+  const inventoryTask = seedSummaryClaim(f);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const advance = vi.fn(async (input: WebTask) => {
+    let record = f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    if (scenario === "session-changed") record = f.options.webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(880) }, 3);
+    entered.resolve();
+    await release.promise;
+    return f.options.webStore.getTask(input)!;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick();
+    await entered.promise;
+    expect(f.remote.ownInventory).toHaveBeenCalled();
+    const original = [...f.grants.values()][0]!;
+    expect(original).toBe(inventoryTask);
+    expect(original.version).toBe(2n);
+    const claim = readWorkerClaim(original.properties)!;
+    const fresh: Task = { ...original, version: 3n, status: scenario === "status-changed" ? "done" : original.status,
+      projectId: scenario === "project-changed" ? uuid(990) : original.projectId, id: scenario === "task-changed" ? uuid(991) : original.id,
+      properties: { ...original.properties, worker: { ...claim,
+        ...(scenario === "already-current" ? { phase: "waiting" as const } : {}),
+        ...(scenario === "claim-changed" ? { claimId: uuid(999) } : {}),
+        ...(scenario === "claim-completed" ? { state: "completed" as const } : {}),
+        ...(scenario === "worker-changed" ? { workerId: uuid(998) } : {}),
+        ...(scenario === "user-changed" ? { userId: uuid(997) } : {}),
+        ...(scenario === "worktree-changed" ? { worktreeId: uuid(996) } : {}),
+        ...(scenario === "agent-changed" ? { agent: "copilot" as const } : {}),
+        ...(scenario === "mode-changed" ? { agentControlMode: "herdr" as const, herdr: { session: "session", workspaceId: "workspace", paneId: "pane" } } : {}),
+        ...(scenario === "session-changed" || scenario === "session-newly-bound" ? { nativeSessionId: uuid(995) } : {}) } } };
+    f.grants.set(claim.claimId, fresh);
+    vi.mocked(f.remote.readTask).mockResolvedValueOnce(fresh);
+    release.resolve();
+    await eventually(() => expect(f.remote.readTask).toHaveBeenCalledWith(original.projectId, original.id, expect.any(AbortSignal)));
+    if (scenario === "still-different") {
+      await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+      expect(vi.mocked(f.remote.update).mock.calls[0]![0]).toBe(fresh);
+      expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "waiting", nativeSessionId: null });
+    } else {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+    expect(advance).toHaveBeenCalledOnce();
+    if (scenario === "already-current") {
+      vi.mocked(f.remote.readTask).mockClear();
+      await coordinator.tick();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.readTask).not.toHaveBeenCalled();
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+  } finally { release.resolve(); await coordinator.shutdown(); }
+});
+
+it.each(["fresh-current", "fresh-different", "inventory-different"] as const)("recompares the observed startup report against the fresh task: %s", async scenario => {
+  const f = await fixture();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const report = (claimId: string) => ({ schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(888), claimId,
+    executionGeneration: "1", controllerInstanceId: uuid(889), revision: "2", observedAt: "2026-11-05T00:00:00.000Z",
+    startup: { state: "unknown" as const, reasonCode: "native_timeout" as const }, recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } });
+  const claimed = seedSummaryClaim(f), claimedId = readWorkerClaim(claimed.properties)!.claimId;
+  f.grants.set(claimedId, { ...claimed, properties: { ...claimed.properties, sessionStartup: scenario === "inventory-different" ? { ...report(claimedId), revision: "1" } : report(claimedId) } });
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    entered.resolve(); await release.promise;
+    return f.options.webStore.getTask(input)!;
+  });
+  const verify = vi.fn(async () => true);
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: verify,
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn(), observeStartupReport: input => report(input.claimId) } });
+  try {
+    await coordinator.tick(); await entered.promise;
+    const original = [...f.grants.values()][0]!, claim = readWorkerClaim(original.properties)!;
+    const fresh: Task = { ...original, version: 3n, properties: { ...original.properties, worker: { ...claim, phase: "waiting" },
+      sessionStartup: scenario === "fresh-different" ? { ...report(claim.claimId), revision: "1" } : report(claim.claimId) } };
+    f.grants.set(claim.claimId, fresh); release.resolve();
+    await eventually(() => expect(f.remote.readTask).toHaveBeenCalledWith(original.projectId, original.id, expect.any(AbortSignal)));
+    expect(verify).toHaveBeenCalledOnce();
+    if (scenario === "fresh-different") {
+      await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+      expect(vi.mocked(f.remote.update).mock.calls[0]![0]).toBe(fresh);
+      expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "waiting", nativeSessionId: null, startupReport: report(claim.claimId) });
+    } else {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(f.remote.update).not.toHaveBeenCalled();
+    }
+  } finally { release.resolve(); await coordinator.shutdown(); }
+});
+
+it.each(["read-failed", "version-conflict", "other-refusal", "unconfirmed-conflict", "unknown"] as const)("defers a %s summary result to the next reconciliation without retrying native recovery", async scenario => {
+  const f = await fixture();
+  seedSummaryClaim(f);
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    return f.options.webStore.getTask(input)!;
+  });
+  const cause = new Error(`controlled ${scenario}`);
+  const failure = ["version-conflict", "other-refusal", "unconfirmed-conflict"].includes(scenario) ? new ApiError({ operation: "worker.update" }, "response", {
+    cause, status: 409, serverError: { code: scenario === "other-refusal" ? "claim_conflict" : "version_conflict", message: "stale version", requestId: "summary-request" }, confirmedRefusal: scenario !== "unconfirmed-conflict", outcomeUnconfirmed: scenario === "unconfirmed-conflict",
+  }) : cause;
+  const normalUpdate = vi.mocked(f.remote.update).getMockImplementation()!;
+  if (scenario === "read-failed") vi.mocked(f.remote.readTask).mockRejectedValueOnce(failure);
+  else vi.mocked(f.remote.update).mockImplementationOnce(async (current, input, signal) => {
+    const claimId = readWorkerClaim(current.properties)!.claimId;
+    f.grants.set(claimId, { ...current, version: current.version + 1n });
+    if (scenario === "version-conflict") {
+      if (f.grants.get(claimId)!.version !== current.version) throw failure;
+      return normalUpdate(current, input, signal);
+    }
+    throw failure;
+  });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {},
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  const tick = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
+  try {
+    await tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "summary-error" && event.error === failure)).toBe(true));
+    const diagnostic = f.events.find(event => event.kind === "summary-error" && event.error === failure)!;
+    if (scenario === "version-conflict") {
+      expect(diagnostic.message).toMatch(/rejected.*version/i);
+      expect(failure).toMatchObject({ code: "version_conflict", requestId: "summary-request", cause });
+    } else if (scenario === "other-refusal") expect(diagnostic.message).toMatch(/rejected/i);
+    else if (scenario !== "read-failed") expect(diagnostic.message).toMatch(/not confirmed/i);
+    expect(f.remote.update).toHaveBeenCalledTimes(scenario === "read-failed" ? 0 : 1);
+    if (scenario !== "read-failed") expect(vi.mocked(f.remote.update).mock.calls[0]![0].version).toBe(2n);
+    await tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(scenario === "read-failed" ? 1 : 2));
+    if (scenario !== "read-failed") expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(3n);
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.options.webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
+  } finally { await coordinator.shutdown(); }
+});
+
+it.each(["worker", "sessionStartup"] as const)("reports malformed fresh %s as a summary error without starting native recovery", async field => {
+  const f = await fixture(); seedSummaryClaim(f);
+  const advance = vi.fn(async (input: WebTask) => {
+    f.options.webStore.pauseRecovery(input, "No original identity.", 2);
+    return f.options.webStore.getTask(input)!;
+  });
+  const report = (input: WebTask) => ({ schemaVersion: 1 as const, source: "worker" as const, sessionId: uuid(888), claimId: input.claimId,
+    executionGeneration: "1", controllerInstanceId: uuid(889), revision: "1", observedAt: "2026-11-05T00:00:00.000Z",
+    startup: { state: "unknown" as const, reasonCode: "native_timeout" as const }, recovery: { state: "blocked" as const, reasonCode: "native_identity_missing" as const } });
+  const original = [...f.grants.values()][0]!;
+  vi.mocked(f.remote.readTask).mockResolvedValueOnce({ ...original, version: 3n, properties: { ...original.properties, [field]: {} } });
+  const coordinator = createWorkerCoordinator({ ...f.options, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, verifyWebStartupReporting: async () => true,
+    webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn(), observeStartupReport: report } });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.events.some(event => event.kind === "summary-error")).toBe(true));
+    expect(f.events.some(event => event.kind === "execution-error")).toBe(false);
+    expect(f.remote.update).not.toHaveBeenCalled();
+    expect(advance).toHaveBeenCalledOnce();
+    expect(f.options.webStore.getTask(f.store.listTasks()[0]!)?.recovery.count).toBe(0);
+  } finally { await coordinator.shutdown(); }
+});
+
 it.each(["claim", "worktree"])("rejects Web retry after original %s loss without authorizing or advancing it", async field => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
@@ -803,7 +968,10 @@ it.each(["paused", "revoked", "changed_claim"] as const)("rechecks %s before res
       expect(cleanup).toHaveBeenCalledOnce();
       expect(webStore.getTask(owner)?.webExecution?.restartAfterShutdown).toBe(true);
     } else {
-      await eventually(() => expect(readWorkerClaim(f.grants.get(owner.claimId)!.properties)?.phase).toBe("waiting"));
+      if (state === "changed_claim") {
+        await eventually(() => expect(f.remote.readTask).toHaveBeenCalledTimes(2));
+        expect(f.remote.update).not.toHaveBeenCalled();
+      } else await eventually(() => expect(readWorkerClaim(f.grants.get(owner.claimId)!.properties)?.phase).toBe("waiting"));
       expect(cleanup).not.toHaveBeenCalled();
       expect(webStore.getTask(owner)?.cleanup?.kind).toBe("shutdown");
     }
